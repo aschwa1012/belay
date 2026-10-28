@@ -406,7 +406,7 @@ async function merge(E, caller, args) {
     if (forced) out.forced = forced;
     const row = E.store.tx(() => rows.append(E.store, 'integration', out, by, Date.now()));
     E.noteWrite();
-    return { ...view(row), ...(carried.notCarried.length ? { not_carried: carried.notCarried } : {}) }; // answered, not stored: a task left out is on no row
+    return { ...require('./integration-task-checks.cjs').withTaskChecks(E, view(row)), ...(carried.notCarried.length ? { not_carried: carried.notCarried } : {}) }; // answered, not stored: a task left out is on no row
   });
   } finally { if (slot) slot.release(); }
 }
@@ -420,7 +420,7 @@ async function get(E, caller, args) {
   if (!args.id) throw err('E_ARGS', 'integration.get needs an id');
   const r = rows.current(E.store, 'integration', args.id);
   if (!r) throw err('E_NOT_FOUND', `no integration row exists for ${args.id}`, { id: args.id });
-  return view(r);
+  return require('./integration-task-checks.cjs').withTaskChecks(E, view(r));
 }
 
 // Removes an integration worktree belay made (the branch stays: it is the integrated result).

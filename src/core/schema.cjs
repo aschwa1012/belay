@@ -160,6 +160,10 @@ const MIGRATIONS = [
   // ADR 0031 decision 6 (build 12 wave 2): the run's `max_fix_rounds` lever, written by `run.attach`, and the
   // task a fix task repairs, written by `task.create`, so core can refuse a fix task past the cap.
   'ALTER TABLE run ADD COLUMN max_fix_rounds INTEGER',
+  // The run's `fix_hard_cap` (null: none): the one case a fix task is refused. `max_fix_rounds` is only a notice threshold.
+  'ALTER TABLE run ADD COLUMN fix_hard_cap INTEGER',
+  // Where the effective hard cap came from ('run spec' or 'default, no run timeout'); null with no cap.
+  'ALTER TABLE run ADD COLUMN fix_hard_cap_source TEXT',
   // The run lever max_parallel_evaluations (null: unlimited): at most this many task evaluations run at once in the owner.
   'ALTER TABLE run ADD COLUMN max_parallel_evaluations INTEGER',
   'ALTER TABLE task ADD COLUMN repairs TEXT',
@@ -241,6 +245,13 @@ const MIGRATIONS = [
   // The worker's first dead row names the leases that death released (JSON array of { lease_id, task_id }), for the death wake.
   'ALTER TABLE lease ADD COLUMN released_reason TEXT',
   'ALTER TABLE worker ADD COLUMN leases_released TEXT',
+  // ADR 0068 (proposed): a stopped or dead row whose life ended with no `result` event carries what its stream's last turn cost,
+  // priced from the per-message usage (JSON text), and `cost_source` names it; both null when the row's figures were all reported.
+  // The estimate has its own columns: cost_usd and the token columns stay what Claude Code reported.
+  'ALTER TABLE worker ADD COLUMN cost_estimate TEXT',
+  'ALTER TABLE worker ADD COLUMN cost_source TEXT',
+  // Reported cost of the sessions before the current one: a fresh session's total_cost_usd starts at zero, so the adapter adds this base.
+  'ALTER TABLE worker ADD COLUMN cost_base REAL',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot

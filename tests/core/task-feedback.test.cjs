@@ -15,7 +15,7 @@ const PASS = { commands: [{ argv: [process.execPath, '-e', 'process.exit(0)'], t
 before(async () => {
   dir = sandbox();
   orch = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
-  await orch.run.attach({ adapter_pid: process.pid, max_fix_rounds: 2 });
+  await orch.run.attach({ adapter_pid: process.pid, fix_hard_cap: 2 });
 });
 
 after(async () => {
@@ -68,10 +68,10 @@ test('fix_from_review: the fix depends on and repairs the judged task, takes its
   const r2 = await refutedReviewOf(f, 'c-2', 'j-2');
   const f2 = await orch.task.fixFromReview({ review_id: r2.id, spec: 'try again' });
   assert.deepStrictEqual([f2.depends_on, f2.repairs, f2.spec], [[f.id], w.id, 'try again']);
-  // max_fix_rounds 2: the third round is refused and nothing is written.
+  // fix_hard_cap 2: the third round is refused and nothing is written.
   const r3 = await refutedReviewOf(f2, 'c-3', 'j-3');
   const before = (await orch.task.list({})).tasks.length;
-  await rejects(orch.task.fixFromReview({ review_id: r3.id }), 'E_FIX_ROUNDS', /max_fix_rounds is 2/);
+  await rejects(orch.task.fixFromReview({ review_id: r3.id }), 'E_FIX_ROUNDS', /fix_hard_cap is 2/);
   assert.strictEqual((await orch.task.list({})).tasks.length, before);
 });
 
@@ -97,9 +97,9 @@ test('handoff acceptance: a research task is done when its hand-back carries eac
   const none = await orch.task.evaluate({ task_id: t.id, worktree: dir });
   const check = (row) => row.results.checks.find((c) => c.kind === 'handoff');
   assert.deepStrictEqual([none.state, check(none).executable], ['open', false], 'no hand-back yet: not executable');
-  await handBack(t.id, 'r-1', { findings: [], summary: 'nothing found' });
-  const thin = await orch.task.evaluate({ task_id: t.id, worktree: dir });
-  assert.deepStrictEqual([thin.state, check(thin).executable, check(thin).passed, check(thin).detail.missing], ['released', true, false, ['findings']]);
+  await rejects(handBack(t.id, 'r-1', { findings: [], summary: 'nothing found' }), 'E_ARGS', /lacks findings/); // the release refuses it, naming the field
+  await worker('r-1');
+  await workers.get('r-1').lease.release({ lease_id: (await orch.task.get({ task_id: t.id })).lease.id, result: { findings: ['x'], summary: 'ok' } });
   // Reassigned, the old hand-back is stale until the new holder releases.
   await worker('r-2');
   await orch.task.assign({ task_id: t.id, worker_id: 'r-2' });

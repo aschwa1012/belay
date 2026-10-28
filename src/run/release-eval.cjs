@@ -24,12 +24,29 @@ const beside = (c) => { const n = Array.isArray(c.concurrent) ? c.concurrent.len
 const failedKinds = (row) => ((row.results && row.results.checks) || []).filter((c) => !c.passed)
   .map((c) => (c.kind === 'command' ? `command ${Array.isArray(c.argv) ? c.argv.slice(0, 3).join(' ') : '?'}${c.exit_code != null ? ` exit ${c.exit_code}` : ''}${beside(c)}` : c.kind));
 
-function summaryOf(row) {
+// A refuted review's wake names the fix rounds the reviewed work has used in this run and the run's max_fix_rounds, read from the work's derived `review` (facts, so the orchestrator sees the count before it asks for another fix).
+function fixRoundsOf(row, byId) {
   const r = row.results || {};
-  return { task_id: row.id, state: row.state, passed: !!r.passed, executable: !!r.executable, checks: ((r.checks) || []).length, failing: failedKinds(row), ...(r.flaky ? { flaky: true } : {}), ...(r.uncommitted ? { uncommitted: true } : {}), ...(r.queued ? { queued: r.queued } : {}) };
+  const dep = byId && Array.isArray(row.depends_on) && row.depends_on.length === 1 ? byId.get(row.depends_on[0]) : null;
+  const rv = dep && dep.review;
+  if (!rv || r.passed || !r.executable || !(r.checks || []).some((c) => c.kind === 'verdict') || rv.max_fix_rounds == null) return null;
+  return { work: dep.id, used: rv.fix_rounds_used, max: rv.max_fix_rounds, hard: rv.fix_hard_cap == null ? null : rv.fix_hard_cap };
 }
 
-const unevaluated = (t, runId, workerId) => t.run_id === runId && t.state === 'released' && t.handoff && t.handoff.by === workerId
+// The work a refuted review judged, read for the turn's own summary (worker_wait): a Map of that one task, or null.
+async function workOf(core, row) {
+  const r = row.results || {};
+  if (r.passed || !r.executable || !Array.isArray(row.depends_on) || row.depends_on.length !== 1 || typeof core.task.get !== 'function') return null;
+  try { const t = await core.task.get({ task_id: row.depends_on[0] }); return t ? new Map([[t.id, t]]) : null; } catch { return null; }
+}
+
+function summaryOf(row, byId) {
+  const r = row.results || {};
+  const fr = fixRoundsOf(row, byId);
+  return { task_id: row.id, state: row.state, passed: !!r.passed, executable: !!r.executable, checks: ((r.checks) || []).length, failing: failedKinds(row), ...(r.flaky ? { flaky: true } : {}), ...(r.uncommitted ? { uncommitted: true } : {}), ...(r.queued ? { queued: r.queued } : {}), ...(fr ? { fix_rounds: fr } : {}) };
+}
+
+const unevaluated = (t, runId, workerId) => t.run_id === runId && t.state === 'released' && t.handoff && t.handoff.by === workerId && !t.handoff.stood_down
   && !(t.results && Number(t.results.evaluated_at) >= Number(t.handoff.at));
 
 // Why a hand-back's evaluation may not start: a lifecycle operation, a park or a stop holds the worker, or the run manager closes.
@@ -72,7 +89,7 @@ async function run(w, ctx, ev) {
     if (ev.cancelled) { out.push({ task_id: t.id, cancelled: true, by: ev.cancelled }); recordFailure(ctx, w, t.id, 'E_CANCELLED', ev.cancelled, ev.turn); continue; }
     try {
       const row = await core.task.evaluate({ task_id: t.id, worktree: w.worktree, trigger: 'release', cancel_key: ev.key });
-      out.push(summaryOf(row));
+      out.push(summaryOf(row, await workOf(core, row)));
       // ADR 0058 decision 8: the stop waits for the worker's queue itself, and this is not on it.
       if (row.state === 'done' && ctx.stopIdleOnDone && ctx.manager && !ev.cancelled) { out[out.length - 1].stop_idle_on_done = true; w.idleStopping = ctx.manager.idleStop(row).then((r) => { if (r) w.idleStop = r; }, () => {}); }
     } catch (e) {
@@ -137,9 +154,10 @@ function clause(evs, room) {
   // An evaluation that waited for a slot (max_parallel_evaluations) says so: queued behind `ahead` others, `waited_ms` before it ran.
   const waited = (e) => (e.queued ? ` (queued behind ${e.queued.ahead}, waited ${Math.round(e.queued.waited_ms / 1000)} s)` : '');
   const parts = evs.map((e) => `${one(e)}${waited(e)}`);
-  function one(e) { return (e.error === 'E_BUSY' ? `task ${e.task_id} not evaluated at release: another evaluation of it is running`
+  function one(e) { return (e.stood_down ? `task ${e.task_id}: the worker stood down with no result (${e.stood_down}); nothing was evaluated`
+    : e.error === 'E_BUSY' ? `task ${e.task_id} not evaluated at release: another evaluation of it is running`
     : e.error ? `task ${e.task_id} could not be evaluated at release (${e.error}); call task_evaluate to run it`
-    : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? `${e.flaky ? 'passed on a retry (flaky), done' : 'passed, done'}${e.uncommitted ? '; uncommitted changes: commit before integrate' : ''}` : `not done; failing: ${e.failing.join(', ') || 'no executable check'}`}`); }
+    : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? `${e.flaky ? 'passed on a retry (flaky), done' : 'passed, done'}${e.uncommitted ? '; uncommitted changes: commit before integrate' : ''}` : `not done${e.fix_rounds ? `; fix rounds ${e.fix_rounds.used} of max ${e.fix_rounds.max}${e.fix_rounds.hard == null ? '' : `, hard cap ${e.fix_rounds.hard}`}` : ''}; failing: ${e.failing.join(', ') || 'no executable check'}`}`); }
   return cut(` ${parts.join('; ')}.`, room);
 }
 
@@ -184,7 +202,7 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
   const settle = (h) => {
     h.ids = h.ids.filter((id) => {
       const t = byId.get(id);
-      if (t && landed(t)) { seen.set(id, t.results.evaluated_at); pending.delete(id); h.evs.push(summaryOf(t)); return false; }
+      if (t && landed(t)) { seen.set(id, t.results.evaluated_at); pending.delete(id); h.evs.push(summaryOf(t, byId)); return false; }
       const f = t && unevaluated(t, runId, h.ev.worker_id) && failedOf(t, h.ev.turn);
       if (f) { pending.delete(id); const s = failure(f); if (s) h.evs.push(s); return false; }
       if (!t || !unevaluated(t, runId, h.ev.worker_id)) { pending.delete(id); return false; }
@@ -205,7 +223,8 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     const evs = []; const ing = [];
     for (const t of tasks) {
       if (t.run_id !== runId || !t.handoff || t.handoff.by !== ev.worker_id) continue;
-      if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); evs.push(summaryOf(t)); } else if (unevaluated(t, runId, ev.worker_id) && failedOf(t, ev.turn)) { const s = failure(failedOf(t, ev.turn)); if (s) evs.push(s); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: t0, turn: ev.turn }); ing.push(t.id); }
+      if (t.handoff.stood_down) { const key = `${t.id}:${t.handoff.at}`; if (!(seen.stood = seen.stood || new Set()).has(key) && t.state === 'released') { seen.stood.add(key); evs.push({ task_id: t.id, stood_down: t.handoff.stood_down }); } continue; } // a stand-down is a fact for the wake, once
+      if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); evs.push(summaryOf(t, byId)); } else if (unevaluated(t, runId, ev.worker_id) && failedOf(t, ev.turn)) { const s = failure(failedOf(t, ev.turn)); if (s) evs.push(s); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: t0, turn: ev.turn }); ing.push(t.id); }
     }
     if (ing.length && holdMs > 0) { held.set(ev.worker_id, { ev, evs, ids: ing, since: t0 }); continue; }
     if (evs.length) ev.evaluated = evs;
@@ -223,7 +242,7 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     if (t && landed(t)) {
       seen.set(id, t.results.evaluated_at); pending.delete(id);
       if (!follow.has(p.worker_id)) follow.set(p.worker_id, []);
-      follow.get(p.worker_id).push(summaryOf(t));
+      follow.get(p.worker_id).push(summaryOf(t, byId));
     } else if (t && unevaluated(t, runId, p.worker_id) && failedOf(t, p.turn)) {
       pending.delete(id);
       const s = failure(failedOf(t, p.turn));

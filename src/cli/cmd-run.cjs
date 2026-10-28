@@ -81,43 +81,17 @@ function renderText(receipt) {
   else if (pl && pl.unchanged === false) lines.push(`plugin copy changed after spawn: ${(pl.changed_files || []).join(', ') || 'unreadable'}`); // ADR 0037 amendment 5 decision 4
   if (receipt.levers) {
     const rr = receipt.review_rounds === null ? `unknown (${receipt.review_rounds_reason})` : receipt.review_rounds;
-    lines.push(`levers: max_fix_rounds ${receipt.levers.max_fix_rounds}, fix_cutoff ${receipt.levers.fix_cutoff}, on_embedder_failure ${receipt.levers.on_embedder_failure}${receipt.levers.max_parallel_evaluations ? `, max_parallel_evaluations ${receipt.levers.max_parallel_evaluations}` : ''}${memoryText(receipt.levers)}; review_rounds: ${rr}`);
+    lines.push(`levers: max_fix_rounds ${receipt.levers.max_fix_rounds}${receipt.levers.fix_hard_cap === undefined ? '' : `, fix_hard_cap ${receipt.levers.fix_hard_cap === null ? 'none' : `${receipt.levers.fix_hard_cap} (${receipt.levers.fix_hard_cap_source})`}`}, fix_cutoff ${receipt.levers.fix_cutoff}, on_embedder_failure ${receipt.levers.on_embedder_failure}${receipt.levers.max_parallel_evaluations ? `, max_parallel_evaluations ${receipt.levers.max_parallel_evaluations}` : ''}${memoryText(receipt.levers)}; review_rounds: ${rr}`);
   }
-  lines.push(...RI.embedderLines(receipt), ...require('../run/review-scratch.cjs').lines(receipt), ...require('./run-trees.cjs').lines(receipt)); // ADR 0054 amendment 1: what the close removed
+  lines.push(...RI.embedderLines(receipt), ...require('../run/review-scratch.cjs').lines(receipt), ...require('./run-trees.cjs').lines(receipt), ...require('./run-checks.cjs').lines(receipt)); // ADR 0054 amendment 1: what the close removed
   if (receipt.receipt_path) lines.push(`receipt: ${receipt.receipt_path}`);
   lines.push('');
   return lines.join('\n');
 }
 
-// ADR 0034 decision 1. The one test-only skip: BELAY_TEST_SKIP_EMBEDDER_WARMUP=1, honoured only together with
-// BELAY_TEST_MODE=1. BELAY_CLAUDE_EXE is a production override and never skips it.
-function warmupSkipped() {
-  if (process.env.BELAY_TEST_MODE === '1' && process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP === '1') return 'BELAY_TEST_SKIP_EMBEDDER_WARMUP is set under BELAY_TEST_MODE';
-  return null;
-}
+const { warmupSkipped, parseEffort } = require('./run-args.cjs'); // the warm-up test skip and the --effort flag
 
 const { emptyOrchestratorBlock } = RI; // moved whole to run-interactive.cjs for this file's line budget
-
-// ADR 0028 decision 5: `--effort <level>` (or `--effort=<level>`) is the one flag this command takes
-// beyond the dispatcher's own; what is left is the positional spec path.
-function parseEffort(argv) {
-  const rest = [];
-  let effort = null;
-  for (let i = 0; i < argv.length; i += 1) {
-    const a = argv[i];
-    if (a === '--effort' || a.startsWith('--effort=')) {
-      const v = a === '--effort' ? argv[i + 1] : a.slice('--effort='.length);
-      if (a === '--effort') i += 1;
-      if (v === undefined || !L.EFFORT_LEVELS.includes(v)) {
-        return { error: `--effort must be one of ${L.EFFORT_LEVELS.join(', ')}; got ${v === undefined ? 'nothing' : JSON.stringify(v)}` };
-      }
-      effort = v;
-      continue;
-    }
-    rest.push(a);
-  }
-  return { rest, effort };
-}
 
 async function run(ctx) {
   const eff = parseEffort(ctx.argv);
@@ -316,7 +290,7 @@ async function run(ctx) {
     try {
       clearRunStart(orchestratorDir); // before this launch's attach: no marker of an earlier life of this run id survives
       RID.watchOrchestrator(pid); // ADR 0039: run-identity.cjs; the attach never waits on a snapshot
-      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, max_parallel_evaluations: parsed.levers.max_parallel_evaluations === undefined ? null : parsed.levers.max_parallel_evaluations, project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
+      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, fix_hard_cap: parsed.levers.fix_hard_cap, fix_hard_cap_source: parsed.levers.fix_hard_cap_source, max_parallel_evaluations: parsed.levers.max_parallel_evaluations === undefined ? null : parsed.levers.max_parallel_evaluations, project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
       for (const w of attachRow.warnings || []) process.stderr.write("belay run: warning: " + w + String.fromCharCode(10));
       return { ok: true, attach: attachRow };
     } catch (e) {
@@ -339,7 +313,7 @@ async function run(ctx) {
   let shutdown = null, reviewWait = null;
   let stopReceipt = null;
   let closed = null;
-  let memoryEnd = null, treesClosed = null;
+  let memoryEnd = null, treesClosed = null, taskChecks = null;
   let closeStages = null;
   let reviewRounds = { value: null, reason: 'the run was never attached, so no tasks were read' };
   // ADR 0039 follow-up: one worker close (ADR 0029); a fast close runs it inside the loop, before the gate collect.
@@ -414,7 +388,7 @@ async function run(ctx) {
         else if (!crashedBy) crashedBy = `belay run crashed while ending the run: ${x.msg}`;
       }
       // The adapter has closed and run.end has settled the rows; this process still owns the store.
-      memoryEnd = await memoryRunEnd({ core, runId: parsed.runId, levers: parsed.levers, ce, late: (m) => { postFailure = chain(postFailure, 'fast close', m); } }); treesClosed = await require('./run-trees.cjs').closeTrees({ core, runId: parsed.runId, endedRow, closed, ce, late, deps: process.env.BELAY_TEST_MODE === '1' ? ctx.treesDeps : undefined }); // ADR 0065: the clean task trees, before the review wait
+      memoryEnd = await memoryRunEnd({ core, runId: parsed.runId, levers: parsed.levers, ce, late: (m) => { postFailure = chain(postFailure, 'fast close', m); } }); treesClosed = await require('./run-trees.cjs').closeTrees({ core, runId: parsed.runId, endedRow, closed, ce, late, deps: process.env.BELAY_TEST_MODE === '1' ? ctx.treesDeps : undefined }); taskChecks = await require('./run-checks.cjs').collect({ core, runId: parsed.runId, startedAt: gotRun && gotRun.run ? gotRun.run.started_at : null }); // ADR 0065: the clean task trees, before the review wait; ADR 0069: each task's checks
     }
   } finally {
     // shutdownOwner() on every path this far, because becomeOwner's owner: true still stands.
@@ -486,7 +460,7 @@ async function run(ctx) {
     review_rounds: reviewRounds.value, review_rounds_reason: reviewRounds.reason,
     workers_closed: closed ? workersClosedBlock(closed, endedRow ? (endedRow.workers_marked_dead || []) : null) : null,
     ...(closeStages ? { close_stages: closeStages } : {}), // only with notes on
-    ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), ...(treesClosed ? { worktrees_closed: treesClosed } : {}), ...require('../run/review-scratch.cjs').closeRun(dataDir, parsed.runId, parsed.levers), // the run-end memory jobs; the reviewers' scratch removed (ADR 0054 amendment 1)
+    ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), ...(treesClosed ? { worktrees_closed: treesClosed } : {}), ...(taskChecks || {}), ...require('../run/review-scratch.cjs').closeRun(dataDir, parsed.runId, parsed.levers), // the run-end memory jobs; the reviewers' scratch removed (ADR 0054 amendment 1)
   };
   try {
     fs.writeFileSync(receiptPath, `${JSON.stringify({ ...receipt, receipt_path: receiptPath }, null, 2)}\n`);

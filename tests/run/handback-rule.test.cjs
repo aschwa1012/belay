@@ -132,3 +132,12 @@ test('a worker spawned in a run with the permission_prompt lever on is launched 
     } finally { await m.shutdown(); cleanup(sb.data); }
   }
 });
+
+test('a task that declares required hand-back fields says so in the rule, at a spawn and from the rule alone; none declared, no line', async () => {
+  const acceptance = { handoff: { required: ['head', 'tests', 'summary'] } };
+  const line = ' The result must carry head, tests, summary, each non-empty; lease_release refuses it otherwise.';
+  assert.ok(HB.rule(assigned({ id: 't1', acceptance })).endsWith(`(branch, head, tests, findings).${line}`));
+  assert.ok(HB.rule(assigned({ id: 'r1', acceptance: { verdict: true, handoff: { required: ['head', 'tests', 'summary'] } } })).includes(`"findings": [...] }.${line}\n\n## Review standard`));
+  assert.ok(!HB.rule(assigned({ id: 't1', acceptance: { commands: [] } })).includes('must carry'));
+  assert.ok((await firstMessage({ id: 't1', acceptance })).endsWith(line), 'the spawn\'s first message carries it');
+});

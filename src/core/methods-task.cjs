@@ -91,20 +91,20 @@ async function create(E, caller, args, own = {}) { // own: core-internal, task.f
     }
   }
 
-  // ADR 0031 decision 6: a fix task names the work it repairs, and core refuses one past the run's cap.
-  // A run row with no cap (an operator's own session, a pre-lever store) is not enforced.
+  // ADR 0031 amendment 3: a fix task names its work; core refuses one only past the user's fix_hard_cap (none by default), and past max_fix_rounds the row carries a fix_notice.
+  let fixNotice = null;
   if (repairs) {
     if (!rows.current(E.store, 'task', repairs)) {
       throw err('E_NOT_FOUND', `task ${id} would repair ${repairs}, which has no row in this store`, { task_id: id, missing_repairs: repairs });
     }
     const run = rows.current(E.store, 'run', caller.run_id);
+    const hard = run && run.fix_hard_cap != null ? Number(run.fix_hard_cap) : null;
     const cap = run && run.max_fix_rounds != null ? Number(run.max_fix_rounds) : null;
-    if (cap != null) {
-      const used = rows.currentAll(E.store, 'task').filter(o => o.repairs === repairs && o.run_id === caller.run_id).length;
-      if (used >= cap) {
-        throw err('E_FIX_ROUNDS', `task ${repairs} already has ${used} fix task${used === 1 ? '' : 's'} and this run's max_fix_rounds is ${cap}; nothing was written. End the run and name the open blocking findings for the human`, { task_id: id, repairs, fix_rounds_used: used, max_fix_rounds: cap });
-      }
+    const used = rows.currentAll(E.store, 'task').filter(o => o.repairs === repairs && o.run_id === caller.run_id).length;
+    if (hard != null && used >= hard) {
+      throw err('E_FIX_ROUNDS', `task ${repairs} already has ${used} fix task${used === 1 ? '' : 's'} and this run's fix_hard_cap is ${hard}${run.fix_hard_cap_source ? ` (${run.fix_hard_cap_source})` : ''}; no further fix task can be created for it in this run, and nothing was written`, { task_id: id, repairs, fix_rounds_used: used, fix_hard_cap: hard, fix_hard_cap_source: run.fix_hard_cap_source || null });
     }
+    if (cap != null && used >= cap) fixNotice = `task ${repairs} now has ${used + 1} fix task${used === 0 ? '' : 's'} in this run, past max_fix_rounds ${cap}`;
   }
 
   let overlaps = [];
@@ -124,7 +124,7 @@ async function create(E, caller, args, own = {}) { // own: core-internal, task.f
     results: null, depends_on: deps, repairs, ...(tree ? { worktree: tree } : {}), ...(own.answers ? { answers: own.answers } : {}), ...(args.base != null ? { base: require('./methods-worktree.cjs').baseArg(args.base) } : {}),
   }, E.writtenBy(caller), t);
   E.noteWrite();
-  return overlaps.length ? { ...row, overlaps } : row;
+  return overlaps.length || fixNotice ? { ...row, ...(overlaps.length ? { overlaps } : {}), ...(fixNotice ? { fix_notice: fixNotice } : {}) } : row;
 }
 
 // The dependency gate shared by task.assign and task.evaluate: only `done` opens it (ADR 0013 §1, ADR 0030 decision 2).
@@ -416,10 +416,9 @@ async function releaseNow(E, caller, args) {
     const task = rows.current(E.store, 'task', l.task_id);
     if (!task) throw err('E_NOT_FOUND', `lease ${l.id} names task ${l.task_id}, which has no row in this store`, { lease_id: l.id, task_id: l.task_id });
     // ADR 0025 amendment 1: a release never un-earns `done`, and cannot replace the verdict it rests on.
-    if (task.state === 'done' && args.result !== undefined) {
-      throw err('E_ARGS', `lease.release: task ${task.id} is done, so its hand-back cannot be replaced; release without a result`, { task_id: task.id });
-    }
+    if (task.state === 'done' && args.result !== undefined) throw err('E_ARGS', `lease.release: task ${task.id} is done, so its hand-back cannot be replaced; release without a result`, { task_id: task.id });
     const t = Date.now(), by = E.writtenBy(caller), late = LHD.isLateHandback(caller, l, task); // late: the holder's death released it first
+    const stood = caller.role === 'worker' && task.state !== 'done' && (l.released_at == null || late) ? require('./handoff-check.cjs').requireFields(task, args) : null; // the task's own declared fields, before anything is written; a stand-down's reason
     if (dropped && l.released_at != null && !late) {
       // A second call on a released lease carries only notes, and they are dropped: nothing is written.
       return { ...task, last_checkpoint_id: (rows.lastCheckpoint(E.store, l.task_id) || {}).id || null, released_reason: args.reason || null, ...dropped };
@@ -435,14 +434,14 @@ async function releaseNow(E, caller, args) {
     if (l.released_at != null && !late) {
       throw err('E_ARGS', `lease.release: lease ${l.id} was already released at ${l.released_at}, so a second release would replace its hand-back; nothing was written. The orchestrator can take a new hand-back by assigning this task to you again (task_assign)`, { lease_id: l.id, released_at: l.released_at });
     }
-    if (!late) rows.append(E.store, 'lease', { ...l, released_at: t }, by, t);
+    if (!late) rows.append(E.store, 'lease', { ...l, released_at: t, ...(stood ? { released_reason: stood } : {}) }, by, t);
     let handoff = task.handoff;
     if (args.result !== undefined) {
       handoff = { result: args.result, by: caller.worker_id, lease_id: l.id, at: t };
       const missing = missingCitations(E, args.result);
       if (missing !== null) handoff.memory_ids_missing = missing;
       if (l.tree || RT.isReview(task)) Object.assign(handoff, RT.handBack(E.dataDir, caller.run_id, caller.worker_id, l.tree, treeNow && treeNow.worktree === l.tree.worktree ? treeNow : null)); // the tree's change and the scratch size
-    }
+    } else if (stood) handoff = { result: null, by: caller.worker_id, lease_id: l.id, at: t, stood_down: stood }; // replaces any earlier hand-back: this lease handed back nothing
     const row = rows.append(E.store, 'task', { ...task, state: task.state === 'done' ? 'done' : 'released', handoff }, by, t);
     const ck = rows.lastCheckpoint(E.store, l.task_id);
     return { ...row, last_checkpoint_id: ck ? ck.id : null, released_reason: args.reason || null, ...(prep ? NM.commit(E, caller, prep, { task_id: task.id }) : {}), ...(dropped || {}), ...(late ? LHD.lateReceipt(l) : {}) };

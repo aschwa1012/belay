@@ -52,7 +52,7 @@ function compactCheck(c) {
 const leaseOf = (l) => (l && typeof l === 'object' ? Object.fromEntries(Object.entries({ id: l.id, holder: l.holder, holder_role: l.holder_role, expires_at: l.expires_at, expired: l.expired }).filter(([, v]) => v !== undefined)) : l);
 // `inherited_from` stays: it says a fix shares the tree of the work it fixes (task.fixFromReview), so its coder can be reused.
 const worktreeOf = (w) => (w && typeof w === 'object' ? { path: w.path, branch: w.branch, ...(w.inherited_from ? { inherited_from: w.inherited_from } : {}), ...(w.removed_at ? { removed_at: w.removed_at } : {}) } : w);
-const handoffFields = (h) => (h && typeof h === 'object' ? { by: h.by, at: h.at, fields: h.result && typeof h.result === 'object' ? Object.keys(h.result) : [] } : h);
+const handoffFields = (h) => (h && typeof h === 'object' ? { by: h.by, at: h.at, ...(h.stood_down ? { lease_id: h.lease_id, stood_down: h.stood_down } : {}), fields: h.result && typeof h.result === 'object' ? Object.keys(h.result) : [] } : h);
 
 // One task's detail gives a review's hand-back once, with the verdict beside its findings: the hand-back's result keeps
 // {verdict, summary, findings}, and the verdict check of the same hand-back (its lease), which carries the summary and the
@@ -158,7 +158,8 @@ function taskList(answer, { task_ids = null } = {}) {
 const taskEvaluate = (row) => compactTask(row, { detail: true });
 
 // integrate (compact, the default): what this call merged, a count of the tasks carried from earlier rows on the same branch, the
-// conflict, the checks (a passing one by name, a reused one marked with the row that ran it, a failing one whole), `forced` and
+// conflict, `task_checks` (a line for each task this call merged, and for any task on the branch whose checks changed: an amend or a
+// fix that differs from the task it repairs), the checks (a passing one by name, a reused one marked with the row that ran it, a failing one whole), `forced` and
 // `not_carried` when set. The repository path, the junctions and the base are the receipt (view debug: the whole row).
 const INTEGRATION_DROP = new Set(['repo', 'junctions', 'created_worktree', 'base_sha', 'written_at', 'written_by', 'run_id', 'owner_pid', 'owner_boot', 'reused_checks']);
 const checkName = (c) => (Array.isArray(c.argv) ? [c.argv[0] ? String(c.argv[0]).split(/[\\/]/).pop() : '', ...c.argv.slice(1, 4)].join(' ').slice(0, 80) : '');
@@ -179,6 +180,12 @@ function integrate(row) {
     const carried = entries.filter((m) => m.carried_from != null);
     out.merged = entries.filter((m) => m.carried_from == null).map(mergedEntry);
     if (carried.length) out.carried = carried.length;
+  }
+  if (Array.isArray(row.task_checks)) {
+    const own = (Array.isArray(row.merged) ? row.merged : []).filter((m) => m && m.carried_from == null).map((m) => m.task_id);
+    const kept = row.task_checks.filter((l) => (row.task_checks_changed || []).some((id) => String(l).startsWith(`${id} checks`)) || own.some((id) => String(l).startsWith(`${id} checks`)));
+    if (kept.length) out.task_checks = kept; else delete out.task_checks;
+    delete out.task_checks_changed;
   }
   if (Array.isArray(row.checks)) {
     out.checks = row.checks.map(({ cwd, ...c }) => {
