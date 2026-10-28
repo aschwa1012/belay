@@ -48,7 +48,7 @@ function vectorLimit(method, params) {
 
 function writeTimeoutFor(method, params) {
   if (method === 'task.evaluate' || method === 'integration.merge') return EVALUATE_TIMEOUT_MS; // ADR 0053: a merge re-runs acceptance commands
-  if (method === 'task.worktreeCreate' || method === 'task.worktreeRemove' || method === 'integration.remove') return WORKTREE_TIMEOUT_MS;
+  if (method === 'task.worktreeCreate' || method === 'task.worktreeRemove' || method === 'task.worktreeSweep' || method === 'integration.remove') return WORKTREE_TIMEOUT_MS;
   if (method === 'memory.embedQuery') return EMBEDDING_READ_TIMEOUT_MS; // one embed of the query, bounded like a search's
   if (method === 'memory.embedNote') return EMBEDDING_READ_TIMEOUT_MS; // one note's embed and its comparison
   if (method === 'memory.store' && params.embed !== false && !params.embedding && !params.embedding_b64) return EMBEDDING_READ_TIMEOUT_MS; // embed: false needs no vector (ADR 0040)

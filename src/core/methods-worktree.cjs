@@ -46,6 +46,19 @@ function inheritable(task) {
   if (r) throw err('E_BUSY', `task ${task.id}'s worktree ${rec.path} is being removed (through task ${r.task_id}), so no task can be given it`, { op: 'worktree_remove', task_id: task.id, removing_through: r.task_id, path: rec.path });
   return rec;
 }
+// A task's recorded tree must still be one git lists, at that path, and on disk, before it is handed to another task: a sweep cut
+// mid-removal, or a leftover directory, leaves a row that names a tree that is not one. Refused, with nothing handed out. A
+// repository git cannot list is not proof the tree is gone, so it is trusted as before.
+async function assertTreeListed(task) {
+  const rec = active(task);
+  if (!rec || !rec.repo) return;
+  inheritable(task); // a removal in flight is E_BUSY first, before any git call that could wait on it
+  let list;
+  try { list = await G.worktrees(rec.repo); } catch { return; }
+  const hit = list.find((x) => G.samePath(x.path, rec.path));
+  if (hit && fs.existsSync(rec.path)) return; // a tree left on another branch, or mid-rebase, is still the worker's live tree
+  throw err('E_PRECONDITION', `task ${task.id} has the recorded worktree ${rec.path}, which git does not list now, or which is not on disk (a removal was cut or left it); belay worktree remove ${task.id} records its removal, then task_worktree makes a new tree`, { task_id: task.id, path: rec.path, branch: rec.branch, tree_gone: true });
+}
 // The other tasks whose recorded, not removed, tree is `dir`: a fix task and the work it fixes share one.
 const sharers = (E, id, dir) => rows.currentAll(E.store, 'task').filter((t) => t.id !== id && active(t) && G.samePath(active(t).path, dir));
 // The first other task that is not done or cancelled and shares `task`'s tree or its branch (a fix works on the work's branch, so
@@ -277,6 +290,8 @@ async function worktreeRemove(E, caller, args) {
 // Removes the tree and records the removal on the task and on every task that shares the tree.
 async function removeShared(E, caller, args, task, rec) {
   const out = await removeTree(E, rec, args, `task ${task.id}`);
+  // The sweep leaves a tree git dropped but the disk kept as it is: the row still says it is there, so belay worktree remove can finish it.
+  if (args.noRecordLeftover === true && out.leftover) return { ...task, removal: out };
   // No second run-open check here: the tree is already gone, and a row that still named it would be the false one.
   const row = E.store.tx(() => {
     const done = { ...rec, removed_at: Date.now(), removed_by: E.writtenBy(caller), forced: out.forced, already_gone: out.already_gone, branch_deleted: out.branch_deleted, leftover: out.leftover };
@@ -286,6 +301,36 @@ async function removeShared(E, caller, args, task, rec) {
   });
   E.noteWrite();
   return { ...row, removal: out };
+}
+
+// git's name for what a tree has checked out (the full ref), or null when HEAD is detached.
+async function symbolicHead(dir) {
+  const r = await G.run(dir, ['symbolic-ref', '-q', 'HEAD']);
+  return r.ok ? r.stdout.trim() : null;
+}
+
+// A tree whose HEAD is off its recorded branch may hold commits no branch reaches, so removing it would drop them (ADR 0065).
+async function assertOnBranch(rec, what) {
+  const head = await symbolicHead(rec.path);
+  if (head === `refs/heads/${rec.branch}` && await G.branchExists(rec.repo, rec.branch)) return;
+  const now = head ? `on ${head}` : 'detached';
+  throw err('E_PRECONDITION', `${what}'s worktree is not on its branch ${rec.branch} (HEAD is ${now}), so removing it could drop commits no branch reaches; move it back to the branch, or pass force`, { path: rec.path, branch: rec.branch, head: head || null });
+}
+
+// task.worktreeSweep's removal of one task's tree (ADR 0065): the same exclusion and record as task.worktreeRemove, without force.
+// Null when the task has no tree to remove now.
+async function removeForSweep(E, caller, task0) {
+  return exclusive(`task:${task0.id}`, `a worktree call for task ${task0.id}`, async () => {
+    const task = requireTask(E, task0.id, 'task.worktreeSweep');
+    const rec = active(task);
+    if (!rec) return null;
+    const open = openSharer(E, task);
+    if (open) throw err('E_PRECONDITION', `task ${open.id} (${open.state}) is worked in the same tree or branch ${rec.path}`, { task_id: open.id, state: open.state, path: rec.path });
+    const key = G.fwd(rec.path).toLowerCase();
+    let finish;
+    removing.set(key, { task_id: task.id, done: new Promise((r) => { finish = r; }) });
+    try { return await removeShared(E, caller, { force: false, noRecordLeftover: true }, task, rec); } finally { removing.delete(key); finish(); }
+  });
 }
 
 // The shared removal (a task's tree, or an integration's): refuses a live worker in it and a dirty tree unless force,
@@ -305,6 +350,7 @@ async function removeTree(E, rec, args, what) {
   } else {
     const dirty = await G.dirtyPaths(rec.path);
     if (dirty.length && args.force !== true) throw err('E_PRECONDITION', `${what}'s worktree has ${dirty.length} uncommitted path(s); commit them, or pass force to discard them`, { path: rec.path, dirty: dirty.slice(0, 50) });
+    if (rec.branch && args.force !== true) await assertOnBranch(rec, what);
     out.junctions_unlinked = unlinkJunctions(rec.junctions);
     out.links_unlinked = unlinkJunctions(strayLinks(rec.path, rec.junctions));
     const r = await G.run(rec.repo, ['worktree', 'remove', ...(args.force === true ? ['--force'] : []), '--', rec.path]);
@@ -352,4 +398,4 @@ function evaluateTarget(task, args) {
   return rec ? { worktree, base: rec.base_sha, baseSource: 'recorded' } : { worktree, base: undefined, baseSource: undefined };
 }
 
-module.exports = { ownBoot, ownBootProbe, worktreeCreate, worktreeRemove, removeTree, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, baseArg, assertTaskTree, openSharer, exclusive, active, inheritable, present, pathName, liveWorkerIn, strayLinks, under };
+module.exports = { ownBoot, ownBootProbe, worktreeCreate, worktreeRemove, removeTree, removeForSweep, symbolicHead, rollback, makeJunctions, junctionList, repoOf, evaluateTarget, baseArg, assertTaskTree, openSharer, exclusive, active, inheritable, assertTreeListed, present, pathName, liveWorkerIn, strayLinks, under };
