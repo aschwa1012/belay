@@ -85,7 +85,7 @@ const ROUTES = {
   // ADR 0043 decision 1: listed only when the run's knowledge_agent lever is on (toolsFor's knowledge option);
   // with the lever off the manager refuses it E_LEVER_OFF, and the listing never mentions it.
   knowledge_ask: { role: 'orchestrator', via: 'run', method: 'ask' },
-  // ADR 0054 decision 2: the orchestrator has no shell; belay runs these git reads for it with its own argv (git-read.cjs).
+  // ADR 0054 decision 2: belay runs these git reads with its own argv (git-read.cjs); the orchestrator's shell is the alternative.
   git_read: { role: 'orchestrator', via: 'git', method: 'gitRead' },
 };
 
