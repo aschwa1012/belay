@@ -159,6 +159,10 @@ async function assign(E, caller, args) {
   // grant would be made against a store that no longer says what it said. The lease row and the task
   // row are one effect for the same reason — a granted lease on a task still `open`, or a released lease
   // on a task still `assigned`, is a state the contract has no name for (ADR 0002 §4).
+  // The worker's pid must run as the process its row records (ADR 0039), so a pid another process now holds is not a live worker.
+  // The transaction below is synchronous, so the snapshot is taken first, for the row as it reads now.
+  const peekWorker = checkOnly ? null : rows.current(E.store, 'worker', args.worker_id);
+  const identity = await require('./live-as.cjs').prepare(peekWorker && peekWorker.pid != null ? [{ pid: peekWorker.pid, created: peekWorker.pid_created }] : []);
   const out = E.store.tx(() => {
     const task = rows.current(E.store, 'task', args.task_id);
     if (!task) throw err('E_NOT_FOUND', `no task row exists for ${args.task_id}`, { task_id: args.task_id });
@@ -214,7 +218,7 @@ async function assign(E, caller, args) {
     // different, legitimate fact, not a dead one: src/run/manager.cjs writes the `starting` row and
     // calls task.assign before the launch has a pid to report — only `worker.write`'s own `running`
     // check treats a pid as required, and this must not narrow that.
-    if (worker.pid != null && !pidAlive(worker.pid)) {
+    if (worker.pid != null && !identity.runsAs(worker.pid, worker.pid_created)) {
       throw err('E_WORKER_NOT_LIVE', `worker ${args.worker_id} claims state ${worker.state} but its pid ${worker.pid} is dead`,
         { worker_id: args.worker_id, state: worker.state, pid: worker.pid, pid_alive: false });
     }

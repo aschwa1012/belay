@@ -11,6 +11,7 @@ const fs = require('node:fs');
 const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 const { pidAlive } = require('./lock.cjs');
+const LA = require('./live-as.cjs'); // a pid with the creation time the row records (ADR 0039)
 const { WORKER_STATES, SUBSTRATES } = require('./schema.cjs');
 const { resolveParks, parseRunRow, clearedPause, pauseFields } = require('./pause-parks.cjs');
 const { closeEpochWorkers, fillMissingHeads } = require('./run-close-rows.cjs'); // ADR 0029: run.end's close of its workers' rows
@@ -142,12 +143,16 @@ async function attach(E, caller, args) {
   // that made it the one state a worker could survive in for ever: a stale pid, no adapter, and never
   // named in workers_marked_dead. The thread may still be resumable, but the worker is not running, and
   // the next epoch has no process to attach to.
+  // A pid that is alive but whose creation time differs from the row's is another process (ADR 0039): one snapshot, taken only
+  // when a suspect row has a live pid and a recorded time, answers for all of them.
   const marked = [];
   if (prev) {
+    const suspects = rows.currentAll(E.store, 'worker').filter((w) => w.run_id === runId && ATTACH_SUSPECT.has(w.state));
+    const identity = await LA.prepare(suspects.map((w) => ({ pid: w.pid, created: w.pid_created })));
     for (const w of rows.currentAll(E.store, 'worker')) {
       if (w.run_id !== runId) continue;
       if (!ATTACH_SUSPECT.has(w.state)) continue;
-      if (pidAlive(w.pid)) continue;
+      if (identity.runsAs(w.pid, w.pid_created)) continue;
       // 6e-2, should-fix methods-run.cjs:45: a row the core itself appends over a paused row must not
       // inherit its paused_at/paused_by — this row is not itself paused, and api.md §2 promises both
       // null on every row that is not (writeWorker's own rule, unreachable here since this bypasses it).
@@ -342,6 +347,12 @@ async function writeWorker(E, caller, args) {
     const run = rows.current(E.store, 'run', caller.run_id);
     if (run && run.ended_at != null) throw err('E_ARGS', `run ${caller.run_id} has already ended; worker ${args.id} was not written`, { run_id: caller.run_id, ended_at: run.ended_at, worker_id: args.id });
   }
+  // `running` is refused unless its pid runs as the process the row records (ADR 0039), so a pid another process now holds is
+  // not alive for it. The snapshot is taken here, before the read-then-append below, which has no await.
+  const createdOfPid = (row, pid) => (args.pid_created !== undefined ? args.pid_created : (row && row.pid === pid ? row.pid_created : null));
+  const peek = rows.current(E.store, 'worker', args.id);
+  const peekPid = args.pid !== undefined ? args.pid : (peek ? peek.pid : null);
+  const identity = await LA.prepare(args.state === undefined || args.state === 'running' ? [{ pid: peekPid, created: createdOfPid(peek, peekPid) }] : []);
   const prev = rows.current(E.store, 'worker', args.id);
   // The id is a directory under the data dir. A row that already exists is restated whatever its id (a store may hold an older one); a new row needs a valid id.
   if (!prev && !isPathId(args.id)) throw err('E_ARGS', `worker.write: ${pathIdMessage('worker id', args.id)}`, { worker_id: String(args.id).slice(0, 80), field: 'worker_id' });
@@ -374,7 +385,7 @@ async function writeWorker(E, caller, args) {
   // api.md §2: `running` is a claim about a process, refused unless the pid is alive right now. build
   // step 6e-4, ADR 0023 amendment 2 decision 5: `paused` is no longer such a claim — a park's own row is
   // written from the exit handler, after the pid has already gone.
-  if (merged.state === 'running' && !pidAlive(merged.pid)) {
+  if (merged.state === 'running' && !identity.runsAs(merged.pid, createdOfPid(prev, merged.pid))) {
     throw err('E_WORKER_NOT_LIVE', `worker ${args.id} cannot be written as ${merged.state} because pid ${merged.pid} is not alive`, { worker_id: args.id, pid: merged.pid == null ? null : merged.pid });
   }
   require('./cost-estimate.cjs').apply(E.dataDir, merged); // a stopped or dead row's unreported last turn, from its stream
