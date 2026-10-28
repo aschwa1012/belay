@@ -19,11 +19,7 @@ function withRegistry(fn) {
   return Promise.resolve().then(() => fn(dir)).finally(() => { process.env.BELAY_SPAWN_REGISTRY = keep; fs.rmSync(dir, { recursive: true, force: true }); });
 }
 
-const deadPid = () => new Promise((resolve) => {
-  const c = spawn(process.execPath, ['-e', '0'], { stdio: 'ignore', windowsHide: true });
-  const pid = c.pid;
-  c.on('exit', () => resolve(pid));
-});
+const deadPid = async () => require('../helpers/dead-pid.cjs').deadPid(); // never an exited child's pid: Windows reuses those
 
 test('register, list, update and unregister: one record per pid, the creation time filled in later', () => withRegistry(() => {
   assert.deepStrictEqual(SR.list(), [], 'an empty register lists nothing');

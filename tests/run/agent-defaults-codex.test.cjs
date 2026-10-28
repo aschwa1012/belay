@@ -52,6 +52,9 @@ test('a Codex worker is launched with the configured codex_model as -m, and the 
   const worktree = `${data}/wt`;
   fs.mkdirSync(worktree, { recursive: true });
   const m = createRunManager({ core: createFakeCore(), dataDir: data, runId: 'run-agentdef-cx', agentDefaults: DEFAULTS, paths: { claudeExe: FAKE, codexExe: FAKE_CODEX, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
+  // Hold the fake Codex turn open (the gate file is never written) so the process is alive for the whole test
+  // and shutdown meets a running worker, never one whose 400 ms turn happened to end during the assertions.
+  process.env.FAKE_CODEX_GATE_FILE = `${data}/codex-turn.gate`;
   try {
     const row = await m.spawn({ substrate: 'codex', worktree, prompt: 'one', worker_id: 'wx', agent_type: 'coder' });
     assert.deepStrictEqual(row.agent.model, { value: 'cfg-codex', source: `${CFG} agents.coder.codex_model` });
@@ -61,5 +64,5 @@ test('a Codex worker is launched with the configured codex_model as -m, and the 
     assert.strictEqual(cc.agent.model.value, 'cfg-coder');
     const cargs = JSON.parse(fs.readFileSync(`${data}/workers/wc/argv.json`, 'utf8')).spec.args;
     assert.ok(!cargs.includes('cfg-codex'));
-  } finally { await m.shutdown().catch(() => {}); cleanup(data); }
+  } finally { delete process.env.FAKE_CODEX_GATE_FILE; await m.shutdown().catch(() => {}); cleanup(data); }
 });

@@ -57,7 +57,8 @@ function withWriterAt(at, writer, every = false) {
   const origRead = fs.readSync, origOpen = fs.openSync, paths = new Map();
   const kind = p => p.endsWith('-wal') ? 'wal' : p.endsWith('-shm') ? 'shm' : 'db';
   let chunks = 0, fired = 0, armed = true;
-  const fire = () => { if (!armed) return; if (!every) armed = false; fired++; writer(); };
+  // `every` as a number runs the writer on that many attempts and then stops, the way an owner's heartbeat stops.
+  const fire = () => { if (!armed) return; if (!every) armed = false; fired++; if (typeof every === 'number' && fired >= every) armed = false; writer(); };
   fs.openSync = (p, ...a) => { const fd = origOpen(p, ...a); paths.set(fd, String(p)); return fd; };
   fs.readSync = (fd, ...a) => {
     const n = origRead(fd, ...a);
@@ -123,16 +124,36 @@ test('an owner elected during the copy that writes and closes (WAL deleted) is r
   } finally { done(st); }
 });
 
-test('a writer that changes the store on every attempt gives E_BUSY and leaves no copy behind', async () => {
+test('a writer that changes the store on every attempt until the retry budget ends gives E_BUSY and leaves no copy behind', async () => {
   const st = makeStore();
+  const budget = hooks.budgetMs; hooks.budgetMs = 150;
   try {
+    const t0 = Date.now();
     const r = await read(st, { file: 'db', chunk: 1 }, () => { bump(st, st.d); st.d.exec('PRAGMA wal_checkpoint(TRUNCATE)'); }, true);
+    const ms = Date.now() - t0;
     assert.equal(r.value, undefined);
     assert.equal(r.error.code, 'E_BUSY');
-    assert.match(r.error.message, /changed during each of 3 copies/);
-    assert.equal(r.copies, 3);
-    assert.equal(r.fired, 3);
-  } finally { done(st); }
+    assert.equal(r.error.detail.reason, 'copy-changed');
+    assert.match(r.error.message, /changed during each of \d+ copies/);
+    assert.ok(r.copies >= 3, 'at least three copies were tried: ' + r.copies);
+    assert.equal(r.error.detail.attempts, r.copies);
+    assert.equal(r.fired, r.copies);
+    assert.ok(ms < 150 + 10000, 'the retries end soon after the budget: ' + ms + ' ms');
+  } finally { hooks.budgetMs = budget; done(st); }
+});
+
+// A live owner heartbeats every second and checkpoints on a timer, and each changes the stamp. A copy
+// that spans one is discarded; three tries a few ms apart can all land inside one slow stretch on a loaded
+// host. The retries run on a time budget, so a writer that stops is waited out and the read answers.
+test('a writer that changes the store on the first copies and then stops is waited out, never E_BUSY', async () => {
+  const st = makeStore();
+  const budget = hooks.budgetMs; hooks.budgetMs = 120000; // the count of copies is the subject, so a slow host cannot end it by the clock
+  try {
+    const r = await read(st, { file: 'db', chunk: 1 }, () => { bump(st, st.d); st.d.exec('PRAGMA wal_checkpoint(TRUNCATE)'); }, 5);
+    assert.equal(r.fired, 5);
+    assert.equal(r.value, last(st), r.error && r.error.message);
+    assert.equal(r.copies, 6, 'five copies were discarded, the sixth was quiet');
+  } finally { hooks.budgetMs = budget; done(st); }
 });
 
 test('a store nothing writes to is copied once', async () => {
@@ -231,4 +252,19 @@ test('with no WAL a write between the window wait and the stamp does not hide a 
     assert.equal(gens, String(d.prepare('SELECT DISTINCT gen FROM t').get().gen));
     assert.equal(gens, '3');
   } finally { fs.statSync = origStat; try { d.close(); } catch { /* closed */ } fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+// The wait between attempts must yield: a long-lived caller (an MCP adapter, the run process) answers a bounded
+// liveness request on its own pipe while its read retries, so a timer on its event loop has to fire during the retries.
+test('the retries between copies yield to the event loop', async () => {
+  const st = makeStore();
+  let ticks = 0;
+  const timer = setInterval(() => { ticks++; }, 1);
+  const budget = hooks.budgetMs; hooks.budgetMs = 120000;
+  try {
+    const r = await read(st, { file: 'db', chunk: 1 }, () => { bump(st, st.d); st.d.exec('PRAGMA wal_checkpoint(TRUNCATE)'); }, 4);
+    assert.equal(r.value, last(st), r.error && r.error.message);
+    assert.ok(r.copies >= 5, 'the read retried: ' + r.copies);
+    assert.ok(ticks >= 3, 'a timer fired while the read was retrying: ' + ticks);
+  } finally { clearInterval(timer); hooks.budgetMs = budget; done(st); }
 });

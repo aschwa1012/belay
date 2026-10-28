@@ -1,4 +1,8 @@
-import { mock } from 'claude-code/testing'
+import { mock, test as kitTest } from 'claude-code/testing'
+// The plugin runner stops a test after 5000 ms of real time, and a test's body does real work (a render per fake-clock step), so a loaded
+// host reaches that default. Every test here gets this bound instead: a hang guard, far above a quiet run's slowest (about 1.3 s), never an assertion.
+export const TEST_TIMEOUT_MS = 30_000
+export const test = (name: string, body: ($: any, on: any) => unknown) => kitTest(name, { timeoutMs: TEST_TIMEOUT_MS } as any, body as any)
 export const T0 = 1_000_000_000_000
 export const RUN = 'r-7f3a'
 export const iso = (ms: number) => new Date(ms).toISOString()
@@ -216,8 +220,15 @@ export async function band($: any, surface = 'terminal', cols = 110) {
   const ui = await $.ui.mount({ plugin: 'belay', surface, component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: cols }, viewport: { columns: 110, rows: 40 } })
   return { ui, text: words(await ui.drawn()) }
 }
+// The kit refuses a second mount of requestId 'belay' while one is up. A test that reads the pane again after a later tick (or whose earlier
+// assertion threw before its own unmount) would leave its mount behind, so the previous mount of this session is unmounted before a new one.
+const mounted = new WeakMap<object, any>()
 export async function pane($: any, surface = 'terminal', cols = 200, isFocused = false) {
+  const prev = mounted.get($)
+  mounted.delete($)
+  if (prev) { try { await prev.unmount() } catch { /* the test unmounted it already */ } }
   const ui = await $.ui.mount({ plugin: 'belay', surface, component: 'Pane', requestId: 'belay', props: { ...PANE_PROPS, isFocused, bodyColumns: cols }, viewport: { columns: 70, rows: 40 } })
+  mounted.set($, ui)
   return { ui, text: words(await ui.drawn()) }
 }
 export async function openPane($: any, wd: any) {

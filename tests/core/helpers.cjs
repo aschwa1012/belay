@@ -30,13 +30,8 @@ function cleanup(dir) {
 
 const callerFor = (role, extra = {}) => ({ role, run_id: 'test-run', pid: process.pid, ...extra });
 
-// A pid that is certainly dead: a child that has already exited. Never a made-up number, because pids
-// are recycled and a guess can be alive.
-function deadPid() {
-  const { spawnSync } = require('node:child_process');
-  const r = spawnSync(process.execPath, ['-e', 'process.exit(0)'], { windowsHide: true });
-  return r.pid;
-}
+// A pid no process holds and none will be handed (tests/helpers/dead-pid.cjs). Not the pid of an exited child: Windows reuses those within seconds.
+const { deadPid } = require('../helpers/dead-pid.cjs');
 
 function listDataDir(dir) {
   try { return fs.readdirSync(dir).sort(); } catch { return []; }

@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect } from 'claude-code/testing'
+import { test } from './support'
 import { TASK4, T0, RUN, iso, AGENTS, FOOTER, EVENTS, NOTICES, TRANSCRIPT, DEFAULTS, SETTINGS, FULL_RUNFILE, world, START, BAND_PROPS, PANE_PROPS, PRES, cmd, colours, words, boot, later, band, pane, openPane, READ_VERBS, type World } from './support'
 
 describe('activation and reading', () => {

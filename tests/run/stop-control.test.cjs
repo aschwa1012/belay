@@ -67,24 +67,31 @@ test('stop control: a second handle during the worker phase returns the in-fligh
     pid: 5555,
     exited: () => exitedFacts, // turns non-null the instant stop() resolves, below
     stop: async (reason) => {
-      await sleep(200);
       exitedFacts = { pid: 5555, exit_code: 0, exit_signal: null, killed_after_close: false, ended_by: reason, ms: 42 };
       return exitedFacts;
     },
   };
   const core = createFakeCore();
-  core.worker.list = async () => ({ workers: [] });
+  // The worker phase's first read is held on a gate. It is reached only after hook.stop() has resolved (so
+  // hook.exited() is already non-null, as it is for the whole of a real worker phase) and while doStop() is
+  // still in flight: the exact shape design item 1's comment describes, reached by order, never by a sleep.
+  let reached; const atList = new Promise((r) => { reached = r; });
+  let release; const gate = new Promise((r) => { release = r; });
+  let held = false;
+  core.worker.list = async () => {
+    if (!held) { held = true; reached(); await gate; }
+    return { workers: [] };
+  };
 
   const sc = createStopControl({ runId: 'r1', core, closeGraceMs: 600 });
   sc.attach(hook);
 
   const p1 = sc.handle({ run_id: 'r1', caller: { pid: 222 } });
-  // Past the 200 ms hook.stop() delay (so hook.exited() is already non-null, as it is for the whole of
-  // a real worker phase) but well inside the ~700 ms doStop() itself still takes (the fixed 500 ms
-  // confirmation sleep of an empty worker list) — the exact shape design item 1's comment describes.
-  await sleep(300);
+  await atList;
+  assert.ok(exitedFacts, 'the worker phase began before hook.stop() resolved');
   const p2 = sc.handle({ run_id: 'r1', caller: { pid: 333 } }); // a different caller — still in flight
   assert.strictEqual(p2, p1, 'a second handle mid-flight did not return the exact same promise');
+  release();
   const [r1, r2] = await Promise.all([p1, p2]);
   assert.strictEqual(r2, r1, 'the two callers did not resolve to the same receipt object');
   assert.strictEqual(r1.caller_pid, 222, 'the completed receipt should still belong to the first caller');

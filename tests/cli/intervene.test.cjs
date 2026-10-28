@@ -24,12 +24,8 @@ const ROOT = path.resolve(__dirname, '..', '..').split(path.sep).join('/');
 const CLI = `${ROOT}/src/cli/belay.cjs`;
 const FAKE_CLAUDE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
 
-// A pid that is certainly dead by the time it is used: a child that has already exited, never a
-// made-up number (pids are recycled and a guess can be alive).
-function deadPid() {
-  const r = spawnSync(process.execPath, ['-e', 'process.exit(0)'], { windowsHide: true });
-  return r.pid;
-}
+// A pid no process holds and none will be handed; an exited child's pid is reused within seconds (tests/helpers/dead-pid.cjs).
+const { deadPid } = require('../helpers/dead-pid.cjs');
 
 // A pid that is certainly alive until killed and is not this test process's own: 6a-2's dead-pid
 // refusal means a row a test wants actually assignable needs one. Killed by exact pid in the `finally`.
@@ -254,7 +250,9 @@ test('take-control: with no live owner exits 1 with E_NO_OWNER naming which fact
 
 // ================================================================ task assign, against a live owner
 
-test('task assign: as the operator, assigns an open task to a live worker over the pipe and returns the rows; a task whose dependency is open is refused E_DEPENDENCY_OPEN naming the blocker; a worker whose pid is dead is refused E_WORKER_NOT_LIVE; a task the operator holds is refused E_OPERATOR_HOLDS until released', async () => {
+// One run with a live worker `w1` (a hung child it can be assigned to), torn down after `fn`. Each refusal below is its own test, so
+// the eleven CLI spawns they make are not charged to one test's 60 s.
+async function withAssignRun(fn) {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const { specPath, runId } = makeSpec(dir, { startup_timeout_ms: 120000 });
@@ -269,11 +267,18 @@ test('task assign: as the operator, assigns an open task to a live worker over t
     // `belay stop` in the finally kills by exact pid any row still claiming a live state past the bound.
     w1 = hungChild();
     await core.worker.write({ id: 'w1', substrate: 'claude-code', pid: w1.pid, pid_image: 'node.exe', state: 'starting', turns: 0, started_at: Date.now() });
-    await core.worker.write({ id: 'w-dead', substrate: 'claude-code', pid: deadPid(), pid_created: 1, state: 'dead', turns: 0, started_at: Date.now() });
-    // The dead-pid refusal itself: a row still claiming a live state word (`starting`) whose pid has
-    // already exited. LIVE_WORKER_STATES alone would call this assignable; pidAlive must not.
-    await core.worker.write({ id: 'w-ghost', substrate: 'claude-code', pid: deadPid(), pid_created: 1, state: 'starting', turns: 0, started_at: Date.now() });
+    await fn({ core, dataDir });
+  } finally {
+    const stop = runStopSync(dataDir, runId);
+    if (stop.status !== 0) process.emitWarning(`cleanup stop failed: ${stop.stdout} / ${stop.stderr}`);
+    await releaseCore(core);
+    if (runCliProc.proc.exitCode === null) { try { await P.killTree(runCliProc.proc); } catch { /* best effort */ } }
+    await killHung(w1);
+    cleanup(dir);
+  }
+}
 
+test('task assign: as the operator, assigns an open task to a live worker over the pipe and returns the rows; a task whose dependency is open is refused E_DEPENDENCY_OPEN naming the blocker', () => withAssignRun(async ({ core, dataDir }) => {
     const t1 = await core.task.create({ spec: 'assigned to the live worker w1' });
     const a1 = cliSync(['task', 'assign', t1.id, 'w1'], dataDir);
     assert.strictEqual(a1.status, 0, `${a1.stdout} / ${a1.stderr}`);
@@ -296,7 +301,13 @@ test('task assign: as the operator, assigns an open task to a live worker over t
     assert.strictEqual(a2.receipt.assigned, false);
     assert.strictEqual(a2.receipt.error.code, 'E_DEPENDENCY_OPEN');
     assert.strictEqual(a2.receipt.error.detail.blocked_by, t1.id);
+}));
 
+test('task assign: a worker whose row claims dead, or claims starting over a dead pid, is refused E_WORKER_NOT_LIVE and nothing is written', () => withAssignRun(async ({ core, dataDir }) => {
+    await core.worker.write({ id: 'w-dead', substrate: 'claude-code', pid: deadPid(), pid_created: 1, state: 'dead', turns: 0, started_at: Date.now() });
+    // The dead-pid refusal itself: a row still claiming a live state word (`starting`) whose pid has
+    // already exited. LIVE_WORKER_STATES alone would call this assignable; pidAlive must not.
+    await core.worker.write({ id: 'w-ghost', substrate: 'claude-code', pid: deadPid(), pid_created: 1, state: 'starting', turns: 0, started_at: Date.now() });
     const t3 = await core.task.create({ spec: 'assigned to a worker whose row claims dead' });
     const a3 = cliSync(['task', 'assign', t3.id, 'w-dead'], dataDir);
     assert.strictEqual(a3.status, 1, `${a3.stdout} / ${a3.stderr}`);
@@ -311,7 +322,9 @@ test('task assign: as the operator, assigns an open task to a live worker over t
     assert.strictEqual(a3b.receipt.error.detail.pid_alive, false, 'the refusal must name pid_alive false, not just the state word');
     assert.strictEqual(a3b.receipt.error.detail.worker_id, 'w-ghost');
     assert.strictEqual((await core.task.get({ task_id: t3b.id })).state, 'open', 'a refused assign must not have written the task row');
+}));
 
+test('task assign: a task the operator holds is refused E_OPERATOR_HOLDS; a bare task, an unknown subcommand and --run are usage errors', () => withAssignRun(async ({ core, dataDir }) => {
     const t4 = await core.task.create({ spec: 'the operator takes this one before anyone is assigned' });
     const took = cliSync(['take-control', t4.id], dataDir);
     assert.strictEqual(took.status, 0, `take-control: ${took.stdout} / ${took.stderr}`);
@@ -331,15 +344,7 @@ test('task assign: as the operator, assigns an open task to a live worker over t
     const usageRun = cliSync(['take-control', t4.id, '--run', 'anything'], dataDir);
     assert.strictEqual(usageRun.status, 2);
     assert.match(usageRun.stderr, /unknown option --run/);
-  } finally {
-    const stop = runStopSync(dataDir, runId);
-    if (stop.status !== 0) process.emitWarning(`cleanup stop failed: ${stop.stdout} / ${stop.stderr}`);
-    await releaseCore(core);
-    if (runCliProc.proc.exitCode === null) { try { await P.killTree(runCliProc.proc); } catch { /* best effort */ } }
-    await killHung(w1);
-    cleanup(dir);
-  }
-});
+}));
 
 // ================================================================ a lease belongs to its task's run
 

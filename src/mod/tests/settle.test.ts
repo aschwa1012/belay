@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect } from 'claude-code/testing'
+import { test } from './support'
 import { T0, RUN, NOTE_ID, FULL_RUNFILE, START, boot, cmd, later, pane, openPane, words, leaves, band } from './support'
 
 // The settle flow inside the pane (the interactive orchestrator has no AskUserQuestion, so there is no dialog): a settle button of the open
