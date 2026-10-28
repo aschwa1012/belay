@@ -102,7 +102,7 @@ test('the integrate answer names each merged task\'s checks and the change an am
   assert.ok(row.task_checks[0].split(' -> ')[0].includes('process.exit(5)'), 'the earlier command is kept beside the new one');
   assert.strictEqual(row.task_checks[1].includes(' -> '), false, 'a task never amended shows its checks alone');
   assert.ok(row.task_checks[1].startsWith(`${b.id} checks: `));
-  assert.deepStrictEqual(require('../../src/mcp/views.cjs').integrate(row).task_checks, row.task_checks, 'the orchestrator's compact view keeps it');
+  assert.deepStrictEqual(require('../../src/mcp/views.cjs').integrate(row).task_checks, row.task_checks, 'the compact view keeps it');
   const got = await orch.integration.get({ id: row.id });
   assert.deepStrictEqual(got.task_checks, row.task_checks);
   const stored = (await orch.integration.list({})).integrations.find((r) => r.id === row.id);
