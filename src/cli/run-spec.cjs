@@ -100,7 +100,7 @@ function parseSpec(specPath, cwd, opts = {}) {
   if (found.found && found.parse_error) return { error: `refusing to start: ${found.parse_error}` }; // its memory and agents defaults cannot be read
   const agents = AD.fromConfig(found);
   if (agents.error) return { error: agents.error };
-  const levers = parseLevers(spec, { config: found.found ? { path: found.path, memory: found.config.memory } : null }); // ADR 0031 decisions 3 and 5
+  const levers = parseLevers(spec, { timeoutMs: numeric.timeout_ms, config: found.found ? { path: found.path, memory: found.config.memory } : null }); // ADR 0031 decisions 3 and 5
   if (levers.error) return { error: levers.error };
   const modeKeys = RI.parseModeKeys(spec); // ADR 0037 decision 1
   if (modeKeys.error) return { error: modeKeys.error };

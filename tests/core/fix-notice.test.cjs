@@ -73,7 +73,7 @@ test('the default hard cap (5, no run timeout) refuses the sixth fix with a mess
   for (let i = 0; i < 5; i += 1) await orch.task.create({ spec: `f${i}`, repairs: work.id });
   await assert.rejects(orch.task.create({ spec: 'f6', repairs: work.id }), (e) => {
     assert.strictEqual(e.code, 'E_FIX_ROUNDS');
-    assert.match(e.message, /fix_hard_cap is 5 \(default, no run timeout\); nothing was written/);
+    assert.match(e.message, /fix_hard_cap is 5 \(default, no run timeout\); no further fix task can be created for it in this run, and nothing was written/);
     assert.strictEqual(e.detail.fix_hard_cap_source, SRC);
     return true;
   });
