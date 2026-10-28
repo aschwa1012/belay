@@ -7,7 +7,7 @@ const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 
 function pausedMessage(run) {
-  return `run ${run.id} is paused (${run.paused_by || 'paused'}), and a paused run starts no new work: wait for the operator's resume; nothing was written`;
+  return `run ${run.id} is paused (${run.paused_by || 'paused'}), and a paused run starts no new work: wait for the operator's resume`;
 }
 
 function refuseIfPaused(E, caller) {

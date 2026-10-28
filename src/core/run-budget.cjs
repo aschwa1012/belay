@@ -120,9 +120,10 @@ function blockOf(runRow, s) {
   if (typeof rec === 'string') { try { rec = JSON.parse(rec); } catch { rec = null; } }
   const overridden = !!(rec && rec.overrides && rec.overrides.run);
   const state = overridden ? 'overridden' : runRow.paused_by && /\[budget [(]/.test(runRow.paused_by) && runRow.paused_at != null ? 'paused' : 'under';
+  const orchestrator = rec && rec.orchestrator ? rec.orchestrator : { counted: 'headless runs only; an interactive session is not counted' };
+  const orchUsd = orchestrator.counted === true && Number.isFinite(orchestrator.usd) ? orchestrator.usd : 0; // the guard pauses on ledger + this
   return {
-    limit_usd: runRow.budget_usd, spent_usd: s.usd, unknown_turns: s.unknown_turns, state, basis: 'reported',
-    orchestrator: rec && rec.orchestrator ? rec.orchestrator : { counted: 'headless runs only; an interactive session is not counted' },
+    limit_usd: runRow.budget_usd, spent_usd: s.usd + orchUsd, ledger_usd: s.usd, unknown_turns: s.unknown_turns, state, basis: 'reported', orchestrator,
   };
 }
 const statusBlock = (store, runRow) => blockOf(runRow, spendOf(store, runRow.id));
@@ -130,7 +131,8 @@ const statusBlock = (store, runRow) => blockOf(runRow, spendOf(store, runRow.id)
 // One line, every figure the reported cost per turn: "at least $4.10 of $20.00 reported (under); 6 turns report no dollars".
 function textOf(b) {
   const m = (n) => `$${(Math.round(n * 100) / 100).toFixed(2)}`;
-  return `${b.unknown_turns ? 'at least ' : ''}${m(b.spent_usd)} of ${m(b.limit_usd)} reported (${b.state})${b.unknown_turns ? `; ${b.unknown_turns} turn${b.unknown_turns === 1 ? '' : 's'} report no dollars` : ''}`;
+  const orch = b.orchestrator && b.orchestrator.counted === true && b.orchestrator.usd > 0 ? `, ${m(b.orchestrator.usd)} of it the orchestrator's` : '';
+  return `${b.unknown_turns ? 'at least ' : ''}${m(b.spent_usd)} of ${m(b.limit_usd)} reported${orch} (${b.state})${b.unknown_turns ? `; ${b.unknown_turns} turn${b.unknown_turns === 1 ? '' : 's'} report no dollars` : ''}`;
 }
 
 module.exports = { SOFT_THRESHOLD, isLimit, checkLimit, ledgerOn, taskLimit, attachLimit, noteTask, turnTask, spendOf, detailOf, usageSpend, setBudget, statusBlock, blockOf, textOf };

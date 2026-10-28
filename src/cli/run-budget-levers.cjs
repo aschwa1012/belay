@@ -13,7 +13,7 @@ const valid = (v) => typeof v === 'number' && Number.isFinite(v) && v > 0;
 function applyBudget(out, spec, opts = {}) {
   let value, source = null;
   if (spec.budget_usd !== undefined) {
-    if (spec.budget_usd !== null && !valid(spec.budget_usd)) return { error: 'budget_usd must be a positive number (the run\'s estimated spend limit in dollars) or null' };
+    if (spec.budget_usd !== null && !valid(spec.budget_usd)) return { error: 'budget_usd must be a positive number (the run\'s spend limit in dollars) or null' };
     value = spec.budget_usd; source = value === null ? 'spec (off)' : 'spec';
   } else if (opts.config && opts.config.run && opts.config.run.budget_usd !== undefined && opts.config.run.budget_usd !== null) {
     if (!valid(opts.config.run.budget_usd)) return { error: `run.budget_usd in ${opts.config.path} must be a positive number (dollars at API rates)` };

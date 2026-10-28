@@ -184,7 +184,7 @@ function createRunPauseControl({ runId, core, hook, pauseWorker, resumeWorker, s
 
     const span_ms = Date.now() - run.paused_at;
     const beyond = (list) => (list.length > 10 ? `${list.slice(0, 10).map((w) => w.worker_id).join(', ')} and ${list.length - 10} more` : list.map((w) => w.worker_id).join(', ') || 'none');
-    const pauser = /embedder-failure [(]/.test(run.paused_by || '') ? `an embedder failure paused this run (${String(run.paused_by).replace(/^[^[]*\[|\]$/g, '')})` : (/\[budget [(]/.test(run.paused_by || '') ? `an estimated budget paused this run (${String(run.paused_by).replace(/^[^[]*\[|\]$/g, '')})` : 'the operator paused this run');
+    const pauser = /embedder-failure [(]/.test(run.paused_by || '') ? `an embedder failure paused this run (${String(run.paused_by).replace(/^[^[]*\[|\]$/g, '')})` : (/\[budget [(]/.test(run.paused_by || '') ? `a budget paused this run (${String(run.paused_by).replace(/^[^[]*\[|\]$/g, '')})` : 'the operator paused this run');
     const line = `belay: ${pauser} ${span_ms} ms ago and has been resumed now; resumed [${beyond(workers_resumed)}]; left parked [${beyond(left_parked)}].`;
 
     const result = await resumeOrchestrator(by, line);
