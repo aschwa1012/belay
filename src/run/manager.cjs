@@ -462,6 +462,14 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     ask: (args) => MP.ask(manager, ctx, args), // ADR 0043 decision 1
     // Read-only handles for tests and for the CLI's own views. Neither writes.
     _worker: (id) => workers.get(id),
+    // A task_assign to this live worker: the task it holds now. Restart, park-resume, death handling, the memory records and the worker
+    // row read `taskId`, so it follows the assignment (the spawn's task is no longer the worker's).
+    retask: ({ worker_id, task_id, spec, review, rule }) => {
+      const w = workers.get(worker_id);
+      if (!w || !task_id) return false;
+      w.taskId = task_id; w.taskSpec = typeof spec === 'string' ? spec : ''; w.review = review || null; w.handbackRule = rule || '';
+      return true;
+    },
     // The note-review brief for a verdict task assigned to this live worker (task_assign appends it, as a spawn does).
     reviewTail: ({ worker_id, task_id }) => { const w = workers.get(worker_id); return w ? NR.reviewTail(ctx, { id: w.id, taskId: task_id, set lastError(v) { w.lastError = v; } }) : ''; },
     _waitTurn: (id, ms) => waitTurnOrLanded(get(id), ms),
