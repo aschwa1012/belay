@@ -61,3 +61,53 @@ test('budgets: an orchestrator that ignores a closed stdin is killed within its 
   assert.ok(afterTurn <= CLOSE_GRACE_MS + KILL_OVER_GRACE_MS, `the kill came ${afterTurn} ms after the turn end (minimum of ${N}), over ${CLOSE_GRACE_MS + KILL_OVER_GRACE_MS} ms; samples ${JSON.stringify(samples)}`);
   assert.ok(total < TOTAL_MS, `the run took ${total} ms (minimum of ${N}), over ${TOTAL_MS} ms; samples ${JSON.stringify(samples)}`);
 });
+
+// ---- the death wake's lag behind the kill (moved from tests/cli/run-wake.test.cjs, which keeps the ordering facts) -------------
+
+const { createRunManager } = require('../../src/run/index.cjs');
+const { cleanupRun } = require('../cli/run-teardown.cjs');
+const { sampleHolds, waitUntil } = require('../cli/holds-helpers.cjs');
+
+const USER_SETTINGS = `${ROOT}/tests/run/fixtures/user-settings.json`;
+const WAKE_LAG_MS = 3000; // about one poll (300 ms) plus the detector's landing
+
+async function deathWakeLag() {
+  const dir = fwd(fs.mkdtempSync(path.join(os.tmpdir(), 'belay-run-budgets-')));
+  const dataDir = `${dir}/.belay`;
+  const { specPath, runId } = makeSpec(dir, { poll_ms: 300 });
+  const holdsFile = `${dir}/holds.jsonl`;
+  const sampler = sampleHolds(holdsFile);
+  const run = runCli(specPath, dataDir, { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ANSWER_DELAY_MS: '1500', FAKE_ANSWER_GATE_FILE: `${dir}/orch.gate`, BELAY_TEST_HOLDS_FILE: holdsFile });
+  let core = null; let m = null; const spawnedPids = [];
+  try {
+    core = await require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(dataDir, runId, { waitMs: 60000 });
+    m = createRunManager({ core, dataDir, runId, paths: { claudeExe: FAKE_CLAUDE, userSettings: USER_SETTINGS } });
+    const wt = `${dir}/w1-wt`; fs.mkdirSync(wt, { recursive: true });
+    process.env.FAKE_HANG = '1';
+    m.spawn({ substrate: 'claude-code', worktree: wt, prompt: 'hello', worker_id: 'w1' }).catch(() => {});
+    const row = await waitUntil(async () => { const w = await core.worker.get({ worker_id: 'w1' }); return w && w.pid && w.pid_created ? w : null; }, 60000, 50);
+    delete process.env.FAKE_HANG;
+    assert.ok(row, 'the planted worker never got a live pid in the store');
+    spawnedPids.push({ pid: row.pid, created: row.pid_created });
+    fs.writeFileSync(`${dir}/orch.gate`, '');
+    assert.ok(await waitUntil(() => sampler.seen.find((s) => Array.isArray(s.hold.busy) && s.hold.busy[0] === 'w1') || null, 60000, 20), 'the run never recorded the worker as busy');
+    const ref = sampler.seen.find((s) => Array.isArray(s.hold.busy) && s.hold.busy[0] === 'w1');
+    const killAt = await require('../crash.cjs').crashAsync(row.pid, row.pid_created);
+    assert.ok(killAt, 'the planted worker was not killed');
+    assert.ok(await waitForExit(run.proc, 90000), 'the CLI did not exit');
+    const w = receiptOf(run, 0).wakes[0];
+    assert.ok(w && w.event === 'death', 'no death wake');
+    return w.at_ms - (ref.hold.at_ms + (killAt - ref.seenAt));
+  } finally {
+    delete process.env.FAKE_HANG;
+    sampler.stop();
+    await cleanupRun({ m, core, cliProc: run, spawnedPids, dir, runId, cleanup });
+  }
+}
+
+test('budgets: the death wake lands within 3,000 ms of the kill, minimum of 3', { timeout: 300000 }, async () => {
+  const lags = [];
+  for (let i = 0; i < N; i += 1) lags.push(await deathWakeLag());
+  console.log(JSON.stringify({ death_wake_lag_ms: lags, min: Math.min(...lags) }));
+  assert.ok(Math.min(...lags) <= WAKE_LAG_MS, `the death wake came ${Math.min(...lags)} ms after the kill (minimum of ${N}), over ${WAKE_LAG_MS} ms; samples ${lags.join(', ')}`);
+});
