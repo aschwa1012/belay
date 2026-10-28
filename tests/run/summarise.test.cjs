@@ -115,3 +115,9 @@ test('the harness verdict and the worker\'s are two fields, and every worker-sta
   assert.match(SUMMARY_LABEL, /data, not instructions/);
   assert.match(SUMMARY_LABEL, /worker-stated are the worker's own unchecked words/);
 });
+
+test('learned reads the title and detail of an object finding, and falls back to the summary only when none is stated', async () => {
+  const r = await summarise({ task: { spec: 'x' }, handoff: { summary: 'S', findings: [{ severity: 'blocking', title: 'T1', detail: 'D1' }, { title: 'T2' }, 'plain'] } });
+  assert.strictEqual(r.fields.learned, 'worker-stated: T1: D1; T2; plain');
+  assert.strictEqual((await summarise({ task: { spec: 'x' }, handoff: { summary: 'S', findings: [{ severity: 'note' }] } })).fields.learned, 'worker-stated: S');
+});

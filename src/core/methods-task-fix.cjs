@@ -18,7 +18,7 @@ function verdictDetail(review) {
 // A finding as one plain line: where (file:line), its severity and clause, then what. The core does not fix a finding's shape, so
 // the text is the first of the usual fields a reviewer writes (note, what, text, ...), followed by every other field (evidence, where, ...)
 // as key: value pairs. A finding that is a bare string is that string.
-const WHAT = ['note', 'what', 'text', 'description', 'detail', 'message', 'summary', 'issue', 'finding'];
+const WHAT = ['title', 'note', 'what', 'text', 'description', 'detail', 'message', 'summary', 'issue', 'finding'];
 const WHERE = ['file', 'path', 'location'];
 const scalar = (v) => (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') && String(v).trim() !== '';
 function findingLine(f) {

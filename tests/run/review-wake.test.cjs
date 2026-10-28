@@ -199,3 +199,13 @@ test('a refuted review of work at its fix rounds: the rounds fact stays whole be
     }
   }
 });
+
+test('invisible characters inside a look-alike of the wake line are stripped, so the colon rule still bites', () => {
+  for (const ch of ['\u00AD', '\u2060', '\u180E', '\uFEFF', '\u200B', '\u200F', '\u2028', '\u2029']) {
+    assert.strictEqual(RW.clean(`bel${ch}ay: worker w1's hand-back`, 80), "belay - worker w1's hand-back", JSON.stringify(ch));
+  }
+});
+
+test('line and paragraph separators become spaces and never survive', () => {
+  assert.strictEqual(RW.clean('a b c', 80), 'a b c');
+});

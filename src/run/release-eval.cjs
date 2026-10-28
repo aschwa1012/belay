@@ -6,7 +6,7 @@
 // A stop, pause, restart or resume (lifecycle.cjs runOp, and so the run's shutdown) cancels it first: the owner kills the command
 // running by its live child handle and the evaluation writes nothing (core evaluate-cancel.cjs). Nothing waits on the cancel.
 //
-// `enrichWakes` is the wake side, facts only (task, state, which checks failed), never the worker's words, except a review's verdict, counts and finding titles (review-wake.cjs; ADR 0015 section 2). A
+// `enrichWakes` is the wake side, facts only (task, state, which checks failed), never the worker's words, except a review's verdict, counts, finding titles and a cut summary (review-wake.cjs; ADR 0015 section 2). A
 // turn_end wake carries the result if it has landed; otherwise the task is watched and a later poll sends one `evaluated` wake.
 // Every wake text is cut to WAKE_TEXT_MAX, the interactive mod's own text budget (src/mod/hooks/wake/core.mjs maxTextBytes: 226 B
 // less the plugin name), so the mod never cuts it and the headless line stays inside the 400-byte hook budget (invariant 9).
