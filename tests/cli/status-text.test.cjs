@@ -20,12 +20,8 @@ const COLUMNS = [
   'last_event_age_ms', 'input_tokens', 'output_tokens', 'cost_usd', 'death_established_by',
 ];
 
-// A pid that is certainly dead by the time it is used: a child that has already exited, never a
-// made-up number (pids are recycled).
-function deadPid() {
-  const r = spawnSync(process.execPath, ['-e', 'process.exit(0)'], { windowsHide: true });
-  return r.pid;
-}
+// A pid no process holds and none will be handed; an exited child's pid is reused within seconds (tests/helpers/dead-pid.cjs).
+const { deadPid } = require('../helpers/dead-pid.cjs');
 
 function statusTextOf(runId, dataDir) {
   return spawnSync(process.execPath, [CLI, 'status', runId, '--data', dataDir], { cwd: ROOT, windowsHide: true, encoding: 'utf8' });

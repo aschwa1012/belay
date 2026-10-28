@@ -21,7 +21,7 @@ test('belay run waits for an attached review before it shuts the owner down, and
   let rev = null;
   await withTeardown(async () => {
     const dataDir = `${dir}/.belay`;
-    const seen = { claim: null, said: [], lockWhileWaiting: null, released: null };
+    const seen = { claim: null, said: [], lockWhileWaiting: null, released: null, finished: null };
     // During the close stages (the run is live), the review attaches to the owner and takes its claim, as `belay memory review` does.
     const closeStagesModule = { closeStages: async (a) => {
       rev = await openCore({ dataDir: a.dataDir, caller: { role: 'operator', run_id: a.runId, pid: process.pid }, embed: false });
@@ -32,7 +32,8 @@ test('belay run waits for an attached review before it shuts the owner down, and
     const reviewWaitDeps = { pollMs: 20, say: (line) => {
       seen.said.push(line);
       seen.lockWhileWaiting = fs.existsSync(`${dataDir}/owner.lock`);
-      void (async () => { seen.released = (await rev.memory.reviewRelease({ project: 'p', claim_id: seen.claim.id, ok: true, message: 'ran' })).release; await rev.close(); rev = null; })();
+      seen.finished = (async () => { seen.released = (await rev.memory.reviewRelease({ project: 'p', claim_id: seen.claim.id, ok: true, message: 'ran' })).release; await rev.close(); rev = null; })();
+      void seen.finished.catch(() => {}); // the test awaits it below; this keeps a failure from being unhandled meanwhile
     } };
     const { specPath } = H.makeSpec(dir, { timeout_ms: 4000, memory: { project: 'p', notes: true } });
     const res = await cmdRun.run({ argv: [specPath], cwd: H.ROOT, dataDir, json: true, closeStagesModule, reviewWaitDeps });
@@ -41,6 +42,8 @@ test('belay run waits for an attached review before it shuts the owner down, and
     assert.strictEqual(seen.said.length, 1, 'the close said once that it waits');
     assert.match(seen.said[0], /waiting for the archive review of p \(pid \d+, job archreview-wiring, claim me-\S+\)/);
     assert.strictEqual(seen.lockWhileWaiting, true, 'the owner was up while the close waited');
+    // The review's release is its own call over the pipe; the run's owner may stop as soon as the claim leaves running, so wait for the call to finish.
+    await seen.finished;
     assert.ok(seen.released, 'the review released its claim through the run\'s owner');
     const w = res.json.store.review_wait;
     assert.deepStrictEqual([w.outcome, w.waited_for.map((x) => [x.project, x.job])], ['detached', [['p', 'archreview-wiring']]]);

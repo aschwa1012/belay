@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect } from 'claude-code/testing'
+import { test } from './support'
 import { T0, RUN, boot, band, pane, openPane } from './support'
 
 describe('notes stored without a vector', () => {

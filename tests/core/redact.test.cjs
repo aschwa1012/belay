@@ -163,25 +163,8 @@ test('redactDeep: values redacted, keys kept, input unmutated, counts summed', (
   assert.deepEqual(r.redactions, { github_token: 2, env_secret: 1 });
 });
 
-test('performance: 64 KB of mixed text in under 20 ms (median of 20)', () => {
-  const unit = 'The quick brown fox: see https://example.com/a?b=1 and commit ' + 'a1b2c3d4'.repeat(5) +
-    ' plus task-sk-1 key=value, "name": "x" -- ' + 'ey' + 'Jabc not a token\nline two NAME=val\n';
-  let text = '';
-  while (text.length < 64 * 1024) text += unit;
-  redact(text);
-  const times = [];
-  for (let i = 0; i < 20; i++) {
-    const t0 = process.hrtime.bigint();
-    redact(text);
-    times.push(Number(process.hrtime.bigint() - t0) / 1e6);
-  }
-  times.sort((a, b) => a - b);
-  const median = (times[9] + times[10]) / 2;
-  // 5 ms is a quiet host's figure and a hosted runner measured about 8 ms per call; the bound is 20 ms, 2.5x the runner's
-  // figure, so a slowdown of about 6x or more from a quiet host fails. A quadratic or backtracking regression is caught
-  // by the 256 KB test below.
-  assert.ok(median < 20, `median ${median.toFixed(2)} ms`);
-});
+// The 20 ms bound for 64 KB (5 ms on a quiet host, about 8 ms measured on a hosted runner) is gated in tests/budgets/core-budgets.test.cjs.
+// A quadratic or backtracking regression is caught by the 256 KB test below, which compares two sizes with each other.
 
 test('the module requires nothing', () => {
   const src = fs.readFileSync(path.join(__dirname, '../../src/core/redact.cjs'), 'utf8');

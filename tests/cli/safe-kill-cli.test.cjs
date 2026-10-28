@@ -46,7 +46,7 @@ test('worker kill: a row whose pid another process holds is refused with the rea
   try {
     const plant = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: 'run-a', pid: process.pid } });
     try {
-      await plant.worker.write({ id: 'w1', substrate: 'claude-code', pid: s.pid, pid_created: 1, state: 'running', turns: 0, started_at: Date.now() });
+      await plant.worker.write({ id: 'w1', substrate: 'claude-code', pid: s.pid, pid_created: 1, state: 'starting', turns: 0, started_at: Date.now() });
     } finally { await plant.shutdownOwner(); await plant.close(); }
     const r = spawnSync(process.execPath, [CLI, 'worker', 'kill', 'w1', '--data', dataDir, '--json'], { cwd: ROOT, windowsHide: true, encoding: 'utf8' });
     const receipt = JSON.parse(r.stdout || r.stderr);

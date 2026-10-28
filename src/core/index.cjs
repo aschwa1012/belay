@@ -306,16 +306,16 @@ class Core {
   // One election at a time per Core (audit 0.3.1 C1): two concurrent first writes each built a client and elected, and the second
   // owner, refused the pipe, released the first one's lock. A caller that arrives while one is in flight waits for it and then
   // looks again, so it finds the owner or client that call made (or, if it failed, makes its own attempt).
-  _ensureWriter(method = null) {
-    if (this._ensuring) return this._ensuring.then(() => this._ensureWriter(method), () => this._ensureWriter(method));
-    const p = this._ensureWriterOnce(method);
+  _ensureWriter(method = null, opts = {}) {
+    if (this._ensuring) return this._ensuring.then(() => this._ensureWriter(method, opts), () => this._ensureWriter(method, opts));
+    const p = this._ensureWriterOnce(method, opts);
     this._ensuring = p;
     const clear = () => { if (this._ensuring === p) this._ensuring = null; };
     p.then(clear, clear);
     return p;
   }
 
-  async _ensureWriterOnce(method) {
+  async _ensureWriterOnce(method, { noElect = false } = {}) {
     if (this.owner && !this.owner.stopped) return;
     if (this.owner) this.owner = null;
     if (this.client && this.client.connected) return;
@@ -326,7 +326,7 @@ class Core {
     // Audit 0.3.1 P2: the owner this Core released is still serving its other clients. A write dialled to it from here would be
     // a connection of this live process, which the owner counts as attached, so it would never stop while this Core lives.
     if (this._retiringOwner()) throw err('E_SHUTDOWN', `${method || 'a write'} was refused: this process released the store owner, which is serving its last clients before it stops, and a write from here would keep it serving`, { method, data_dir: this.dataDir, retiring: true });
-    const elect = this.caller.role !== 'worker' && !this.shutDown && !this.key; // a bound adapter never elects (ADR 0045 decision 2)
+    const elect = !noElect && this.caller.role !== 'worker' && !this.shutDown && !this.key; // a bound adapter never elects (ADR 0045 decision 2)
     const c = new Client(this.dataDir, {
       caller: this.caller,
       key: this.key,
@@ -433,11 +433,24 @@ class Core {
   async _ticket(method, params) {
     if (method === 'ticket.issue' && !this.isOwner()) return this.control(method, params, { timeoutMs: 10000 });
     if (!this.owner || this.owner.stopped) await this._ensureWriter(method);
-    return this.isOwner() ? this.owner.ticketCall(method, params, this.caller) : this.client.call(method, { ...params, caller: this.caller }, { timeoutMs: 10000 });
+    return this.isOwner() ? this.owner.ticketCall(method, params, this.caller) : this._callRedial(method, params);
   }
   async _bind(method, params) {
     if (!this.owner || this.owner.stopped) await this._ensureWriter(method);
-    return this.isOwner() ? this.owner.bindCall(method, params, { role: 'operator', run_id: this.caller.run_id }) : this.client.call(method, { ...params, caller: this.caller }, { timeoutMs: 10000 });
+    return this.isOwner() ? this.owner.bindCall(method, params, { role: 'operator', run_id: this.caller.run_id }) : this._callRedial(method, params);
+  }
+  // A bind or ticket call over the pipe. The socket can drop between _ensureWriter's look and the send, while the operator check is
+  // asked for: that is E_OWNER_LOST with sent:false, and the call is dialled once more, as _write does (ADR 0033). The re-dial never
+  // elects, so a store whose owner is gone fails naming that rather than gaining a stray owner (ADR 0051). A sent call is not re-run.
+  async _callRedial(method, params) {
+    const call = () => this.client.call(method, { ...params, caller: this.caller }, { timeoutMs: 10000 });
+    try { return await call(); }
+    catch (e) {
+      if (!e || e.code !== 'E_OWNER_LOST' || !(e.detail && e.detail.sent === false)) throw e;
+      await this._dropClient();
+      await this._ensureWriter(method, { noElect: true });
+      return call();
+    }
   }
 
   // ADR 0051: a command that is done with the owner it elected, and is not the run that owns the store. With no other

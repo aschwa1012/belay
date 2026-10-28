@@ -19,6 +19,7 @@ const { err } = require('./errors.cjs');
 
 const SUFFIXES = ['', '-wal', '-shm'];
 const BUSY = new Set(['EBUSY', 'EPERM', 'EACCES']);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
 const sleepSync = ms => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* no SAB */ } };
 
 // The copy reads the source through a plain Node open, never `copyFileSync`. On Windows CopyFileW opens
@@ -30,7 +31,7 @@ const sleepSync = ms => { try { Atomics.wait(new Int32Array(new SharedArrayBuffe
 const CHUNK = 1 << 20;
 // Test seam: tests that count store copies set `hooks.copy(src, dst)`, called once per file whose copy has
 // opened its source. Product code never sets it.
-const hooks = { copy: null };
+const hooks = { copy: null, budgetMs: null };
 function copyShared(src, dst, onChunk) {
   const fin = fs.openSync(src, 'r');
   if (hooks.copy) hooks.copy(src, dst);
@@ -97,7 +98,18 @@ function makeTmpDir(parent, fsx = fs, sleep = sleepSync) {
 // opens, queries run, and the answer matches neither state. So the size, mtime and identity of the three
 // files are read before and after the copy, and a copy over a change is discarded and taken again. Any
 // change retries, an appended -wal included: the exemption is not proven.
+// Retries are bounded by time, not by a count: a live owner heartbeats every second and checkpoints on a timer,
+// each of which changes the stamp, so a few tries a few ms apart can all land inside one slow stretch on a loaded
+// host and fail together. The read keeps taking the copy again until RETRY_BUDGET_MS (1.5 heartbeats) have passed
+// since its first attempt, with at least COPY_TRIES attempts. A quiet store is copied once and never waits; only
+// a copy that changed retries. The worst case added to a read is the budget, plus up to about 160 ms of quietStamp's
+// own window waits, plus one copy (whose busy-file retries add up to 120 ms per file), plus one backoff of at most
+// 50 ms. The wait between attempts yields to the event loop (a caller's own pipe still answers a bounded request);
+// each copy attempt, and quietStamp's short window waits, stay synchronous.
+// `hooks.budgetMs` is a test seam.
 const COPY_TRIES = 3;
+const RETRY_BUDGET_MS = 1500;
+const BACKOFF_CAP_MS = 50;
 // A file's mtime has a granularity (about 1.5 ms on NTFS, up to 15.6 ms on power saver), so two writes inside one
 // tick leave the same size and mtime. Two things cover that. The -wal header carries the checkpoint sequence and
 // both salts (bytes 12 to 24), which every WAL restart changes, so a restart-and-rewrite that kept every size is
@@ -141,10 +153,13 @@ async function withCopy(dataDir, fn) {
   const tmpDir = makeTmpDir(parent);
   const dst = path.join(tmpDir, 'memory.db');
   try {
-    let present = false, settled = false;
-    for (let attempt = 1; attempt <= COPY_TRIES && !settled; attempt++) {
+    let present = false, settled = false, attempt = 0, copies = 0;
+    const budget = hooks.budgetMs === null ? RETRY_BUDGET_MS : hooks.budgetMs, began = Date.now();
+    while (!settled && (attempt < COPY_TRIES || Date.now() - began < budget)) {
+      attempt++;
       const before = quietStamp(src);
-      if (before === null) { sleepSync(5 * attempt); continue; }
+      if (before === null) { await sleep(Math.min(5 * attempt, BACKOFF_CAP_MS)); continue; }
+      copies++;
       present = false;
       for (const suf of SUFFIXES) {
         const copied = copyWithRetry(src + suf, dst + suf, suf === '-shm');
@@ -153,10 +168,10 @@ async function withCopy(dataDir, fn) {
       settled = stampAll(src) === before;
       if (!settled) {
         for (const suf of SUFFIXES) { try { fs.rmSync(dst + suf, { force: true }); } catch { /* removed with the dir */ } }
-        if (attempt < COPY_TRIES) sleepSync(5 * attempt);
+        await sleep(Math.min(5 * attempt, BACKOFF_CAP_MS));
       }
     }
-    if (!settled) throw err('E_BUSY', `the store ${src} changed during each of ${COPY_TRIES} copies: a writer is checkpointing or committing; nothing was read, try again`, { db: src, reason: 'copy-changed', attempts: COPY_TRIES });
+    if (!settled) throw err('E_BUSY', `the store ${src} changed during each of ${copies} copies over ${Date.now() - began} ms: a writer is checkpointing or committing; nothing was read, try again`, { db: src, reason: 'copy-changed', attempts: copies });
     return await fn(dst, present ? 'copy' : 'none');
   } finally {
     try { fs.rmSync(tmpDir, { recursive: true, force: true }); } catch { /* temp dir, next boot clears it */ }

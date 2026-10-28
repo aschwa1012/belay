@@ -16,10 +16,8 @@ const { openCore } = require('../../src/core/index.cjs');
 const ROOT = path.resolve(__dirname, '..', '..').split(path.sep).join('/');
 const CLI = `${ROOT}/src/cli/belay.cjs`;
 
-function deadPid() {
-  const r = spawnSync(process.execPath, ['-e', 'process.exit(0)'], { windowsHide: true });
-  return r.pid;
-}
+// A pid no process holds and none will be handed; an exited child's pid is reused within seconds (tests/helpers/dead-pid.cjs).
+const { deadPid } = require('../helpers/dead-pid.cjs');
 
 function cliAsync(args, dataDir, extraEnv) {
   return new Promise((resolve) => {
