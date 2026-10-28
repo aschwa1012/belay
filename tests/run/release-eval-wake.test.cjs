@@ -77,24 +77,26 @@ test('the headless idle close holds for a watched evaluation of a live worker of
   assert.deepStrictEqual(RE.evaluatingHolds(new Map(), rows, 'r'), []);
 });
 
-test('a refuted review\'s follow-up wake names the work\'s fix rounds in this run and max_fix_rounds, inside the budget', async () => {
+test('a refuted review wakes and the worker_wait answer carry the work fix rounds; with UUID ids and a long worker id the fact survives the cut', async () => {
   const { capText, byteLength } = await mod();
   const verdict = { kind: 'verdict', executable: true, passed: false };
-  const review = { id: `${UUID}`, run_id: 'r', state: 'released', depends_on: ['work1'], handoff: { by: LONG_ID, at: 1 }, results: { trigger: 'release', evaluated_at: 2, passed: false, executable: true, checks: [verdict] } };
-  const work = { id: 'work1', run_id: 'r', state: 'done', review: { state: 'refuted', rounds: 2, fix_rounds_used: 2, max_fix_rounds: 2 } };
+  const WORK = '1c2d3e4f-0000-4000-8000-aaaaaaaaaaaa';
+  const WID = 'T01-reviewer-1';
+  const review = { id: UUID, run_id: 'r', state: 'released', depends_on: [WORK], handoff: { by: WID, at: 1 }, results: { trigger: 'release', evaluated_at: 2, passed: false, executable: true, checks: [verdict, ...failing(3).map((x) => ({ kind: 'command', passed: false, argv: ['node', x], exit_code: 1 }))] } };
+  const work = { id: WORK, run_id: 'r', state: 'done', review: { state: 'refuted', rounds: 2, fix_rounds_used: 2, max_fix_rounds: 2 } };
   const core = { task: { list: async () => ({ tasks: [review, work] }) } };
-  const seen = new Map();
-  seen.pending = new Map([[review.id, { worker_id: LONG_ID, since: Date.now() }]]);
-  const out = await RE.enrichWakes(core, 'r', [], seen);
-  const worst = wakeText(out[0]);
-  assert.ok(byteLength(worst) <= RE.WAKE_TEXT_MAX && capText(worst) === worst, 'even cut, it fits');
-  const s1 = new Map(); s1.pending = new Map([[review.id, { worker_id: 'w1', since: Date.now() }]]);
-  const text = wakeText((await RE.enrichWakes(core, 'r', [], s1))[0]);
-  assert.match(text, /work work1: fix rounds used in this run 2, max_fix_rounds 2/);
+  const seen = new Map(); seen.pending = new Map([[review.id, { worker_id: WID, since: Date.now() }]]);
+  const text = wakeText((await RE.enrichWakes(core, 'r', [], seen))[0]);
+  assert.match(text, /not done; fix rounds 2 of max 2; failing: /, text);
   assert.ok(byteLength(text) <= RE.WAKE_TEXT_MAX && capText(text) === text, text);
-  // a run that sets no max_fix_rounds, or a review that holds, says nothing about rounds
+  // a run that sets no max_fix_rounds says nothing about rounds
   const none = { ...work, review: { ...work.review, max_fix_rounds: null } };
-  const s2 = new Map(); s2.pending = new Map([[review.id, { worker_id: 'w1', since: Date.now() }]]);
-  const out2 = await RE.enrichWakes({ task: { list: async () => ({ tasks: [review, none] }) } }, 'r', [], s2);
-  assert.ok(!/fix round/.test(wakeText(out2[0])));
+  const s2 = new Map(); s2.pending = new Map([[review.id, { worker_id: WID, since: Date.now() }]]);
+  assert.ok(!/fix rounds/.test(wakeText((await RE.enrichWakes({ task: { list: async () => ({ tasks: [review, none] }) } }, 'r', [], s2))[0])));
+  // worker_wait: the turn's own evaluated summary (evalOf, which wait.cjs spreads into its answer) carries the count
+  const w = { id: WID, turns: 1, op: null, parkRequested: false, stopRequested: false, worktree: 'C:/x', releaseIds: { turn: 1, ids: [review.id] } };
+  const ctx = { runId: 'r', core: { task: { list: async () => ({ tasks: [] }), get: async () => work, evaluate: async () => review } } };
+  const ev = RE.startRelease(w, ctx);
+  await ev.promise;
+  assert.deepStrictEqual(RE.evalOf(w).evaluated[0].fix_rounds, { work: WORK, used: 2, max: 2 });
 });

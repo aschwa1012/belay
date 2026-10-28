@@ -33,6 +33,13 @@ function fixRoundsOf(row, byId) {
   return { work: dep.id, used: rv.fix_rounds_used, max: rv.max_fix_rounds };
 }
 
+// The work a refuted review judged, read for the turn's own summary (worker_wait): a Map of that one task, or null.
+async function workOf(core, row) {
+  const r = row.results || {};
+  if (r.passed || !r.executable || !Array.isArray(row.depends_on) || row.depends_on.length !== 1 || typeof core.task.get !== 'function') return null;
+  try { const t = await core.task.get({ task_id: row.depends_on[0] }); return t ? new Map([[t.id, t]]) : null; } catch { return null; }
+}
+
 function summaryOf(row, byId) {
   const r = row.results || {};
   const fr = fixRoundsOf(row, byId);
@@ -82,7 +89,7 @@ async function run(w, ctx, ev) {
     if (ev.cancelled) { out.push({ task_id: t.id, cancelled: true, by: ev.cancelled }); recordFailure(ctx, w, t.id, 'E_CANCELLED', ev.cancelled, ev.turn); continue; }
     try {
       const row = await core.task.evaluate({ task_id: t.id, worktree: w.worktree, trigger: 'release', cancel_key: ev.key });
-      out.push(summaryOf(row));
+      out.push(summaryOf(row, await workOf(core, row)));
       // ADR 0058 decision 8: the stop waits for the worker's queue itself, and this is not on it.
       if (row.state === 'done' && ctx.stopIdleOnDone && ctx.manager && !ev.cancelled) { out[out.length - 1].stop_idle_on_done = true; w.idleStopping = ctx.manager.idleStop(row).then((r) => { if (r) w.idleStop = r; }, () => {}); }
     } catch (e) {
@@ -149,7 +156,7 @@ function clause(evs, room) {
   const parts = evs.map((e) => `${one(e)}${waited(e)}`);
   function one(e) { return (e.error === 'E_BUSY' ? `task ${e.task_id} not evaluated at release: another evaluation of it is running`
     : e.error ? `task ${e.task_id} could not be evaluated at release (${e.error}); call task_evaluate to run it`
-    : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? `${e.flaky ? 'passed on a retry (flaky), done' : 'passed, done'}${e.uncommitted ? '; uncommitted changes: commit before integrate' : ''}` : `not done; failing: ${e.failing.join(', ') || 'no executable check'}${e.fix_rounds ? `; work ${e.fix_rounds.work}: fix rounds used in this run ${e.fix_rounds.used}, max_fix_rounds ${e.fix_rounds.max}` : ''}`}`); }
+    : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? `${e.flaky ? 'passed on a retry (flaky), done' : 'passed, done'}${e.uncommitted ? '; uncommitted changes: commit before integrate' : ''}` : `not done${e.fix_rounds ? `; fix rounds ${e.fix_rounds.used} of max ${e.fix_rounds.max}` : ''}; failing: ${e.failing.join(', ') || 'no executable check'}`}`); }
   return cut(` ${parts.join('; ')}.`, room);
 }
 
