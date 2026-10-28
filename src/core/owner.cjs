@@ -67,6 +67,7 @@ class Owner {
     // the engine. `inFlightControls` tracks each call plus its flushed reply so `stop()` can wait.
     this.controls = opts.controls || {};
     this.inFlightControls = new Set();
+    this.inFlightCalls = new Set(); // engine calls served over the pipe, each with its reply write, so stop() can let them answer
   }
 
   // The lock is published before the pipe exists, and it has to be: a stale-lock takeover needs a pid to
@@ -393,7 +394,12 @@ class Owner {
       return;
     }
 
-    Promise.resolve()
+    // Once the owner is stopping, a new call is not run: it could commit after stop() took its list of calls to answer and have its
+    // reply destroyed. E_OWNER_LOST with sent: false is the answer a client already re-runs on the next owner (ADR 0033).
+    if (this.stopped) {
+      return this._refuse(c, req, { code: 'E_OWNER_LOST', message: `the store owner is stopping, so ${req.method} was not run; the client re-runs it against the next owner`, detail: { method: req.method, sent: false, owner_stopping: true } });
+    }
+    const call = Promise.resolve()
       .then(() => this.engine.handle(req.method, decodeWire(req.params || {})))
       .then(result => { if (!c.destroyed) c.write(JSON.stringify({ id: req.id, result }) + '\n'); })
       .catch(e => {
@@ -401,47 +407,12 @@ class Owner {
         if (c.destroyed) return;
         c.write(JSON.stringify({ id: req.id, error: { code: e.code || 'E_INTERNAL', message: e.message, detail: e.detail } }) + '\n');
       });
+    this.inFlightCalls.add(call);
+    call.finally(() => this.inFlightCalls.delete(call));
   }
 
-  // 5c: `run.stop` ahead of the engine, after `ping` and `shutdown` — operator only (the shape
-  // `shutdown` refuses on), then E_NOT_FOUND if no control is registered, else the control is called
-  // and its flushed reply tracked in `inFlightControls` so `stop()` can await it.
-  // build step 6f, ADR 0023 amendment 3 decision 4: generalised from `_dispatchRunStop` to serve
-  // `run.pause` and `run.resume` too — same gate, same E_NOT_FOUND wording naming the method actually
-  // called, same `controls` map keyed by method name.
-  //
-  // 5c-2 design item 2: a refusal's own write is tracked in `inFlightControls` exactly as the
-  // dispatched path is (round-1 finding: an E_ROLE or E_NOT_FOUND refusal racing an owner shutdown was
-  // dropped rather than flushed, because `fail` started the write but never added it to the set).
-  _dispatchRunControl(method, c, req) {
-    const write = (payload) => new Promise((resolve) => { if (c.destroyed) resolve(); else c.write(payload, resolve); });
-    const fail = (code, message, detail) => {
-      this.counters.errors++;
-      const p = write(JSON.stringify({ id: req.id, error: { code, message, detail } }) + '\n');
-      this.inFlightControls.add(p);
-      p.then(() => this.inFlightControls.delete(p));
-      return p;
-    };
-    const role = req.params && req.params.caller && req.params.caller.role;
-    if (role !== 'operator') {
-      return fail('E_ROLE', `${method} is available to operator and this call came from role ${JSON.stringify(role === undefined ? null : role)}`,
-        { method, role: role === undefined ? null : role, allowed: ['operator'] });
-    }
-    const control = this.controls[method];
-    if (typeof control !== 'function') {
-      return fail('E_NOT_FOUND', `this owner (pid ${process.pid}) registers no ${method} control: it is not a belay run process`,
-        { method, controls: Object.keys(this.controls) });
-    }
-    const dispatched = Promise.resolve()
-      .then(() => control(decodeWire(req.params)))
-      .then((result) => write(JSON.stringify({ id: req.id, result }) + '\n'))
-      .catch((e) => {
-        this.counters.errors++;
-        return write(JSON.stringify({ id: req.id, error: { code: e.code || 'E_INTERNAL', message: e.message, detail: e.detail } }) + '\n');
-      });
-    this.inFlightControls.add(dispatched);
-    dispatched.then(() => this.inFlightControls.delete(dispatched));
-  }
+  // Run controls (5c, 6f): the dispatch lives in owner-controls.cjs, which adds each reply to inFlightControls.
+  _dispatchRunControl(method, c, req) { return require('./owner-controls.cjs').dispatchRunControl(this, method, c, req); }
 
   // Fix round for 6f (diff-scope): a private-method compatibility shim. `tests/core/control.test.cjs`
   // is not owned by this build step and calls `_dispatchRunStop` by name to drive the race it tests; the
@@ -475,6 +446,9 @@ class Owner {
     // before the timers are cleared and the connections destroyed, so every registered waiter resolves
     // (a settle marker, never a verdict) before the socket it would have answered over is torn down.
     try { if (this.engine) this.engine.settleWaiters(); } catch (e) { record(e); }
+    // A call already being served answers before its connection is destroyed (a committed write must not read as a lost owner);
+    // bounded at 5,000 ms like the controls above.
+    if (this.inFlightCalls.size) await new Promise((resolve) => { const timer = setTimeout(resolve, 5000); Promise.allSettled([...this.inFlightCalls]).then(() => { clearTimeout(timer); resolve(); }); });
     try { this.binds.close(); } catch (e) { record(e); } // ADR 0045: an owner takes its keys with it
     try { for (const t of this.timers || []) clearInterval(t); } catch (e) { record(e); }
     // MF1: the embedder child process ends with the owner, even mid-load or mid-embed: `close` over IPC,
