@@ -13,6 +13,7 @@ const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 const G = require('./git.cjs');
 const W = require('./methods-worktree.cjs');
+const J = require('./judged.cjs');
 
 const STAGING = /^belay\/integrate\/(.+)$/;
 
@@ -37,10 +38,19 @@ async function refuseVariant(repo, into, fold) {
   if (same) throw err('E_ARGS', `${into} is another spelling of the existing branch ${same}, and refs compare equal on this host; name it as ${same}`, { into, existing: same });
 }
 
-function isUserBranch(E, repo, into, runId, fold = (s) => s) {
+// A task row's branch is belay's only for the repository the row names, and only while the branch still holds the commit the task was judged on (the
+// task's recorded head or tree, found on the branch). A task with no judged record claims nothing: that branch is treated as the user's and asks. A branch
+// belay made and the user deleted outside belay, then recreated from main or other history, does not hold that commit, so it is the user's. What remains: a
+// user who merged the task's work into their own history and recreated the name from it holds the judged commit, and reads as belay's.
+async function isUserBranch(E, repo, into, runId, fold = (s) => s) {
   const m = STAGING.exec(into);
   if (m && (fold(m[1]) === fold(runId) || rows.current(E.store, 'run', m[1]))) return false;
-  return !rows.currentAll(E.store, 'task').some((t) => t.worktree && t.worktree.branch && !t.worktree.branch_deleted && fold(t.worktree.branch) === fold(into) && (!t.worktree.repo || G.samePath(t.worktree.repo, repo)));
+  const claims = rows.currentAll(E.store, 'task').filter((t) => t.worktree && t.worktree.branch && !t.worktree.branch_deleted && t.worktree.repo && J.judgedOf(t)
+    && fold(t.worktree.branch) === fold(into) && G.samePath(t.worktree.repo, repo));
+  for (const t of claims) {
+    if (await J.commitOf(repo, t, `refs/heads/${into}`)) return false;
+  }
+  return true;
 }
 
 // The run's setting and mode, read from its row (written by the launching attach, operator only). Absent reads as "ask" and "headless".
@@ -93,8 +103,11 @@ function checkList(tasks, evaluate) {
 // the branch head (or the base of a new branch), whether checks run and exactly which. Any difference is another request.
 function requestOf(repo, into, ids, targets, place, args, tasks) {
   const evaluate = args.evaluate !== false;
-  return JSON.stringify({ repo: G.fwd(repo), into, tasks: ids.map((id) => ({ id, sha: targets.has(id) ? targets.get(id).sha : null })), into_head: place.head, base: place.base, evaluate, checks: checkList(tasks, evaluate) });
+  return JSON.stringify({ repo: G.fwd(repo), into, tasks: ids.map((id) => ({ id, sha: targets.has(id) ? targets.get(id).sha : null })), into_head: place.head, base: place.base, evaluate, checks: checkList(tasks, evaluate), integrate_checks: normChecks(args.checks) });
 }
+
+// The call's own `checks`, as the shape the run uses: argv, cwd and timeout, in order (a different list is another request).
+const normChecks = (list) => (Array.isArray(list) ? list : []).map((c) => ({ argv: c.argv, cwd: c.cwd || null, timeout_ms: c.timeout_ms || null }));
 
 const usedBy = (E, id) => rows.currentAll(E.store, 'integration').some((r) => r.approver && r.approver.id === id);
 
