@@ -34,4 +34,7 @@ async function prepare(pairs) {
   return { runsAs: (pid, created) => runsAs(pid, created, known(pid, created) ? snap : null) };
 }
 
-module.exports = { prepare, runsAs, snapshotFor };
+// The pairs a worker row asks about: its pid with the creation time it records, none for no row or a row with no pid yet.
+const pairsOf = (w) => (w && w.pid != null ? [{ pid: w.pid, created: w.pid_created }] : []);
+
+module.exports = { prepare, pairsOf, runsAs, snapshotFor };
