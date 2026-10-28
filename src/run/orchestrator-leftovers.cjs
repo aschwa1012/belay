@@ -11,15 +11,17 @@
 const IDENTITY = require('../core/proc-identity.cjs');
 
 // -> { adapterKnown, list: [{ pid, created }] } of the processes belay owns; throws when they cannot be read.
-async function ownedProcesses(core) {
-  const row = ((await core.run.get()) || {}).run || {};
+// Read with run.list, not run.get: the close's own first run.get must stay the close's. The run row's adapter is the MCP adapter once it has
+// attached; until then it is belay run's own process, which is not the adapter, so it does not count as one.
+async function ownedProcesses(core, runId) {
+  const row = (((await core.run.list({})) || {}).runs || []).find((r) => r.id === runId) || {};
   const list = require('../core/spawn-register.cjs').list().map((r) => ({ pid: r.pid, created: r.created }));
-  const adapterKnown = Number.isInteger(row.adapter_pid) && row.adapter_pid_created != null;
+  const adapterKnown = Number.isInteger(row.adapter_pid) && row.adapter_pid !== process.pid && row.adapter_pid_created != null;
   if (Number.isInteger(row.adapter_pid)) list.push({ pid: row.adapter_pid, created: row.adapter_pid_created == null ? null : row.adapter_pid_created });
   return { adapterKnown, list };
 }
 
-function createLeftovers({ child, P, state, core, owned = () => ownedProcesses(core) }) {
+function createLeftovers({ child, P, state, core, runId, owned = () => ownedProcesses(core, runId) }) {
   let taking = null; // the one capture, started by the first close
   let targets = [];
   let why = null;

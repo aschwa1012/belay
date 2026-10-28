@@ -51,15 +51,15 @@ test("at the close the shell's stray process is ended; the adapter, a spawned wo
     const core = createFakeCore();
     core.worker = { ...core.worker, list: async () => ({ workers: [] }) };
     // The run row names the adapter the way the real one attaches: its pid and creation time, read when the close asks.
-    core.run = { ...core.run, get: async () => {
+    core.run = { ...core.run, list: async () => {
       const pid = await pidFrom(f('adapter.pid'));
       const c = await P.createdOf(pid);
-      return { run: { adapter_pid: pid, adapter_pid_created: c && c.created } };
+      return { runs: [{ id: 'run-leftovers', adapter_pid: pid, adapter_pid_created: c && c.created }] };
     } };
     // The register names the sibling once its pid is known, as the adapter's spawn would; reading the register is what the close does.
     const registerSibling = async () => { const pid = await pidFrom(f('registered.pid')); SR.register({ pid, kind: 'worker', dataDir, workerId: 'w-registered', created: (await P.createdOf(pid)).created }); };
-    const getRun = core.run.get;
-    core.run.get = async () => { await registerSibling(); return getRun(); };
+    const listRuns = core.run.list;
+    core.run.list = async () => { await registerSibling(); return listRuns(); };
     const result = await runOrchestrator({
       core, runId: 'run-leftovers', dataDir,
       spec: { worktree: fwd(path.join(d, 'wt')), promptText: 'hello', orchestratorDir: fwd(path.join(d, 'orch')), model: 'claude-sonnet-5', allowedTools: null, startupTimeoutMs: 8000, timeoutMs: 0, mcpToolTimeoutMs: 60000, pollMs: 100, closeGraceMs: 3000 },

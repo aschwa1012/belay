@@ -118,7 +118,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   let pollHandle = null;
   let pollInFlight = false; // 5a-2: at most one store read at a time, guard not a queue
   const holdRecorder = createHoldRecorder(); // wake.cjs (design item 9): moved out of this file
-  const leftovers = require('./orchestrator-leftovers.cjs').createLeftovers({ child, P, state, core }); // ADR 0054 amendment 2
+  const leftovers = require('./orchestrator-leftovers.cjs').createLeftovers({ child, P, state, core, runId }); // ADR 0054 amendment 2
   const preClose = require('./pre-close-wake.cjs').createPreCloseNotice({ core, runId }); // ADR 0065 amendment 1
   const callWatcher = require('./call-wake.cjs').createCallWatcher({ core, runId });
   const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId, enabled: !!spec.notes }); // wave 4: a refuted note wakes the orchestrator (notes runs only)
