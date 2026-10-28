@@ -109,10 +109,15 @@ async function fixFromReview(E, caller, args) {
   const original = (judged.repairs && rows.current(E.store, 'task', judged.repairs)) || judged;
   // Called again for a review an open fix of this run already answers (the same review, or another refutation that fix took in),
   // that fix is returned, and no fix round is spent. A refutation decided after the fix was made is not in it: it gets its own.
-  const { refs, existing } = unanswered(E, caller, judged, review, repairs);
+  let { refs, existing } = unanswered(E, caller, judged, review, repairs);
   if (existing) return { ...existing, from_review: review.id, existing: true };
   await require('./methods-worktree.cjs').assertTreeListed(judged);
-  const tree = inheritedTree(judged);
+  // The await let other calls run: another fix for this review may have been written, and the judged row's tree may have been
+  // removed. Read both again; nothing awaits between here and the task row's write.
+  const judgedNow = rows.current(E.store, 'task', judgedId) || judged;
+  ({ refs, existing } = unanswered(E, caller, judgedNow, review, repairs));
+  if (existing) return { ...existing, from_review: review.id, existing: true };
+  const tree = inheritedTree(judgedNow);
   const row = await T.create(E, caller, {
     spec: typeof args.spec === 'string' && args.spec.trim() ? args.spec : defaultSpec(refs, judged, original),
     acceptance: args.acceptance !== undefined ? args.acceptance : judged.acceptance,

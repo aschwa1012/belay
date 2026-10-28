@@ -52,7 +52,11 @@ async function closeTrees({ core, runId, endedRow, closed, ce, late, deps = {} }
     }
     return got;
   } catch (e) {
-    return { ...empty(null), error: (e && e.message) || String(e) };
+    // The call failed, but a sweep in the owner may still be inside a tree's git: the cancel stops it before its next tree and names
+    // that tree, which may be removed and not recorded.
+    let inFlight = null;
+    try { inFlight = (await Promise.resolve().then(() => (deps.cancel || ((a) => core.task.worktreeSweepCancel(a)))({ run_id: runId }))).in_flight || null; } catch { /* nothing more is known */ }
+    return { ...empty(null), error: (e && e.message) || String(e), ...(inFlight ? { possibly_unrecorded: [inFlight] } : {}) };
   } finally { for (const sig of ['SIGINT', 'SIGBREAK']) process.off(sig, onInterrupt); }
 }
 
@@ -62,7 +66,7 @@ function lines(receipt) {
   if (!w) return [];
   const maybe = (w.possibly_unrecorded || []).map((p) => `worktree possibly removed but not recorded: ${p}`);
   if (w.skipped && w.skipped !== 'budget' && !w.removed.length) return [`worktrees: not swept (${w.skipped})`, ...maybe];
-  if (w.error) return [`worktrees: sweep failed (${w.error})`];
+  if (w.error) return [`worktrees: sweep failed (${w.error})`, ...maybe];
   if (!w.removed.length && !w.kept.length && !w.failed.length && !w.orphans.length) return [];
   return [`worktrees: removed ${w.removed.length}, kept ${w.kept.length}, failed ${w.failed.length}`,
     ...w.failed.map((f) => `worktree not removed: ${f.path} (${f.code}: ${f.error})${f.remedy ? `; ${f.remedy}` : ''}`),

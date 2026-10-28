@@ -101,6 +101,22 @@ async function removeOne(E, caller, g, base) {
     ignored_removed: ignored ? { paths: ignored.length, first: ignored.slice(0, NAMED) } : null, ms: Date.now() - t1 } };
 }
 
+// task.worktreeSweep { dry_run: true }: what the sweep would keep and remove now, judged by the same keepReason. Removes nothing,
+// writes nothing, sets no cancel state; `would_remove` lists the trees that pass every condition.
+async function dryRun(E, groups, ctx, out, t0) {
+  out.dry_run = true;
+  out.would_remove = [];
+  for (const g of groups.values()) {
+    const base = { task_ids: g.tasks.map((t) => t.id), path: g.rec.path, branch: g.rec.branch };
+    try {
+      const why = await keepReason(E, g, ctx);
+      if (why) out.kept.push({ ...base, ...why }); else out.would_remove.push(base);
+    } catch (e) { out.failed.push({ ...base, code: e.code || 'E_INTERNAL', error: e.message }); }
+  }
+  out.ms = Date.now() - t0;
+  return out;
+}
+
 async function sweep(E, caller, args) {
   const runId = args.run_id === undefined ? caller.run_id : args.run_id;
   if (typeof runId !== 'string' || !runId) throw err('E_ARGS', 'task.worktreeSweep needs a run_id');
@@ -120,6 +136,7 @@ async function sweep(E, caller, args) {
     groups.get(key(rec.path)).tasks.push(t);
   }
   const out = { removed: [], kept: [], failed: [], orphans: [], integration_kept: [], skipped: null, ms: 0 };
+  if (args.dry_run === true) return dryRun(E, groups, ctx, out, t0);
   const mine = { path: null };
   running.set(runId, mine);
   try {
@@ -138,6 +155,11 @@ async function sweep(E, caller, args) {
       try { r = await removeOne(E, caller, g, base); } finally { mine.path = null; slowest = Math.max(slowest, Date.now() - t1); }
       for (const k of ['removed', 'kept', 'failed']) if (r[k]) out[k].push(r[k]);
     } catch (e) {
+      // A tree dirtied between the check and the removal is refused by the removal itself: it is kept dirty, not failed.
+      if (e.code === 'E_PRECONDITION' && e.detail && Array.isArray(e.detail.dirty)) {
+        out.kept.push({ ...base, reason: 'dirty', detail: `${e.detail.dirty.length} uncommitted path(s)`, paths: e.detail.dirty.slice(0, NAMED) });
+        continue;
+      }
       const listed = await G.worktrees(g.rec.repo).then((l) => l.some((x) => G.samePath(x.path, g.rec.path))).catch(() => null);
       out.failed.push({ ...base, code: e.code || 'E_INTERNAL', error: e.message, git_still_lists: listed, leftover: false });
     }

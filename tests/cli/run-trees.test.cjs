@@ -103,3 +103,12 @@ test('the sweep is given the fast close time as its deadline when one is running
   await closeTrees({ core: null, runId: 'r', endedRow: ended, closed: null, ce, late() {}, deps: { sweep: (a) => { seen = a; return block; } } });
   assert.strictEqual(seen.deadline_ms, 1234);
 });
+
+test('a sweep call that fails names the tree a cancel finds in flight as possibly unrecorded', async () => {
+  const r = await closeTrees({ core: null, runId: 'r', endedRow: { ended_at: 1 }, closed: null, ce: null, late() {}, deps: { sweep: () => { throw new Error('call lost'); }, cancel: () => ({ cancel_requested: true, in_flight: 'C:/t/y' }) } });
+  assert.strictEqual(r.error, 'call lost');
+  assert.deepStrictEqual(r.possibly_unrecorded, ['C:/t/y']);
+  assert.ok(lines({ worktrees_closed: r }).includes('worktree possibly removed but not recorded: C:/t/y'));
+  const plain = await closeTrees({ core: null, runId: 'r', endedRow: { ended_at: 1 }, closed: null, ce: null, late() {}, deps: { sweep: () => { throw new Error('boom'); }, cancel: () => ({ in_flight: null }) } });
+  assert.strictEqual(plain.possibly_unrecorded, undefined);
+});
