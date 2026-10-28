@@ -28,3 +28,13 @@ test('a real process holds a pid far below the never-issued range', async () => 
     assert.ok(process.pid < FLOOR / 100);
   } finally { child.kill(); await exited; }
 });
+
+test('stillRunning: a process born after the start time is another process; the same process is itself; a gone pid is gone', async () => {
+  const { stillRunning } = require('../helpers/dead-pid.cjs');
+  const ID = require('../../src/core/proc-identity.cjs');
+  if (process.platform !== 'win32') return;
+  const own = await ID.createdOf(process.pid);
+  assert.strictEqual(await stillRunning(process.pid, own.created + 50), true, 'this process, started after its creation');
+  assert.strictEqual(await stillRunning(process.pid, own.created - 60000), false, 'a pid whose holder was born after the recorded start is not that process');
+  assert.strictEqual(await stillRunning(deadPid(), Date.now()), false);
+});

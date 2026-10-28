@@ -169,7 +169,7 @@ test('plugin: a change while claude runs is a leak: claude is killed by its pid 
   assert.strictEqual(res.code, 1, res.text);
   assert.match(res.json.ended_by, /plugin copy changed after spawn \(hooks\/wake\/index\.ts\)/);
   assert.strictEqual(res.json.orchestrator.interactive.gate.status, 'failed');
-  assert.ok(rec && !P.pidAlive(rec.pid), 'claude outlived the leak');
+  assert.ok(rec && !(await require('../helpers/dead-pid.cjs').stillRunning(rec.pid, rec.started_at)), 'claude outlived the leak');
 }));
 
 test('plugin: the two paths Claude Code writes into the copy do not fail the run', T, async (t) => H.withRun(t, async (dir) => {

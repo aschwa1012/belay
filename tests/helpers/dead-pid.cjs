@@ -15,4 +15,16 @@ function deadPid() {
   return pid;
 }
 
-module.exports = { deadPid, FLOOR, CEILING };
+// Whether the process that was started at `startedAt` (its own clock, taken after it was born) still runs under `pid`. A pid that is
+// alive is that process only if it was created no later than that; a process created after is another one that was handed the pid
+// once the first had gone (ADR 0039), which `process.kill(pid, 0)` cannot tell. A creation time the snapshot cannot read is a failed
+// precondition, not an answer.
+async function stillRunning(pid, startedAt) {
+  const { pidAlive } = require('../../src/core/lock.cjs');
+  if (!pidAlive(pid)) return false;
+  const { readCreated } = require('./created.cjs');
+  const c = await readCreated(pid);
+  return c.created <= startedAt;
+}
+
+module.exports = { deadPid, stillRunning, FLOOR, CEILING };
