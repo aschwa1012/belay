@@ -8,6 +8,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { PROCESS_LINE } = require('../../src/run/task-body.cjs');
 
 const shim = require('./redact-shim.cjs');
 shim.install();
@@ -156,7 +157,7 @@ test('manager, lever on: the task, then a message, each on the turn it starts, w
     await m._waitTurn('w1', 8000);
     const got = rows(sb.sent('w1'));
     assert.deepStrictEqual(got.map((r) => [r.seq, r.turn, r.kind]), [[1, 1, 'task'], [2, 2, 'message']]);
-    assert.strictEqual(got[0].text, 'build the thing');
+    assert.strictEqual(got[0].text, 'build the thing' + PROCESS_LINE);
     assert.ok(got[1].text.startsWith('note: [REDACTED:'));
     assert.ok(!JSON.stringify(got).includes(shim.SECRET));
   });
