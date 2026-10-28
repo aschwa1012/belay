@@ -110,8 +110,9 @@ function createCompose({ callCore, manager, openManager, dataDir = null, runId =
   // task_create (B4): the row as written, with a warning when it declares no check, since such a task can never be done, and
   // (ADR 0059) when it owns paths a task in another tree owns too.
   async function create(args) {
-    const row = await callCore('task.create', args);
-    return withWarnings(row, row && !hasCheck(row.acceptance) && NO_CHECK, row && overlapWarning(row.overlaps));
+    const out = await callCore('task.create', args);
+    const warn = (row) => withWarnings(row, row && !hasCheck(row.acceptance) && NO_CHECK, row && overlapWarning(row.overlaps));
+    return out && Array.isArray(out.tasks) ? { tasks: out.tasks.map(warn) } : warn(out); // ADR 0062: a batch answers every row it wrote
   }
 
   // task_cancel: the cancel, then a short line to the worker whose lease it ended, when this session launched it.

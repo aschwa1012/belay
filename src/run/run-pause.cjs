@@ -20,7 +20,7 @@ function resumeWakeText(by, resumed, left, held) {
   return build(0).slice(0, 220);
 }
 
-function createRunPauseControl({ runId, core, hook, pauseWorker, resumeWorker, stopInFlight, beforeResume, interactive = false }) {
+function createRunPauseControl({ runId, core, hook, pauseWorker, resumeWorker, stopInFlight, beforeResume, afterResume, interactive = false }) {
   let inFlight = null; // { op: 'pause'|'resume', promise }
   // ADR 0037 wave 2 fix: an interactive run has no run-hold, so this process's own memory is the ground truth for
   // "paused" (a stale paused_at carried across a reattach does not count) and the wake publisher's hold.
@@ -184,7 +184,7 @@ function createRunPauseControl({ runId, core, hook, pauseWorker, resumeWorker, s
 
     const span_ms = Date.now() - run.paused_at;
     const beyond = (list) => (list.length > 10 ? `${list.slice(0, 10).map((w) => w.worker_id).join(', ')} and ${list.length - 10} more` : list.map((w) => w.worker_id).join(', ') || 'none');
-    const pauser = /embedder-failure [(]/.test(run.paused_by || '') ? `an embedder failure paused this run (${String(run.paused_by).replace(/^[^[]*\[|\]$/g, '')})` : 'the operator paused this run';
+    const pauser = /embedder-failure [(]/.test(run.paused_by || '') ? `an embedder failure paused this run (${String(run.paused_by).replace(/^[^[]*\[|\]$/g, '')})` : (/\[budget [(]/.test(run.paused_by || '') ? `a budget paused this run (${String(run.paused_by).replace(/^[^[]*\[|\]$/g, '')})` : 'the operator paused this run');
     const line = `belay: ${pauser} ${span_ms} ms ago and has been resumed now; resumed [${beyond(workers_resumed)}]; left parked [${beyond(left_parked)}].`;
 
     const result = await resumeOrchestrator(by, line);
@@ -236,7 +236,8 @@ function createRunPauseControl({ runId, core, hook, pauseWorker, resumeWorker, s
     if (inFlight && inFlight.op === 'resume') return inFlight.promise;
     const p = doResume(params);
     inFlight = { op: 'resume', promise: p };
-    p.then(() => { inFlight = null; }, () => { inFlight = null; });
+    const settle = () => { inFlight = null; if (typeof afterResume === 'function') { try { afterResume(); } catch { /* the caller's hook never fails a resume */ } } }; // afterResume: the budget guard checks again once the resume has landed
+    p.then(settle, settle);
     return p;
   }
 

@@ -98,6 +98,7 @@ const METHODS = {
   'memory.recordChances': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./memory-chances.cjs', 'recordChances') },
   'memory.noteDeliveries': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./memory-chances.cjs', 'noteDeliveries') },
   'usage.record': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-ledger.cjs', 'usageRecord') },
+  'usage.spend': { roles: ALL, kind: 'read', fn: lazy('./run-budget.cjs', 'usageSpend') },
   'usage.list': { roles: ALL, kind: 'read', fn: lazy('./methods-ledger.cjs', 'usageList') },
   'memory.delete': { roles: ALL, kind: 'write', fn: memory.delete },
   'memory.stats': { roles: ALL, kind: 'read', fn: memory.stats },
@@ -135,6 +136,8 @@ const METHODS = {
   // identity), and it is read back through the ordinary run row.
   'run.setPaused': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: run.setPaused },
   'run.setEmbedderMode': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: run.setEmbedderMode },
+  'run.assertNotPaused': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./paused-run.cjs', 'assertNotPaused') },
+  'run.setBudget': { roles: ['operator'], kind: 'write', fn: lazy('./run-budget.cjs', 'setBudget') },
   'run.get': { roles: ALL, kind: 'read', fn: run.getRun },
   // build step 4a: every run's current row, so a CLI with no run id argument (belay status,
   // belay workers) has a way to find the current run at all.
@@ -152,7 +155,7 @@ const METHODS = {
   'task.create': { roles: ORCH, kind: 'write', fn: task.create },
   // build step 6a, ADR 0010 §4 amendment 1: opened to the operator as well (see the comment above
   // ORCH_OR_OPERATOR); the MCP adapter's task_assign tool stays orchestrator-only.
-  'task.assign': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: task.assign },
+  'task.assign': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: require('./paused-run.cjs').gate(task.assign) },
   // The run manager asks this before it relaunches a worker (restart, resume, a Codex turn): the task it holds is held for the manager's live run, or the relaunch is refused.
   'task.ensureHold': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: taskHold.ensureHold },
   'task.list': { roles: ALL, kind: 'read', fn: task.list },

@@ -68,6 +68,7 @@ function queueMemory(w, e, ctx, memoryTextMax, checkpointId) {
   const text = (e.text || w.lastAssistantText || '').slice(0, memoryTextMax);
   const plan = MC.plan(w, e, ctx); // null with the capture and job levers off: then the turn row is the only write
   if ((!text && !plan) || (ctx.shutdownFlags && ctx.shutdownFlags.closed)) return;
+  if (plan && ctx.memoryLevers && ctx.memoryLevers.cost_ledger) require('./usage-early.cjs').start(w, ctx, plan.snap); // the usage row does not wait behind this turn's embeds
   const turn = w.turns;
   const endedAt = Date.now(); // the turn's end, read now: the write is queued, and a lease granted after it is the next task's
   w.memoryQueue = (w.memoryQueue || Promise.resolve()).then(async () => {
