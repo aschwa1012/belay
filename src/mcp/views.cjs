@@ -240,7 +240,7 @@ function amendedView(row) {
 // fix_from_review: the task as task_create answers it, plus what belay inferred for it (the task it repairs, what it waits for, the
 // files it owns), since the orchestrator did not write those. The spec, acceptance and tree records are the findings' and the base's own.
 function fixCreated(row) {
-  const out = created(row);
+  const out = row && row.follows_up && row.worktree && row.worktree.path && !row.worktree.inherited_from && !row.worktree.removed_at ? taskWorktree(row) : created(row); // a follow-up's tree is its own, and the call just made it
   if (out && row && typeof row === 'object') for (const k of ['repairs', 'depends_on', 'files_owned']) if (!empty(row[k])) out[k] = row[k];
   return out;
 }
