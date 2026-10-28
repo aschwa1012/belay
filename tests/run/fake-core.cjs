@@ -36,6 +36,7 @@ function createFakeCore({ runId = 'run-fake', resumeLineText = null, failing = {
   const memories = [];
   const leases = new Map();
   let seq = 0;
+  let leaseSeq = 0; // lease ids are deterministic, so two runs of a script can be compared byte for byte (the first message ends with the lease id)
 
   const record = (method, args, result) => {
     calls.push({ method, args, result, at: Date.now() });
@@ -77,11 +78,17 @@ function createFakeCore({ runId = 'run-fake', resumeLineText = null, failing = {
             { worker_id: r.id, pid: r.pid == null ? null : r.pid }
           );
         }
+        // Mirrors writeWorker: release_leases on a dead worker that holds no lease writes nothing (ADR 0026 amendment 2).
+        const cur = core.currentWorker(r.id);
+        if (r.release_leases && cur && cur.state === 'dead' && ![...leases.values()].some((l) => l.holder === r.id && !l.released_at)) {
+          return record('worker.write', r, { skipped: true, reason: 'nothing_to_release', current_seq: cur.seq });
+        }
         const written = { ...r, seq: ++seq, written_at: Date.now(), written_by: 'orchestrator' };
         if (!workerRows.has(r.id)) workerRows.set(r.id, []);
         workerRows.get(r.id).push(written);
         return record('worker.write', r, written);
       },
+      async list() { return { workers: [...workerRows.keys()].map((id) => core.currentWorker(id)) }; },
       async get({ worker_id }) {
         maybeFail('worker.get');
         const cur = core.currentWorker(worker_id);
@@ -105,7 +112,7 @@ function createFakeCore({ runId = 'run-fake', resumeLineText = null, failing = {
       // run-not-live refusals do; the fake holds everything otherwise.
       async ensureHold({ task_id, worker_id }) {
         maybeFail('task.ensureHold');
-        return record('task.ensureHold', { task_id, worker_id }, { task_id, run_id: runId, held: true, reason: 'live', rehomed: false });
+        return record('task.ensureHold', { task_id, worker_id }, { task_id, run_id: runId, held: true, reason: 'run_live', rehomed: false });
       },
       async assign({ task_id, worker_id, ttl_ms = 600000, check_only = false }) {
         // 'task.assign:check' fails the check_only call (ADR 0030 decision 4) and writes nothing;
@@ -116,7 +123,7 @@ function createFakeCore({ runId = 'run-fake', resumeLineText = null, failing = {
         }
         maybeFail('task.assign');
         const lease = {
-          id: crypto.randomUUID(), task_id, run_id: runId, holder: worker_id,
+          id: `lease-${++leaseSeq}`, task_id, run_id: runId, holder: worker_id,
           holder_role: 'worker', granted_at: Date.now(), expires_at: Date.now() + ttl_ms,
           released_at: null, supersedes: (leases.get(task_id) || {}).id || null,
         };
@@ -184,4 +191,7 @@ function createFakeCore({ runId = 'run-fake', resumeLineText = null, failing = {
   return core;
 }
 
-module.exports = { createFakeCore, FakeCoreError };
+// What belay ends a spawned worker's first message with for a task of the fake core: the hand-back rule naming the lease (handback.cjs).
+const handback = (leaseId = 'lease-1') => require('../../src/run/handback.cjs').rule({ new_lease: { id: leaseId }, task: {} });
+
+module.exports = { createFakeCore, FakeCoreError, handback };

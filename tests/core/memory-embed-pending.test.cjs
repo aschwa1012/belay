@@ -100,7 +100,7 @@ test('nothing but memory.embedNote embeds a bare note: warm-up, searches, the in
     walk(srcRoot);
     return hits.sort();
   };
-  assert.deepStrictEqual(filesWith('embedNote'), ['cli/cmd-memory-embed.cjs', 'cli/cmd-memory-reembed.cjs', 'core/engine.cjs', 'core/index.cjs', 'core/methods-memory-embed.cjs']);
+  assert.deepStrictEqual(filesWith('embedNote'), ['cli/cmd-memory-embed.cjs', 'cli/cmd-memory-reembed.cjs', 'core/call-limits.cjs', 'core/engine.cjs', 'core/methods-memory-embed.cjs']);
   // (the second command module is `--reembed`, also started only by the operator)
   // Store.setEmbedding is reached from embedNote's core path only
   assert.deepStrictEqual(filesWith('setEmbedding('), ['core/methods-memory-embed.cjs', 'core/store.cjs']);

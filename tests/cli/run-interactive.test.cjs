@@ -88,7 +88,9 @@ test('interactive run, claude exits 0: launch facts, receipt, run row closed, be
   assert.match(rc.ended_by, /^claude exited \(code 0\)$/);
   assert.strictEqual(rc.orchestrator.exit_code, 0);
   assert.strictEqual(rc.orchestrator.interactive.tools.verified, 'unverified');
-  assert.deepStrictEqual(rc.orchestrator.interactive.tools.requested, ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash']);
+  // ADR 0054 decision 1: the receipt records the list the launch passed (the six), never the workers' list by assumption.
+  assert.deepStrictEqual(rc.orchestrator.interactive.tools.requested, ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash']);
+  assert.deepStrictEqual(rc.orchestrator.interactive.tools.requested, require('../../src/run/surface.cjs').ORCHESTRATOR_TOOLS);
   assert.deepStrictEqual(rc.orchestrator.interactive.console_events, []);
   assert.strictEqual(rc.orchestrator.interactive.gate.debug.ok, true);
   assert.strictEqual(rc.orchestrator.interactive.gate.session.ok, true);
@@ -396,6 +398,7 @@ test('belay pause against an interactive run is accepted (ADR 0023 amendment 5):
   const r = start(dir, { env: { FAKE_EXIT_FILE: `${dir}/quit` } }); // the stub quits when the test says so: the owner's check of the pause's caller takes longer than any fixed hold
   assert.ok(await waitUntil(() => r.record(), 15000));
   const probe = await openCore({ dataDir: r.dataDir, caller: { role: 'operator', run_id: r.runId, pid: process.pid } });
+  t.after(() => Promise.resolve().then(() => probe.close()));
   assert.ok(await waitUntil(async () => (await probe.run.get()).run, 15000));
   await probe.close();
   const res = await cmdPause.run({ command: 'pause', argv: [r.runId], cwd: ROOT, dataDir: r.dataDir, json: true });

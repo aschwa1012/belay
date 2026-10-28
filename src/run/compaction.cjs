@@ -15,9 +15,11 @@
 // core.continuity.resumeLine read per turn end of a worker that holds a task, no write, no embedder).
 //
 // The harness's own /compact turn is invisible as a worker turn (swallow): it adds no turn, answers no waiter, writes no
-// turn count, so neither the wake nor worker_wait reports it as work. A message sent while it is in flight is refused
-// E_BUSY (refuseIfCompacting), never held: a held message would be stranded by a pause or park. The inflight flag clears
-// on the compaction turn's end, on a relaunch, or after INFLIGHT_MAX_MS.
+// turn count, so neither the wake nor worker_wait reports it as work. A message sent while it is in flight is queued
+// (ADR 0058 decision 4, queueIfCompacting) and written as one turn when the compaction's turn ends; a pause, park or
+// relaunch first drops the queue, recorded on the worker (queued_dropped) and in queued-messages.jsonl, never silently.
+// The queue is bounded (QUEUE_MAX messages, QUEUE_MAX_BYTES); past it the message is refused E_BUSY. The inflight flag
+// clears on the compaction turn's end, on a relaunch, or after INFLIGHT_MAX_MS.
 
 const fs = require('node:fs');
 const path = require('node:path');
@@ -27,6 +29,9 @@ const HOOK_MAX_BYTES = 400; // invariant 9, ADR 0007 decision 7
 const HOOKS_LOG = 'compact-hooks.jsonl'; // written by the hook processes
 const RECORDS_LOG = 'compactions.jsonl'; // written by the harness
 const RESUME_FILE = 'compact-resume.txt';
+const QUEUE_LOG = 'queued-messages.jsonl'; // ADR 0058: what became of each message held during a compaction
+const QUEUE_MAX = 8;
+const QUEUE_MAX_BYTES = 65536;
 // The steering text the PreCompact hook prints: generic task state, no probe-specific words (<= 400 bytes, invariant 9).
 const STEER = 'Preserve verbatim, under a heading TASK-STATE: the task id and goal, decisions made and why, open findings and questions, files touched, and the exact next step. Keep everything else short.';
 const INSTRUCTIONS = 'Keep the task id, the task state, the files touched and the exact next step verbatim.';
@@ -76,6 +81,7 @@ function writeResume(w, line) {
 function onAttach(w, ctx) {
   if (ctx.compactAt == null || w.substrate !== 'claude-code') return;
   const s = state(w);
+  dropQueued(w, 'the worker was relaunched before the compaction ended');
   s.inflight = null; s.pending = null; s.sentIdx.clear(); // write indices restart with the process
   writeResume(w, resumeFallback(w));
 }
@@ -151,7 +157,7 @@ function swallow(w, e, ctx) {
   const n = (x) => (typeof x === 'number' ? x : 0);
   w.inputTokens += n(u.input_tokens); w.outputTokens += n(u.output_tokens);
   w.cacheReadTokens += n(u.cache_read_input_tokens); w.cacheCreationTokens += n(u.cache_creation_input_tokens);
-  if (typeof e.cost_usd === 'number') w.costUsd = e.cost_usd;
+  if (typeof e.cost_usd === 'number') w.costUsd = (w.costBase || 0) + e.cost_usd;
   w.turnEnded = true; w.lastTurnEndAt = Date.now(); w.pendingTurnEnd = null;
   // A park reads the results after its interrupt (pause.cjs doPause): a compaction cut short is one of them.
   const afterInterrupt = !!(w.parkRequested && e.at >= w.parkRequested.interruptAt);
@@ -161,27 +167,74 @@ function swallow(w, e, ctx) {
   // A waiter registered during the compaction on an idle worker is answered with the last real turn, as it would have
   // been had it come a moment earlier. Not when a message was written after the compaction's own write (accepted past the
   // expiry): the waiter is that message's, and only its own reply answers it.
-  const laterWrite = e.answers_write != null && !!w.parser && w.parser.writeIndex > e.answers_write;
+  // A message queued during the compaction is written next, and a waiter is that message's too.
+  const laterWrite = (e.answers_write != null && !!w.parser && w.parser.writeIndex > e.answers_write) || !!(s.queue && s.queue.length);
   if (!laterWrite) for (const r of w.turnWaiters.splice(0)) r({ usage: w.lastTurnUsage, checkpoint_id: w.lastCheckpointId, is_error: false, paused: afterInterrupt });
   return true;
 }
 
-function sendRaw(w, text, ctx) {
+function sendRaw(w, text, ctx, kind = 'compact') {
   w.child.stdin.write(JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text }] } }) + '\n');
-  require('./sent-log.cjs').record(w, ctx, 'compact', text); // ADR 0042 decision 4: generated; a no-op with memory.bottle off
+  require('./sent-log.cjs').record(w, ctx, kind, text); // ADR 0042 decision 4: a no-op with memory.bottle off
   return w.parser.noteStdinWrite();
 }
 const live = (w, ctx) => w.child && w.child.stdin && !w.child.stdin.destroyed && !w.settled && !w.stopRequested
   && !w.parkRequested && !w.paused && !(ctx.shutdownFlags && ctx.shutdownFlags.closed);
 
-// After a swallowed compaction turn: the row says the worker is no longer mid-turn.
-async function afterCompact(w, ctx) {
-  if (w.parkRequested) return; // as onTurnEnd: a park's own exit handler writes the only row it produces (6e-5 item 3)
-  try { await ctx.writeRow(w, 'running'); } catch (err) { w.lastError = { where: 'compaction.write', code: err && err.code, message: err && err.message }; }
+function logQueue(w, rec) {
+  try { fs.appendFileSync(path.join(w.dir, QUEUE_LOG), JSON.stringify({ at: Date.now(), worker_id: w.id, ...rec }) + '\n'); } catch (e) { w.lastError = { where: 'compaction.queueLog', message: e && e.message }; }
 }
 
-// manager.message, before it writes: while the harness's /compact is in flight the message is refused E_BUSY (nothing is
-// written, nothing held); the caller retries once the compaction's turn ends. No-op when nothing is in flight.
+// A queue that can no longer be delivered is dropped with its reason, on the record (worker_wait reports queued_dropped).
+function dropQueued(w, reason) {
+  const s = w.cp;
+  if (!s || !s.queue || !s.queue.length) return;
+  const q = s.queue.splice(0);
+  const rec = { event: 'dropped', count: q.length, bytes: q.reduce((a, m) => a + m.bytes, 0), reason };
+  (w.queuedDropped = w.queuedDropped || []).push({ ...rec, at: Date.now() });
+  logQueue(w, rec);
+}
+
+// The queued messages, joined, as one turn. Not awaited: this runs inside the worker's queue (see afterTurn).
+function drainQueued(w, ctx, turnStarted) {
+  const s = w.cp;
+  if (!s || !s.queue || !s.queue.length) return;
+  if (!turnStarted || !live(w, ctx)) { dropQueued(w, 'the worker could not take a message when the compaction ended'); return; }
+  const q = s.queue.splice(0);
+  const text = q.map((m) => m.text).join('\n\n');
+  turnStarted(w, ctx, () => sendRaw(w, text, ctx, 'message'));
+  logQueue(w, { event: 'delivered', count: q.length, bytes: Buffer.byteLength(text, 'utf8') });
+}
+
+// After a swallowed compaction turn: the row says the worker is no longer mid-turn, then any queued message is written.
+async function afterCompact(w, ctx, turnStarted) {
+  if (w.parkRequested) { dropQueued(w, 'a pause parked the worker during the compaction'); return; } // as onTurnEnd: a park's own exit handler writes the only row it produces (6e-5 item 3)
+  try { await ctx.writeRow(w, 'running'); } catch (err) { w.lastError = { where: 'compaction.write', code: err && err.code, message: err && err.message }; }
+  drainQueued(w, ctx, turnStarted);
+}
+
+// manager.message, before it writes: while the harness's /compact is in flight the message is queued and the receipt
+// returned (ADR 0058 decision 4), or refused E_BUSY when the queue is full. Returns null when nothing is in flight; an
+// expired flag is cleared, and anything left queued behind it is returned in `flush`, to go in front of this message.
+// While queued messages wait to be written (the compaction's turn has ended and its row is being written), a new message goes
+// behind them, so the order they were sent in is the order the worker reads them.
+function queueIfCompacting(w, text, fail) {
+  const s = w.cp;
+  const behind = !!(s && s.queue && s.queue.length);
+  if (!s || (!s.inflight && !behind)) return null;
+  if (s.inflight && expired(s)) { s.inflight = null; const q = (s.queue || []).splice(0); return q.length ? { flush: q.map((m) => m.text) } : null; }
+  const since = s.inflight ? new Date(s.inflight.at).toISOString() : null;
+  const bytes = Buffer.byteLength(text, 'utf8');
+  const q = s.queue || (s.queue = []);
+  if (q.length >= QUEUE_MAX || q.reduce((a, m) => a + m.bytes, 0) + bytes > QUEUE_MAX_BYTES) {
+    fail('E_BUSY', `worker ${w.id} is compacting its context (started ${since}) and ${q.length} messages are already queued for it; retry when it ends`, { worker_id: w.id, op: 'compact', compaction_started_at: since, queue_full: true, queued: q.length });
+  }
+  q.push({ text, bytes, at: Date.now() });
+  logQueue(w, { event: 'queued', position: q.length, bytes });
+  return { queued: true, position: q.length, bytes, compaction_started_at: since, established_by: since ? 'a harness /compact turn is in flight; written when its turn ends' : 'messages queued during a compaction are still to be written; this one follows them' };
+}
+
+// Refuses E_BUSY while a compaction is in flight, for a caller that cannot queue. No-op when nothing is in flight.
 function refuseIfCompacting(w, fail) {
   const s = w.cp;
   if (!s || !s.inflight) return;
@@ -207,7 +260,7 @@ async function afterTurn(w, e, ctx, turnStarted) {
   const s = state(w);
   settlePending(w, ctx);
   if (s.inflight) { // only reached for a turn end swallow() did not take (a park, or an end answering another write)
-    if (e.answers_write === s.inflight.idx || s.inflight.boundary || expired(s)) s.inflight = null;
+    if (e.answers_write === s.inflight.idx || s.inflight.boundary || expired(s)) { s.inflight = null; drainQueued(w, ctx, turnStarted); }
     return;
   }
   await refreshResume(w, ctx); // every turn end, so an automatic compaction injects a current line (ADR 0007 decision 2)
@@ -239,4 +292,4 @@ function summarize(dataDir, workerId) {
   };
 }
 
-module.exports = { parseCompactAt, hooksBlock, startOutput, onAttach, note, swallow, afterCompact, refuseIfCompacting, afterTurn, summarize, state, HOOK_MAX_BYTES, HOOKS_LOG, RECORDS_LOG, RESUME_FILE, STEER, INSTRUCTIONS };
+module.exports = { parseCompactAt, hooksBlock, startOutput, onAttach, note, swallow, afterCompact, refuseIfCompacting, queueIfCompacting, dropQueued, afterTurn, summarize, state, HOOK_MAX_BYTES, HOOKS_LOG, RECORDS_LOG, RESUME_FILE, STEER, INSTRUCTIONS };

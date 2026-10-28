@@ -104,17 +104,20 @@ async function resumeLine(E, caller, args) {
   const leaseId = c.lease ? c.lease.id : (c.released ? c.released.id : null);
   const next = c.worker && c.worker.stated ? c.worker.stated.next_step : null;
 
+  // A first assignment (`first: true`) has nothing to recover: only the task and its lease. Any other caller is a resume
+  // (compaction, restart, pause), and the briefing holds the spec, acceptance and lease.
+  if (args && args.first === true) {
+    const text = `task ${task.id} lease=${leaseId || 'none'}.`;
+    return { text, bytes: Buffer.byteLength(text, 'utf8'), task_id: task.id, task_state: task.state, lease_id: leaseId, checkpoint_id: c.worker ? c.worker.id : (c.any ? c.any.id : null) };
+  }
   const head = `task ${task.id} state=${task.state} lease=${leaseId || 'none'}.`;
-  const tail = ` Recover context: memory_search "${task.id}".`;
+  const tail = ` Recover context: briefing task_id=${task.id}.`;
   const fixed = Buffer.byteLength(head, 'utf8') + Buffer.byteLength(tail, 'utf8');
-  let mid;
+  let mid = '';
   if (next && String(next).trim()) {
     const prefix = ' Next step (stated by the worker, unverified): ';
     const room = LINE_MAX - fixed - Buffer.byteLength(prefix, 'utf8') - 1;
     mid = room > 8 ? prefix + truncBytes(String(next).replace(/\s+/g, ' ').trim(), room) : '';
-  } else {
-    const none = ' No worker-stated next step on record.';
-    mid = fixed + Buffer.byteLength(none, 'utf8') <= LINE_MAX ? none : '';
   }
   let text = head + mid + tail;
   if (Buffer.byteLength(text, 'utf8') > LINE_MAX) text = truncBytes(text, LINE_MAX);
@@ -188,26 +191,41 @@ async function resumeDoc(E, caller, args) {
     + 'Derived from store rows only. Sections labelled "stated by the worker" are claims, not facts.\n\n'
     + '## how to orient\n'
     + 'You cannot see your peers and must not try to build a roster of them.\n'
-    + 'Orient with task_list and memory_search, which answer from the store.\n'
+    + 'Orient with task_list, which answers from the store.\n'
     + 'Never ask a peer or the orchestrator what state something is in: task_list answers with lease holders and pid liveness, a peer answers with a claim.\n\n';
   let text = truncBytes(header, DOC_MAX);
   const sections = [];
-  // Each section gets a fair share of what is left, and whatever a short section does not use rolls
-  // forward to the next. Without this one runaway worker claim eats the budget and the sections after
-  // it — the lease, the harness checkpoint, the memory rows — vanish from the briefing entirely.
+  // When every section fits, none is cut. Otherwise two passes: a section no bigger than the fair share of what is left keeps its
+  // full size, and the rest split what remains, so one runaway worker claim cannot eat the budget and make the lease, the
+  // harness checkpoint or the memory rows vanish, and a short spec is never cut for want of room that others did not use.
   const marker = `\n…truncated to fit the ${DOC_MAX}-byte budget\n\n`;
+  const sizes = candidates.map(b => Buffer.byteLength(b.text, 'utf8'));
+  const alloc = shares(sizes, DOC_MAX - Buffer.byteLength(text, 'utf8'));
   for (let i = 0; i < candidates.length; i++) {
     const b = candidates[i];
-    const room = DOC_MAX - Buffer.byteLength(text, 'utf8');
-    if (room <= 0) break;
-    const left = candidates.length - i;
-    const share = left === 1 ? room : Math.floor(room / left);
-    if (Buffer.byteLength(b.text, 'utf8') <= share) { text += b.text; sections.push(b.name); continue; }
-    const keep = share - Buffer.byteLength(marker, 'utf8');
+    if (sizes[i] <= alloc[i]) { text += b.text; sections.push(b.name); continue; }
+    const keep = alloc[i] - Buffer.byteLength(marker, 'utf8');
     if (keep > 40) { text += truncBytes(b.text, keep) + marker; sections.push(b.name + ' (truncated)'); }
   }
   if (Buffer.byteLength(text, 'utf8') > DOC_MAX) text = truncBytes(text, DOC_MAX);
   return { text, bytes: Buffer.byteLength(text, 'utf8'), sections };
 }
 
-module.exports = { checkpoint, lastCheckpoint, resumeLine, resumeDoc, truncBytes, LINE_MAX, DOC_MAX };
+// Bytes allowed to each section: its full size when it fits the fair share of what is left, else an equal split of the remainder.
+function shares(sizes, room) {
+  const out = sizes.map(() => 0);
+  if (room <= 0) return out;
+  let open = sizes.map((_, i) => i);
+  let left = room;
+  for (let moved = true; moved && open.length;) {
+    moved = false;
+    const share = Math.floor(left / open.length);
+    const fits = open.filter(i => sizes[i] <= share);
+    if (fits.length) { for (const i of fits) { out[i] = sizes[i]; left -= sizes[i]; } open = open.filter(i => !fits.includes(i)); moved = true; }
+  }
+  const share = open.length ? Math.floor(left / open.length) : 0;
+  for (const i of open) out[i] = share;
+  return out;
+}
+
+module.exports = { checkpoint, lastCheckpoint, resumeLine, resumeDoc, truncBytes, shares, LINE_MAX, DOC_MAX };

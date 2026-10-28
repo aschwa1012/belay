@@ -46,9 +46,11 @@ async function run(ctx) {
   // `create()`), and that is what belongs here: resolve it through `task.get` and pass it explicitly.
   const core = await openCore({ dataDir, caller: { role: 'operator', run_id: 'cli', pid: process.pid } });
   try {
-    const line = await core.continuity.resumeLine(parsed.selector);
-    const task = await core.task.get({ task_id: line.task_id });
-    const doc = await core.continuity.resumeDoc({ ...parsed.selector, namespace: `run/${task.run_id}` });
+    const { line, doc } = await core.readBatch(async () => { // one store copy for the three reads
+      const l = await core.continuity.resumeLine(parsed.selector);
+      const task = await core.task.get({ task_id: l.task_id });
+      return { line: l, doc: await core.continuity.resumeDoc({ ...parsed.selector, namespace: `run/${task.run_id}` }) };
+    });
     const json = { selector: parsed.selector, line, doc };
     return { code: 0, text: `${line.text}\n\n${doc.text}\n`, json };
   } catch (e) {

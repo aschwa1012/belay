@@ -69,7 +69,7 @@ export function normMenu(json: unknown): BelayMenu | null {
     },
     levers: {
       profile: str(lv.profile) ?? 'cpu-fast', profileCpu: str(lv.profile_cpu) ?? 'cpu-fast', onHeavyFailure: str(lv.on_heavy_failure) ?? 'fallback', onHeavyBehind: str(lv.on_heavy_behind) ?? 'wait',
-      rerankDepth: num(lv.rerank_depth) ?? 50, searchLogCapMb: num(lv.search_log_cap_mb) ?? 500, routing: mapOf(lv.routing, pickOf), routingCpu: mapOf(lv.routing_cpu, v => str(v)),
+      rerankDepth: num(lv.rerank_depth) ?? 50, searchLog: lv.search_log === true, searchLogCapMb: num(lv.search_log_cap_mb) ?? 500, routing: mapOf(lv.routing, pickOf), routingCpu: mapOf(lv.routing_cpu, v => str(v)),
     },
     headroomMb: num(j.headroom_mb) ?? 768, profiles, models,
     mainTypes: strs(types?.main).map(s => one(s, 32)), advancedTypes: strs(types?.advanced).map(s => one(s, 32)),
@@ -170,7 +170,7 @@ export type MemAction =
   | { kind: 'saveRouting' }
 
 // The only settings keys the menu writes, and the only commands: belay settings <key> <value>, belay embedder verify, belay embedder delete.
-export const SETTABLE = ['memory.profile', 'memory.profile_cpu', 'memory.on_heavy_failure', 'memory.on_heavy_behind', 'memory.rerank_depth', 'memory.search_log_cap_mb', 'memory.routing', 'memory.routing_cpu']
+export const SETTABLE = ['memory.profile', 'memory.profile_cpu', 'memory.on_heavy_failure', 'memory.on_heavy_behind', 'memory.rerank_depth', 'memory.search_log', 'memory.search_log_cap_mb', 'memory.routing', 'memory.routing_cpu']
 const MODEL_ID = /^[A-Za-z0-9][A-Za-z0-9._-]{0,80}\/[A-Za-z0-9][A-Za-z0-9._-]{0,120}$/
 
 // The argv (after the belay CLI) a confirmed write runs, or why it is refused. A model must be one the menu lists.

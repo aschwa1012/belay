@@ -22,9 +22,10 @@
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On, Timer } from 'claude-code'
-import type { BelayMenu as BelayMenuT, BelayPanelMenu, BelayPanelSnap, BelayPanelUi, BelayPanelWatch } from '../../types/index'
-import { argvFor, buildSnapshot, fatalSnapshot, fwd, launcherLine, isWindowsPath, parseRan, parseRunFile, projectRootOf, repoCliGuess, type Ran, type RunFileRead } from './fetch'
-import { CONFIRM_MS, DEFAULT_SETTINGS, DEFAULT_UI, reviewProject } from './model'
+import type { BelayMenu as BelayMenuT, BelayPanelMenu, BelayPanelSettled, BelayPanelSnap, BelayPanelUi, BelayPanelWatch } from '../../types/index'
+import { argvFor, buildSnapshot, fatalSnapshot, fwd, launcherLine, isWindowsPath, needsRun, parseRan, parseRunFile, projectRootOf, repoCliGuess, type Ran, type RunFileRead } from './fetch'
+import { CONFIRM_MS, normHeld, reasonProblem, reviewProject, SETTLE_ACTIONS, SETTLE_UNKNOWN, PENDING_STALE_MS, pruneSettled, settleArgs, settleKind, settleLine, settledActive, shortId, type SettleAction } from './held'
+import { DEFAULT_SETTINGS, DEFAULT_UI } from './model'
 import { actionId, confirmText, cycleDraft, draftOf, gb, modelById, normBadge, normMenu, resultLine, routeFit, routingWrites, sameDraft, writeArgv, type MemAction } from './memory'
 import { Band, BandWaiting, Fallback, Pane, type Act, type Els } from './view'
 
@@ -33,12 +34,14 @@ const watchA = atom({ plugin: 'belay', key: 'panelWatch' } as const, null)
 const snapA = atom({ plugin: 'belay', key: 'panelSnap' } as const, null)
 const uiA = atom({ plugin: 'belay', key: 'panelUi' } as const, DEFAULT_UI)
 const menuA = atom({ plugin: 'belay', key: 'panelMenu' } as const, { menu: null, error: null, at: 0, behind: 0 } as BelayPanelMenu)
+const settleA = atom({ plugin: 'belay', key: 'panelSettle' } as const, null)
+const settledA = atom({ plugin: 'belay', key: 'panelSettled' } as const, {} as BelayPanelSettled)
 
 // A round starts this long after the previous round ENDS (a slow belay is never chased).
 const PANE_EVERY_MS = 4000
 const BAND_EVERY_MS = 5000
 const SETTINGS_EVERY_MS = 10000
-const COMMAND_TIMEOUT_MS = 4000
+const COMMAND_TIMEOUT_MS = 8000 // the panel's patience under host load (reads of 3.5 to 4.8 s were seen), not a product budget
 // `belay transcript --tail N`: the band reads the last 10 entries (it shows the newest words among them), the pane the last 50. Null would read it all.
 const TRANSCRIPT_TAIL: { band: number | null; pane: number | null } = { band: 10, pane: 50 }
 const BACKOFF_FIRST_MS = 10000
@@ -46,7 +49,9 @@ const BACKOFF_MAX_MS = 60000
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/
 const REVIEW_ARGS = ['memory', 'review', '--project'] // the one write the panel makes; the project follows, then START_FLAG
 const START_FLAG = '--start'
-const READ_VERBS = ['agents', 'notices', 'transcript', 'settings'] // the only commands runJson runs
+const RUN_FLAG = '--run' // the review acts for the watched run, a live one included (the CLI never defaults to a live run)
+const READ_VERBS = ['agents', 'notices', 'transcript', 'settings'] // the only commands runJson runs ...
+const AWAITING_READ = ['memory', 'held', '--awaiting'] // ... and this one read, run only while a held note waits on the operator
 const MENU_EVERY_MS = 30000 // the Memory menu's facts while only the badge needs them; 10 s while the menu is open
 const MENU_OPEN_EVERY_MS = 10000
 const MEM_TIMEOUT_MS = { set: 20000, delete: 30000, verify: 180000 } as const // a verify hashes the whole model
@@ -94,8 +99,8 @@ async function resolveCli($: Host, watch: BelayPanelWatch): Promise<Resolved> {
 // timeout, which the caller turns into a skipped round and a back-off; any other rejection is a command
 // that did not run.
 async function runJson($: Host, cli: string[], args: string[], dataDir: string | null, cwd: string | null = null): Promise<Ran> {
-  const menuRead = args[0] === 'memory' && args[1] === 'menu' && (args.length === 2 || (args.length === 3 && args[2] === '--badge')) // `belay memory menu [--badge]`: the one read of the memory verb
-  if (!READ_VERBS.includes(args[0] ?? '') && !menuRead) return { error: `belay ${args[0] ?? ''}: the read helper runs only ${READ_VERBS.join(', ')} and memory menu` } // never a write, whatever called it
+  const menuRead = args[0] === 'memory' && args[1] === 'menu' && (args.length === 2 || (args.length === 3 && args[2] === '--badge')) // `belay memory menu [--badge]`: the Memory menu's read
+  if (!READ_VERBS.includes(args[0] ?? '') && args.join(' ') !== AWAITING_READ.join(' ') && !menuRead) return { error: `belay ${args[0] ?? ''}: the read helper runs only ${READ_VERBS.join(', ')}, memory held --awaiting and memory menu` } // never a write, whatever called it
   const t0 = await $.clock.now()
   try {
     const r = await $.process.run(argvFor(cli, args, dataDir), { timeoutMs: COMMAND_TIMEOUT_MS, ...(cwd ? { cwd } : {}) })
@@ -118,20 +123,23 @@ async function fetchSnapshot($: Host, watch: BelayPanelWatch, prev: BelayPanelSn
   const r = await resolveCli($, watch)
   if ('error' in r) return { snap: fatalSnapshot(r.error, watch.runId, o.now), timedOut: false }
   const cli = r.cli
-  const agents = await runJson($, cli, ['agents', ...(watch.runId ? [watch.runId] : [])], watch.dataDir)
+  const agents = await runJson($, cli, ['agents', ...(watch.runId ? [watch.runId] : []), ...(watch.orchDir ? ['--dir', watch.orchDir] : [])], watch.dataDir)
   const seen = 'json' in agents ? (agents.json as { run_id?: string; mode?: string }) : null
   const runId = watch.runId ?? seen?.run_id ?? prev?.runId ?? null
   const runArg = runId ? [runId] : []
-  const cut = (a: Ran, n: Ran | null, t: Ran | null, s: Ran | null) => ({ snap: buildSnapshot({ watch, prev, now: o.now, agents: a, notices: n, transcript: t, settings: s }), timedOut: true })
+  const cut = (a: Ran, n: Ran | null, t: Ran | null, s: Ran | null, w: Ran | null = null) => ({ snap: buildSnapshot({ watch, prev, now: o.now, agents: a, notices: n, transcript: t, settings: s, awaiting: w }), timedOut: true })
   if (timedOut(agents)) return cut(agents, null, null, null)
   const notices = await runJson($, cli, ['notices', ...runArg], watch.dataDir)
   if (timedOut(notices)) return cut(agents, notices, null, null)
+  // The ids of the held notes that wait on the operator: one more read, only while the notices say some wait.
+  const awaiting = 'json' in notices && (normHeld(notices.json)?.awaiting ?? 0) > 0 ? await runJson($, cli, ['memory', 'held', '--awaiting'], watch.dataDir) : null
+  if (timedOut(awaiting)) return cut(agents, notices, null, null, awaiting)
   const mode = watch.fixed ? 'interactive' : seen ? seen.mode : prev?.mode
   const tail = o.open ? TRANSCRIPT_TAIL.pane : TRANSCRIPT_TAIL.band
   const transcript = mode === 'headless' ? await runJson($, cli, ['transcript', ...runArg, ...(tail === null ? [] : ['--tail', String(tail)])], watch.dataDir) : null
-  if (timedOut(transcript)) return cut(agents, notices, transcript, null)
+  if (timedOut(transcript)) return cut(agents, notices, transcript, null, awaiting)
   const settings = o.withSettings ? await runJson($, cli, ['settings'], watch.dataDir, watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null) : null
-  return { snap: buildSnapshot({ watch, prev, now: o.now, agents, notices, transcript, settings }), timedOut: timedOut(settings) }
+  return { snap: buildSnapshot({ watch, prev, now: o.now, agents, notices, transcript, settings, awaiting }), timedOut: timedOut(settings) }
 }
 
 // The Memory menu's facts: `belay memory menu`, a read (it copies the store to count a heavy embedder's backlog, and starts nothing). Its own atom, so a
@@ -162,6 +170,7 @@ async function setOpen($: Host, open: boolean): Promise<void> {
   let placed = false
   if (open && (snap?.settings ?? DEFAULT_SETTINGS).pane === 'docked') placed = (await $.ui.open({ id: PANE, title: 'belay' })).isPlaced
   if (!open && ui.placed) await $.ui.close({ id: PANE })
+  if (!open) await update($, settleA, () => null) // a pending settle does not survive the panel closing
   // Opening the panel is the person seeing the notices (decision 3): the current ones are marked seen.
   const seen = open ? [...new Set([...ui.seen, ...(snap?.notices ?? []).map(n => n.key)])].slice(-200) : ui.seen
   await update($, uiA, u => ({ ...u, open, placed, seen }))
@@ -204,6 +213,10 @@ async function tick($: Host): Promise<void> {
         if (!watch.runId && snap.runId) await update($, watchA, w => (w && !w.runId ? { ...w, runId: snap.runId } : w))
         // While the panel is open, notices that arrive are seen as they arrive.
         if (ui.open) await update($, uiA, u => ({ ...u, seen: [...new Set([...u.seen, ...snap.notices.map(n => n.key)])].slice(-200) }))
+        // A pending settle whose note left the list, or whose run changed, is cleared.
+        await settleCheck($, snap, watch)
+        // A note that has left the list closes.
+        if (ui.openNote) await update($, uiA, u => (u.openNote && !(snap.held?.awaitingNotes ?? []).some(n => n.id === u.openNote) ? { ...u, openNote: null } : u))
         // A switch to above-prompt closes the docked pane. A switch to docked opens nothing from a timer:
         // the panel stays inline until the person reopens it.
         if (ui.open && ui.placed && snap.settings.pane === 'above-prompt') {
@@ -227,7 +240,7 @@ function ensureTicker($: Host): void {
 }
 
 const sameWatch = (a: BelayPanelWatch | null, b: BelayPanelWatch): boolean =>
-  !!a && a.runId === b.runId && a.dataDir === b.dataDir && a.cli === b.cli && a.node === b.node && a.fixed === b.fixed && a.error === b.error
+  !!a && a.runId === b.runId && a.dataDir === b.dataDir && a.cli === b.cli && a.node === b.node && a.orchDir === b.orchDir && a.fixed === b.fixed && a.error === b.error
 
 // A repeated session.start (a hot reload) with an unchanged watch keeps the snapshot and the seen notices.
 async function watchRun($: Host, next: BelayPanelWatch): Promise<void> {
@@ -235,6 +248,7 @@ async function watchRun($: Host, next: BelayPanelWatch): Promise<void> {
   if (sameWatch(cur, next)) { if (!next.error) ensureTicker($); return }
   await update($, watchA, () => next)
   await update($, uiA, u => ({ ...DEFAULT_UI, open: u.open, placed: u.placed }))
+  if (await read($, settleA)) { await update($, settleA, () => null); $.ui.toast('belay: the watched run changed, so the settle was cleared.') }
   if (next.error) {
     const now = await $.clock.now()
     await update($, snapA, () => fatalSnapshot(next.error as string, null, now))
@@ -263,11 +277,18 @@ async function dispatchReview($: Host, project: string): Promise<void> {
   if (starting.has(project)) { $.ui.toast(`belay: an archive review of ${project} is being started.`); return }
   starting.add(project)
   const cwd = watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null
+  // First without --run: the CLI chooses the newest ended run with notes on. Only if it says the one run with notes on is live (E_NOT_FOUND with live_run) is it
+  // asked again, once, with the watched run named.
+  const attempts: string[][] = [[], ...(watch.runId ? [[RUN_FLAG, watch.runId]] : [])]
   try {
-    const res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS, project, START_FLAG], watch.dataDir), { timeoutMs: START_TIMEOUT_MS, ...(cwd ? { cwd } : {}) })
+    let res = { exitCode: 1, stdout: '', stderr: '' }
+    for (const runArg of attempts) {
+      res = await $.process.run(argvFor(r.cli, [...REVIEW_ARGS, project, START_FLAG, ...runArg], watch.dataDir), { timeoutMs: START_TIMEOUT_MS, ...(cwd ? { cwd } : {}) })
+      if (!needsRun(res.exitCode, res.stdout, res.stderr, watch.runId)) break
+    }
     $.ui.toast(launcherLine(res.exitCode, res.stdout, res.stderr, project))
   } catch (err) {
-    $.ui.toast(`belay: the review was not started: ${firstLine(err instanceof Error ? err.message : String(err)) || 'the launcher did not answer'}`)
+    $.ui.toast(`belay: the review launcher did not answer (${firstLine(err instanceof Error ? err.message : String(err)) || 'no reason given'}): whether it started is unknown; the notes line shows a running review`)
   } finally { starting.delete(project) }
 }
 
@@ -364,6 +385,119 @@ async function memAct($: Host, a: MemAction): Promise<void> {
   } else await memPress($, a)
 }
 
+// The settle of a held note that waits on the operator, inside the pane (the interactive orchestrator has no AskUserQuestion, so nothing here asks
+// a dialog). Four steps, each a press of a drawn element:
+//   1. a settle button of the open note (view.tsx SettleRow -> act.settle -> settleStart) starts the reason stage: an Input and a cancel button;
+//   2. Enter in the Input (act.reason -> reasonSubmit) checks the reason and moves to the confirm stage, which shows the exact reason;
+//   3. the confirm button (act.confirm -> settlePress) is the ONLY way to the write: `belay memory held settle <id> --<action> --reason <text>`;
+//   4. cancel, closing or opening a note, the note leaving the list or a change of run clears the pending state (the settleA atom).
+// The reason is one argv element. Steps 1 and 2 and cancel run no process.
+const settling = new Set<string>() // note ids whose settle is running
+let inlineFocused = false // the inline band has no focus prop: true only after a $.ui.focus on its Input was answered without a denial
+
+async function settleStart($: Host, action: SettleAction, id: string): Promise<void> {
+  if (!SETTLE_ACTIONS.includes(action)) { $.ui.toast(`belay: unknown action ${action}.`); return }
+  const snap = await read($, snapA)
+  const listed = (snap?.held?.awaitingNotes ?? []).find(n => n.id === id)
+  if (!listed) { $.ui.toast(`belay: note ${shortId(id)} no longer awaits you.`); return } // only a note belay named as waiting on the operator
+  const watch = await read($, watchA)
+  if (!watch || watch.error) { $.ui.toast('belay: no run is watched, so a note cannot be settled.'); return }
+  if (settling.has(id) || settledActive((await read($, settledA))[id], snap, id)) { $.ui.toast(`belay: note ${shortId(id)} was just settled; wait for the next read before acting on it again.`); return }
+  await update($, uiA, calm)
+  await update($, settleA, () => ({ id, action, stage: 'reason', reason: '', title: listed.title, run: { runId: watch.runId, dataDir: watch.dataDir, cli: watch.cli, node: watch.node } }))
+  void focusReason($, snap, id) // not awaited: the Input is drawn only after this press returns, and the ring can move to it only then
+}
+
+// The Input is `autoFocus`, which takes the ring when the site takes the keyboard. A pane Button's click or hotkey can take it too, but the panel does not rely
+// on that: a docked pane is asked for the keys (`ui.open` with `focus`, a request and not a grant), which puts the ring on the autoFocus Input. That is the
+// one focus call; a second `$.ui.focus` on the docked pane is denied as redundant ("the focus moved meanwhile"), so only the inline band, which has no pane
+// to open, gets `$.ui.focus`. A refusal toasts nothing: the dim hint line in the reason stage, drawn while the pane is not focused, is the signal.
+async function focusReason($: Host, snap: BelayPanelSnap | null, id: string): Promise<void> {
+  const ui = await read($, uiA)
+  inlineFocused = false
+  if (!ui.open) return
+  const inline = (snap?.settings ?? DEFAULT_SETTINGS).pane === 'above-prompt' || !ui.placed
+  try {
+    if (inline) { const r = await $.ui.focus({ requestId: 'above-prompt', key: `reason:${id}` }); inlineFocused = !r.deny; $.ui.invalidate('ui.render') }
+    else await $.ui.open({ id: PANE, title: 'belay', focus: true })
+  } catch { /* the hint line shows while the pane is not focused */ }
+}
+
+// Enter in the reason Input. A reason that cannot be sent is toasted and the Input stays; a good one moves to the confirm stage. Nothing is run.
+async function reasonSubmit($: Host, value: string): Promise<void> {
+  const p = await read($, settleA)
+  if (!p || p.stage !== 'reason') { $.ui.toast('belay: no reason is being asked for.'); return }
+  const reason = value.trim()
+  if (reason === '') { $.ui.toast('belay: type a reason first, or press cancel.'); return }
+  const problem = reasonProblem(reason)
+  if (problem) { $.ui.toast(problem); return }
+  await update($, settleA, s => (s && s.id === p.id && s.stage === 'reason' ? { ...s, stage: 'confirm', reason } : s))
+}
+
+async function settlePress($: Host, pressed: string): Promise<void> {
+  const p = await read($, settleA)
+  if (!p || p.stage !== 'confirm' || p.id !== pressed) { $.ui.toast('belay: no settle is waiting for a confirm.'); return }
+  const { action, id, reason } = p
+  if (settling.has(id)) { $.ui.toast(`belay: note ${shortId(id)} is being settled.`); return }
+  if (settledActive((await read($, settledA))[id], await read($, snapA), id)) { await update($, settleA, () => null); $.ui.toast(`belay: note ${shortId(id)} was just settled; it was not settled again.`); return }
+  settling.add(id)
+  try {
+    await update($, settleA, () => null) // consumed: a second press of the button finds nothing
+    // The reason stage can stay open for minutes: the note and the watched run are checked again before anything is written.
+    const watch = await read($, watchA)
+    if (!watch || watch.error) { $.ui.toast('belay: no run is watched, so the note was not settled.'); return }
+    if (watch.runId !== p.run.runId || watch.dataDir !== p.run.dataDir || watch.cli !== p.run.cli || watch.node !== p.run.node) { $.ui.toast('belay: the watched run changed since you started, so the note was not settled.'); return }
+    const now = await read($, snapA)
+    if (!(now?.held?.awaitingNotes ?? []).some(n => n.id === id)) { $.ui.toast(`belay: note ${shortId(id)} no longer awaits you, so it was not settled.`); return }
+    const r = await resolveCli($, watch)
+    if ('error' in r) { $.ui.toast(`belay: the note was not settled: ${r.error}`); return }
+    // Written BEFORE the process runs: a hot reload that drops this function mid-settle leaves the note refused, as an unknown outcome, not open to a second settle.
+    const t0 = await $.clock.now()
+    await update($, settledA, m => ({ ...m, [id]: { label: 'settling…', at: t0, pending: true as const } }))
+    const cwd = watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null
+    try {
+      const res = await $.process.run(argvFor(r.cli, settleArgs(action, id, reason), watch.dataDir), { timeoutMs: START_TIMEOUT_MS, ...(cwd ? { cwd } : {}) })
+      const line = settleLine(res.exitCode, res.stdout, res.stderr)
+      $.ui.toast(line)
+      await markSettled($, id, line)
+    } catch {
+      $.ui.toast(SETTLE_UNKNOWN) // the command was started and did not answer (a timeout included): it may have written
+      await markSettled($, id, SETTLE_UNKNOWN)
+    }
+  } finally { settling.delete(id) }
+}
+
+// The operator looked (belay memory held) after an unknown outcome. The row is not opened at once: it is marked re-checking, stamped now, so only a read started after
+// this decides whether the note is still there; and not while a settle of it is still running.
+async function recheckNote($: Host, id: string): Promise<void> {
+  if (settling.has(id)) { $.ui.toast(`belay: note ${shortId(id)} is being settled; wait for it to finish.`); return }
+  const at = await $.clock.now()
+  await update($, settledA, m => (m[id] && (m[id]!.pending !== true || at - m[id]!.at > PENDING_STALE_MS) ? { ...m, [id]: { label: 're-checking', at } } : m))
+  lastFetchAt = 0
+  $.ui.invalidate('ui.render')
+}
+
+// Whatever the settle's outcome (written, unknown, refused), the note stays hidden and refused until a read taken after it has caught up: the snapshot the
+// rechecks read is the one from before the write, and a second settle on it would write twice. The next tick reads at once.
+async function markSettled($: Host, id: string, line: string): Promise<void> {
+  const at = await $.clock.now() // stamped after the process returned; the API has only the epoch clock (no monotonic one), so this is compared with fetchedAt in the same clock
+  const k = settleKind(line)
+  await update($, settledA, m => pruneSettled({ ...m, [id]: { label: k.label, at, ...(k.kind === 'unknown' ? { unknown: true as const } : {}) } }, id))
+  lastFetchAt = 0
+  $.ui.invalidate('ui.render')
+}
+
+// A pending settle whose note has left the list, or whose run is no longer the watched one, is cleared, and the person is told.
+async function settleCheck($: Host, snap: BelayPanelSnap, watch: BelayPanelWatch): Promise<void> {
+  const p = await read($, settleA)
+  if (!p) return
+  const same = watch.runId === p.run.runId && watch.dataDir === p.run.dataDir && watch.cli === p.run.cli && watch.node === p.run.node
+  const listed = (snap.held?.awaitingNotes ?? []).some(n => n.id === p.id)
+  if (same && listed) return
+  await update($, settleA, () => null)
+  $.ui.toast(same ? `belay: note ${shortId(p.id)} no longer awaits you, so the settle was cleared.` : 'belay: the watched run changed, so the settle was cleared.')
+}
+
 // Every press that is not the review button cancels a pending confirm.
 const calm = (u: BelayPanelUi): BelayPanelUi => (u.confirm || u.memConfirm ? { ...u, confirm: null, memConfirm: null } : u)
 
@@ -374,10 +508,16 @@ function acts($: Host): Act {
     fold: () => { void update($, uiA, u => ({ ...calm(u), foldOpen: !u.foldOpen })) },
     group: key => { void update($, uiA, u => ({ ...calm(u), groups: u.groups.includes(key) ? u.groups.filter(g => g !== key) : [...u.groups, key].slice(-50) })) },
     seen: key => { void update($, uiA, u => (u.seen.includes(key) && !u.confirm ? u : { ...calm(u), seen: u.seen.includes(key) ? u.seen : [...u.seen, key].slice(-200) })) },
-    close: () => { void update($, uiA, calm).then(() => setOpen($, false)) },
-    toggle: () => { void update($, uiA, calm).then(() => read($, uiA)).then(u => setOpen($, !u.open)) },
+    close: () => { void update($, settleA, () => null); void update($, uiA, calm).then(() => setOpen($, false)) },
+    toggle: () => { void update($, settleA, () => null); void update($, uiA, calm).then(() => read($, uiA)).then(u => setOpen($, !u.open)) },
     review: () => { void reviewPress($) },
     mem: a => { void memAct($, a) },
+    settle: (action, id) => { void settleStart($, action, id) },
+    reason: value => { void reasonSubmit($, value) },
+    cancel: () => { void update($, settleA, () => null) },
+    recheck: id => { void recheckNote($, id) },
+    commit: id => { void settlePress($, id) },
+    note: id => { void update($, settleA, () => null); void update($, uiA, u => ({ ...calm(u), openNote: u.openNote === id ? null : id })) }, // opening, switching or closing a note drops a pending settle
   }
 }
 
@@ -388,7 +528,7 @@ export function registerPanel(on: On): void {
       await watchRun($, { runId: null, dataDir: null, cli: null, node: null, error: rf.error, fixed: true })
       return next(e) // the error state: no commands are registered and nothing is read
     }
-    if (rf) await watchRun($, { runId: rf.file.runId, dataDir: rf.file.dataDir, cli: rf.file.cli, node: rf.file.node, error: null, fixed: true })
+    if (rf) await watchRun($, { runId: rf.file.runId, dataDir: rf.file.dataDir, cli: rf.file.cli, node: rf.file.node, orchDir: rf.file.orchDir, error: null, fixed: true })
     await $.command.register({ name: 'orch', description: "Toggle belay's panel for the watched run" })
     if (!rf) await $.command.register({ name: 'belay', description: 'Watch a belay run: watch [run-id] | unwatch', argumentHint: 'watch [run-id] | unwatch' })
     const w = await read($, watchA)
@@ -426,7 +566,7 @@ export function registerPanel(on: On): void {
   })
 
   on('ui.close', async ($, e, next) => {
-    if (e.id === PANE && e.origin.kind === 'person') await update($, uiA, u => ({ ...u, open: false, placed: false }))
+    if (e.id === PANE && e.origin.kind === 'person') { await update($, settleA, () => null); await update($, uiA, u => ({ ...u, open: false, placed: false })) }
     return next(e)
   })
 
@@ -440,7 +580,7 @@ export function registerPanel(on: On): void {
     const menu = await read($, menuA)
     if (!watch) return <Box><Text dimColor>No belay run is watched. /belay watch [run-id]</Text></Box>
     if (!snap) return <BandWaiting E={E} runId={watch.runId} errors={[]} cols={e.props.bodyColumns} />
-    const c = { E, snap, ui, now, cols: e.props.bodyColumns, act: acts($), menu }
+    const c = { E, snap, ui, now, cols: e.props.bodyColumns, act: acts($), pend: await read($, settleA), focused: e.props.isFocused, settled: await read($, settledA), menu }
     return e.surface === 'terminal' ? <Pane {...c} /> : <Fallback {...c} />
   })
 
@@ -454,7 +594,7 @@ export function registerPanel(on: On): void {
     const now = await $.clock.now()
     const menu = await read($, menuA)
     if (!snap) return <BandWaiting E={E} runId={watch.runId} errors={[]} cols={e.props.bodyColumns} />
-    const c = { E, snap, ui, now, cols: e.props.bodyColumns, act: acts($), menu }
+    const c = { E, snap, ui, now, cols: e.props.bodyColumns, act: acts($), pend: await read($, settleA), focused: inlineFocused, settled: await read($, settledA), menu } // the band has no focus prop: the hint is for the docked pane
     // Inline when the person chose above-prompt, or when the docked pane is not seated (a narrow terminal).
     const inline = ui.open && (snap.settings.pane === 'above-prompt' || !ui.placed)
     if (e.surface !== 'terminal') return inline ? <Fallback {...c} /> : <Band {...c} />

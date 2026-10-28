@@ -30,9 +30,10 @@ function outcomeOf(e) {
   return e.signalled ? 'signalled_still_alive' : 'not_signalled_still_alive';
 }
 
-// With note review on, the adapter first drains its review jobs (up to NOTE_REVIEW_DRAIN_MS) before it stops any worker.
-const adapterStopBoundMs = (n, snapMs = SNAPSHOT_TIMEOUT_MS, noteReview = false) => n * (ADAPTER_STOP_PER_WORKER_MS + snapMs) + ADAPTER_STOP_SLACK_MS + snapMs + (noteReview ? NOTE_REVIEW_DRAIN_MS : 0);
-const adapterWaitBoundMs = (n, graceMs, snapMs = SNAPSHOT_TIMEOUT_MS, noteReview = false) => Math.max(graceMs, adapterStopBoundMs(n, snapMs, noteReview));
+// The adapter first drains review verdict applications in flight (up to NOTE_REVIEW_DRAIN_MS, one deadline for both drains), then stops workers:
+// the wait covers both.
+const adapterStopBoundMs = (n, snapMs = SNAPSHOT_TIMEOUT_MS) => n * (ADAPTER_STOP_PER_WORKER_MS + snapMs) + ADAPTER_STOP_SLACK_MS + snapMs + NOTE_REVIEW_DRAIN_MS;
+const adapterWaitBoundMs = (n, graceMs, snapMs = SNAPSHOT_TIMEOUT_MS) => Math.max(graceMs, adapterStopBoundMs(n, snapMs));
 
 // A Codex `idle` row has no process by design (api.md §2): run.end closes it, belay run never kills it.
 const hasProcess = (w) => !(w.substrate === 'codex' && w.state === 'idle');
@@ -84,7 +85,7 @@ async function lateAdapterPid(core, handled, ownPid) {
   } catch { return null; } // run.end follows and reports its own failure
 }
 
-async function closeRunWorkersOnce({ core, runId, graceMs, ownPid = process.pid, deps = {}, fast = null, noteReview = false, candidatesP = Promise.resolve([]), adapterPid }) {
+async function closeRunWorkersOnce({ core, runId, graceMs, ownPid = process.pid, deps = {}, fast = null, candidatesP = Promise.resolve([]), adapterPid }) {
   const { killProcess, waitPidGone, withKillLock } = { ...processDefaults, ...deps };
   const { rowTarget } = processDefaults;
   const cut = { v: false }; // set when the budget's race timer fires or finalizeCut runs: a snapshot landing after it signals nothing
@@ -108,7 +109,7 @@ async function closeRunWorkersOnce({ core, runId, graceMs, ownPid = process.pid,
   // A cut before the final listing still names the workers known now (finalizeCut).
   if (fast) { fast.progress = { out, unrecorded, cut }; for (const w of before || []) if (claimsLiveProcess(w)) unrecorded.set(w.id, { w, touched: () => false }); }
   const liveCount = before ? before.filter(claimsLiveProcess).length : 0;
-  out.adapter_wait_bound_ms = Math.max(graceMs, adapterWaitBoundMs(liveCount, graceMs, SNAPSHOT_TIMEOUT_MS, !!noteReview));
+  out.adapter_wait_bound_ms = Math.max(graceMs, adapterWaitBoundMs(liveCount, graceMs, SNAPSHOT_TIMEOUT_MS));
   if (out.adapter_pid != null && out.adapter_pid !== ownPid && pidAlive(out.adapter_pid)) {
     if (fast && fast.requested()) {
       out.adapter_gone = false; out.adapter_wait_ms = 0; out.fast_close = true;

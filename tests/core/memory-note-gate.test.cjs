@@ -17,7 +17,15 @@ const READER = 'rn-reader', WRITER = 'rn-writer';
 const orch = (run) => callerFor('orchestrator', { run_id: run });
 const call = (caller, method, args = {}) => E.handle(method, { caller, ...args });
 let n = 0;
-const fresh = () => `project/gate-${++n}`;
+// A notes run reaches only its levers' project (ADR 0047 amendment of 2026-10-22), so each case points the runs at its own project.
+const fresh = () => {
+  const name = `gate-${++n}`;
+  for (const id of [READER, WRITER]) {
+    const cur = rows.current(store, 'run', id);
+    store.p('UPDATE run SET project = ?, memory_levers = ? WHERE id = ? AND seq = ?').run(name, JSON.stringify({ ...JSON.parse(cur.memory_levers), project: name }), id, cur.seq);
+  }
+  return `project/${name}`;
+};
 
 before(async () => {
   dir = sandbox();
@@ -137,6 +145,8 @@ test('clause c: a pending state, a promoted note and a superseded note are not l
   const old = note(space, 'old', { task_id: 't-c' });
   const newer = note(space, 'newer', { task_id: 't-c', supersedes: old });
   const held = note(space, 'held', { task_id: 't-c', body: { held: { kind: 'wrong', reason: 'being checked', row: 'h1' } } });
+  // The warning line is read from the active hold row, not the note's pointer.
+  store.storeIn({ namespace: `held/${space.slice(8)}`, worker_id: 'harness', type: 'held', text: `held ${held}`, title: 'h', body: { state: 'held', note_id: held, kind: 'wrong', ground: 'scrubber', reason: 'being checked', rev: 0 }, run_id: 'gone', source: 'harness', written_by: 'harness' });
   for (const who of [orch(READER), orch(WRITER)]) {
     assert.deepStrictEqual(await everywhere(who, space, pending), NONE);
     assert.deepStrictEqual(await everywhere(who, space, promoted), NONE);
@@ -172,7 +182,8 @@ test('the lifecycle namespaces are refused to a tool-channel worker or orchestra
 
 test('a note with no task, written by the orchestrator in another open run, stays hidden until that run ends', async () => {
   const space = fresh();
-  await call(orch('rn-orch-open'), 'run.attach', { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true }) });
+  const pname = space.replace('project/', '');
+  await call(orch('rn-orch-open'), 'run.attach', { adapter_pid: process.pid, project: pname, memory_levers: JSON.stringify({ project: pname, notes: true }) });
   const id = note(space, 'orchestrator note', { run_id: 'rn-orch-open', task_id: null, worker_id: 'orchestrator' });
   assert.deepStrictEqual(await everywhere(orch(READER), space, id), NONE, 'its run is open');
   assert.deepStrictEqual(await everywhere(orch('rn-orch-open'), space, id), ALL, 'its own run sees it');
@@ -184,10 +195,13 @@ test('only notes are gated, and the operator is not', async () => {
   const space = fresh();
   task('t-op', WRITER, 'assigned');
   const open = note(space, 'still open', { task_id: 't-op' });
-  const summary = note(space, 'a summary', { task_id: 't-op', type: 'summary' });
+  // A non-note row is not gated by the two-clock gate; in the project namespace of a notes run it is hidden by decision 4 of the 2026-10-22 amendment (memory-legacy-unreadable.test.cjs).
+  const elsewhere = 'run/gate-op';
+  const summary = note(elsewhere, 'a summary', { task_id: 't-op', type: 'summary' });
   const reader = await seen(orch(READER), space);
   assert.ok(!reader.search.includes(open));
-  assert.ok(reader.search.includes(summary) && reader.list.includes(summary), 'a non-note row is not gated');
+  const other = await seen(orch(READER), elsewhere);
+  assert.ok(other.search.includes(summary) && other.list.includes(summary), 'a non-note row is not gated');
   assert.deepStrictEqual(await everywhere(callerFor('operator'), space, open, { index: {} }), [false, true, true], 'the operator sees the open note in search and list (the index lists notes of a run, and the operator has none)');
   assert.strictEqual(G.sql(E, callerFor('operator')), null);
 });

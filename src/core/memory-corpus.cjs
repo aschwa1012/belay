@@ -13,6 +13,7 @@ const { err } = require('./errors.cjs');
 const { deriveTitle, validId, safeType, FRAME } = require('./memory-rows.cjs');
 const { checkReach } = require('./memory-reach.cjs');
 const { fit } = require('./fit-budget.cjs');
+const gate = require('./memory-note-gate.cjs');
 
 const DEFAULT_MAX = 65536;
 const CEILING_MAX = 262144;
@@ -57,7 +58,8 @@ async function corpus(E, caller, args = {}) {
     AND (e.ttl_at IS NULL OR e.ttl_at >= ?)
     AND NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND +s.namespace = e.namespace)
     AND COALESCE(e.status, 'unverified') <> 'refuted'
-    AND (COALESCE(e.status, 'unverified') = 'verified' OR e.type IN ('summary', 'decision'))`;
+    AND (COALESCE(e.status, 'unverified') = 'verified' OR e.type IN ('summary', 'decision'))${gate.legacyHidden(E, caller) ? `
+    AND ${gate.legacySql('e')}` : ''}`; // a notes run's reader does not see the project's rows that are not notes
   const params = [namespace, Date.now()];
   const total = db.prepare(`SELECT COUNT(*) AS n FROM memory_entries e WHERE ${where}`).get(...params).n;
   // Newest first under the cap, so a very large namespace loses its oldest rows; the text reads oldest first.

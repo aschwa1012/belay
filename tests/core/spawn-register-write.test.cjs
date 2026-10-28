@@ -36,10 +36,12 @@ test('a record write retried through EPERM on the first renames still lands, and
 
 test('EBUSY and EACCES are retried the same way, and a refusal that is not transient is not retried', () => withRegistry((dir) => {
   const realRename = SR.io.rename;
-  for (const code of ['EBUSY', 'EACCES']) {
+  // One pid per code: a record carries its write time to the millisecond, so a second write of one pid's record within the same
+  // millisecond is the same text, which is rightly taken as already written and is not retried.
+  for (const [k, code] of ['EBUSY', 'EACCES'].entries()) {
     let calls = 0;
     SR.io.rename = (a, b) => { if (++calls === 1) throw errno(code); return realRename(a, b); };
-    SR.register({ pid: process.pid });
+    SR.register({ pid: process.pid + k });
     assert.strictEqual(calls, 2, code);
   }
   let calls = 0;

@@ -73,6 +73,25 @@ export function wordWrap(text: string, room: number): string[] {
   return out.length ? out : ['']
 }
 
+// Like wordWrap, but a word wider than the room (a long path or id) is broken on whole grapheme clusters instead of left to be cut.
+export function wrapHard(text: string, room: number): string[] {
+  const r = Math.max(1, room)
+  const out: string[] = []
+  for (const l of wordWrap(text, r)) {
+    if (cells(l) <= r) { out.push(l); continue }
+    let cur = ''
+    let w = 0
+    for (const g of clusters(l)) {
+      const gw = clusterCells(g)
+      if (w + gw > r && cur !== '') { out.push(cur); cur = ''; w = 0 }
+      cur += g
+      w += gw
+    }
+    if (cur !== '') out.push(cur)
+  }
+  return out.length ? out : ['']
+}
+
 // Pack parts onto lines, joined by `sep`. A part that fits a line is never split; one that does not is
 // word-wrapped on its own lines. A part goes to the next line whole when it would overflow this one.
 export function wrapParts(parts: string[], sep: string, room: number): string[] {

@@ -17,6 +17,16 @@ if (process.env.FAKE_ORPHAN_CHILD === '1') {
   if (process.env.FAKE_CHILD_PID_FILE) fs.writeFileSync(process.env.FAKE_CHILD_PID_FILE, String(kid.pid));
 }
 
+// ADR 0054 amendment 2: FAKE_ADAPTER_CHILD=1 starts a detached stand-in for the orchestrator's MCP adapter (helper-adapter.cjs, which starts
+// a worker of its own); FAKE_SIBLING_CHILD=<pidfile> starts a detached child that writes its pid there (a process the spawn register may name).
+const KID_OPTS = { windowsHide: true, stdio: 'ignore', detached: true };
+if (process.env.FAKE_ADAPTER_CHILD === '1') {
+  require('node:child_process').spawn(process.execPath, [require('node:path').join(__dirname, 'helper-adapter.cjs')], KID_OPTS).unref();
+}
+if (process.env.FAKE_SIBLING_CHILD) {
+  require('node:child_process').spawn(process.execPath, [require('node:path').join(__dirname, 'helper-sleeper.cjs')], { ...KID_OPTS, env: { ...process.env, FAKE_HELPER_PIDFILE: process.env.FAKE_SIBLING_CHILD } }).unref();
+}
+
 // ADR 0045 (audit D06): FAKE_SPAWN_SCRIPT=<path> starts that script as an ordinary child of this process, the way a worker's Bash starts one.
 if (process.env.FAKE_SPAWN_SCRIPT) {
   require('node:child_process').spawn(process.execPath, [process.env.FAKE_SPAWN_SCRIPT], { windowsHide: true, stdio: 'ignore' }).unref();
@@ -103,6 +113,8 @@ function initEvent() {
     else if (FAKE_SURFACE === 'memory') ev.memory_paths = { auto: 'C:/fake/memory/' };
     // S2 fix round F1: a malformed (non-array) plugins field — checkSurface must refuse this, never throw.
     else if (FAKE_SURFACE === 'plugins-object') ev.plugins = {};
+    // ADR 0054: a binary that ignored --tools and reported the six built-ins a worker gets.
+    else if (FAKE_SURFACE === 'six-tools') ev.tools = ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash', ...ev.tools.filter((t) => t.startsWith('mcp__'))];
   }
   return ev;
 }
@@ -409,5 +421,9 @@ process.stdin.on('data', (d) => {
 if (process.env.FAKE_IGNORE_STDIN_END === '1') {
   setInterval(() => {}, 1000);
   if (process.env.FAKE_STDIN_END_FILE) process.stdin.on('end', () => { try { require('node:fs').writeFileSync(process.env.FAKE_STDIN_END_FILE, String(Date.now())); } catch { /* the test reports the missing file */ } });
-} else process.stdin.on('end', () => process.exit(0));
+} else process.stdin.on('end', () => {
+  // FAKE_BG_BLOCKS_EXIT=1: a worker holding an open background task does not exit on stdin close (the hung shell of a real session).
+  if (process.env.FAKE_BG_BLOCKS_EXIT === '1' && runningBgList().length) return;
+  process.exit(0);
+});
 process.stdin.resume();

@@ -60,4 +60,14 @@ async function pinAtStart(core, { levers, write = null } = {}) {
   return { ...r, start_progress: progress };
 }
 
-module.exports = { pinAtStart, needsPin };
+
+// The run receipt's retrieval block: the pin as the run row holds it at the end (so a fallback in force is in the receipt), and under --json
+// the start-up progress lines. Nothing when the run pinned nothing.
+function receiptBlock(routingPin, gotRun) {
+  if (!routingPin) return {};
+  const run = gotRun && gotRun.run;
+  const view = require('../core/retrieval-view.cjs').describe(run && run.retrieval_routing ? run : { retrieval_routing: JSON.stringify(routingPin), epoch: run ? run.epoch : null });
+  return { retrieval: { ...(view || { profile: routingPin.routing.run.profile, notices: routingPin.notices }), start_progress: routingPin.start_progress || [] } };
+}
+
+module.exports = { pinAtStart, needsPin, receiptBlock };

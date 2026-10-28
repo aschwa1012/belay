@@ -25,7 +25,7 @@ const { pidAlive } = require('./lock.cjs');
 // and fit only. A guide, never a promise: the retrieval eval (0.3.2) re-picks the defaults.
 const PROFILE_TIME_S = Object.freeze({ 'cpu-fast': 0, 'cpu-rerank-light': 0.3, 'cpu-rerank': 3.6, 'gpu-rerank-fast': 0.73, 'gpu-rerank': 2.7, 'gpu-balanced': 2.8, 'gpu-recall-max': 0.8 });
 const MAIN_TYPES = Object.freeze(['orchestrator', 'reviewer', 'coder']);
-const LEVER_KEYS = Object.freeze(['profile', 'profile_cpu', 'on_heavy_failure', 'on_heavy_behind', 'rerank_depth', 'search_log_cap_mb', 'vram_headroom_gb', 'routing', 'routing_cpu']);
+const LEVER_KEYS = Object.freeze(['profile', 'profile_cpu', 'on_heavy_failure', 'on_heavy_behind', 'rerank_depth', 'search_log', 'search_log_cap_mb', 'vram_headroom_gb', 'routing', 'routing_cpu']);
 const has = (o, k) => Object.prototype.hasOwnProperty.call(o, k);
 
 function tableEntry(id) {

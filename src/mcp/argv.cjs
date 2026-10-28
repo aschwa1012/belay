@@ -11,7 +11,7 @@ const CP = require('../run/compaction.cjs'); // fs and path only; parses --compa
 const AD = require('../run/agent-defaults.cjs'); // pure; checks the --agent-defaults file
 
 const VALUE_FLAGS = new Set(['--role', '--run', '--data', '--worker-id', '--log', '--permit-wait-ms', '--compact-at', '--worktree', '--agent-defaults', '--bind']);
-const BOOL_FLAGS = new Set(['--no-embed', '--experimental-worker-wait', '--permit', '--notes']);
+const BOOL_FLAGS = new Set(['--no-embed', '--experimental-worker-wait', '--permit', '--notes', '--stop-idle-on-done']);
 
 function die(reason) {
   process.stderr.write(`belay-mcp: ${reason}\n`);
@@ -50,6 +50,8 @@ function parseArgv(argv) {
     // --notes (ADR 0047): the run has the notes lever on, so this worker adapter lists the notes fields. The run manager
     // passes it from the run row; it changes what is listed, never who the caller is.
     if (a === '--notes') { out.notes = true; continue; }
+    if (a === '--stop-idle-on-done') { out.stopIdleOnDone = true; continue; } // ADR 0058: the run lever stop_idle_on_done
+    if (a === '--permission-prompt') { out.permissionPrompt = true; continue; } // the run lever permission_prompt: list permission_list and permission_decide
     if (BOOL_FLAGS.has(a)) continue;
     if (!VALUE_FLAGS.has(a)) die(`unknown argument ${a}`);
     const v = argv[i + 1];
@@ -79,6 +81,8 @@ function parseArgv(argv) {
   if (out.role === 'orchestrator' && out.workerId) die('--worker-id is not accepted in orchestrator role');
   if (out.permit && out.role === 'orchestrator') die('--permit is a worker adapter\'s flag');
   if (out.notes && out.role !== 'worker') die('--notes is a worker adapter\'s flag');
+  if (out.stopIdleOnDone && out.role !== 'orchestrator') die('--stop-idle-on-done is an orchestrator adapter\'s flag');
+  if (out.permissionPrompt && out.role !== 'orchestrator') die('--permission-prompt is an orchestrator adapter flag');
   if (out.agentDefaults && out.role !== 'orchestrator') die('--agent-defaults is an orchestrator adapter\'s flag');
   out.permit = !!out.permit;
   out.notes = !!out.notes;

@@ -21,7 +21,7 @@
 // its row and `memory.noteRestore` brings it back (a moved history goes back with it).
 
 const { err } = require('./errors.cjs');
-const { loadNote, storedCosine } = require('./memory-facts.cjs');
+const { loadNote, storedCosine, isHeldNow } = require('./memory-facts.cjs');
 const { archiveNote } = require('./memory-archive.cjs');
 const { upheld } = require('./report-marks.cjs');
 
@@ -43,7 +43,7 @@ function liveNote(E, project, id) {
   if ((r.status || 'unverified') === 'refuted') throw refuse(`note ${id} is refuted`, { id });
   const gone = E.store.p('SELECT id FROM memory_entries WHERE supersedes = ? AND namespace = ?').get(id, r.namespace);
   if (gone) throw refuse(`note ${id} was superseded by ${gone.id}`, { id, superseded_by: gone.id });
-  if (r.b.held) throw refuse(`note ${id} is held for archive (${r.b.held.row}); the reviewer settles that first`, { id, held: r.b.held.row });
+  if (isHeldNow(E, r)) throw refuse(`note ${id} is held for archive (${r.b.held ? r.b.held.row : 'queued for review'}); the reviewer settles that first`, { id, held: r.b.held ? r.b.held.row : null });
   const o = E.store.p('SELECT rowid AS rid FROM memory_entries WHERE id = ?').get(id);
   return { ...r, rid: o ? o.rid : 0 };
 }

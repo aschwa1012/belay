@@ -25,6 +25,18 @@ const seams = {
 };
 
 const SETTING_NAMES = K.NAMES;
+const RETIRED = require('../core/memory-levers.cjs').RETIRED; // memory.<key> of the removed note-review job
+
+// A key of the removed note-review job. Setting a true value (or a model or a cost cap) is refused with the removal message and writes
+// nothing; setting note_review false is accepted as the only value left, says it was removed and writes nothing; reading prints the message.
+const retiredKey = (key) => (typeof key === 'string' && key.startsWith('memory.') && Object.prototype.hasOwnProperty.call(RETIRED, key.slice(7)) ? key.slice(7) : null);
+function retiredResult(key, value) {
+  const k = retiredKey(key);
+  const message = RETIRED[k];
+  if (value === undefined) return { code: 0, text: `${message}\n`, json: { key, removed: true, message } };
+  if (k === 'note_review' && (value === false || value === 'false')) return { code: 0, text: `${message}\nnothing was written\n`, json: { key, removed: true, written: false, message } };
+  return usageError(message);
+}
 
 const USAGE = [
   'usage: belay settings [<key> [<value>]]',
@@ -36,8 +48,9 @@ const USAGE = [
   '          would produce, and either all are written (in one rename) or none',
   '',
   `keys: ${K.MOD_NAMES.join(', ')}`,
-  '      memory.<lever>   a memory lever, the default every run inherits (the run spec overrides it key by key)',
+  '      memory.<lever>   a notes lever (memory.*), the default every run inherits (the run spec overrides it key by key)',
   '      agents.<type>.model | .effort | .codex_model   a default for coder, tester, reviewer, researcher or orchestrator;',
+  '      agents.<type>.tools   a worker type\'s tools, comma-separated; a spawn may narrow them, never widen them;',
   '          null returns a key to the built-in roster default; it cannot select the substrate\'s own default',
   '',
 ].join('\n');
@@ -116,10 +129,12 @@ function writeAtomic(file, text, expectRaw) {
 // memory block included), writes the config file atomically and returns { code, text, json } with the old and new value;
 // a refusal writes nothing.
 function writeSetting(found, key, rawValue, ctx) {
+  if (retiredKey(key)) return retiredResult(key, rawValue);
   if (!SETTING_NAMES.includes(key)) return usageError(`unknown key ${key}; the keys are ${SETTING_NAMES.join(', ')}`);
   const parsed = K.parseValue(key, rawValue);
   if (parsed.error) return usageError(parsed.error);
   const { value } = parsed;
+  const mappedFrom = parsed.mapped_from;
   if (found.found && found.parse_error) return fail(`refusing to write: ${found.parse_error}`, key);
 
   const old = row(found, key);
@@ -165,8 +180,10 @@ function writeSetting(found, key, rawValue, ctx) {
     new: { value: back.value, source: back.source },
     path: file,
     created,
+    ...(mappedFrom !== undefined ? { mapped_from: mappedFrom } : {}),
   };
   const text = `${key}: ${JSON.stringify(old.value)} (${old.source}) -> ${JSON.stringify(value)}\n`
+    + (mappedFrom !== undefined ? `${JSON.stringify(mappedFrom)} is the 0.2.0 name of ${JSON.stringify(value)}; wrote ${JSON.stringify(value)}\n` : '')
     + `${created ? 'created' : 'updated'} ${file}\n`;
   return { code: 0, text, json: receipt };
 }
@@ -232,6 +249,7 @@ async function run(ctx) {
     return writeSettings(C.discover(ctx.cwd), pairs, ctx);
   }
   const [key, value, extra] = ctx.argv;
+  if (retiredKey(key) && extra === undefined) return retiredResult(key, value);
   if (key !== undefined && !SETTING_NAMES.includes(key)) {
     return usageError(`unknown key ${key}; the keys are ${SETTING_NAMES.join(', ')}`);
   }

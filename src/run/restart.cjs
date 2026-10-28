@@ -82,7 +82,7 @@ async function writeBottle(w, ctx, core, lv) {
 }
 
 // `ctx` is optional: without it (or with `memory.bottle` off) the replace branch is exactly what it was.
-async function restartFirstText(w, branch, { core, ctx }) {
+async function restartFirstText(w, branch, { core, ctx, hold }) {
   if (branch === 'resume') {
     const rl = w.taskId ? await core.continuity.resumeLine({ task_id: w.taskId }).catch(() => null) : null;
     return 'You were interrupted and resumed. Continue from where you left off.' + (rl && rl.text ? '\n\n' + rl.text : '');
@@ -102,14 +102,54 @@ async function restartFirstText(w, branch, { core, ctx }) {
   }
   const rl = await core.continuity.resumeLine(key).catch(() => null);
   return (rl && rl.text ? rl.text + '\n\n' : '') +
-    'This is a fresh session replacing an interrupted one. Read resume.md in your worker directory, then continue.';
+    'This is a fresh session replacing an interrupted one. Read resume.md in your worker directory, then continue.' + require('./task-body.cjs').PROCESS_LINE + (await currentRule(w, core, hold)); // a new session has not seen the standing line or the hand-back rule (and its required fields)
+}
+
+// The hand-back rule for the task this worker holds now, rebuilt from the core: the spawn's rule names the spawn task's lease, which a
+// death, a hand-back or a task_assign since has changed. Empty unless a lease on the task is unreleased and held by this worker and the
+// relaunch did not report it lost. The held task is found among the run's tasks (a task_assign moves it; `w.taskId` stays the spawn's).
+async function currentRule(w, core, hold) {
+  if (!w.taskId || (hold && hold.reason === 'lease_lost')) return '';
+  try {
+    const task = (await heldTask(w, core)) || heldBy(w, await core.task.get({ task_id: w.taskId }));
+    if (!task) return '';
+    const full = (await core.task.get({ task_id: task.id })) || task;
+    const HB = require('./handback.cjs'), assigned = { task: full, new_lease: full.lease };
+    return HB.rule(assigned, await HB.facts((id) => core.task.get({ task_id: id }), assigned));
+  } catch { return ''; }
+}
+
+// The task this worker holds, derived from its lease (invariant 4), not from what was remembered at spawn: a task_assign through the CLI,
+// from another adapter, or to an adopted record leaves `w.taskId` behind. A held lease implies `assigned`. Null when it holds none.
+const heldBy = (w, t) => (t && t.lease && t.lease.holder === w.id && t.lease.holder_role === 'worker' && !t.lease.released_at ? t : null);
+async function heldTask(w, core) {
+  if (!core.task || typeof core.task.list !== 'function') return null;
+  try { return (((await core.task.list({ states: ['assigned'] })) || {}).tasks || []).filter((t) => heldBy(w, t)).pop() || null; } catch { return null; }
 }
 
 // ADR 0046 decision 1: a worker launched again (restart, resume, a Codex turn) may have been adopted from a run that has
 // ended. Before any process starts, the core makes its task's files held for this adapter's live run (the task and its
 // lease move here), or refuses E_FILES_OVERLAP / E_RUN_NOT_LIVE and nothing is launched.
+// Returns ensureHold's answer (null without a task). ADR 0026 amendment 2: a worker whose death released its lease gets it back
+// (`regranted`) when nobody has been given the task since, and is otherwise told it holds none (`lease_lost`).
 async function holdForLaunch(w, core) {
-  if (w.taskId) await core.task.ensureHold({ task_id: w.taskId, worker_id: w.id });
+  const held = await heldTask(w, core);
+  if (held && held.id !== w.taskId) w.taskId = held.id; // the record follows the lease before anything reads it (the first text, the bottle, the hold)
+  return w.taskId ? core.task.ensureHold({ task_id: w.taskId, worker_id: w.id }) : null;
 }
 
-module.exports = { decideBranch, restartFirstText, holdForLaunch, CLAUDE_RESUME_WINDOW_MS, CODEX_RESUME_WINDOW_MS };
+// What the relaunch's receipt says about the lease its death released: granted back, or lost. Empty otherwise.
+function leaseField(hold) {
+  if (!hold || !(hold.regranted || hold.reason === 'lease_lost')) return {};
+  return { lease: { task_id: hold.task_id, lease_id: hold.lease_id, regranted: !!hold.regranted, ...(hold.regranted ? {} : { task_state: hold.task_state, current_holder: hold.current_holder, note: 'released when the previous process died; this worker holds no lease and must not hand the task back' }) } };
+}
+
+// The line the worker's first text gains when it lost its lease: it must not act as the task's holder.
+function leaseNote(hold) {
+  if (!hold || hold.reason !== 'lease_lost') return '';
+  return `
+
+Your lease ${hold.lease_id} on task ${hold.task_id} was released when your previous process died, and the task is now ${hold.task_state}${hold.current_holder ? `, leased to ${hold.current_holder}` : ''}. You hold no lease on it: do not hand it back (lease_release) or write checkpoints for it.`;
+}
+
+module.exports = { decideBranch, restartFirstText, holdForLaunch, leaseField, leaseNote, CLAUDE_RESUME_WINDOW_MS, CODEX_RESUME_WINDOW_MS };

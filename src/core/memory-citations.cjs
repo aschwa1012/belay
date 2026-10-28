@@ -243,6 +243,12 @@ async function checkTaskCites(E, taskId, cites, note = null) {
   const failures = [];
   const fail = (index, where, reason) => failures.push({ index, where, reason });
   for (const [i, c] of cites.entries()) {
+    if (c.where.startsWith('evaluate:')) { // a task_evaluate result of the judged task's run (ADR 0057 decision 7); lazy, evaluate-cite.cjs requires this module
+      const judged = rows.current(E.store, 'task', taskId);
+      const r = require('./evaluate-cite.cjs').check(E, c.where, c.quote, judged ? judged.run_id || '' : '');
+      if (!r.ok) fail(i, c.where, r.reason);
+      continue;
+    }
     if (c.where === 'stream' || c.where.startsWith('stream:')) {
       const only = c.where === 'stream' ? null : c.where.slice(7);
       const pool = only ? workers.filter(w => w.id === only) : workers;
@@ -350,4 +356,7 @@ function evidenceOf(args) {
   return { head_sha: head || null, worktree: wt || null, evidence_files: ev || [] };
 }
 
-module.exports = { checkCitations, evidenceOf, checkTaskCites, checkShape, streamResultHas, streamCite, selfQuoted, seam };
+// Whether a quote appears in a text by this module's one rule (whitespace collapsed, JSON escapes tolerated, a short quote a whole line).
+const quoteHolds = (raw, quote) => holds(raw, quoteForms(quote));
+
+module.exports = { checkCitations, evidenceOf, checkTaskCites, checkShape, streamResultHas, streamCite, selfQuoted, seam, quoteHolds };

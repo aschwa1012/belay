@@ -20,6 +20,9 @@ const { headOf } = require('./note-report-verdicts.cjs');
 // note row. One transaction: the queue row, the pointer on the note and the `note_review` receipt, or nothing.
 function queueUnsupported(E, caller, route, v, n) {
   return E.store.tx(() => {
+    // The receipt is read again here, after the citation await: the losing one of two applications of one review answers already.
+    const done = E.store.p("SELECT id FROM memory_event WHERE kind = 'note_review' AND ok = 1 AND key = ?").get(`${route.keyBase}:${n.id}`);
+    if (done) return { id: n.id, verdict: 'unsupported', already: true, event_id: done.id };
     const fresh = loadNote(E, n.id);
     if (!fresh) throw err('E_NOT_FOUND', `no note ${n.id}`, { id: n.id });
     const status = fresh.status || 'unverified';

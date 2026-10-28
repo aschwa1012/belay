@@ -4,7 +4,7 @@
 
 import type { BelayMenu, BelayMenuModel, BelayPanelMenu, BelayPanelUi } from '../../types/index'
 import { fitSegs, type Seg } from './model'
-import { CONFIRM_MS } from './model'
+import { CONFIRM_MS } from './held'
 import {
   actionId, bytesText, CAP_PRESETS, DEPTH_PRESETS, draftOf, embedLine, fetchLine, gb, MEM_TABS, probeLine, profileText, routeFit, runtimeLine, sameDraft, type MemAction,
 } from './memory'
@@ -64,6 +64,8 @@ function Profiles(c: MCtx & { menu: BelayMenu }) {
       {radios('memory.on_heavy_behind', lv.onHeavyBehind, [['wait', 'wait: embed the backlog first'], ['fallback', 'fall back to nano for this run']])}
       <Row E={E} w={cols} k="p5" segs={[{ t: 'Rerank depth', bold: true }, { t: '  rerank_depth: candidates reranked per search', dim: true }]} />
       <Box>{DEPTH_PRESETS.map(n => pick('memory.rerank_depth', String(lv.rerankDepth), String(n), String(n)))}</Box>
+      <Row E={E} w={cols} k="p7" segs={[{ t: 'Search log', bold: true }, { t: '  search_log: each search and its query text, kept in this store only', dim: true }]} />
+      {radios('memory.search_log', String(lv.searchLog), [['false', 'off (the default)'], ['true', 'on: for a retrieval eval']])}
       <Row E={E} w={cols} k="p6" segs={[{ t: 'Search log cap', bold: true }, { t: '  search_log_cap_mb: oldest runs pruned first', dim: true }]} />
       <Box>{CAP_PRESETS.map(n => pick('memory.search_log_cap_mb', String(lv.searchLogCapMb), String(n), `${n} MB`))}</Box>
     </Box>

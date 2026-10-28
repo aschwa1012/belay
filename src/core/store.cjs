@@ -18,6 +18,11 @@ const { deriveTitle, validId } = require('./memory-rows.cjs');
 const MV = require('./memory-vectors.cjs');
 
 const now = () => Date.now();
+const sleepSync = ms => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* no SAB */ } };
+// SQLITE_READONLY is 8; its extended codes keep 8 in the low byte.
+const isReadonly = e => !!e && typeof e.errcode === 'number' && (e.errcode & 0xff) === 8;
+const READONLY_WAITS = [25, 50, 100, 200, 300, 325];
+const READONLY_TOTAL_MS = READONLY_WAITS.reduce((a, b) => a + b, 0);
 const hashText = t => crypto.createHash('sha256').update(String(t).trim()).digest('hex');
 
 function toUnitF32(arr, dim) {
@@ -39,13 +44,38 @@ class Store {
     this.dbPath = dbPath;
     this.opts = { synchronous: 'NORMAL', busyTimeoutMs: 5000, ...opts };
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    // When another process holds the file open without write sharing (on Windows, a copy made with
+    // CopyFileW), SQLite opens it read-only without saying so and the owner's first write fails
+    // "attempt to write a readonly database". The owner's open is retried for about a second, then
+    // refused naming the file, never served read-only. A read's throwaway copy is not retried.
+    const waits = this.opts.stamp ? READONLY_WAITS : [];
+    for (let i = 0; ; i++) {
+      try { this._open(); break; }
+      catch (e) {
+        if (!isReadonly(e) || !waits.length) throw e;
+        if (i >= waits.length) {
+          throw err('E_BUSY', `the store ${dbPath} opened read-only for ${READONLY_TOTAL_MS} ms: another process holds the file (or a sidecar) open without write sharing`, { db: dbPath, reason: 'readonly', attempts: i + 1, waited_ms: READONLY_TOTAL_MS, cause: e.message });
+        }
+        sleepSync(waits[i]);
+      }
+    }
+    this._stmts = new Map();
+    this._vectors = false; // true once memory_vectors is known to exist (it is made by the owner's open only)
+    // The engine installs `guard(op, id, detail)` (held-guard.cjs): every method below that changes a note's visibility or status calls it inside its
+    // own transaction, before its write. A store used without an engine has none.
+    this.guard = null;
+    this.cache = new Map(); // namespace -> { rows: [{id, vec, ttl_at}], superseded: Set<id> }
+  }
+
+  _open() {
+    const dbPath = this.dbPath;
     this.db = new DatabaseSync(dbPath);
-    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=${this.opts.synchronous}; PRAGMA busy_timeout=${this.opts.busyTimeoutMs}; PRAGMA temp_store=MEMORY;`);
     // G3: refuse a newer schema before ensureSchema can write anything to it. Only the owner passes
     // `stamp: true`; a read opens a throwaway copy and never stamps. The owner checks, migrates and stamps
     // in one transaction, so no crash can leave a migrated store still carrying the old version, which an
     // older core would then open and write into as if the layout were its own.
     try {
+      this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=${this.opts.synchronous}; PRAGMA busy_timeout=${this.opts.busyTimeoutMs}; PRAGMA temp_store=MEMORY;`);
       if (this.opts.stamp) {
         let skipCatchUp = false;
         this.db.exec('BEGIN IMMEDIATE');
@@ -69,9 +99,6 @@ class Store {
         ensureSchema(this.db);
       }
     } catch (e) { try { this.db.close(); } catch { /* already closed */ } throw e; }
-    this._stmts = new Map();
-    this._vectors = false; // true once memory_vectors is known to exist (it is made by the owner's open only)
-    this.cache = new Map(); // namespace -> { rows: [{id, vec, ttl_at}], superseded: Set<id> }
   }
 
   p(sql) {
@@ -88,6 +115,7 @@ class Store {
       // A write inside the transaction already put its row in the vector cache; the rollback took it out of the
       // table, so the cache is dropped and reloads from the table on the next search (no phantom hit).
       this.cache.clear();
+      this.heldMemo = null; // the held-note filter's read (memory-withhold.cjs) may have seen the rolled-back writes
       throw e;
     }
   }
@@ -154,6 +182,7 @@ class Store {
       if (a.supersedes && !this.p('SELECT 1 FROM memory_entries WHERE id = ?').get(a.supersedes)) {
         throw err('E_SUPERSEDES', `the row this write supersedes (${a.supersedes}) is not in the store`, { supersedes: a.supersedes });
       }
+      if (a.supersedes && this.guard) this.guard('supersede', a.supersedes, { via: dup ? 'store_update' : 'store_insert' });
       const tags = a.tags ? JSON.stringify(a.tags) : null;
       const prov = a.provenance || null;
       const blob = vec ? Buffer.from(vec.buffer) : null;
@@ -181,7 +210,10 @@ class Store {
       const c = this.cache.get(ns);
       if (c) {
         const i = c.rows.findIndex(r => r.id === id);
-        const row = { id, vec, ttl_at: ttl };
+        // An update with no vector keeps the one the row has (COALESCE above), so the cache keeps it too (audit 0.3.1 C2).
+        let cvec = vec;
+        if (!cvec && dup) { const r = this.p('SELECT embedding FROM memory_entries WHERE id = ?').get(id); if (r && r.embedding) cvec = new Float32Array(r.embedding.buffer, r.embedding.byteOffset, r.embedding.byteLength / 4); }
+        const row = { id, vec: cvec, ttl_at: ttl };
         if (i >= 0) c.rows[i] = row; else c.rows.push(row);
         if (a.supersedes) c.superseded.add(a.supersedes);
         c.heavy = null; // search-tier.cjs keeps a heavy tier's vectors on this object
@@ -206,7 +238,9 @@ class Store {
     if (!row) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
     let cur = {};
     try { cur = row.body ? JSON.parse(row.body) : {}; } catch { cur = {}; }
+    const before = this.guard ? JSON.stringify([cur.state, cur.promoted_to]) : null;
     const next = fn(cur) || cur;
+    if (this.guard && before !== JSON.stringify([next.state, next.promoted_to])) this.guard('body', id, { fields: 'state or promoted_to' });
     this.p('UPDATE memory_entries SET body = ?, updated_at = ? WHERE id = ?').run(JSON.stringify(next), now(), id);
     MV.bump(this.db); // a changed `when` changes the template a row is embedded under, so a vector map built from it is stale
     return next;
@@ -216,6 +250,7 @@ class Store {
   setSupersedes(id, target) {
     const row = this.p('SELECT namespace FROM memory_entries WHERE id = ?').get(id);
     if (!row) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
+    if (target && this.guard) this.guard('supersede', target, { via: 'set_supersedes', by: id });
     this.p('UPDATE memory_entries SET supersedes = ?, updated_at = ? WHERE id = ?').run(target, now(), id);
     this.cache.delete(row.namespace);
   }
@@ -234,20 +269,29 @@ class Store {
 
   // ADR 0040 §2 memory.setStatus. One row, one transaction; the FTS trigger fires on title and text only,
   // so a status change leaves the keyword index alone.
-  setStatus(id, f) {
-    return this.tx(() => {
-      const row = this.p('SELECT status FROM memory_entries WHERE id = ?').get(id);
-      if (!row) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
-      this.p('UPDATE memory_entries SET status = ?, status_receipt = ?, status_by = ?, status_at = ? WHERE id = ?')
-        .run(f.status, f.receipt, f.by, f.at, id);
-      return { id, status: f.status, previous_status: row.status || 'unverified', status_receipt: f.receipt, status_by: f.by, status_at: f.at };
-    });
+  setStatus(id, f) { return this.tx(() => this.setStatusIn(id, f)); }
+
+  // The same write inside the caller's transaction (a review's verdict sets the status in the transaction that records its receipt).
+  setStatusIn(id, f) {
+    const row = this.p('SELECT status FROM memory_entries WHERE id = ?').get(id);
+    if (!row) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
+    if (this.guard) this.guard('status', id, { status: f.status });
+    this.p('UPDATE memory_entries SET status = ?, status_receipt = ?, status_by = ?, status_at = ? WHERE id = ?')
+      .run(f.status, f.receipt, f.by, f.at, id);
+    return { id, status: f.status, previous_status: row.status || 'unverified', status_receipt: f.receipt, status_by: f.by, status_at: f.at };
   }
 
   // ADR 0044 decision 2: a row's namespace is the only thing that changes, and its id stays. The keyword index is over
   // title and text and joins the namespace from this table, so it needs nothing; the vector caches are keyed by
   // namespace, so both are dropped and reloaded on the next search. Called inside the caller's transaction.
   moveRow(id, from, to) {
+    if (this.guard) {
+      if (String(from).startsWith('project/')) this.guard('move', id, { from, to });
+      // A row moved into the namespace of the row its own `supersedes` names hides that row again: a held target stays visible.
+      const s = this.p('SELECT supersedes FROM memory_entries WHERE id = ?').get(id);
+      const t = s && s.supersedes ? this.p('SELECT namespace FROM memory_entries WHERE id = ?').get(s.supersedes) : null;
+      if (t && t.namespace === to) this.guard('supersede', s.supersedes, { via: 'move', moved: id, to });
+    }
     const r = this.p('UPDATE memory_entries SET namespace = ? WHERE id = ? AND namespace = ?').run(to, id, from);
     if (!Number(r.changes)) throw err('E_NOT_FOUND', `no memory row ${id} in ${from}`, { id });
     this.cache.delete(from);
@@ -312,6 +356,7 @@ class Store {
     return this.tx(() => {
       const row = this.p('SELECT * FROM memory_entries WHERE id = ?').get(id);
       if (!row) return { id, deleted: false };
+      if (this.guard) this.guard('delete', id, {});
       this.p('DELETE FROM memory_entries WHERE id = ?').run(id);
       this.sweepVectors([row]);
       const c = this.cache.get(row.namespace);
@@ -323,9 +368,11 @@ class Store {
   sweep() {
     const t = now();
     return this.tx(() => {
-      const nss = this.p('SELECT DISTINCT namespace FROM memory_entries WHERE ttl_at IS NOT NULL AND ttl_at < ?').all(t).map(r => r.namespace);
-      const gone = this._hasVectors() ? this.p('SELECT * FROM memory_entries WHERE ttl_at IS NOT NULL AND ttl_at < ?').all(t) : [];
-      const r = this.p('DELETE FROM memory_entries WHERE ttl_at IS NOT NULL AND ttl_at < ?').run(t);
+      // A held note is never swept (no note carries a ttl_at today; if one ever does, its deadline waits while it is held).
+      const live = "ttl_at IS NOT NULL AND ttl_at < ? AND NOT (type = 'note' AND json_extract(body, '$.held') IS NOT NULL)";
+      const nss = this.p(`SELECT DISTINCT namespace FROM memory_entries WHERE ${live}`).all(t).map(r => r.namespace);
+      const gone = this._hasVectors() ? this.p(`SELECT * FROM memory_entries WHERE ${live}`).all(t) : [];
+      const r = this.p(`DELETE FROM memory_entries WHERE ${live}`).run(t);
       this.sweepVectors(gone);
       for (const n of nss) this.cache.delete(n);
       return { expired_deleted: Number(r.changes), namespaces: nss };

@@ -10,13 +10,16 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const P = require('../../src/run/process.cjs');
-const { runPhase, runPhases } = require('../../scripts/test.cjs');
+const { runPhase, runPhases, concurrencyFromEnv } = require('../../scripts/test.cjs');
 
 const fwd = (p) => String(p).split(path.sep).join('/');
 const HANG = fwd(path.resolve(__dirname, 'fixtures', 'hang-fixture.cjs'));
 const PASS = fwd(path.resolve(__dirname, 'fixtures', 'pass-fixture.cjs'));
 const PROBE = fwd(path.resolve(__dirname, 'fixtures', 'runphase-probe.cjs'));
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+// A nested phase over the hang fixture fails on purpose; its output is discarded, so that failure line does not show among
+// the suite's own results. Every check reads runPhase's returned facts, never that output.
+const quiet = (cmd, args, o) => spawn(cmd, args, { ...o, stdio: 'ignore' });
 
 // The phase runs a nested `node --test`; inside this test file that would see NODE_TEST_CONTEXT and act
 // as a reporting child of ours, so the variable is removed for the nested run and restored after.
@@ -51,7 +54,7 @@ test('test-runner: a hung phase is stopped by exact pid, its tree included, with
   let pids = null;
   try {
     const t0 = Date.now();
-    const r = await withNestedEnv({ H1_PIDS_FILE: pidsFile }, () => runPhase([HANG], { timeoutMs: 2000 }));
+    const r = await withNestedEnv({ H1_PIDS_FILE: pidsFile }, () => runPhase([HANG], { timeoutMs: 2000, spawnImpl: quiet }));
     const took = Date.now() - t0;
     assert.strictEqual(r.timed_out, true, `the hung phase must report timed_out: ${JSON.stringify(r)}`);
     assert.strictEqual(r.status, 124);
@@ -99,7 +102,7 @@ test('test-runner: a phase whose tree could not be stopped reports stop_failed a
   const seen = [];
   const stub = async (target) => { seen.push(target); return { ok: false, error: 'stubbed killTree failure' }; };
   try {
-    const r = await withNestedEnv({ H1_PIDS_FILE: pidsFile }, () => runPhase([HANG], { timeoutMs: 1500, killTreeImpl: stub }));
+    const r = await withNestedEnv({ H1_PIDS_FILE: pidsFile }, () => runPhase([HANG], { timeoutMs: 1500, killTreeImpl: stub, spawnImpl: quiet }));
     assert.strictEqual(r.timed_out, true, JSON.stringify(r));
     assert.strictEqual(r.status, 124);
     assert.strictEqual(r.stop_failed, true, `a failed killTree must be reported: ${JSON.stringify(r)}`);
@@ -110,7 +113,7 @@ test('test-runner: a phase whose tree could not be stopped reports stop_failed a
 
     const dir2 = fwd(fs.mkdtempSync(path.join(os.tmpdir(), 'belay-h1-runner-')));
     try {
-      const all = await withNestedEnv({ H1_PIDS_FILE: `${dir2}/pids.json` }, () => runPhases({ globs1: [HANG], glob2: PASS, timeout1: 1500, timeout2: 60000, killTreeImpl: stub }));
+      const all = await withNestedEnv({ H1_PIDS_FILE: `${dir2}/pids.json` }, () => runPhases({ globs1: [HANG], glob2: PASS, timeout1: 1500, timeout2: 60000, killTreeImpl: stub, spawnImpl: quiet }));
       stopFixturePids(`${dir2}/pids.json`);
       assert.strictEqual(all.p1.stop_failed, true);
       assert.strictEqual(all.p2, null, 'phase 2 must not start when phase 1 could not be stopped');
@@ -151,4 +154,37 @@ test('every tests/<dir> that holds a *.test.cjs file is named by a phase glob', 
   assert.ok(dirs.includes('mod') && dirs.includes('core'), 'the scan sees the directories');
   // acceptance rows run by `npm run test:acceptance`, not by a glob
   assert.deepStrictEqual(dirs.filter((d) => !named.has(d) && d !== 'acceptance'), []);
+});
+
+// BELAY_TEST_CONCURRENCY: a fake spawn captures each phase's argv; no real test phase runs.
+function fakeSpawn(argvs) {
+  const { EventEmitter } = require('node:events');
+  return (_exe, argv) => { argvs.push(argv); const c = new EventEmitter(); c.pid = 0; c.exitCode = null; c.signalCode = null; setImmediate(() => { c.exitCode = 0; c.emit('exit', 0, null); c.emit('close', 0); }); return c; };
+}
+const flagOf = (argv) => argv.filter((a) => a.startsWith('--test-concurrency'));
+
+test('test-runner: a valid concurrency is passed to the node --test argv of both phases', async () => {
+  const argvs = [];
+  await runPhases({ globs1: ['a'], glob2: 'b', guard: false, concurrency: 3, spawnImpl: fakeSpawn(argvs) });
+  assert.strictEqual(argvs.length, 2);
+  for (const a of argvs) assert.deepStrictEqual(flagOf(a), ['--test-concurrency=3']);
+});
+
+test('test-runner: no concurrency means no flag on either phase', async () => {
+  const argvs = [];
+  await runPhases({ globs1: ['a'], glob2: 'b', guard: false, concurrency: null, spawnImpl: fakeSpawn(argvs) });
+  assert.strictEqual(argvs.length, 2);
+  for (const a of argvs) assert.deepStrictEqual(flagOf(a), []);
+});
+
+test('test-runner: BELAY_TEST_CONCURRENCY is read as a positive integer; anything else is ignored with a log line', () => {
+  const run = (v) => { const lines = []; const n = concurrencyFromEnv(v === undefined ? {} : { BELAY_TEST_CONCURRENCY: v }, (l) => lines.push(l)); return { n, lines }; };
+  assert.deepStrictEqual(run('4'), { n: 4, lines: [] });
+  assert.deepStrictEqual(run(undefined), { n: null, lines: [] });
+  for (const bad of ['0', '-1', 'abc', '1.5']) {
+    const r = run(bad);
+    assert.strictEqual(r.n, null, bad);
+    assert.strictEqual(r.lines.length, 1, bad);
+    assert.match(r.lines[0], /BELAY_TEST_CONCURRENCY.*ignored/, bad);
+  }
 });

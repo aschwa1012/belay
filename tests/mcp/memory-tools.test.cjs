@@ -1,7 +1,7 @@
 // memory-tools.test.cjs — ADR 0040 §4: the memory tool surface. Routes (against a fake core that echoes
 // the arguments it was called with, because the real methods land separately), role allows, the
 // harness-only refusals naming the field, and the listing bytes printed for both roles and kept under
-// their budgets (11,264 orchestrator, 7,168 worker).
+// their budgets (16,384 orchestrator, 7,168 worker).
 'use strict';
 
 const test = require('node:test');
@@ -60,6 +60,9 @@ test('routes: a worker reaches memory_timeline and the new search arguments, as 
   assert.strictEqual(tl.__caller.worker_id, 'wk-mem');
   const s = row(await w.call('memory_search', { query: 'pid', mode: 'keyword' }));
   assert.deepStrictEqual(s.modes_run, ['keyword']);
+  // ADR 0057 decision 1: a model's search is the compact view unless it names one; the Core API's own default stays full.
+  assert.strictEqual(s.__args.view, 'compact');
+  assert.strictEqual(row(await w.call('memory_search', { query: 'pid', view: 'debug' })).__args.view, 'debug');
 });
 
 test('role allows: memory_verify is the orchestrator\'s alone, memory_timeline is both roles\'', async (t) => {
@@ -118,7 +121,7 @@ test('memory_retrieve: id or ids, not neither, not both, ids bounded and typed',
 test('the new arguments are typed at the boundary', () => {
   const bad = (name, args, re) => assert.throws(() => tools.validateArgs(name, args), (e) => e.code === 'E_ARGS' && re.test(e.message));
   bad('memory_search', { query: 'x', mode: 'fuzzy' }, /mode must be one of semantic, keyword, hybrid/);
-  bad('memory_search', { query: 'x', view: 'brief' }, /view must be one of full, index/);
+  bad('memory_search', { query: 'x', view: 'brief' }, /view must be one of debug, index/);
   bad('memory_search', { query: 'x', order: 'random' }, /order must be one of score, newest, oldest/);
   bad('memory_search', { query: 'x', filter: ['fact'] }, /filter must be object/);
   bad('memory_search', { query: 'x', offset: 1.5 }, /offset must be integer/);
@@ -132,13 +135,13 @@ test('the new arguments are typed at the boundary', () => {
 
 test('listing bytes for both roles are printed and inside the ADR 0040 §4 budgets', async (t) => {
   assert.strictEqual(tools.BUDGET.worker, 7168);
-  assert.strictEqual(tools.BUDGET.orchestrator, 11264);
+  assert.strictEqual(tools.BUDGET.orchestrator, 16384);
   for (const role of ['orchestrator', 'worker']) {
     const bytes = tools.listingBytes(role);
     console.log(`ADR 0040 §4 ${role}: ${tools.toolsFor(role).length} tools, ${bytes} bytes, budget ${tools.BUDGET[role]}, headroom ${tools.BUDGET[role] - bytes}`);
     assert.ok(bytes <= tools.BUDGET[role], `${role} listing is ${bytes} bytes, over ${tools.BUDGET[role]}`);
-    // The worker was at 4,081 before this record; the orchestrator at 8,351.
-    assert.ok(bytes > (role === 'worker' ? 4081 : 8351), `${role} listing grew`);
+    // The worker was at 4,081 before this record (3,557 now that ADR 0010 amendment 14 took four tools off it); the orchestrator at 8,351.
+    assert.ok(bytes > (role === 'worker' ? 3500 : 8351), `${role} listing grew`);
     const a = await adapter(role, t);
     const wire = Buffer.byteLength(JSON.stringify(await a.list()), 'utf8');
     console.log(`ADR 0040 §4 ${role} over the wire: ${wire} bytes`);

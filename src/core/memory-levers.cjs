@@ -37,9 +37,6 @@ const DEFAULTS = Object.freeze({
   scrub_max_items: 40, // entries in one scrub hand-back
   scrub_alarm_holds: 20, // more holds than this from one scrub raise the alarm field (the call still succeeds)
   notes_trust_wording: false, // ADR 0047 decision 6: basis, evidence and review status instead of "unverified"; off until the harm arms have run
-  note_review: false, // wave 4: when a task that wrote notes ends with no reviewer, belay starts one short read-only review job for them; off until the planted-false-claim gate sets its model
-  note_review_model: 'claude-haiku-5-5', // the review job's model; a lever, set by the planted-false-claim gate
-  note_review_cost_cap_usd: 0.05, // the review job's cost cap in dollars: passed to the substrate as its budget, and a job that went over leaves its notes unreviewed
   // The run-close stages (the Haiku scrubber and the Opus archive reviewer). Caps are real: the recorded cost is the binding check.
   scrub_wall_s: 300, // the scrubber's wall cap in seconds
   scrub_cost_cap_usd: 0.1, // the scrubber's cost cap in dollars: passed to the substrate as its budget; a scrub that recorded more applies nothing and its items are owed
@@ -61,16 +58,21 @@ const DEFAULTS = Object.freeze({
   rerank_bound_ms: 10000, // the rerank stage's own bound, inside the MCP tool timeout
   on_heavy_failure: 'fallback', // fallback | pause: a heavy model that fails to load or fails mid-run
   on_heavy_behind: 'wait', // wait | fallback: a heavy embedder with a backlog at run start, when no one is there to ask
+  search_log: false, // the search log (ADR 0050): it keeps each search's query text in the store, so it is off for users; belay's own eval and pilot configs turn it on
   search_log_cap_mb: 500, // the search log's size cap; the oldest runs are pruned first
   vram_headroom_gb: 0.75, // kept free above the summed measured peaks of the routing's GPU models (the probe)
   // Eval-only (0.3.2 memory eval), off by default; the run spec takes them as top-level keys, not inside `memory`.
   native_memory: null, // an absolute folder: every Claude Code worker of the run gets Claude Code's own auto-memory there (never the orchestrator)
   handback_question: false, // with notes off: the hand-back question, once, to the roles a notes contract would reach
+  // ADR 0047 amendment (2026-10-22): a note reported wrong is withheld from workers until it is reviewed; a run that disputes too many stops withholding.
+  held_visibility: 'withhold', // withhold | warn: warn shows a held note to a worker with its warning line, as before
+  held_breaker_count: 5, // the most notes one run's reports may withhold (bounded further by held_breaker_share)
+  held_breaker_share: 0.2, // ... or this share of the project's live notes, whichever is fewer
   notes_sink: 'off', // off | record | penalty: record writes a note_chance fact per delivered note at task end; penalty records the same, its rank shift is not built yet (the index has a no-op seam, memory-index-rank.cjs sinkFactor)
 });
 
 const BOOLEAN_KEYS = ['redact', 'rules', 'capture', 'observations', 'project_writes', 'cost_ledger',
-  'first_message_index', 'bottle', 'wrapup', 'knowledge_agent', 'notes', 'notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording', 'note_review', 'archive_review_auto'];
+  'first_message_index', 'bottle', 'wrapup', 'knowledge_agent', 'notes', 'notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording', 'archive_review_auto'];
 const MODEL_RE = /^claude-(haiku|sonnet|opus)-5-5$/; // a Claude 5.5 model id: the only models the roster allows (ADR 0021 amendments 5 and 6)
 const SUMMARIES = ['off', 'mechanical'];
 const SCRUB_ACTIONS = ['off', 'propose', 'apply'];
@@ -80,6 +82,7 @@ const HEAVY_FAILURE = ['fallback', 'pause'];
 const HEAVY_BEHIND = ['wait', 'fallback'];
 const ROUTING_MAX = 64; // entries in the routing map
 const ROUTING_TYPE_RE = /^[a-z][a-z0-9_-]{0,31}$/; // the main keys are orchestrator, reviewer and coder; any other agent type is an advanced key
+const HELD_VIS = ['withhold', 'warn'];
 const PROJECT_RE = /^[a-z0-9][a-z0-9._-]{0,63}$/;
 const INDEX_BYTES_MAX = 4096; // ADR 0042 decision 2
 const BOTTLE_BYTES_MAX = 262144; // ADR 0042 decision 4
@@ -139,11 +142,28 @@ function boundedInt(v, max) {
   return typeof v === 'number' && Number.isSafeInteger(v) && v >= 1 && v <= max;
 }
 
+// The levers of the removed note-review job. A report that a note is wrong now holds the note for the archive review, so there is no job
+// to configure. `note_review: false` is still accepted, as the only value left, and has no effect; a true value, or a model or a cost cap
+// of any value, is refused with the message below. A run row written before the removal is read with `stored: true`: the three keys are
+// dropped, never refused, so an older run's other levers are not lost.
+const RETIRED_KEYS = Object.freeze(['note_review', 'note_review_model', 'note_review_cost_cap_usd']);
+const RETIRED = Object.freeze(Object.fromEntries(RETIRED_KEYS.map((k) => [k, `memory.${k} was removed (2026-10-21): a report that a note is wrong now holds the note at once for the archive review (belay memory review); there is no note-review job to configure. Delete the key.`])));
+
 // Returns { value } (every key present, defaults filled) or { error } naming the key. `undefined` and null
 // both mean "no block". Unknown keys, wrong types and a lever whose prerequisite is off are refused.
-function parseMemoryBlock(block) {
+// `opts.stored`: the block is a stored run row's, so the removed note-review keys are dropped, whatever their values.
+function parseMemoryBlock(block, opts = {}) {
   if (block === undefined || block === null) return { value: defaultLevers() };
   if (typeof block !== 'object' || Array.isArray(block)) return { error: 'memory must be an object' };
+  if (RETIRED_KEYS.some((k) => Object.prototype.hasOwnProperty.call(block, k))) {
+    const copy = { ...block };
+    for (const k of RETIRED_KEYS) {
+      if (!Object.prototype.hasOwnProperty.call(copy, k)) continue;
+      if (!opts.stored && (k !== 'note_review' || copy[k] !== false)) return { error: RETIRED[k] };
+      delete copy[k];
+    }
+    block = copy;
+  }
   for (const key of Object.keys(block)) {
     if (!Object.prototype.hasOwnProperty.call(DEFAULTS, key)) {
       return { error: `memory.${key} is not a known memory lever (known: ${Object.keys(DEFAULTS).join(', ')})` };
@@ -169,6 +189,9 @@ function parseMemoryBlock(block) {
   if (v.observations && !v.capture) return { error: 'memory.observations needs memory.capture' };
   if (v.project_writes && v.project === null) return { error: 'memory.project_writes needs memory.project' };
   // A project namespace outlives the run and is read by every later one, so it never takes unredacted text.
+  // ADR 0047 amendment (2026-10-22): a project write by a worker or the orchestrator is a note, so the two harness routes into the project that
+  // bypass the notes path (promotion at task end, the copy made when a run row is verified) cannot be on beside it. A stored row is read as written.
+  if (v.project_writes && v.notes && !opts.stored) return { error: 'memory.project_writes cannot be combined with memory.notes (on by default with a project): notes are the only project writes; set notes: false to keep project_writes' };
   if (v.project_writes && v.redact === false) {
     return { error: 'memory.redact false cannot be combined with memory.project_writes true: the project namespace outlives the run and must never hold unredacted text' };
   }
@@ -180,14 +203,15 @@ function parseMemoryBlock(block) {
   if (v.notes && v.project === null) return { error: 'memory.notes needs memory.project: notes live in the project namespace' };
   // Notes outlive the run in the project namespace, so they never take unredacted text.
   if (v.notes && v.redact === false) return { error: 'memory.redact false cannot be combined with memory.notes true: the project namespace outlives the run and must never hold unredacted text' };
-  if (typeof v.note_review_model !== 'string' || !MODEL_RE.test(v.note_review_model)) return { error: 'memory.note_review_model must be a Claude 5.5 model id (claude-haiku-5-5, claude-sonnet-5-5 or claude-opus-5-5)' };
-  if (typeof v.note_review_cost_cap_usd !== 'number' || !(v.note_review_cost_cap_usd > 0 && v.note_review_cost_cap_usd <= 5)) return { error: 'memory.note_review_cost_cap_usd must be a number above 0 and at most 5' };
-  for (const k of ['notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording', 'note_review', 'archive_review_auto']) if (v[k] && !v.notes) return { error: `memory.${k} needs memory.notes` };
+  for (const k of ['notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording', 'archive_review_auto']) if (v[k] && !v.notes) return { error: `memory.${k} needs memory.notes` };
   for (const [k, max] of [['scrub_wall_s', 3600], ['review_wall_s', 7200], ['review_min_held', 500], ['review_max_age_runs', 1000]]) if (!boundedInt(v[k], max)) return { error: `memory.${k} must be an integer from 1 to ${max}` };
   for (const [k, max] of [['scrub_cost_cap_usd', 5], ['review_cost_cap_usd', 20]]) if (typeof v[k] !== 'number' || !(v[k] > 0 && v[k] <= max)) return { error: `memory.${k} must be a number above 0 and at most ${max}` };
   for (const k of ['scrub_model', 'archive_review_model']) if (typeof v[k] !== 'string' || !MODEL_RE.test(v[k])) return { error: `memory.${k} must be a Claude 5.5 model id (claude-haiku-5-5, claude-sonnet-5-5 or claude-opus-5-5)` };
   if (v.native_memory !== null && (typeof v.native_memory !== 'string' || !v.native_memory)) return { error: 'memory.native_memory must be null or an absolute directory path' };
   if (typeof v.handback_question !== 'boolean') return { error: 'memory.handback_question must be true or false' };
+  if (!HELD_VIS.includes(v.held_visibility)) return { error: `memory.held_visibility must be one of ${HELD_VIS.join(', ')}` };
+  if (!boundedInt(v.held_breaker_count, 500)) return { error: 'memory.held_breaker_count must be an integer from 1 to 500' };
+  if (typeof v.held_breaker_share !== 'number' || !(v.held_breaker_share > 0 && v.held_breaker_share <= 1)) return { error: 'memory.held_breaker_share must be a number above 0 and at most 1' };
   if (!SINKS.includes(v.notes_sink)) return { error: `memory.notes_sink must be one of ${SINKS.join(', ')}` };
   if (v.notes_sink !== 'off' && !v.notes) return { error: 'memory.notes_sink needs memory.notes' };
   for (const k of ['profile', 'profile_cpu']) if (!PROFILE_VALUES.includes(v[k])) return { error: `memory.${k} must be one of ${PROFILE_VALUES.join(', ')}` };
@@ -206,6 +230,7 @@ function parseMemoryBlock(block) {
   if (cpuRouteProblem) return { error: cpuRouteProblem.msg, ...(cpuRouteProblem.code ? { code: cpuRouteProblem.code } : {}) };
   if (!boundedInt(v.rerank_depth, 200)) return { error: 'memory.rerank_depth must be an integer from 1 to 200' };
   if (!boundedInt(v.rerank_bound_ms, 600000)) return { error: 'memory.rerank_bound_ms must be an integer from 1 to 600000' };
+  if (typeof v.search_log !== 'boolean') return { error: 'memory.search_log must be true or false' };
   if (!boundedInt(v.search_log_cap_mb, 1048576)) return { error: 'memory.search_log_cap_mb must be an integer from 1 to 1048576' };
   if (typeof v.vram_headroom_gb !== 'number' || !(v.vram_headroom_gb >= 0 && v.vram_headroom_gb <= 16)) return { error: 'memory.vram_headroom_gb must be a number from 0 to 16' };
   if (!HEAVY_FAILURE.includes(v.on_heavy_failure)) return { error: `memory.on_heavy_failure must be one of ${HEAVY_FAILURE.join(', ')}` };
@@ -235,7 +260,6 @@ const OVERRIDES = {
   bottle_bytes: { type: 'integer', min: 1, max: BOTTLE_BYTES_MAX },
   notes_match_threshold: { type: 'number', min: 0, max: 1, minExclusive: true },
   notes_match_n: { type: 'integer', min: 1, max: 10 },
-  note_review_cost_cap_usd: { type: 'number', min: 0, max: 5, minExclusive: true },
   scrub_action: { type: 'enum', values: SCRUB_ACTIONS },
   scrub_max_items: { type: 'integer', min: 1, max: 500 },
   scrub_alarm_holds: { type: 'integer', min: 1, max: 500 },
@@ -250,8 +274,12 @@ const OVERRIDES = {
   rerank_bound_ms: { type: 'integer', min: 1, max: 600000 },
   on_heavy_failure: { type: 'enum', values: HEAVY_FAILURE },
   on_heavy_behind: { type: 'enum', values: HEAVY_BEHIND },
+  search_log: { type: 'boolean' },
   search_log_cap_mb: { type: 'integer', min: 1, max: 1048576 },
   vram_headroom_gb: { type: 'number', min: 0, max: 16 },
+  held_visibility: { type: 'enum', values: HELD_VIS },
+  held_breaker_count: { type: 'integer', min: 1, max: 500 },
+  held_breaker_share: { type: 'number', min: 0, max: 1, minExclusive: true },
   scrub_wall_s: { type: 'integer', min: 1, max: 3600 },
   review_wall_s: { type: 'integer', min: 1, max: 7200 },
   review_min_held: { type: 'integer', min: 1, max: 500 },
@@ -271,4 +299,4 @@ const TYPES = Object.freeze(Object.fromEntries(Object.keys(DEFAULTS).map((k) => 
 // Run-spec keys only: never a project default, so the config file's memory block and `belay settings` refuse them.
 const EVAL_ONLY = Object.freeze(['native_memory', 'handback_question']);
 
-module.exports = { ROUTING_TYPE_RE, ROUTING_MAX, EVAL_ONLY, DEFAULTS, defaultLevers, TYPES, MODE_VALUES, parseMemoryBlock, isDefault };
+module.exports = { ROUTING_TYPE_RE, ROUTING_MAX, EVAL_ONLY, RETIRED, RETIRED_KEYS, DEFAULTS, defaultLevers, TYPES, MODE_VALUES, parseMemoryBlock, isDefault };

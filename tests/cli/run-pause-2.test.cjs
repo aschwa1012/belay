@@ -48,7 +48,7 @@ async function startRun(dir, overrides, env) {
   const cliProc = runCli(specPath, dataDir, { BELAY_CLAUDE_EXE: FAKE_CLAUDE, ...env });
   const core = await connectOrchestratorCore(dataDir, runId);
   const m = createRunManager({ core, dataDir, runId, paths: { claudeExe: FAKE_CLAUDE, userSettings: USER_SETTINGS } });
-  const control = createWorkerControl({ dataDir, manager: m, pid: cliProc.proc.pid });
+  const control = createWorkerControl({ redeem: null, dataDir, manager: m, pid: cliProc.proc.pid });
   await control.listen();
   return { dataDir, runId, orchestratorDir, cliProc, core, m, control };
 }

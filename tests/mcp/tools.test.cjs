@@ -77,8 +77,11 @@ test('A8 task_list returns lease holder, expiry and whether that holder is alive
     const r = assertOk(await a.call('task_list', { states: ['assigned'] }), 'task_list');
     has(r, ['tasks'], 'task_list');
     const row = r.tasks[0];
-    has(row, ['id', 'spec', 'state', 'lease', 'holder_pid_alive', 'last_checkpoint_id', 'last_checkpoint_at'], 'task_list row');
+    has(row, ['id', 'spec_head', 'state', 'lease', 'holder_pid_alive'], 'task_list row');
     has(row.lease, ['id', 'holder', 'holder_role', 'expires_at', 'expired'], 'task_list lease');
+    // ADR 0058 amendment 3: the compact row is the default; view debug is the core's row, whole.
+    const full = assertOk(await a.call('task_list', { states: ['assigned'], view: 'debug' }), 'task_list debug').tasks[0];
+    has(full, ['id', 'spec', 'state', 'lease', 'holder_pid_alive', 'last_checkpoint_id', 'last_checkpoint_at'], 'task_list debug row');
   });
 });
 
@@ -96,8 +99,12 @@ test('A8 briefing returns line and doc, both inside their byte ceilings', async 
 
 test('A8 the four worker tools return the process facts their proof columns name', async (t) => {
   await withRole('orchestrator', t, async (a, data) => {
-    const w = assertOk(await a.call('worker_spawn', { substrate: 'claude-code', worktree: data, prompt: 'go' }), 'worker_spawn');
+    const w = assertOk(await a.call('worker_spawn', { substrate: 'claude-code', worktree: data, prompt: 'go', view: 'debug' }), 'worker_spawn');
     has(w, ['id', 'substrate', 'pid', 'session_id', 'adapter_pid', 'argv_hash', 'started_at', 'state', 'ready_ms'], 'worker_spawn');
+    // ADR 0058: the default answer is the compact one, and nothing in it is invented.
+    const c = assertOk(await a.call('worker_spawn', { substrate: 'claude-code', worktree: data, prompt: 'go' }), 'worker_spawn');
+    has(c, ['id', 'substrate', 'pid', 'session_id', 'state', 'worktree', 'started_at', 'ready_ms', 'effort', 'tools'], 'worker_spawn compact');
+    for (const k of ['argv_hash', 'written_at', 'input_tokens', '__paths']) assert.ok(!(k in c), `the compact answer leaves out ${k}`);
     assert.strictEqual(w.state, 'running', 'a spawned worker is running only after its ready event');
 
     const m = assertOk(await a.call('worker_message', { worker_id: w.id, text: 'carry on' }), 'worker_message');
@@ -118,23 +125,28 @@ test('A8 the four worker tools return the process facts their proof columns name
 
 test('A8 task_create and task_assign return the task row and both leases', async (t) => {
   await withRole('orchestrator', t, async (a) => {
-    const c = assertOk(await a.call('task_create', { spec: 'do the thing', files_owned: ['src/a.js'], acceptance: { commands: [{ argv: ['node', '--test'] }], files_within_owned: true } }), 'task_create');
-    has(c, ['id', 'spec', 'acceptance', 'files_owned', 'state'], 'task_create');
-    assert.strictEqual(c.state, 'open');
+    const args = { spec: 'do the thing', files_owned: ['src/a.js'], acceptance: { commands: [{ argv: ['node', '--test'] }], files_within_owned: true } };
+    // The default answer is the new task's id, rev, state and spec head; view debug is the whole row.
+    const c = assertOk(await a.call('task_create', args), 'task_create');
+    assert.deepStrictEqual(Object.keys(c).sort(), ['id', 'rev', 'spec_head', 'state']);
+    assert.deepStrictEqual([c.state, c.spec_head], ['open', 'do the thing']);
+    const full = assertOk(await a.call('task_create', { ...args, view: 'debug' }), 'task_create');
+    has(full, ['id', 'spec', 'acceptance', 'files_owned', 'state'], 'task_create view debug');
 
     const asg = assertOk(await a.call('task_assign', { task_id: c.id, worker_id: 'wk-1' }), 'task_assign');
     has(asg, ['task', 'old_lease', 'new_lease', 'paused_worker'], 'task_assign');
-    has(asg.new_lease, ['id', 'task_id', 'holder', 'holder_role', 'expires_at'], 'task_assign new_lease');
+    // The lease taken is shown as a lease (id, holder, expiry), not the stored row with its seq, run, supersedes and release fields.
+    assert.deepStrictEqual(Object.keys(asg.new_lease).sort(), ['expires_at', 'holder', 'holder_role', 'id'], 'task_assign new_lease');
     assert.strictEqual(asg.task.state, 'assigned');
   });
 });
 
-test('A8 task_evaluate returns the task row with its results, and refuses a missing worktree or a non-string base at the boundary', async (t) => {
+test('A8 task_evaluate returns the task row with its results, and refuses a missing task_id or a non-string base at the boundary (worktree defaults in the core, ADR 0053)', async (t) => {
   await withRole('orchestrator', t, async (a, data) => {
     const e = assertOk(await a.call('task_evaluate', { task_id: 'task-1', worktree: data, base: 'main' }), 'task_evaluate');
     has(e, ['id', 'state', 'results'], 'task_evaluate');
     has(e.results, ['evaluated_at', 'executable', 'passed', 'checks'], 'task_evaluate results');
-    for (const [args, re] of [[{ task_id: 't' }, /needs worktree/], [{ worktree: data }, /needs task_id/], [{ task_id: 't', worktree: data, base: 7 }, /base must be string/]]) {
+    for (const [args, re] of [[{ worktree: data }, /needs task_id/], [{ task_id: 't', worktree: data, base: 7 }, /base must be string/]]) {
       const r = await a.call('task_evaluate', args);
       assert.strictEqual(r.isError, true, `task_evaluate ${JSON.stringify(args)}: expected a refusal`);
       assert.strictEqual(r.structuredContent.error, 'E_ARGS');
@@ -143,20 +155,22 @@ test('A8 task_evaluate returns the task row with its results, and refuses a miss
   });
 });
 
-test('A8 the three worker-role tools return their rows', async (t) => {
+test('A8 the worker-role tool lease_release returns the compact answer: the task, its state and the lease released', async (t) => {
   await withRole('worker', t, async (a) => {
-    const l = assertOk(await a.call('lease_renew', { lease_id: 'lease-1' }), 'lease_renew');
-    has(l, ['id', 'task_id', 'holder', 'expires_at'], 'lease_renew');
-
     const rel = assertOk(await a.call('lease_release', { lease_id: 'lease-1', reason: 'done' }), 'lease_release');
-    has(rel, ['id', 'state', 'last_checkpoint_id'], 'lease_release');
+    assert.deepStrictEqual(Object.keys(rel).sort(), ['id', 'lease_id', 'state'], 'not the spec, the tree record or the checkpoint ids the core row carries');
     assert.strictEqual(rel.state, 'released');
+    assert.strictEqual(rel.lease_id, 'lease-1');
+  });
+});
 
-    const ck = assertOk(await a.call('checkpoint_write', { task_id: 'task-1', turn: 3, files_touched: ['src/a.js'], summary: 'did a thing', next_step: 'do the next', open_questions: ['is it right?'] }), 'checkpoint_write');
-    has(ck, ['id', 'task_id', 'worker_id', 'turn', 'files_touched', 'stated', 'source'], 'checkpoint_write');
-    assert.strictEqual(ck.source, 'worker', 'a worker checkpoint is recorded as the worker\'s claim');
-    assert.strictEqual(ck.worker_id, 'wk-1', 'the worker id comes from argv');
-    has(ck.stated, ['summary', 'next_step', 'open_questions'], 'checkpoint_write stated');
+test('A8 the removed worker tools are no tools', async (t) => {
+  await withRole('worker', t, async (a) => {
+    for (const [name, args] of [['lease_renew', { lease_id: 'lease-1' }], ['checkpoint_write', { task_id: 'task-1' }]]) {
+      const r = await a.call(name, args);
+      assert.strictEqual(r.isError, true, name);
+      assert.match(r.structuredContent.message, /no such tool/);
+    }
   });
 });
 
@@ -288,9 +302,9 @@ test('S11 worker_spawn takes effort: five levels in the listing, a bad level ref
     assert.strictEqual(bad.isError, true);
     assert.strictEqual(bad.structuredContent.error, 'E_ARGS');
     assert.match(bad.structuredContent.message, /effort/);
-    const w = assertOk(await a.call('worker_spawn', { substrate: 'claude-code', worktree: data, prompt: 'x', effort: 'xhigh' }), 'worker_spawn');
+    const w = assertOk(await a.call('worker_spawn', { substrate: 'claude-code', worktree: data, prompt: 'x', effort: 'xhigh', view: 'debug' }), 'worker_spawn');
     assert.strictEqual(w.__effort, 'xhigh', 'the manager received effort: xhigh');
-    assert.strictEqual(assertOk(await a.call('worker_spawn', { substrate: 'claude-code', worktree: data, prompt: 'x' }), 'worker_spawn').__effort, null);
+    assert.strictEqual(assertOk(await a.call('worker_spawn', { substrate: 'claude-code', worktree: data, prompt: 'x', view: 'debug' }), 'worker_spawn').__effort, null);
   });
 });
 

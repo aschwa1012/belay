@@ -18,7 +18,7 @@ const RR = 'fake/log-reranker';
 let T, notes, OWN;
 const FIX = [[1, 0, 0], [0.9, 0.436, 0], [0.7, 0.714, 0], [0.2, 0.98, 0]];
 before(async () => {
-  T = await setup();
+  T = await setup({ levers: { plain: { search_log: true } } }); // the search log is off unless a run turns it on
   notes = FIX.map((v, i) => T.note(`log fixture ${i}`, { vec: v }));
   OWN = new Engine({ dataDir: T.dir, store: T.store, getEmbedder: null, owner: { opts: {} }, establishedBy: 'test' });
 });
@@ -185,6 +185,18 @@ test('a worker cannot attribute an index row to another worker: the logged worke
   assert.strictEqual(ev.task_id, null);
   const d = detail(ev);
   assert.deepStrictEqual([d.worker_id, d.for_worker, d.for_task], ['w-real', null, null]);
+});
+
+test('the search log is off by default: a run without memory.search_log writes no search or index row, and turning it on in the levers does', async () => {
+  const ST = require('../../src/core/search-tier.cjs');
+  assert.strictEqual(ST.leversOfSearch(OWN, T.who.tool('propose')).search_log, false, 'the default');
+  const s0 = events().length, i0 = events('index').length;
+  await search(OWN, T.who.tool('propose'), args());
+  await OWN.handle('memory.index', { caller: { ...T.who.harness('propose') }, query: 'loader', worker_id: 'w-off' });
+  assert.strictEqual(events().length, s0, 'no search row with the lever off');
+  assert.strictEqual(events('index').length, i0, 'no index row with the lever off');
+  await search(OWN, T.who.tool('propose'), args(), { levers: { search_log: true } });
+  assert.strictEqual(events().length, s0 + 1, 'the lever on: one row');
 });
 
 test('an internal search (log: false) and an abandoned run write no row; the run that answered does', async () => {

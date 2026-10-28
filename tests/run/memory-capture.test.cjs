@@ -191,7 +191,8 @@ test('a failed observation store is an ok 0 event with the code, is not retried,
     assert.strictEqual(ev.row_ids, undefined);
     assert.strictEqual(core.memories.length, 1, 'the turn is not lost: the turn row stands in');
     const t = core.stores.find((s) => s.type === 'turn');
-    assert.deepStrictEqual(Object.keys(t).sort(), ['provenance', 'tags', 'text', 'type', 'worker_id']);
+    assert.deepStrictEqual(Object.keys(t).sort(), ['created_at', 'provenance', 'tags', 'text', 'turn', 'type', 'worker_id']);
+    assert.deepStrictEqual([t.worker_id, t.turn], ['w1', 1], 'the turn row names the worker that took the turn and its number');
     assert.deepStrictEqual(t.tags, ['w1', 'turn:1']);
     assert.match(t.text, /^echo: /);
   });

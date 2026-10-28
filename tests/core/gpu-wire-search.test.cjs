@@ -84,6 +84,8 @@ test('a heavy search with no query vector embeds the query through the heavy pro
 test('a note written after the drain leaves the heavy tier behind, and it refuses by name', async () => {
   const late = T.note('late arrival to the project', { vec: [1, 0.9, 0] });
   await assert.rejects(ask({ query: 'anything at all' }), (e) => e.code === 'E_TIER_BEHIND' && e.detail.ids.includes(late));
+  // A worker is told how many rows are behind but not which: some may be notes it may not see.
+  assert.throws(() => require('../../src/core/search-tier.cjs').assertServable(E, heavy(), [NS], false), (e) => e.code === 'E_TIER_BEHIND' && e.detail.behind >= 1 && e.detail.ids.length === 0);
   const r = await HD.drainHeavy(E, EMB4, { namespaces: [NS] });
   assert.deepStrictEqual([r.written, r.done], [1, true]);
   assert.strictEqual((await ask({ query: 'anything at all' })).results.length, notes.length + 1);

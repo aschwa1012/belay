@@ -143,7 +143,7 @@ test('a hold writes the held row and leaves the note live in project, with its p
   assert.strictEqual(h.held.body.scrub.verified[0].source, `loader.js@${T.head.slice(0, 12)}`, 'the scrub receipt names what was verified');
   assert.strictEqual(T.row(n).namespace, `project/${PROJECT}`, 'the note stays live');
   assert.strictEqual(T.body(n).held.row, h.held.id);
-  const idx = await T.call(T.who.tool('apply'), 'memory.index', {});
+  const idx = await T.call(T.who.tool('apply'), 'memory.index', { max_bytes: 4096 }); // a held note ranks last (ADR 0047 amendment of 2026-10-25), so room is given
   assert.ok(idx.row_ids.includes(n), 'a held note is still in the index candidate set');
   const again = await scrub('apply', [holdWrong(n)]);
   assert.strictEqual(again.refused[0].code, 'E_EXISTS');

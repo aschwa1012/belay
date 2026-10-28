@@ -5,6 +5,14 @@
 const fs = require('node:fs');
 const L = require('./launch.cjs');
 const { fail } = require('./errors.cjs');
+const { isJobId } = require('../core/job-ids.cjs');
+const { WORKER_STATES } = require('../core/schema.cjs');
+const { isPathId, pathIdMessage } = require('../core/path-id.cjs'); // pure
+
+// A caller-named worker id becomes a directory under the data dir: refused before any file or row is written.
+function checkWorkerId(worker_id) {
+  if (worker_id !== null && worker_id !== undefined && !isPathId(worker_id)) fail('E_ARGS', `spawn ${pathIdMessage('worker_id', worker_id)}`, { field: 'worker_id' });
+}
 
 // memory_queries: up to 4 situation lines the orchestrator writes for the worker's memory index (each a `when`-shaped task line, at
 // most 160 bytes). Returns them trimmed, or [] when none were given.
@@ -20,10 +28,25 @@ function checkMemoryQueries(list) {
   });
 }
 
-function validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, permit_wait_ms, effort, worker_id, native_memory = null }) {
+// NTFS is case-insensitive, so W1 and w1 share one directory, and another run's row of the same id would be restated. A caller-named id is fresh only when no row in the
+// store has it (any state, any run, compared without case) and no directory holds it. A restart, resume or adopt of the same row never comes through spawn.
+// A job or knowledge worker's id is the harness's: the model cannot name one (tools.cjs refuses the prefixes), and the harness makes the worker's directory (the corpus, the stage files) before the spawn.
+const harnessOwned = (id) => isJobId(id) || id.startsWith('knowledge-');
+// One exception: this run's own stopped or dead worker of the exact same id has no live process, and the product re-spawns such an id in place (the row is restated, the directory reused).
+async function checkIdFree(core, dataDir, id, runId) {
+  const lower = id.toLowerCase();
+  const same = (r) => r.id === id && r.run_id === runId && (r.state === 'stopped' || r.state === 'dead');
+  const hits = ((await core.worker.list({ states: WORKER_STATES })).workers || []).filter((r) => String(r.id).toLowerCase() === lower);
+  const taken = hits.find((r) => !same(r));
+  if (taken) fail('E_ARGS', `worker_id ${JSON.stringify(id)} is taken: the store has a worker row ${JSON.stringify(taken.id)} (run ${taken.run_id}, ${taken.state}); choose another id`, { worker_id: id, existing_id: taken.id, existing_run_id: taken.run_id });
+  if (!hits.length && !harnessOwned(id) && fs.existsSync(L.workerDir(dataDir, id))) fail('E_ARGS', `worker_id ${JSON.stringify(id)} is taken: its worker directory exists with no row; choose another id`, { worker_id: id });
+}
+
+function validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, permit_wait_ms, effort, worker_id, native_memory = null, task_id = null }) {
+  checkWorkerId(worker_id);
   if (substrate !== 'claude-code' && substrate !== 'codex') fail('E_ARGS', 'substrate must be claude-code or codex', { substrate });
   if (!worktree) fail('E_ARGS', 'spawn needs a worktree');
-  if (typeof prompt !== 'string' || !prompt) fail('E_ARGS', 'spawn needs a prompt');
+  if (task_id ? prompt != null && typeof prompt !== 'string' : typeof prompt !== 'string' || !prompt) fail('E_ARGS', 'spawn needs a prompt (optional only with a task_id: belay sends the task\'s spec)');
   if (typeof permission_prompt !== 'boolean') fail('E_ARGS', 'spawn permission_prompt must be a boolean', { permission_prompt });
   if (!Number.isInteger(permit_wait_ms) || permit_wait_ms <= 0) fail('E_ARGS', 'spawn permit_wait_ms must be a positive integer', { permit_wait_ms });
   if (effort !== null && !L.EFFORT_LEVELS.includes(effort)) fail('E_ARGS', `spawn effort must be one of ${L.EFFORT_LEVELS.join(', ')} (ADR 0028)`, { effort });
@@ -51,4 +74,4 @@ async function discardUnstarted(workers, w, dirExisted) {
   if (!dirExisted) { try { fs.rmSync(w.dir, { recursive: true, force: true }); } catch { /* the original error is the one to report */ } }
 }
 
-module.exports = { discardUnstarted, validateSpawnArgs, checkMemoryQueries, QUERIES_MAX, QUERY_BYTES_MAX };
+module.exports = { checkWorkerId, checkIdFree, discardUnstarted, validateSpawnArgs, checkMemoryQueries, QUERIES_MAX, QUERY_BYTES_MAX };

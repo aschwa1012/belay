@@ -18,6 +18,7 @@ function admit(owner, c, req) {
     const caller = { ...entry.identity };
     if (Number.isInteger(sent.pid)) caller.pid = sent.pid;
     if (sent.channel === 'tool') caller.channel = 'tool';
+    else if (sent.channel === 'keepalive' && entry.identity.role === 'worker') caller.channel = 'keepalive'; // the worker adapter's lease keep-alive
     else if (sent.channel === 'harness') {
       // Only an orchestrator's bind admits the harness channel (the run manager); a worker's admits neither it nor any other role.
       if (entry.identity.role !== 'orchestrator') return { code: 'E_UNBOUND', message: `a ${entry.identity.role} bind does not admit the harness channel`, detail: { reason: 'channel', method: req.method, role: entry.identity.role } };
@@ -58,7 +59,8 @@ function admit(owner, c, req) {
   return Promise.resolve(owner.opts.operatorCheck({ conn: c, caller: sent, method: req.method })).then((v) => {
     if (!v || v.ok !== true) return open ? anonymous() : refuse('operator_check', `${req.method}: the operator check refused this connection${v && v.reason ? ` (${v.reason})` : ''}`);
     c.belayVia = v.via || 'peer';
-    params.caller = { ...sent, role: 'operator' };
+    const { peer_pid: forged, ...rest } = sent; // the checked peer's pid is the owner's finding, never the request's
+    params.caller = { ...rest, role: 'operator', ...(v.peer && Number.isInteger(v.peer.pid) ? { peer_pid: v.peer.pid } : {}) };
     return null;
   });
 }

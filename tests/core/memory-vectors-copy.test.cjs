@@ -15,7 +15,7 @@ before(async () => {
   dir = sandbox();
   store = new Store(`${dir}/memory.db`, { stamp: true });
   E = new Engine({ dataDir: dir, store, getEmbedder: null, owner: null, establishedBy: 'test' });
-  await E.handle('run.attach', { caller: proj, adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', project_writes: true }) });
+  await E.handle('run.attach', { caller: proj, adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: false, project_writes: true }) });
 });
 after(() => { store.close(); cleanup(dir); });
 

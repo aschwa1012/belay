@@ -38,7 +38,7 @@ function leversOfSearch(E, caller, over) {
   const run = leversOf(E, caller) || {};
   const pick = (k) => (over && over[k] !== undefined ? over[k] : run[k] !== undefined ? run[k] : DEFAULTS[k]);
   // The rerank bound stays under the MCP tool timeout whatever a lever says (110 s at most).
-  return { rerank_depth: pick('rerank_depth'), rerank_bound_ms: Math.min(Number(pick('rerank_bound_ms')) || 10000, BOUND_MAX_MS), on_heavy_failure: pick('on_heavy_failure'), search_log_cap_mb: pick('search_log_cap_mb') };
+  return { rerank_depth: pick('rerank_depth'), rerank_bound_ms: Math.min(Number(pick('rerank_bound_ms')) || 10000, BOUND_MAX_MS), on_heavy_failure: pick('on_heavy_failure'), search_log: pick('search_log') === true, search_log_cap_mb: pick('search_log_cap_mb') };
 }
 
 // ---- candidates ---------------------------------------------------------------------------------------------------
@@ -92,7 +92,7 @@ function candidates(E, tier, ns, m, o) {
   const db = E.store.db, c = E.store._loadNs(ns), t = Date.now(), hidden = o.hidden;
   let allowed = null;
   if (o.filterSql.where) allowed = new Set(db.prepare(`SELECT e.id FROM memory_entries e WHERE e.namespace = ? AND ${o.filterSql.where}`).all(ns, ...o.filterSql.params).map(r => r.id));
-  const live = (r) => !((r.ttl_at && r.ttl_at < t) || (!o.includeSuperseded && c.superseded.has(r.id)) || (allowed && !allowed.has(r.id)) || (hidden && hidden.has(r.id)));
+  const live = (r) => !((r.ttl_at && r.ttl_at < t) || (!o.includeSuperseded && c.superseded.has(r.id)) || (allowed && !allowed.has(r.id)) || (hidden && hidden.has(r.id)) || (o.legacy && o.legacy.has(r.id)));
   const out = [], lacking = [];
   if (isNano(tier)) {
     for (const r of c.rows) { if (!live(r)) continue; if (r.vec) out.push({ id: r.id, vec: r.vec }); else lacking.push(r.id); }
@@ -105,14 +105,15 @@ function candidates(E, tier, ns, m, o) {
   return out;
 }
 
-function behindError(tier, namespaces, ids) {
-  return err('E_TIER_BEHIND', `the ${tier.embedder} tier is ${ids.length} note${ids.length === 1 ? '' : 's'} behind in ${namespaces.join(', ')}, and a heavy tier never serves a partial index; drain its backlog (belay memory embed --model ${tier.embedder}) or search on the nano tier`, { embedder: tier.embedder, behind: ids.length, namespaces, ids: ids.slice(0, 20) });
+function behindError(tier, namespaces, ids, reveal = true) {
+  return err('E_TIER_BEHIND', `the ${tier.embedder} tier is ${ids.length} note${ids.length === 1 ? '' : 's'} behind in ${namespaces.join(', ')}, and a heavy tier never serves a partial index; drain its backlog (belay memory embed --model ${tier.embedder}) or search on the nano tier`, { embedder: tier.embedder, behind: ids.length, namespaces, ids: reveal ? ids.slice(0, 20) : [] });
 }
 
 // A heavy tier never serves a partial index: a note in scope (every visible one, held and superseded included, as the backlog counts) without
 // the tier's vector refuses the search, by name. A store with no cache table is not refused here: the semantic stage fails with E_NO_INDEX
 // and a hybrid search answers from keywords (N3).
-function assertServable(E, tier, namespaces) {
+// `reveal` false (a worker): the refusal counts the rows behind but names none, since some may be notes the worker may not see.
+function assertServable(E, tier, namespaces, reveal = true) {
   if (isNano(tier) || !VT.hasTable(E.store.db)) return;
   binding(E, tier, namespaces[0]); // E_ARGS for a tier without dims
   const t = Date.now(), behind = [];
@@ -120,7 +121,7 @@ function assertServable(E, tier, namespaces) {
     const c = E.store._loadNs(ns), h = heavyVectors(E, tier, ns, c);
     for (const r of c.rows) if (!(r.ttl_at && r.ttl_at < t) && !h.has(r.id) && !r.unrenderable) behind.push(r.id);
   }
-  if (behind.length) throw behindError(tier, namespaces, behind);
+  if (behind.length) throw behindError(tier, namespaces, behind, reveal);
 }
 
 // ---- rerank ---------------------------------------------------------------------------------------------------------
@@ -176,7 +177,8 @@ async function rerankHead(E, caller, o, ranked, rowsOf, lv) {
       const cause = { code: e.code, reason: 'shutdown', message: e.message };
       return { ranked, info: { ran: false, skipped: true, cause }, failed: { mode: 'rerank', code: cause.code, message: cause.message } };
     }
-    if (lv.on_heavy_failure === 'pause') {
+    // A search with no query text (a vector only) cannot be reranked: that is the caller's shape, not a failing model, so it never pauses.
+    if (lv.on_heavy_failure === 'pause' && !(e.detail && e.detail.reason === 'no_query')) {
       e.detail = { ...e.detail, advised: true }; // the reranker's own advice below; adviseEmbedderFailure's text is about the embedder
       e.message = `${e.message} ${pauseAdvice(caller)}`;
       notifyEmbedderFailure(E, caller, 'memory.search', e);
@@ -200,5 +202,5 @@ function rankRecord(before, after, cap, order = 'score') {
 module.exports = {
   NANO_TIER, isNano, tierFor, leversOfSearch, binding, countRows, nanoKey, boundFor, candidates, assertServable, rerankHead, rankRecord,
   visibleRowFilter: VT.visibleRowFilter, logSearch: SL.record,
-  logIndex: (E, caller, o) => SL.record(E, caller, { kind: 'index', tier: NANO_TIER, pinned_tier: (o && o.for_worker && HT.tierForWorker(E, caller, o.for_worker)) || tierFor(E, caller), ...o, capMb: leversOfSearch(E, caller).search_log_cap_mb }),
+  logIndex: (E, caller, o) => leversOfSearch(E, caller).search_log && SL.record(E, caller, { kind: 'index', tier: NANO_TIER, pinned_tier: (o && o.for_worker && HT.tierForWorker(E, caller, o.for_worker)) || tierFor(E, caller), ...o, capMb: leversOfSearch(E, caller).search_log_cap_mb }),
 };

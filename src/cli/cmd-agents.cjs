@@ -26,6 +26,7 @@ const { openCore } = require('../core/index.cjs');
 const { WORKER_STATES } = require('../core/schema.cjs');
 const D = require('./agents-derive.cjs');
 const { stallAge } = require('./cmd-notices.cjs');
+const TU = require('./transcript-usage.cjs');
 
 const USAGE = 'usage: belay agents [run-id] [--dir <orchestrator_dir>] [--data <dir>] [--json]\n';
 const TAIL_BYTES = 256 * 1024; // the first window; widened by 4x only while no assistant line of the agent's own is in it
@@ -174,6 +175,32 @@ function orchestratorRow(run, streamPath, now = Date.now()) {
   };
 }
 
+// An interactive orchestrator writes no stream: its usage is read from its session transcript (transcript-usage.cjs).
+// Only when its stream gave nothing. The dollar figure is an estimate from that transcript and exists only for a
+// model with a rate; otherwise the tokens are shown and the cost stays null with the reason in cost_source.
+function fillFromTranscript(orch, orchDir, run, opts = {}) {
+  if (orch.context_tokens != null || orch.cost_usd != null) return;
+  const { file, refused } = TU.sessionFileOf(orchDir, run, opts);
+  if (!file) { if (refused.length) orch.cost_note = `session transcript not read: ${refused[0]}`; return; }
+  const u = TU.readUsage(file, undefined, opts);
+  if (u.refused) { orch.cost_note = `session transcript not read: ${u.refused}`; return; }
+  orch.transcript_path = file;
+  if (!u.exists || !u.messages) return;
+  orch.transcript_usage = { tokens: u.tokens, messages: u.messages };
+  // The same rule as a worker's stream (D.cacheOf), over the transcript: its latest message and latest cache-write split.
+  const fl = u.last_first_line;
+  orch.cache = D.cacheOf({ exists: true, bytes_read: u.bytes_read, first_assistant: fl, assistant: fl, split: u.split }, Number.isFinite(opts.now) ? opts.now : Date.now());
+  orch.cache.ttl_established_by = u.split
+    ? `${orch.cache.ttl_established_by} of the session transcript ${file}`
+    : `no assistant line of the session transcript ${file} has a non-zero message.usage.cache_creation split; the lifetime is not assumed`;
+  orch.context_tokens = u.context_tokens;
+  if (u.model_seen) { orch.model_seen = u.model_seen; if (orch.model == null) orch.model = u.model_seen; }
+  if (u.cost_usd != null) {
+    orch.cost_usd = u.cost_usd; orch.cost_source = 'estimate from the session transcript belay launched; /clear starts a new one that is not followed'; orch.cost_basis = 'transcript, API rates';
+    if (u.cache_write_assumed_5m) orch.cost_note = `${u.cache_write_assumed_5m} message(s) gave no 5m/1h cache-write split: all priced at the 5m rate`;
+  } else orch.cost_note = `no rate for ${u.unpriced_models.join(', ') || 'this model'}: tokens only (from the session belay launched; /clear starts a new one that is not followed)`;
+}
+
 // An orchestrator with tokens and no result line of its own (the run is live: one turn, no result yet)
 // takes the window from the latest result line of another agent of the run that ran the SAME model.
 // Never from a different model, and never estimated: otherwise the window stays unknown.
@@ -215,7 +242,7 @@ function workerRow(w, tasksById, dataDir, { now, pending, leaseTaskOf = new Map(
     model: w.model != null ? w.model : ctx.model_seen, model_seen: ctx.model_seen, effort: nn(w.effort_requested), effort_is: 'requested',
     state: nn(w.state), context_tokens: ctx.context_tokens, context_window: ctx.context_window, context_pct: ctx.context_pct,
     window_source: ctx.context_window != null ? 'own result line' : null,
-    cost_usd: rowCost, cost_source: rowCost != null ? 'worker row cost_usd' : null,
+    cost_estimated: !!w.cost_source, cost_usd: rowCost, cost_source: rowCost == null ? null : 'worker row cost_usd', ...estimatedCost(w, rowCost),
     ...D.workerDisplay(w, { pending: pending.has(w.id), stall: stallAge(w, dataDir, now) }), cache: D.cacheOf(scan, now),
     stream_path: streamPath, stream_exists: !!scan.exists, stream_error: scan.error, result_ts_ms: scan.result_ts_ms,
   };
@@ -233,6 +260,17 @@ function leaseTasksOf(tasks) {
   return out;
 }
 
+// The estimate for messages no result line reported, beside the reported cost and never inside it.
+function estimatedCost(w, rowCost) {
+  const e = w.cost_estimate && typeof w.cost_estimate === 'object' ? w.cost_estimate : null;
+  const est = e && typeof e.usd === 'number' ? e.usd : null;
+  return {
+    cost_estimated_usd: est, cost_estimated_source: w.cost_source ? 'estimated from the worker stream: messages no result line reported' : null,
+    cost_estimate_truncated: !!(e && e.truncated), cost_estimate_empty: !!(e && e.truncated && !e.messages),
+    cost_combined_usd: rowCost == null && est == null ? null : (rowCost || 0) + (est || 0),
+  };
+}
+
 function footerOf(agents) {
   const costed = agents.filter((a) => a.cost_usd != null);
   const stamped = agents.map((a) => a.result_ts_ms).filter((t) => t != null);
@@ -240,6 +278,9 @@ function footerOf(agents) {
     agents: agents.length,
     total_cost_usd: costed.length ? costed.reduce((s, a) => s + a.cost_usd, 0) : null,
     cost_not_recorded: agents.length - costed.length,
+    cost_estimated_agents: agents.filter((a) => a.cost_estimated).length,
+    total_cost_estimated_usd: agents.some((a) => a.cost_estimated_usd != null) ? agents.reduce((s, a) => s + (a.cost_estimated_usd || 0), 0) : null,
+    total_cost_combined_usd: agents.some((a) => a.cost_combined_usd != null) ? agents.reduce((s, a) => s + (a.cost_combined_usd || 0), 0) : null,
     as_of_ms: stamped.length ? Math.max(...stamped) : null,
     as_of_source: 'timestamp of the last stream line before the newest result line counted; a result line carries none of its own',
     highest_context_pct: agents.reduce((m, a) => (a.context_pct != null && (m == null || a.context_pct > m) ? a.context_pct : m), null),
@@ -264,13 +305,14 @@ function renderText(rc) {
     const head = `${P.v(a.id, 40)}  role ${P.v(a.role, 20)}  model ${P.v(a.model, 40)}  effort ${P.v(a.effort, 10)}  state ${P.v(a.state, 12)}  display ${P.v(a.display_state, 12)}`;
     lines.push(...P.wrapLine('', head));
     lines.push(...P.wrapLine('  ', `task ${task}  cache ${D.cacheText(a.cache)}`));
-    const cost = a.cost_usd == null ? 'cost not recorded' : `cost ${P.money(a.cost_usd)} (${a.cost_source})`;
-    lines.push(...P.wrapLine('  ', `${contextText(a)}  ${cost}`));
+    const cost = a.cost_usd == null ? (a.cost_note ? `cost not priced (${P.v(a.cost_note, 80)})` : 'cost not recorded') : `cost ${P.money(a.cost_usd)} (${a.cost_source})`;
+    const estNote = a.cost_estimate_empty ? ' (not estimated: stream tail over 16 MB)' : a.cost_estimated ? ` + ${a.cost_estimated_usd == null ? 'not priced' : P.money(a.cost_estimated_usd)} estimated (${a.cost_estimated_source}${a.cost_estimate_truncated ? ', truncated' : ''}) = ${P.money(a.cost_combined_usd)}` : '';
+    lines.push(...P.wrapLine('  ', `${contextText(a)}  ${cost}${estNote}`));
   }
   if (!rc.agents.length) return '(no agents)\n';
   const f = rc.footer;
   const total = f.total_cost_usd == null ? 'not recorded' : P.money(f.total_cost_usd);
-  lines.push(`run cost ${total} over ${f.agents} agents, ${f.cost_not_recorded} with cost not recorded, as of ${P.iso(f.as_of_ms)}`);
+  lines.push(`run cost ${total}${f.cost_estimated_agents ? ' reported' : ''} over ${f.agents} agents, ${f.cost_not_recorded} with cost not recorded${f.cost_estimated_agents ? `, ${f.cost_estimated_agents} with an estimate from the stream (${f.total_cost_estimated_usd == null ? 'not priced' : P.money(f.total_cost_estimated_usd)}; combined ${P.money(f.total_cost_combined_usd)})` : ''}, as of ${P.iso(f.as_of_ms)}`);
   lines.push('');
   return lines.join('\n');
 }
@@ -287,36 +329,40 @@ async function run(ctx) {
 
   const core = await openCore({ dataDir, caller: { role: 'operator', run_id: parsed.runId || 'cli', pid: process.pid } });
   try {
-    const { chosen, source } = await P.chooseRun(core, parsed.runId);
-    if (!chosen) {
-      const message = parsed.runId ? `no run row exists for ${parsed.runId}` : 'no run rows exist';
-      if (!parsed.runId) {
-        const empty = { run_id: null, run_id_source: source, mode: null, mode_source: 'no run', started_at_ms: null, paused_at_ms: null, ended_at_ms: null, tasks: { done: 0, total: 0 }, max_fix_rounds: null, agents: [], footer: footerOf([]) };
-        return { code: 0, text: renderText(empty), json: empty };
+    return await core.readBatch(async () => { // one store copy for every read below
+      const { chosen, source } = await P.chooseRun(core, parsed.runId);
+      if (!chosen) {
+        const message = parsed.runId ? `no run row exists for ${parsed.runId}` : 'no run rows exist';
+        if (!parsed.runId) {
+          const empty = { run_id: null, run_id_source: source, mode: null, mode_source: 'no run', started_at_ms: null, paused_at_ms: null, ended_at_ms: null, tasks: { done: 0, total: 0 }, max_fix_rounds: null, fix_hard_cap: null, fix_hard_cap_source: null, agents: [], footer: footerOf([]) };
+          return { code: 0, text: renderText(empty), json: empty };
+        }
+        return { code: 1, text: `belay agents: ${P.clean(message)}\n`, json: { error: { code: 'E_NOT_FOUND', message, run_id: parsed.runId } } };
       }
-      return { code: 1, text: `belay agents: ${P.clean(message)}\n`, json: { error: { code: 'E_NOT_FOUND', message, run_id: parsed.runId } } };
-    }
-    const { workers: everyWorker } = await core.worker.list({ states: WORKER_STATES }); // `forgotten` rows keep their cost_usd: the money was spent
-    const { tasks: everyTask } = await core.task.list({});
-    const { requests: pendingReqs } = await core.permission.list({ run_id: chosen.id, states: ['pending'] });
-    const pending = new Set(pendingReqs.map((r) => r.worker_id));
-    const tasksById = new Map(everyTask.filter((t) => t.run_id === chosen.id).map((t) => [t.id, t]));
-    const leaseTaskOf = leaseTasksOf([...tasksById.values()]);
-    const { dir: orchDir, stream_path: orchStream } = P.orchestratorStreamPath(chosen.id, parsed.dir, ctx.cwd);
-    const workers = everyWorker.filter((w) => w.run_id === chosen.id).map((w) => workerRow(w, tasksById, dataDir, { now, pending, leaseTaskOf }));
-    const orchestrator = orchestratorRow(chosen, orchStream, now);
-    borrowWindow(orchestrator, workers);
-    const agents = [orchestrator, ...workers];
-    const runTasks = [...tasksById.values()];
-    const receipt = {
-      run_id: chosen.id, run_id_source: source, ...D.modeOf(orchDir, chosen, orchestrator.stream_exists ? D.streamStart(orchStream) : null),
-      started_at_ms: nn(chosen.started_at), paused_at_ms: nn(chosen.paused_at), ended_at_ms: nn(chosen.ended_at),
-      tasks: { done: runTasks.filter((t) => t.state === 'done').length, total: runTasks.length },
-      max_fix_rounds: nn(chosen.max_fix_rounds), // the run row records the limit, not the rounds used
-      memory_notice: require('../core/memory-notice.cjs').noticeForRun(chosen, null), // this run's own notice (or null): the panel shows it, never the config's
-      agents, footer: footerOf(agents), owner: core.ownerInfo(),
-    };
-    return { code: 0, text: renderText(receipt), json: receipt };
+      const { workers: everyWorker } = await core.worker.list({ states: WORKER_STATES }); // `forgotten` rows keep their cost_usd: the money was spent
+      const { tasks: everyTask } = await core.task.list({});
+      const { requests: pendingReqs } = await core.permission.list({ run_id: chosen.id, states: ['pending'] });
+      const pending = new Set(pendingReqs.map((r) => r.worker_id));
+      const tasksById = new Map(everyTask.filter((t) => t.run_id === chosen.id).map((t) => [t.id, t]));
+      const leaseTaskOf = leaseTasksOf([...tasksById.values()]);
+      const { dir: orchDir, stream_path: orchStream } = P.orchestratorStreamPath(chosen.id, parsed.dir, ctx.cwd);
+      const workers = everyWorker.filter((w) => w.run_id === chosen.id).map((w) => workerRow(w, tasksById, dataDir, { now, pending, leaseTaskOf }));
+      const orchestrator = orchestratorRow(chosen, orchStream, now);
+      fillFromTranscript(orchestrator, orchDir, chosen, { now });
+      borrowWindow(orchestrator, workers);
+      const agents = [orchestrator, ...workers];
+      const runTasks = [...tasksById.values()];
+      const receipt = {
+        run_id: chosen.id, run_id_source: source, ...D.modeOf(orchDir, chosen, orchestrator.stream_exists ? D.streamStart(orchStream) : null),
+        started_at_ms: nn(chosen.started_at), paused_at_ms: nn(chosen.paused_at), ended_at_ms: nn(chosen.ended_at),
+        tasks: { done: runTasks.filter((t) => t.state === 'done').length, total: runTasks.length },
+        max_fix_rounds: nn(chosen.max_fix_rounds), // the run row records the limit, not the rounds used
+        fix_hard_cap: nn(chosen.fix_hard_cap), fix_hard_cap_source: nn(chosen.fix_hard_cap_source),
+        memory_notice: require('../core/memory-notice.cjs').noticeForRun(chosen, null), // this run's own notice (or null): the panel shows it, never the config's
+        agents, footer: footerOf(agents), owner: core.ownerInfo(),
+      };
+      return { code: 0, text: renderText(receipt), json: receipt };
+    });
   } catch (e) {
     return { code: 1, text: `belay agents: ${P.clean(e.message, 200)}\n`, json: { error: { code: e.code || 'E_INTERNAL', message: e.message } } };
   } finally {
@@ -324,4 +370,4 @@ async function run(ctx) {
   }
 }
 
-module.exports = { run, leaseTasksOf, renderText, scanTail, contextOf, orchestratorRow, workerRow, TAIL_MAX_BYTES };
+module.exports = { run, fillFromTranscript, leaseTasksOf, renderText, scanTail, contextOf, orchestratorRow, workerRow, TAIL_MAX_BYTES };

@@ -8,6 +8,7 @@ const assert = require('node:assert');
 const { core, sandbox, cleanup, callerFor, listDataDir } = require('./helpers.cjs');
 
 const { openCore } = core('index.cjs');
+const { teardown } = require('../helpers/teardown.cjs');
 const LINE_MAX = 400;
 const DOC_MAX = 4096;
 
@@ -32,13 +33,16 @@ before(async () => {
 });
 
 after(async () => {
-  await worker.close();
-  await orch.shutdownOwner();
-  await orch.close();
-  cleanup(dir);
+  // Every step runs even if an earlier one fails (a before hook that failed part-way leaves some unset); the first failure is thrown.
+  await teardown(null, [
+    () => worker && worker.close(),
+    () => orch && orch.shutdownOwner(),
+    () => orch && orch.close(),
+    () => cleanup(dir),
+  ]);
 });
 
-test('resumeLine names the task, its state, the lease and the store query, inside 400 bytes', async () => {
+test('resumeLine names the task, its state, the lease and the briefing, inside 400 bytes', async () => {
   const l = await orch.continuity.resumeLine({ task_id: taskId });
   assert.ok(l.bytes <= LINE_MAX, `${l.bytes} bytes exceeds the ${LINE_MAX}-byte hook budget`);
   assert.strictEqual(l.bytes, Buffer.byteLength(l.text, 'utf8'));
@@ -48,8 +52,16 @@ test('resumeLine names the task, its state, the lease and the store query, insid
   assert.ok(l.text.includes(taskId));
   assert.ok(l.text.includes('assigned'));
   assert.ok(l.text.includes(leaseId));
-  assert.ok(l.text.includes(`memory_search "${taskId}"`), 'the line must carry the query that recovers context');
+  assert.ok(l.text.endsWith(`Recover context: briefing task_id=${taskId}.`), 'a resume points to the briefing, which holds the context');
+  assert.ok(!l.text.includes('memory_search') && !l.text.includes('No worker-stated'), 'no search that cannot succeed, no claim about a checkpoint nobody asks for');
   assert.strictEqual(l.checkpoint_id, null, 'no checkpoint exists yet');
+});
+
+test('a first assignment sends only the task and its lease', async () => {
+  const l = await orch.continuity.resumeLine({ task_id: taskId, first: true });
+  assert.strictEqual(l.text, `task ${taskId} lease=${leaseId}.`);
+  assert.strictEqual(l.bytes, Buffer.byteLength(l.text, 'utf8'));
+  assert.strictEqual(l.lease_id, leaseId);
 });
 
 test('a worker-stated next step is carried and labelled, and an overlong one is truncated to fit', async () => {
@@ -65,7 +77,7 @@ test('a worker-stated next step is carried and labelled, and an overlong one is 
   l = await orch.continuity.resumeLine({ task_id: taskId });
   assert.ok(l.bytes <= LINE_MAX, `${l.bytes} bytes: an overlong claim must be truncated, never allowed to overflow`);
   assert.ok(l.text.includes('xxxxx'));
-  assert.ok(l.text.endsWith(`memory_search "${taskId}".`), 'truncation trims the claim, not the store query');
+  assert.ok(l.text.endsWith(`briefing task_id=${taskId}.`), 'truncation trims the claim, not the pointer to the briefing');
 });
 
 test('multi-byte text never splits a character or overflows the budget', async () => {
@@ -96,7 +108,7 @@ test('resumeDoc has the named sections, labels the unverified one, and stays ins
 
 test('the document carries the three orientation rules and truncation cannot drop them', async () => {
   const d = await orch.continuity.resumeDoc({ task_id: taskId });
-  for (const rule of ['cannot see your peers', 'task_list and memory_search', 'a peer answers with a claim']) {
+  for (const rule of ['cannot see your peers', 'Orient with task_list', 'a peer answers with a claim']) {
     assert.ok(d.text.includes(rule), `the brief states: ${rule} (ADR 0013 2)`);
   }
   // The rules are header, not a section, so the section budget can never eat them.
@@ -116,6 +128,34 @@ test('an enormous spec is truncated to fit rather than overflowing', async () =>
   assert.ok(l.bytes <= LINE_MAX);
 });
 
+test('a briefing that fits the budget cuts nothing: a 900 byte spec arrives whole', async () => {
+  const spec = `${'Write the week view. '.repeat(40)}END-OF-SPEC`.slice(-900);
+  const t = await orch.task.create({ spec, files_owned: ['lib/week.js'] });
+  await orch.task.assign({ task_id: t.id, worker_id: wid });
+  const d = await orch.continuity.resumeDoc({ task_id: t.id });
+  assert.ok(d.bytes < 2000, `${d.bytes} bytes: the whole document is well inside the budget`);
+  assert.ok(d.text.includes(spec), 'the spec is whole, to its last words');
+  assert.ok(!d.text.includes('truncated'), 'nothing says it was cut');
+  assert.ok(d.sections.every((s) => !s.includes('(truncated)')), d.sections.join(', '));
+});
+
+test('an oversized briefing keeps the short sections whole and cuts only the ones over their share', async () => {
+  const t = await orch.task.create({ spec: 'S'.repeat(20000), files_owned: ['big/other'] });
+  await orch.task.assign({ task_id: t.id, worker_id: wid });
+  const d = await orch.continuity.resumeDoc({ task_id: t.id });
+  assert.ok(d.bytes <= DOC_MAX);
+  assert.deepStrictEqual(d.sections.filter((s) => s.includes('(truncated)')), ['spec (truncated)']);
+  assert.ok(d.text.includes('- big/other') && d.text.includes('held by'), 'the files and the lease are whole');
+});
+
+test('shares: sections under the fair share keep their size, the rest split what remains', () => {
+  const { shares } = core('continuity.cjs');
+  assert.deepStrictEqual(shares([10, 20, 5000], 1000), [10, 20, 970]);
+  assert.deepStrictEqual(shares([300, 300, 300], 1000), [300, 300, 300]);
+  assert.deepStrictEqual(shares([900, 900, 50], 1000), [475, 475, 50]);
+  assert.deepStrictEqual(shares([5, 5], 0), [0, 0]);
+});
+
 test('a briefing needs an id it can resolve, and resolves a worker through its lease', async () => {
   await assert.rejects(orch.continuity.resumeLine({}), e => e.code === 'E_ARGS');
   await assert.rejects(orch.continuity.resumeDoc({ task_id: 'no-such-task' }), e => e.code === 'E_NOT_FOUND');
@@ -124,9 +164,10 @@ test('a briefing needs an id it can resolve, and resolves a worker through its l
   assert.strictEqual(l.task_id, taskId);
 });
 
-test('reading a briefing writes nothing to the data dir', async () => {
+test('reading a briefing writes nothing to the data dir', async (tcx) => {
   await orch.shutdownOwner();
   const reader = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
+  tcx.after(() => Promise.resolve().then(() => reader.close()));
   const before = listDataDir(dir);
   await reader.continuity.resumeLine({ task_id: taskId });
   await reader.continuity.resumeDoc({ task_id: taskId });

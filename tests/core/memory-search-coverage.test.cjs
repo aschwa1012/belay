@@ -35,9 +35,15 @@ test('absence is not established while in-scope rows have no vector: the row cou
     assert.strictEqual(r.searched.rows_considered, 2);
     assert.strictEqual(r.scanned, 0);
     assert.strictEqual(r.absence_established, false, 'a semantic scan that saw no row cannot join in establishing absence');
-    assert.strictEqual(r.searched.rows_without_vector, 2);
-    assert.match(r.warning, /^2 in-scope rows have no vector/);
-    assert.match(r.warning, /does not mean no such memory/);
+    // ADR 0057 decision 5: rows in scope and not one with a vector is a degraded semantic half, named in modes_failed, not run.
+    assert.deepStrictEqual(r.modes_run, ['keyword']);
+    assert.deepStrictEqual(r.modes_failed.map(f => [f.mode, f.code]), [['semantic', 'E_NO_VECTORS']]);
+    assert.match(r.modes_failed[0].message, /none of the 2 in-scope rows has a vector/);
+    assert.match(r.warning, /^semantic search did not run \(E_NO_VECTORS\); these are keyword matches only/);
+    assert.match(r.warning, /does not mean no such entry/);
+    const sem = await search(E, { namespace: 'n', query: 'zzzqqq', mode: 'semantic' });
+    assert.deepStrictEqual(sem.modes_run, [], 'a semantic search with nothing to see answers, degraded, rather than throwing');
+    assert.strictEqual(sem.modes_failed[0].code, 'E_NO_VECTORS');
     const k = await search(E, { namespace: 'n', query: 'CreateProcess', mode: 'keyword' });
     assert.strictEqual(k.results.length, 1, 'the row is findable by keyword');
     // One embedded row beside an unembedded one: the namespace is bound, yet the unembedded row is still uncovered.
@@ -46,7 +52,9 @@ test('absence is not established while in-scope rows have no vector: the row cou
     const mixed = await search(E, { namespaces: ['m'], query: 'zzzqqq', mode: 'hybrid' });
     assert.strictEqual(mixed.absence_established, false);
     assert.strictEqual(mixed.searched.rows_without_vector, 1);
-    assert.strictEqual(mixed.warning, null, 'the embedded row answered, so the page is not empty and needs no empty-result warning');
+    // ADR 0057 decision 6 (C4): the gap is named beside results too, not only on an empty page.
+    assert.match(mixed.warning, /^1 in-scope row has no vector, so semantic search could not see it; keyword search alone covers it/);
+    assert.deepStrictEqual(mixed.modes_run, ['semantic', 'keyword'], 'one embedded row: the semantic half ran');
   } finally { store.close(); cleanup(dir); }
 });
 
@@ -85,11 +93,12 @@ test('min_score, dup_threshold and list limit are type-checked in core', async (
 
 const snap = d => fs.readdirSync(d, { recursive: true }).sort().map(f => { const s = fs.statSync(path.join(d, f)); return `${f}:${s.size}:${s.mtimeMs}`; }).join('|');
 
-test('a wedged owner (live pid, no pipe): hybrid answers from the copy naming E_OWNER_LOST, semantic is refused, no file changes', async () => {
+test('a wedged owner (live pid, no pipe): hybrid answers from the copy naming E_OWNER_LOST, semantic is refused, no file changes', async (tcx) => {
   const dir = sandbox();
   let c;
   try {
     const store = new Store(path.join(dir, 'memory.db'), { stamp: true });
+    tcx.after(() => Promise.resolve().then(() => store.db.isOpen !== false && store.close()));
     store.store({ namespace: 'run/r', worker_id: 'w', text: 'The owner pipe wedges when the loop blocks on CreateProcess' });
     store.close();
     // owner.json names this live process as the listening owner, and nothing serves the pipe.

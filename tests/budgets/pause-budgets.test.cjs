@@ -81,10 +81,12 @@ test('budgets: pause and resume against a data dir that does not exist each add 
   } finally { cleanup(dir); }
 });
 
-test('budgets: pause and resume against a dead store with no such worker each add under 500 ms to the host floor, interleaved', async () => {
+test('budgets: pause and resume against a dead store with no such worker each add under 500 ms to the host floor, interleaved', async (tcx) => {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const plantCore = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: 'run-pause-budgets', pid: process.pid }, embed: false });
+  tcx.after(() => Promise.resolve().then(() => plantCore.shutdownOwner()));
+  tcx.after(() => Promise.resolve().then(() => plantCore.close()));
   await plantCore.run.attach({ adapter_pid: process.pid });
   await plantCore.shutdownOwner();
   await plantCore.close();

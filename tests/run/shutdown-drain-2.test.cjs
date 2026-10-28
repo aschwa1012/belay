@@ -40,7 +40,7 @@ function cleanup(sb) {
 // shutdown() re-elected a real store owner in this process (probe-late-turn, 2 of 2 at the reviewed head).
 // Plant (worker.cjs or turn-record.cjs): drop the `ctx.shutdownFlags.closed` check in turn-record.cjs —
 // this test must turn red.
-test('shutdown: a turn_end arriving after shutdown writes nothing and elects no store owner', async () => {
+test('shutdown: a turn_end arriving after shutdown writes nothing and elects no store owner', async (tcx) => {
   const { sb, dataDir, wt } = sandbox('h18');
   const runId = 'run-h18';
   let core;
@@ -48,6 +48,7 @@ test('shutdown: a turn_end arriving after shutdown writes nothing and elects no 
     core = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
     await core.run.attach({ adapter_pid: process.pid });
     const m = createRunManager({ core, dataDir, runId, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: USER_SETTINGS } });
+    tcx.after(() => Promise.resolve().then(() => m.shutdown()));
     await m.spawn({ substrate: 'claude-code', worktree: wt, prompt: 'one', worker_id: 'w1' });
     const w = m._worker('w1');
 
@@ -91,7 +92,7 @@ test('shutdown: a turn_end arriving after shutdown writes nothing and elects no 
 // mechanism whose ordering this test exists to show. Plants: remove the `markClosed()` call in
 // manager.cjs's `shutdown` closure — red; restore the start's order in lifecycle.cjs (`core.shutdownOwner()`
 // before the queues drain) — red.
-test('shutdown through the manager: a late exit fill-in after shutdown elects no store owner', async () => {
+test('shutdown through the manager: a late exit fill-in after shutdown elects no store owner', async (tcx) => {
   const { sb, dataDir, wt } = sandbox('h19');
   const runId = 'run-h19';
   let core;
@@ -99,6 +100,7 @@ test('shutdown through the manager: a late exit fill-in after shutdown elects no
     core = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
     await core.run.attach({ adapter_pid: process.pid });
     const m = createRunManager({ core, dataDir, runId, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: USER_SETTINGS } });
+    tcx.after(() => Promise.resolve().then(() => m.shutdown()));
     await m.spawn({ substrate: 'claude-code', worktree: wt, prompt: 'one', worker_id: 'w1' });
     await m._waitTurn('w1', 8000);
     await m.pause({ worker_id: 'w1', by: 'operator:1' });

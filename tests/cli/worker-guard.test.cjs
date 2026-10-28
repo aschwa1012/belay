@@ -28,7 +28,7 @@ test('every command of mode W or C, and the memory write verbs, are refused unde
   const env = { BELAY_WORKER_ID: 'w-1' };
   for (const [name, spec] of Object.entries(COMMANDS)) {
     if (spec.mode === 'R') continue;
-    assert.match(G.workerRefusal({ name, mode: spec.mode, argv: [], env }) || '', /refused/, `${name} (mode ${spec.mode})`);
+    assert.match(G.workerRefusal({ name, mode: spec.mode, argv: name === 'settings' ? ['k', 'v'] : [], env }) || '', /refused/, `${name} (mode ${spec.mode})`);
   }
   for (const verb of ['verify', 'import', 'embed', 'restore', 'archive', 'promote', 'scrub', 'review', 'resolve', 'nonsense', undefined]) {
     assert.match(G.workerRefusal({ name: 'memory', mode: 'R', argv: verb === undefined ? [] : [verb], env }) || '', /refused/, `memory ${verb}`);
@@ -56,4 +56,22 @@ test('the built CLI: under the marker memory verify exits 1 and writes nothing; 
     const read = cli(['status', '--data', data], { ...base(), BELAY_WORKER_ID: 'w-1' });
     assert.doesNotMatch(read.stderr, /BELAY_WORKER_ID/, 'a read command answers under the marker');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('the memory verbs that read in one form are not refused under the marker; their write forms are', () => {
+  const env = { BELAY_WORKER_ID: 'w-1' };
+  const refused = (argv) => /refused/.test(G.workerRefusal({ name: 'memory', mode: 'R', argv, env }) || '');
+  for (const argv of [['held'], ['held', '--awaiting'], ['held', '--project', 'p'], ['embed', '--dry-run'], ['embed', '--reembed', '--template', 'v2', '--dry-run'], ['restore', 'n1', '--candidates']]) assert.strictEqual(refused(argv), false, argv.join(' '));
+  for (const argv of [['held', 'settle', 'n1'], ['held', '--project', 'p', 'settle', 'n1'], ['embed'], ['embed', '--project', 'p'], ['restore', 'n1'], ['constructor']]) assert.strictEqual(refused(argv), true, argv.join(' '));
+});
+
+test('the read forms are judged by the command\'s own parser: a flag name used as a value is not the flag', () => {
+  const env = { BELAY_WORKER_ID: 'w-1' };
+  const refused = (argv) => /refused/.test(G.workerRefusal({ name: 'memory', mode: 'R', argv, env }) || '');
+  for (const argv of [
+    ['restore', 'n1', '--reason', '--candidates'], ['restore', '--reason', '--candidates', 'n1'], ['restore', 'n1', '--reason=--candidates'],
+    ['embed', '--project', '--dry-run'], ['embed', '--template', '--dry-run'], ['embed', '--dry-run=true'],
+    ['--candidates', 'restore', 'n1'], ['--dry-run', 'embed'], ['held', '--reason', 'settle'], ['held', 'settle', 'n1', '--reason', 'x'], ['held', '--bogus'],
+  ]) assert.strictEqual(refused(argv), true, argv.join(' '));
+  for (const argv of [['restore', 'n1', '--candidates'], ['restore', 'n1', '--candidates', '--reason', 'x'], ['embed', '--dry-run'], ['embed', '--project', 'p', '--dry-run'], ['held', '--project', 'p']]) assert.strictEqual(refused(argv), false, argv.join(' '));
 });

@@ -49,8 +49,9 @@ test('settings: every memory lever is listed as memory.<key> with its default, d
       assert.ok(s.type, `${s.key} names its type`);
     }
     const agents = r.out.settings.filter((s) => s.key.startsWith('agents.'));
-    assert.deepStrictEqual(agents.map((s) => s.key).slice(0, 4), ['agents.coder.model', 'agents.coder.effort', 'agents.coder.codex_model', 'agents.tester.model']);
-    assert.strictEqual(agents.length, 14, 'four worker types with model, effort and codex_model, and the orchestrator with model and effort');
+    assert.deepStrictEqual(agents.map((s) => s.key).slice(0, 4), ['agents.coder.model', 'agents.coder.effort', 'agents.coder.codex_model', 'agents.coder.tools']);
+    assert.strictEqual(agents.length, 18, 'four worker types with model, effort, codex_model and tools (ADR 0054), and the orchestrator with model and effort');
+    assert.deepStrictEqual(agents.filter((s) => s.key.endsWith('.tools')).map((s) => [s.key, s.value.join(',')]), [['agents.coder.tools', 'Read,Edit,Write,Glob,Grep,Bash'], ['agents.tester.tools', 'Read,Edit,Write,Glob,Grep,Bash'], ['agents.reviewer.tools', 'Read,Edit,Write,Glob,Grep,Bash'], ['agents.researcher.tools', 'Read,Glob,Grep,WebFetch,WebSearch']], 'the built-in tool policy');
     assert.deepStrictEqual(agents.filter((s) => s.key.endsWith('codex_model')).map((s) => [s.key, s.value]), ['coder', 'tester', 'reviewer', 'researcher'].map((t) => [`agents.${t}.codex_model`, null]));
     assert.ok(agents.every((s) => s.source === 'default'));
     const by = Object.fromEntries(agents.map((s) => [s.key, s.value]));
@@ -356,5 +357,52 @@ test('settings: the eval-only run-spec levers are not settings, and a config mem
     assert.ok(!fs.existsSync(`${dir}/belay.config.json`), 'nothing was written');
     writeConfig(dir, { memory: { handback_question: true } });
     assert.match(String(cli(dir, ['settings']).out.memory_error), /handback_question is eval-only/);
+  } finally { cleanup(dir); }
+});
+
+test('settings: the 0.2.0 on_embedder_failure names are read and written as the names a run maps them to', () => {
+  const dir = project();
+  try {
+    writeConfig(dir, { memory: { on_embedder_failure: 'continue' } });
+    const r = cli(dir, ['settings', 'memory.on_embedder_failure']);
+    assert.strictEqual(r.code, 0);
+    assert.strictEqual(r.out.value, 'keyword');
+    assert.strictEqual(r.out.invalid, undefined);
+    assert.strictEqual(r.out.mapped_from, 'continue');
+    assert.match(r.out.note, /0\.2\.0 name/);
+    const list = cli(dir, ['settings']);
+    assert.strictEqual(list.out.settings.find((s) => s.key === 'memory.on_embedder_failure').value, 'keyword');
+    const w = cli(dir, ['settings', 'memory.on_embedder_failure', 'stop']);
+    assert.strictEqual(w.code, 0);
+    assert.strictEqual(w.out.mapped_from, 'stop');
+    assert.strictEqual(w.out.new.value, 'required');
+    assert.strictEqual(readConfig(dir).memory.on_embedder_failure, 'required');
+    const t = cli(dir, ['settings', 'memory.on_embedder_failure', 'continue'], { json: false });
+    assert.strictEqual(t.code, 0);
+    assert.match(t.stdout, /"continue" is the 0\.2\.0 name of "keyword"; wrote "keyword"/);
+    assert.strictEqual(cli(dir, ['settings', 'memory.on_embedder_failure', 'bogus']).code, 2);
+  } finally { cleanup(dir); }
+});
+
+test('settings: the held-note levers round-trip, a bad value leaves the file unchanged, and project_writes beside notes is refused', () => {
+  const dir = project();
+  try {
+    writeConfig(dir, { memory: { project: 'acme' } });
+    for (const [k, v, want] of [['held_visibility', 'warn', 'warn'], ['held_breaker_count', '9', 9], ['held_breaker_share', '0.5', 0.5]]) {
+      const w = cli(dir, ['settings', `memory.${k}`, v]);
+      assert.strictEqual(w.code, 0, w.stderr);
+      assert.strictEqual(w.out.new.value, want, k);
+      assert.strictEqual(cli(dir, ['settings', `memory.${k}`]).out.value, want, k);
+    }
+    const before = fs.readFileSync(`${dir}/belay.config.json`, 'utf8');
+    for (const [k, v] of [['held_visibility', 'hide'], ['held_breaker_count', '501'], ['held_breaker_share', '0']]) {
+      assert.strictEqual(cli(dir, ['settings', `memory.${k}`, v]).code, 2, k);
+    }
+    const pw = cli(dir, ['settings', 'memory.project_writes', 'true']);
+    assert.strictEqual(pw.code, 2, 'project_writes with notes on by default is refused');
+    assert.match(`${pw.stderr}${pw.stdout}`, /notes: false/);
+    assert.strictEqual(fs.readFileSync(`${dir}/belay.config.json`, 'utf8'), before, 'the file is byte-identical after the refusals');
+    assert.deepStrictEqual(ML.TYPES.held_breaker_share, { type: 'number', min: 0, max: 1, minExclusive: true });
+    assert.deepStrictEqual(ML.TYPES.held_visibility, { type: 'enum', values: ['withhold', 'warn'] });
   } finally { cleanup(dir); }
 });

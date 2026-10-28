@@ -59,13 +59,13 @@ test('layering: the spec overrides the settings key by key, defaults fill the re
 test('routing: main and advanced keys, a custom pair, and a routed type outside agentTypes', () => {
   const r = resolveRouting({
     gpu: true, agentTypes: ['orchestrator', 'reviewer', 'coder', 'tester'],
-    levers: lv({ routing: { orchestrator: 'gpu-balanced', reviewer: 'gpu-rerank', coder: { embedder: RP.NANO, reranker: Q.r06 }, tester: 'cpu-fast', 'note-review': 'gpu-recall-max' } }),
+    levers: lv({ routing: { orchestrator: 'gpu-balanced', reviewer: 'gpu-rerank', coder: { embedder: RP.NANO, reranker: Q.r06 }, tester: 'cpu-fast', 'scrubber': 'gpu-recall-max' } }),
   });
   assert.deepStrictEqual([r.tiers.orchestrator.embedder, r.tiers.orchestrator.reranker], [Q.e4, Q.r4]);
   assert.deepStrictEqual([r.tiers.reviewer.embedder, r.tiers.reviewer.reranker], [RP.NANO, Q.r4]);
   assert.deepStrictEqual([r.tiers.coder.profile, r.tiers.coder.reranker, r.tiers.coder.device], ['custom', Q.r06, 'gpu']);
   assert.strictEqual(r.tiers.tester.device, 'cpu');
-  assert.strictEqual(r.tiers['note-review'].embedder, Q.e8, 'an advanced key resolves though no caller listed it');
+  assert.strictEqual(r.tiers['scrubber'].embedder, Q.e8, 'an advanced key resolves though no caller listed it');
   assert.strictEqual(r.tiers.reviewer.source, 'routing');
   assert.strictEqual(r.run.source, 'run');
   assert.strictEqual(r.tiers.researcher, undefined, 'only the listed and routed types appear');

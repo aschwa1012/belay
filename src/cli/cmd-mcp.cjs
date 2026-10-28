@@ -150,7 +150,8 @@ function probe(adapterPath, dataDir) {
       clearTimeout(timer);
       // Closing stdin is how a stdio server is asked to stop; the kill is the backstop, by exact
       // pid and never by matching a command line (ADR 0011 §2). The adapter has no children of its
-      // own on this path, so there is no subtree to take with it.
+      // own on this path (its process snapshot waits for notifications/initialized, which this probe
+      // never sends), so there is no subtree to take with it.
       try { child.stdin.end(); } catch { /* already closed */ }
       // ADR 0039: only while the handle proves the pid is still the adapter this call spawned.
       try { if (child.pid && child.exitCode === null && child.signalCode === null) require('../core/process.cjs').killPid(child, 'SIGTERM'); } catch { /* already gone */ }

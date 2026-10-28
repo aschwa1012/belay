@@ -197,7 +197,7 @@ async function offReceipt(ctx, w, emb, convo) {
 
 // What a worker is told when its first-message index was refused (E_INDEX_BOUND, E_SEMANTIC_REQUIRED): belay's own words, no note text.
 function noIndexNotice(e) {
-  return `NO MEMORY INDEX WAS INJECTED into this message: the index was refused (${codeOf(e)}: ${String((e && e.message) || e).slice(0, 240)}). This is not a pause and your task is unchanged. Use the memory_search tool to look for what the task may touch before you start, and do not assume that the project has no memory on it.`;
+  return `NO NOTE INDEX WAS INJECTED into this message: the index was refused (${codeOf(e)}: ${String((e && e.message) || e).slice(0, 240)}). This is not a pause and your task is unchanged. Use the memory_search tool to look for what the task may touch before you start, and do not assume that the project has no notes on it.`;
 }
 
 // The index text for this worker's launch, or '' (lever off, no rows, or a failed call). The event is the
@@ -358,9 +358,12 @@ async function preface(w, ctx, prompt) {
   }
   let head = '';
   if (w.taskId) {
-    await ctx.core.task.assign({ task_id: w.taskId, worker_id: w.id });
+    const assigned = await ctx.core.task.assign({ task_id: w.taskId, worker_id: w.id });
+    if (assigned && assigned.review) w.review = assigned.review; // a review spawn's answer carries the reviewed tree, as task_assign's does
+    w.taskSpec = assigned && assigned.task && typeof assigned.task.spec === 'string' ? assigned.task.spec : ''; // belay sends the spec itself (manager.cjs), so the orchestrator's prompt is only added instructions
+    w.handbackRule = require('./handback.cjs').rule(assigned, await require('./handback.cjs').facts((id) => ctx.core.task.get({ task_id: id }), assigned)); // belay ends the first message with the hand-back rule (a verdict task's carries the Review standard), as task_assign does
     try {
-      const rl = await ctx.core.continuity.resumeLine({ task_id: w.taskId });
+      const rl = await ctx.core.continuity.resumeLine({ task_id: w.taskId, first: true });
       head = rl && rl.text ? rl.text + '\n\n' : '';
     } catch (e) {
       w.lastError = { where: 'continuity.resumeLine', code: e && e.code, message: e && e.message };
@@ -379,7 +382,9 @@ async function ask(manager, ctx, args) {
 
 // The jobs that finish a run's memory work (summaries, project copies, the ledger, wrap-ups): only when a
 // lever that feeds them is on. Called by shutdown once every worker's queue is drained.
-const JOB_LEVERS = (lv) => lv.summaries !== 'off' || lv.project_writes || lv.cost_ledger || lv.wrapup;
+// `notes` is one: the run-end sweep applies the verdicts of review tasks that ended without a turn path to apply them (a close that began first). It plans only
+// that sweep when notes is the only lever; no scrub or review child is started here.
+const JOB_LEVERS = (lv) => lv.summaries !== 'off' || lv.project_writes || lv.cost_ledger || lv.wrapup || !!lv.notes;
 async function runEnd(ctx) {
   const lv = await levers(ctx, null);
   if (!JOB_LEVERS(lv)) return;

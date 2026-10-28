@@ -68,6 +68,12 @@ async function review(r, taskId, verdicts, extra = {}) {
 const cite = (quote, where = 'stream') => ({ where, quote });
 const verdict = (id, v, cites, reason = 'what the stream shows') => ({ id, verdict: v, cites, reason });
 const apply = (reviewTask) => call('memory.noteVerdicts', harness, { review_task_id: reviewTask });
+// A note refuted as the archive review's cited outcome leaves it (status refuted, the receipt, the review on the body): the state the tests below need to start from.
+// A task reviewer's own `refuted` is a report now (memory-review-refute-report.test.cjs).
+function refuteDirect(id, { by = 'rev-x', ref = 'rev-x', reason = 'what the stream shows', cites = [] } = {}) {
+  store.setStatus(id, { status: 'refuted', receipt: `review:${ref}`, by: 'harness', at: Date.now() });
+  store.patchBody(id, (b) => { b.review = { verdict: 'refuted', by, ref, at: Date.now(), reason, cites }; return b; });
+}
 
 before(async () => {
   dir = sandbox();
@@ -99,18 +105,24 @@ test('R1: a confirmed verdict marks the note verified with a review: receipt, an
   assert.deepStrictEqual([ev.ok, ev.task_id, ev.worker_id, ev.written_by], [1, w.task, 'rev-a', 'harness']);
 });
 
-test('R2: a refuted verdict marks the note refuted, writes the note_refuted receipt, and the index no longer lists it', async () => {
+test('R2: a refuted verdict is a report: the note is held, its status is left, no note_refuted receipt is written, and the hold carries the verdict', async () => {
   const w = await written('w-b', 'K2');
   const before = await call('memory.index', orch, { max_bytes: 4096 });
   assert.ok(before.row_ids.includes(w.note), 'listed before the review');
   const rt = await review('rev-b', w.task, [verdict(w.note, 'refuted', [cite('fixtures/unlisted.json was never opened')], 'the stream shows it was opened later')]);
   const out = await apply(rt);
-  assert.strictEqual(out.applied[0].status, 'refuted');
-  assert.strictEqual(rowOf(w.note).status, 'refuted');
-  assert.strictEqual(events('note_refuted').filter((e) => e.key === `refuted:${w.note}`).length, 1);
-  const after = await call('memory.index', orch, { max_bytes: 4096 });
-  assert.ok(!after.row_ids.includes(w.note), 'a refuted note never reaches a later run');
-  assert.match(bodyOf(w.note).review.reason, /opened later/);
+  assert.strictEqual(out.applied.length, 1, JSON.stringify(out));
+  assert.deepStrictEqual([out.applied[0].verdict, out.applied[0].reported.seq, out.applied[0].status], ['refuted', 1, 'unverified']);
+  assert.strictEqual(rowOf(w.note).status ?? 'unverified', 'unverified');
+  assert.strictEqual(events('note_refuted').filter((e) => e.key === `refuted:${w.note}`).length, 0);
+  assert.ok(!('review' in bodyOf(w.note)), 'the verdict is advice on the hold, not a review on the note');
+  const rep = bodyOf(w.note).reported_wrong.find((r) => r.by === 'worker:rev-b');
+  assert.deepStrictEqual([rep.worker_id, rep.task_id, rep.why], ['rev-b', rt, 'the stream shows it was opened later']);
+  const hold = store.p("SELECT id, body FROM memory_entries WHERE type = 'held' AND json_extract(body, '$.note_id') = ?").all(w.note).map((r) => ({ id: r.id, b: JSON.parse(r.body) }));
+  assert.strictEqual(hold.length, 1);
+  assert.deepStrictEqual([hold[0].id, hold[0].b.ground, hold[0].b.state], [out.applied[0].held_row, 'reported', 'held']);
+  assert.match(hold[0].b.note_verdicts[0].reason, /opened later/);
+  assert.strictEqual(hold[0].b.note_verdicts[0].verdict, 'refuted');
 });
 
 test('R3: a cite whose quote is not in the recorded evidence is E_CITATION; nothing changes', async () => {
@@ -141,15 +153,15 @@ test('R5: a writer cannot review its own note, and neither can a worker that hel
   const w = await written('w-e', 'K6');
   // the writer reviews its own task's note through a review task it holds
   const t = await call('task.create', orch, { spec: 'self review', depends_on: [w.task], acceptance: { verdict: true } });
-  const a = await call('task.assign', orch, { task_id: t.id, worker_id: 'w-e' });
+  // Refused at assign since ADR 0058; built as a store from before that gate holds it, to check the independence rule behind it.
+  await assert.rejects(call('task.assign', orch, { task_id: t.id, worker_id: 'w-e' }), (e) => e.code === 'E_SELF_REVIEW');
+  await call('worker.write', orch, { id: 'stand-in', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's-stand-in', last_event_at: Date.now() });
+  const a = await call('task.assign', orch, { task_id: t.id, worker_id: 'stand-in' });
+  store.p('UPDATE lease SET holder = ? WHERE id = ?').run('w-e', a.new_lease.id);
   await call('lease.release', worker('w-e'), { lease_id: a.new_lease.id, notes: [], result: { verdict: 'holds', summary: 'ok', memory_verdicts: [verdict(w.note, 'confirmed', [cite('fixtures/unlisted.json was never opened')])] } });
   const out = await apply(t.id);
   assert.deepStrictEqual([out.applied.length, out.refused[0].code, out.refused[0].detail.reason], [0, 'E_ROLE', 'independence']);
   assert.strictEqual(rowOf(w.note).status ?? 'unverified', 'unverified');
-  // a job whose worker id equals the writer's lease holder is refused the same way
-  await call('worker.write', orch, { id: `notereview-${w.task}`, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's', last_event_at: Date.now() });
-  const j = await call('memory.noteVerdicts', harness, { job: { worker_id: `notereview-${w.task}`, reviewed_task_id: w.task }, verdicts: [verdict(w.note, 'confirmed', [cite('fixtures/unlisted.json was never opened')])] });
-  assert.strictEqual(j.applied.length, 1, 'a different worker with no lease on the task may judge it');
 });
 
 test('R6: the orchestrator model cannot apply verdicts; only the harness channel can', async () => {
@@ -211,7 +223,7 @@ test('R9: applying the same review twice writes once', async () => {
 
 test('R10: a refuted note stays refuted: a later confirmed verdict is refused', async () => {
   const w = await written('w-j', 'K12');
-  await apply(await review('rev-j1', w.task, [verdict(w.note, 'refuted', [cite('fixtures/unlisted.json was never opened')])]));
+  refuteDirect(w.note, { by: 'rev-j1', ref: 'rev-j1' });
   const out = await apply(await review('rev-j2', w.task, [verdict(w.note, 'confirmed', [cite('fixtures/unlisted.json was never opened')])]));
   assert.strictEqual(out.refused[0].code, 'E_ARGS');
   assert.strictEqual(rowOf(w.note).status, 'refuted');
@@ -233,11 +245,17 @@ test('R12: reviewBrief names the notes a review task should judge, and nothing f
   assert.deepStrictEqual((await call('memory.reviewBrief', orch, { task_id: plain.id })).notes, []);
 });
 
-test('R13: the job route needs a notereview- worker row belay spawned', async () => {
+test('R13: the note-review job was removed: its noteVerdicts, noteBriefCapture and reviewBrief forms are E_ARGS and write nothing', async () => {
   const w = await written('w-m', 'K15');
   const v = [verdict(w.note, 'confirmed', [cite('fixtures/unlisted.json was never opened')])];
-  await assert.rejects(call('memory.noteVerdicts', harness, { job: { worker_id: `notereview-${w.task}`, reviewed_task_id: w.task }, verdicts: v }), (e) => e.code === 'E_NOT_FOUND');
-  await assert.rejects(call('memory.noteVerdicts', harness, { job: { worker_id: 'w-m', reviewed_task_id: w.task }, verdicts: v }), (e) => e.code === 'E_ARGS');
+  const before = events('note_review').length + events('note_brief').length;
+  for (const [m, args] of [
+    ['memory.noteVerdicts', { job: { worker_id: `notereview-${w.task}`, reviewed_task_id: w.task }, verdicts: v }],
+    ['memory.noteBriefCapture', { job: { worker_id: `notereview-${w.task}`, reviewed_task_id: w.task }, notes: [] }],
+    ['memory.reviewBrief', { reviewed_task_id: w.task }],
+  ]) await assert.rejects(rawCall(m, harness, args), (e) => e.code === 'E_ARGS' && /note-review job was removed/.test(e.message), m);
+  assert.strictEqual(events('note_review').length + events('note_brief').length, before, 'nothing was written');
+  assert.strictEqual(rowOf(w.note).status ?? 'unverified', 'unverified');
 });
 
 test('R14: noteRefutation lists who was shown the note (running or finished, cited or not) and the notes they wrote', async () => {
@@ -254,8 +272,7 @@ test('R14: noteRefutation lists who was shown the note (running or finished, cit
   };
   const fin = await mk('user-fin', true);
   const run = await mk('user-run', false);
-  const rt = await review('rev-n', w.task, [verdict(w.note, 'refuted', [cite('fixtures/unlisted.json was never opened')], 'the file is opened by the second pass')]);
-  await apply(rt);
+  refuteDirect(w.note, { by: 'rev-n', ref: 'rev-n', reason: 'the file is opened by the second pass', cites: [cite('fixtures/unlisted.json was never opened')] });
   const r = await call('memory.noteRefutation', harness, { note_id: w.note });
   assert.strictEqual(r.note.status, 'refuted');
   assert.deepStrictEqual([r.review.reason, r.review.by, r.review.cites[0].where], ['the file is opened by the second pass', 'rev-n', 'stream']);
@@ -269,7 +286,7 @@ test('R14: noteRefutation lists who was shown the note (running or finished, cit
 
 test('R15: reviewBrief names a refuted note a reviewed task\'s worker was shown, before the review starts', async () => {
   const bad = await written('w-o', 'K22');
-  await apply(await review('rev-o1', bad.task, [verdict(bad.note, 'refuted', [cite('fixtures/unlisted.json was never opened')], 'wrong about the loader')]));
+  refuteDirect(bad.note, { by: 'rev-o1', ref: 'rev-o1', reason: 'wrong about the loader' });
   const victim = await written('w-o2', 'K23');
   await call('memory.recordEvent', harness, { kind: 'index_injected', ok: true, worker_id: 'w-o2', task_id: victim.task, row_ids: [bad.note], bytes: 10, sha256: 'y' });
   const t = await call('task.create', orch, { spec: 'review of victim', depends_on: [victim.task], acceptance: { verdict: true } });
@@ -302,15 +319,14 @@ test('R16 (review B-1): a note cannot be confirmed by quoting itself: belay tool
 
 test('R17 (review B-2): a confirm whose check was in flight when a refute landed is refused; a refuted note is never verified again', async () => {
   const w = await written('w-q', 'K41');
-  await call('worker.write', orch, { id: `notereview-${w.task}`, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's-job', last_event_at: Date.now() });
+  const first = await review('rev-q0', w.task, [verdict(w.note, 'confirmed', [cite("return 'skips unlisted fixtures'", 'loader.js')])]);
   const CC = core('memory-citations.cjs');
   CC.seam.afterCheck = async () => {
     CC.seam.afterCheck = null;
-    const rt = await review('rev-q', w.task, [verdict(w.note, 'refuted', [cite('fixtures/unlisted.json was never opened')])]);
-    assert.strictEqual((await apply(rt)).applied[0].status, 'refuted');
+    refuteDirect(w.note, { by: 'rev-q', ref: 'rev-q' }); // the archive review's outcome lands while the confirm's citation check is awaited
   };
   try {
-    const c = await call('memory.noteVerdicts', harness, { job: { worker_id: `notereview-${w.task}`, reviewed_task_id: w.task }, verdicts: [verdict(w.note, 'confirmed', [cite("return 'skips unlisted fixtures'", 'loader.js')])] });
+    const c = await apply(first);
     assert.deepStrictEqual([c.applied.length, c.refused[0].code], [0, 'E_ARGS']);
     assert.match(c.refused[0].message, /refuted while this verdict was being checked/);
   } finally { CC.seam.afterCheck = null; }
@@ -366,11 +382,6 @@ test('R22: a reported_wrong on a note that is no longer live is skipped and retu
   assert.strictEqual(out.notes[0].state, 'stored', 'the release and its note went through');
   assert.deepStrictEqual(out.reported_wrong, [{ id: w.note, skipped: 'not_live', state: 'archive' }, { id: 'no-such-note', skipped: 'not_live', state: 'missing' }]);
   assert.strictEqual((await call('task.get', orch, { task_id: t.id })).state, 'released');
-});
-
-test('R18: the job route needs the review job\'s own id for the task', async () => {
-  const w = await written('w-r', 'K42');
-  await assert.rejects(call('memory.noteVerdicts', harness, { job: { worker_id: 'notereview-someone-else', reviewed_task_id: w.task }, verdicts: [] }), (e) => e.code === 'E_ARGS' && /not the review job of task/.test(e.message));
 });
 
 test('R20b: a short whole-line quote that is really there is accepted; empty, whitespace and over-long quotes are refused', async () => {

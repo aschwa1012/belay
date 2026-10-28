@@ -7,12 +7,12 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const os = require('node:os');
-const crypto = require('node:crypto');
 
 // Where the Claude Code and Codex CLI executables are found: exe-discovery.cjs (env, then config, then PATH).
 // belay needs Claude Code 2.1.280 or later (ready.cjs MIN_CLAUDE_CODE_VERSION). The executable itself, not
 // the npm `claude.cmd` shim, since Node spawns no .cmd without a shell.
 const ED = require('./exe-discovery.cjs');
+const { isPathId, pathIdMessage } = require('../core/path-id.cjs'); // pure
 
 const MCP_SERVER_NAME = 'belay';
 // A test default only: production workers are Sonnet or Opus by role (ADR 0021 amendment 1).
@@ -32,6 +32,7 @@ const { SCRUB_EXACT, SCRUB_PREFIXES, SCRUB_CWD, CODEX_RUST_LOG, buildEnv, fwd } 
 // build step 6d: moved verbatim to wire-log.cjs (the 500-line rule) and re-exported below unchanged.
 const { wireLogPath, wireLogHasToolsList, WIRE_LOG_NAME, TOOLS_LIST } = require('./wire-log.cjs');
 const S = require('./surface.cjs'); // ADR 0024: the tool list, setting-sources and cwd hygiene.
+const KG = require('./kill-guard.cjs'); // ADR 0024 amendment 7: the PreToolUse hook that refuses kill-by-name
 const CP = require('./compaction.cjs'); // ADR 0007 decision 3: the compact_at_tokens lever's hooks block
 
 
@@ -58,6 +59,7 @@ function userSettingsPath() {
   return fwd(path.join(os.homedir(), '.claude', 'settings.json'));
 }
 function workerDir(dataDir, workerId) {
+  if (!isPathId(workerId)) throw Object.assign(new Error(pathIdMessage('worker_id', workerId)), { code: 'E_ARGS', detail: { field: 'worker_id' } }); // the last guard: no caller joins an id into the data dir unchecked
   return fwd(path.join(dataDir, 'workers', workerId));
 }
 function workerName(workerId) {
@@ -157,8 +159,8 @@ function writeWorkerFiles({ dir, workerId, runId, dataDir, mcpPath, settingsPath
     JSON.stringify(mcpConfig({ workerId, runId, dataDir, mcpPath, logPath, permit, permitWaitMs, notes, bind }), null, 2) + '\n'
   );
   const plugins = readPluginConfig(settingsPath);
-  const hooks = CP.hooksBlock({ dir, compactAt }); // null, and no `hooks` key at all, unless the lever is on
-  fs.writeFileSync(workerSettingsPath, JSON.stringify({ ...workerSettings(plugins.names, { cwd, nativeMemory }), ...(hooks ? { hooks } : {}) }, null, 2) + '\n');
+  const hooks = { ...(CP.hooksBlock({ dir, compactAt }) || {}), ...KG.hooksBlock() }; // the kill guard always; the compaction hooks only with the lever on
+  fs.writeFileSync(workerSettingsPath, JSON.stringify({ ...workerSettings(plugins.names, { cwd, nativeMemory }), hooks }, null, 2) + '\n');
   return { mcpJsonPath, settingsPath: workerSettingsPath, plugins };
 }
 
@@ -244,6 +246,7 @@ function codexLaunchArgv(opts) {
     prompt,
     sandbox = DEFAULT_CODEX_SANDBOX,
     model = null,
+    scratchDir = null,
   } = opts;
   const argv = [
     'exec',
@@ -255,8 +258,9 @@ function codexLaunchArgv(opts) {
     sandbox,
     ...codexMcpArgs(adapterArgs),
   ];
+  if (scratchDir) argv.push('--add-dir', fwd(scratchDir)); // a reviewer's scratch folder lies outside the worktree, the only root workspace-write opens: add that one folder
   if (model) argv.push('-m', model);
-  argv.push(prompt);
+  argv.push('--', prompt); // after `--` the text is the prompt: one that starts with `-` is not an option, and `review` or `resume` not a subcommand
   return argv;
 }
 
@@ -273,7 +277,7 @@ function codexResumeArgv(opts) {
     ...codexMcpArgs(adapterArgs),
   ];
   if (model) argv.push('-m', model);
-  argv.push(prompt);
+  argv.push('--', prompt);
   return argv;
 }
 
@@ -295,7 +299,7 @@ function codexResumeArgv(opts) {
 // ADR 0021 amendment 4: the orchestrator is Opus 5.5. Sonnet 5 is retired.
 const DEFAULT_ORCHESTRATOR_MODEL = ORCHESTRATOR_MODEL;
 
-function orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath = null, compactAt = null, worktree = null, agentDefaultsPath = null }) {
+function orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath = null, compactAt = null, worktree = null, agentDefaultsPath = null, stopIdleOnDone = false, permissionPrompt = false }) {
   const argv = [
     mcpPath || mcpServerPath(),
     '--role',
@@ -307,18 +311,19 @@ function orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath = null, comp
   ];
   if (logPath) argv.push('--log', fwd(logPath));
   if (compactAt != null) argv.push('--compact-at', String(compactAt)); // ADR 0007 decision 3: the workers' lever
-  if (worktree) argv.push('--worktree', fwd(path.resolve(worktree))); // ADR 0043 decision 1: the knowledge agent's cwd
+  if (worktree) argv.push('--worktree', fwd(path.resolve(worktree))); // the run's worktree: the knowledge agent's cwd (ADR 0043 decision 1), git_read's default (ADR 0054)
   if (agentDefaultsPath) argv.push('--agent-defaults', fwd(agentDefaultsPath)); // the config's per-agent-type defaults; absent when none are set
-  return argv;
+  if (permissionPrompt) argv.push('--permission-prompt'); // the run lever permission_prompt: the adapter lists the permission tools; absent when off
+  return stopIdleOnDone ? [...argv, '--stop-idle-on-done'] : argv; // ADR 0058: the run lever stop_idle_on_done; absent when off
 }
 
-function orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath = null, compactAt = null, worktree = null, agentDefaultsPath = null, bind = null }) {
+function orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath = null, compactAt = null, worktree = null, agentDefaultsPath = null, bind = null, stopIdleOnDone = false, permissionPrompt = false }) {
   return {
     mcpServers: {
       [MCP_SERVER_NAME]: {
         type: 'stdio',
         command: fwd(process.execPath),
-        args: [...orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath, compactAt, worktree, agentDefaultsPath }), ...(bind ? ['--bind', bind] : [])], // ADR 0045
+        args: [...orchestratorAdapterArgs({ runId, dataDir, mcpPath, logPath, compactAt, worktree, agentDefaultsPath, stopIdleOnDone, permissionPrompt }), ...(bind ? ['--bind', bind] : [])], // ADR 0045
       },
     },
   };
@@ -335,9 +340,9 @@ function assertOutsideDataDir(dir, dataDir) {
   return d;
 }
 
-// `knowledgeAgent`: the run's memory block turns the knowledge agent on, so the adapter is told the worktree (its
-// cwd). With the lever off the adapter's argv is the base one, byte for byte.
-function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, logPath = null, cwd = null, compactAt = null, knowledgeAgent = false, agentDefaults = null, bind = null }) {
+// The adapter is told the run's worktree (`cwd`): the knowledge agent's cwd (ADR 0043 decision 1) and git_read's default
+// directory (ADR 0054 decision 2). `knowledgeAgent` is accepted from older callers and no longer changes the argv.
+function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, logPath = null, cwd = null, compactAt = null, agentDefaults = null, bind = null, stopIdleOnDone = false, permissionPrompt = false, killGuard = false }) {
   const outDir = assertOutsideDataDir(dir, dataDir);
   fs.mkdirSync(outDir, { recursive: true });
   const agentDefaultsPath = require('./agent-defaults.cjs').writeFile(outDir, agentDefaults); // null unless the config sets a worker type's default
@@ -345,14 +350,14 @@ function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, lo
   const orchSettingsPath = fwd(path.join(outDir, 'settings.json'));
   fs.writeFileSync(
     mcpJsonPath,
-    JSON.stringify(orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath, compactAt, worktree: knowledgeAgent ? cwd : null, agentDefaultsPath, bind }), null, 2) + '\n'
+    JSON.stringify(orchestratorMcpConfig({ runId, dataDir, mcpPath, logPath, compactAt, worktree: cwd, agentDefaultsPath, bind, stopIdleOnDone, permissionPrompt }), null, 2) + '\n'
   );
   // Same hygiene as a worker (ADR 0007 §6): the operator's plugins and their hooks are disabled, so
   // the orchestrator's own context is not shaped by whatever is installed on the host. For the
   // context experiment that is not hygiene but the measurement itself — a plugin's hooks would
   // inject bytes into the very token series being compared.
   const plugins = readPluginConfig(settingsPath);
-  fs.writeFileSync(orchSettingsPath, JSON.stringify(workerSettings(plugins.names, { cwd }), null, 2) + '\n');
+  fs.writeFileSync(orchSettingsPath, JSON.stringify({ ...workerSettings(plugins.names, { cwd }), ...(killGuard ? { hooks: KG.hooksBlock() } : {}) }, null, 2) + '\n'); // headless only: the interactive orchestrator is the operator's own session
   return { mcpJsonPath, settingsPath: orchSettingsPath, plugins, dir: outDir };
 }
 
@@ -383,8 +388,8 @@ function orchestratorLaunchArgv(opts) {
     fwd(mcpJsonPath),
     '--settings',
     fwd(settingsPath),
-    '--tools', // ADR 0024 decisions 1 to 3: the orchestrator gets the same list and treatment.
-    S.CLAUDE_TOOLS.join(','),
+    '--tools', // ADR 0024 decisions 1 to 3, with ADR 0054's orchestrator list (the six).
+    S.ORCHESTRATOR_TOOLS.join(','),
     S.SETTING_SOURCES_ARG,
   ];
   if (allowedTools && allowedTools.length) argv.push('--allowedTools', ...allowedTools);
@@ -423,8 +428,8 @@ function orchestratorInteractiveArgv(opts) {
     fwd(mcpJsonPath),
     '--settings',
     fwd(settingsPath),
-    '--tools',
-    S.CLAUDE_TOOLS.join(','),
+    '--tools', // ADR 0054 amendment 2: the interactive orchestrator gets the same list
+    S.ORCHESTRATOR_TOOLS.join(','),
     S.SETTING_SOURCES_ARG,
   ];
   if (allowedTools && allowedTools.length) argv.push('--allowedTools', ...allowedTools);
@@ -436,22 +441,8 @@ function orchestratorInteractiveArgv(opts) {
   return argv;
 }
 
-// ------------------------------------------------------------------- receipt
-
-// argv_hash is sha256 over `JSON.stringify({ exe, args, cwd })` — the exact bytes written to
-// argv.json's `spec` field, so a reader can recompute it from that file alone. Key order is fixed
-// here rather than taken from the caller's object.
-function argvHash(spec) {
-  const canonical = { exe: spec.exe, args: spec.args, cwd: spec.cwd };
-  return crypto.createHash('sha256').update(JSON.stringify(canonical)).digest('hex');
-}
-
-function writeArgvJson(dir, spec) {
-  const argv_hash = argvHash(spec);
-  const body = { spec, argv_hash, written_at: Date.now() };
-  fs.writeFileSync(fwd(path.join(dir, 'argv.json')), JSON.stringify(body, null, 2) + '\n');
-  return argv_hash;
-}
+// The launch receipt (argv.json and its hash): argv-receipt.cjs.
+const { argvHash, writeArgvJson } = require('./argv-receipt.cjs');
 
 module.exports = {
   DEFAULT_CLAUDE_MODEL,

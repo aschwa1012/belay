@@ -90,12 +90,14 @@ test('budgets: worker kill, worker rm, worker stop, worker restart and message e
   } finally { cleanup(dir); }
 });
 
-test('budgets: worker kill, worker stop, worker restart and message against a dead store with no such worker each add under 500 ms to the host floor, interleaved', async () => {
+test('budgets: worker kill, worker stop, worker restart and message against a dead store with no such worker each add under 500 ms to the host floor, interleaved', async (tcx) => {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   // A real store, no live owner: run.attach then shutdownOwner leaves memory.db on disk with no
   // owner.lock, the "dead store" this codebase's other budget groups plant the same way.
   const plantCore = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: 'run-budgets', pid: process.pid }, embed: false });
+  tcx.after(() => Promise.resolve().then(() => plantCore.shutdownOwner()));
+  tcx.after(() => Promise.resolve().then(() => plantCore.close()));
   await plantCore.run.attach({ adapter_pid: process.pid });
   await plantCore.shutdownOwner();
   await plantCore.close();

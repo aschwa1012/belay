@@ -165,6 +165,13 @@ test('a provider failure is sticky for the rest of the run: later searches skip 
   assert.strictEqual(seen.length, 1);
 });
 
+test('a search with no query text never pauses the run, even with on_heavy_failure pause (the hand-back duplicate check is one)', async () => {
+  fake((i) => i);
+  const r = await search(T.E, T.who.operator('plain'), { namespaces: [NS], query_embedding: [1, 0, 0], embedding_model: 'm', mode: 'semantic' }, { tier: tier(), levers: { on_heavy_failure: 'pause' } });
+  assert.strictEqual(r.rerank.cause.reason, 'no_query');
+  assert.deepStrictEqual(ids(r), base());
+});
+
 test('a search with no query text is not a provider failure and does not make the run sticky', async () => {
   fake((i) => i);
   const vectorOnly = await search(T.E, T.who.operator('plain'), { namespaces: [NS], query_embedding: [1, 0, 0], embedding_model: 'm', mode: 'semantic' }, { tier: tier() });
