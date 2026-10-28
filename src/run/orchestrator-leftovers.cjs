@@ -50,10 +50,14 @@ function createLeftovers({ child, P, state, core, runId, owned = () => ownedProc
       if (state.leftovers) return state.leftovers;
       if (taking) await taking;
       const results = targets.length ? await P.killMany(targets).catch(() => []) : [];
+      // A captured process that exited meanwhile (the sweep runs after the adapter wait) is gone, and so is one whose pid another process
+      // now holds: both prove the meant process is not there. Only an identity that could not be checked is a refusal.
+      const isGone = (r) => r.gone === true || (!!r.refused && (r.kind === 'absent' || r.kind === 'mismatch'));
       state.leftovers = {
         found: targets.map((t) => t.pid),
         killed: results.filter((r) => r.killed).map((r) => r.pid),
-        refused: results.filter((r) => r.refused).map((r) => ({ pid: r.pid, kind: r.kind || null, detail: r.detail || null })),
+        gone: results.filter(isGone).map((r) => r.pid),
+        refused: results.filter((r) => r.refused && !isGone(r)).map((r) => ({ pid: r.pid, kind: r.kind || null, detail: r.detail || null })),
         ...(why ? { not_taken: why } : {}),
       };
       return state.leftovers;

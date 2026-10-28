@@ -88,7 +88,7 @@ test("at the close the shell's stray process is ended; the adapter, a spawned wo
   }
 });
 
-test('a captured descendant whose pid now belongs to another process (a different creation time) is refused, not killed', async () => {
+test('a captured descendant whose pid now belongs to another process (a different creation time) is counted gone and left running', async () => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-leftovers-'));
   const pidFile = path.join(d, 'p.pid');
   const stranger = spawn(process.execPath, [HELPER], { stdio: 'ignore', windowsHide: true, env: { ...process.env, FAKE_HELPER_PIDFILE: pidFile } });
@@ -105,7 +105,8 @@ test('a captured descendant whose pid now belongs to another process (a differen
     const r = await l.end();
     assert.deepStrictEqual(r.found, [stranger.pid]);
     assert.deepStrictEqual(r.killed, []);
-    assert.strictEqual(r.refused.length, 1);
+    assert.deepStrictEqual(r.gone, [stranger.pid], 'the meant process is provably not there');
+    assert.deepStrictEqual(r.refused, [], 'so it is not a refusal, and the run is not failed for it');
     assert.strictEqual(P.pidAlive(stranger.pid), true, 'the process that took the pid is untouched');
   } finally { try { process.kill(stranger.pid, 'SIGKILL'); } catch { /* gone */ } cleanup(d); }
 });
@@ -124,4 +125,21 @@ test('with no adapter named in the run row, or the owned processes unreadable, n
   await l2.capture();
   assert.match((await l2.end()).not_taken, /could not be read: boom/);
   assert.deepStrictEqual(killed, []);
+});
+
+test('a captured stray that exited (absent) or whose pid was reused (mismatch) is gone; only an unverifiable identity is a refusal', async () => {
+  const child = { pid: process.pid, exitCode: null, signalCode: null };
+  const snap = new Map([[process.pid, { created: 5, ppid: null }], [900001, { created: 6, ppid: process.pid }], [900002, { created: 6, ppid: process.pid }], [900003, { created: 6, ppid: process.pid }], [900004, { created: 6, ppid: process.pid }]]);
+  const fakeP = { snapshotShared: async () => ({ snap }), killMany: async () => [
+    { pid: 900001, killed: false, gone: true },
+    { pid: 900002, killed: false, refused: 'identity', kind: 'absent', detail: 'not in the snapshot' },
+    { pid: 900003, killed: false, refused: 'identity', kind: 'mismatch', detail: 'a different process holds the pid' },
+    { pid: 900004, killed: false, refused: 'identity', kind: 'unverifiable', detail: 'snapshot unreadable' },
+  ] };
+  const l = createLeftovers({ child, P: fakeP, state: {}, owned: async () => ({ adapterKnown: true, list: [] }) });
+  await l.capture();
+  const r = await l.end();
+  assert.deepStrictEqual([...r.gone].sort(), [900001, 900002, 900003]);
+  assert.deepStrictEqual(r.refused.map((x) => x.pid), [900004]);
+  assert.deepStrictEqual(r.killed, []);
 });
