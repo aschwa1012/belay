@@ -341,7 +341,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       // the Claude Code orchestrator: verifyReady's own `.then`/`.catch` are gone (nothing else used
       // them), and a turn ending before this line can no longer race it, because there is nothing left
       // to race — the whole check has already run by the time `pollOnce` is reached.
-      const gate = verifyClaudeReady({ substrate: 'claude-code', tools: S.ORCHESTRATOR_TOOLS }, ev); // ADR 0054 decision 1: held to its list, which has no Bash
+      const gate = verifyClaudeReady({ substrate: 'claude-code', tools: S.ORCHESTRATOR_TOOLS }, ev); // ADR 0054: held to its list
       if (!gate.ok) {
         abortForReadyFailure(`the orchestrator's ready check failed (ADR 0001 §8): ${gate.reason}`);
         return;

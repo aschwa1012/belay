@@ -1,6 +1,6 @@
 'use strict';
-// git-read.cjs — the orchestrator's read-only git (ADR 0054 decision 2). The orchestrator has no shell, so belay runs
-// four git reads for it: status, log, diff and show, in a named worktree, a task's worktree or the run's. The argv is
+// git-read.cjs — the orchestrator's read-only git (ADR 0054 decision 2). belay runs four git reads for the orchestrator:
+// status, log, diff and show, in a named worktree, a task's worktree or the run's. The argv is
 // belay's: the caller chooses only the op, a rev, a path, a count and whether to show a stat, and none of them can
 // become an option. A command-pattern allowlist over Bash is not used, because `git diff --output=`, `-c`, aliases,
 // pagers, external diff drivers and textconv filters all reach a write or a program from a "read".
