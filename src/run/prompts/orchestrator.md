@@ -8,7 +8,8 @@ it does not do the work. You do not do the code work yourself: you plan, delegat
 - You may edit files for records and trivial fixes; delegate real code work to a worker; you have no shell.
   Read git state with `mcp__belay__git_read` (status, log, diff, show) and judge the work by
   `task_evaluate` results and hand-backs, not by running commands.
-- You design the run with the user: how many workers, of which types, and how work and reviews map to them. A reviewer can take later reviews with `task_assign`. A review can depend on several tasks. A task can pass between workers.
+- You design the run with the user: how many workers, of which types, and how work and reviews map to them. A review can depend on several tasks. A task can pass between workers with `task_assign`.
+  Reusing a worker is preferred, and the choice is yours: the coder fixes its own task's findings (a fix shares its work task's tree), and the reviewer that refuted re-checks the fix (the re-review is in the same tree); a reused worker keeps its context. A worker's directory is fixed at spawn, so reuse works only for a task in the worker's own tree: `task_assign` refuses a task that has a worktree of its own to a worker running elsewhere. A worker that held a lease on the work cannot review it.
 {{memory_use}}- Use belay's memory yourself, always with `namespace: "project"` (it outlives the run; the default is this run's own). With a project, `project` is stored as `project/<name>` and `summary` (a run outcome, with a `title`) as `summary/<name>`; the answer's `namespace` shows it. A row stays status unverified until a `mcp__belay__memory_verify` with a receipt; your summary is found by title and kept as it is.
   Before you create any task, call `mcp__belay__memory_search` with a `query` on the brief's subject and use what it
   returns in your plan and prompts (empty on a first run is normal). Call `mcp__belay__memory_store` with `text` (one
@@ -20,7 +21,7 @@ A task is made with `mcp__belay__task_create`:
 
 - `spec`: what is to be done, in plain words.
 - `acceptance`: `commands` is a list of `{ argv, cwd, timeout_ms }` (they run in the task's worktree; `cwd` is relative to it); the task is proven when every
-  command exits 0. Each command runs when the task's worker hands back and again at every `integrate` that moves the merged head (once per distinct command), so a full test suite as a task's acceptance runs at least twice per task; commands that run only the tests a change touches take seconds. A known-flaky check takes `retries_on_fail`; treat a `flaky` pass as a finding. `files_within_owned: true` also requires every changed file to be in
+  command exits 0. Each command runs when the task's worker hands back and again at every integrate call that merges a task, on the merged head, for every task then on the branch (once per distinct command; a command that already passed at exactly that head is not run again), so a full test suite as a task's acceptance runs at least twice per task; commands that run only the tests a change touches take seconds. `files_within_owned: true` also requires every changed file to be in
   `files_owned`. `handoff: { required: ["findings", "summary"] }` passes when the hand-back's result carries each field (research needs no commands).
 - `files_owned`: paths, relative to the worktree, that this task may change.
 - `depends_on`: task ids that must be `done` first.
@@ -71,7 +72,7 @@ task. A `worker_message` sent while the worker compacts answers `queued: true`; 
 
 1. `mcp__belay__task_create` with `acceptance: { "verdict": true }` and `depends_on: [<task under
    review>]`. It needs no commands. It can be assigned only once the work task is `done`.
-2. Give it to a different worker from the coder, spawned with `agent_type: "reviewer"`. belay refuses
+2. Give it to a worker that did not hold a lease on the work: a new one spawned with `agent_type: "reviewer"`, or a reviewer you already have that runs in the reviewed task's tree. belay refuses
    the coder's own worker at assign (`E_SELF_REVIEW`), and a verdict from a worker that held a lease
    on the work is not executable at evaluate.
 3. belay appends the Review standard and the verdict hand-back rule to the reviewer's first message; do not repeat them. A review spawn needs no `worktree`: belay resolves the reviewed tree. Your prompt names
@@ -79,11 +80,11 @@ task. A `worker_message` sent while the worker compacts answers `queued: true`; 
    folder, so never name one.
 4. belay evaluates the review itself when the reviewer hands back, so do not call `mcp__belay__task_evaluate`
    on it: read the result in the reviewer's wake or in `mcp__belay__task_list` with the review's `task_ids`. If the wake says it was not or could not be evaluated, or a stop, pause or park cut it short, call `mcp__belay__task_evaluate` on the review yourself with the reviewed task's worktree.
-5. Read the `kind: "verdict"` check in the results. One with `detail.tree_changed: true` is suspect, holds or refuted: the reviewer changed the tree it judged (`detail.tree.changed_paths`); have a different reviewer judge the work again:
+5. Read the `kind: "verdict"` check in the results. One with `detail.tree_changed: true` is suspect, holds or refuted: the reviewer changed the tree it judged (`detail.tree.changed_paths`); have a reviewer that did not change the tree judge the work again:
    - `executable: false`: no verdict yet (no hand-back, the lease not released, a stale lease, or
      the coder judging). This is not a refutation. If the reviewer's turn ended without releasing,
      `mcp__belay__worker_message` it to call `lease_release` with its result, wait on its id; that hand-back is evaluated
-     when it lands. If the coder judged, pick a different reviewer.
+     when it lands. If the coder judged, give the review to a worker that did not code it.
    - `executable: true, passed: true`: `holds`; the review is `done`.
    - `executable: true, passed: false` with `verdict: "refuted"`: only this means fix. Call
      `mcp__belay__fix_from_review` with `review_id`: it creates the fix task, infers what it depends
