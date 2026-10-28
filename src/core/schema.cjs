@@ -241,6 +241,13 @@ const MIGRATIONS = [
   // The worker's first dead row names the leases that death released (JSON array of { lease_id, task_id }), for the death wake.
   'ALTER TABLE lease ADD COLUMN released_reason TEXT',
   'ALTER TABLE worker ADD COLUMN leases_released TEXT',
+  // ADR 0068 (proposed): a stopped or dead row whose life ended with no `result` event carries what its stream's last turn cost,
+  // priced from the per-message usage (JSON text), and `cost_source` names it; both null when the row's figures were all reported.
+  // The estimate has its own columns: cost_usd and the token columns stay what Claude Code reported.
+  'ALTER TABLE worker ADD COLUMN cost_estimate TEXT',
+  'ALTER TABLE worker ADD COLUMN cost_source TEXT',
+  // Reported cost of the sessions before the current one: a fresh session's total_cost_usd starts at zero, so the adapter adds this base.
+  'ALTER TABLE worker ADD COLUMN cost_base REAL',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot
