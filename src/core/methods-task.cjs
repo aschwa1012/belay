@@ -298,7 +298,7 @@ async function evaluate(E, caller, args, queued = null) {
   const cancel = EC ? EC.register(args.cancel_key) : null;
   const J = require('./judged.cjs'), judged = await J.stateOf(task, at.worktree); // ADR 0060 decisions 4 and 6: what integrate may merge
   let commandChecks;
-  try { commandChecks = await runAcceptance(task.acceptance, at.worktree, task.files_owned, { ...at, cancel, budgetMs: require('./evaluate-cancel.cjs').budgetAfter(queued && queued.waited_ms, ACCEPTANCE_BUDGET_MS), beside: (a, b) => require('./evaluate-cancel.cjs').during(task.id, a, b) }); } finally { if (cancel) EC.unregister(args.cancel_key, cancel); }
+  try { commandChecks = await runAcceptance(task.acceptance, at.worktree, task.files_owned, { ...at, cancel, budgetMs: require('./evaluate-cancel.cjs').budgetAfter(queued && queued.waited_ms, ACCEPTANCE_BUDGET_MS, args.trigger), beside: (a, b) => require('./evaluate-cancel.cjs').during(task.id, a, b) }); } finally { if (cancel) EC.unregister(args.cancel_key, cancel); }
   if (cancel && cancel.cancelled) throw EC.cancelled(task, cancel);
   // The commands can run for minutes, so the row is read again inside the transaction that writes it: a
   // release that landed meanwhile (its handoff, its state) is what the verdict check reads and what the

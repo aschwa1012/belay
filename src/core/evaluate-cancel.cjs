@@ -65,7 +65,7 @@ async function joinOrRun(E, args, run) {
   }
   const limit = limitFor(E, task.run_id);
   const p = (async () => {
-    const slot = await acquire(limit, { cancelKey: args.cancel_key, task }); // queued evaluations are registered below, so a second call for the same task and tree joins this one
+    const slot = await acquire(limit, { cancelKey: args.cancel_key, task, unbounded: args.trigger === 'release' }); // queued evaluations are registered below, so a second call for the same task and tree joins this one
     const end = beginSpan(task.id);
     try { return await run(slot.queued); } finally { end(); slot.release(); }
   })();
@@ -84,14 +84,17 @@ const GATE = { active: 0, waiting: [] }; // waiting: { limit, grant, reject, key
 // How long a call may wait for a slot. The 540 s command budget (evaluate.cjs ACCEPTANCE_BUDGET_MS) is what is left after the wait, so wait plus run
 // is inside 540 s and the client's 600 s wait (call-limits.cjs EVALUATE_TIMEOUT_MS) never ends first with the outcome unknown. 240 s leaves a
 // queued evaluation at least 300 s to run; one that reaches it is refused E_BUSY { queued: true } with nothing run and nothing written. A
-// release-time evaluation is bound the same way: it is a call over the same client, and its refusal reaches the orchestrator in the wake.
+// release-time evaluation (trigger 'release', the run manager evaluating a hand-back) is not an orchestrator's call and has no one to call it
+// again: it waits for its slot with no bound, runs with its whole budget after the wait, and records the wait as a fact (queued.waited_ms).
+// Its client call carries its own long bound (call-limits.cjs RELEASE_EVALUATE_TIMEOUT_MS); a stop or run end takes it out of the queue
+// through evaluateCancel.
 const WAIT = { maxMs: 240000 };
-const budgetAfter = (waitedMs, total) => Math.max(0, total - Math.max(0, Number(waitedMs) || 0));
+const budgetAfter = (waitedMs, total, trigger = null) => trigger === 'release' ? total : Math.max(0, total - Math.max(0, Number(waitedMs) || 0));
 function pump() {
   while (GATE.waiting.length && GATE.active < GATE.waiting[0].limit) { const w = GATE.waiting.shift(); GATE.active += 1; w.grant(); }
 }
 // -> Promise of { release(), queued: null | { ahead, waited_ms } }. `ahead` counts the evaluations running or queued when this one queued.
-function acquire(limit, { cancelKey = null, task = null, op = 'evaluation' } = {}) {
+function acquire(limit, { cancelKey = null, task = null, op = 'evaluation', unbounded = false } = {}) {
   if (limit == null) return Promise.resolve({ release() {}, queued: null });
   let held = false;
   const slot = () => ({ release() { if (held) return; held = true; GATE.active -= 1; pump(); } });
@@ -99,6 +102,7 @@ function acquire(limit, { cancelKey = null, task = null, op = 'evaluation' } = {
   const ahead = GATE.active + GATE.waiting.length;
   return new Promise((resolve, reject) => {
     const w = { limit, key: cancelKey, task, reject, at: Date.now(), grant: () => { clearTimeout(w.timer); resolve({ ...slot(), queued: { ahead, waited_ms: Date.now() - w.at } }); } };
+    if (unbounded) { GATE.waiting.push(w); return; } // a release evaluation waits for its slot; the wait stays on record in queued
     w.timer = setTimeout(() => { // the bound: out of the queue, nothing run, nothing written
       const i = GATE.waiting.indexOf(w);
       if (i < 0) return;

@@ -42,6 +42,40 @@ async function gatedTask() {
   return { id: t.id, evaluate: (extra = {}) => orch.task.evaluate({ task_id: t.id, worktree: dir, ...extra }), started: () => fs.existsSync(started), open: () => fs.writeFileSync(gate, '') };
 }
 
+test('a release evaluation has no wait bound and keeps its whole budget; the client call carries its own long bound', () => {
+  assert.strictEqual(EC.budgetAfter(EC.WAIT.maxMs * 10, ACCEPTANCE_BUDGET_MS, 'release'), ACCEPTANCE_BUDGET_MS);
+  assert.ok(EC.budgetAfter(EC.WAIT.maxMs, ACCEPTANCE_BUDGET_MS, null) < ACCEPTANCE_BUDGET_MS, 'a called evaluation still spends its wait');
+  const L = require('../../src/core/call-limits.cjs');
+  assert.strictEqual(L.writeTimeoutFor('task.evaluate', { trigger: 'release' }), L.RELEASE_EVALUATE_TIMEOUT_MS);
+  assert.strictEqual(L.writeTimeoutFor('task.evaluate', {}), L.EVALUATE_TIMEOUT_MS);
+  assert.ok(L.RELEASE_EVALUATE_TIMEOUT_MS > L.EVALUATE_TIMEOUT_MS && L.RELEASE_EVALUATE_TIMEOUT_MS < 2 ** 31);
+});
+
+test('a queued release evaluation past the bound is not refused: it takes its slot, runs, and records the wait', async () => {
+  const a = await gatedTask(), b = await gatedTask();
+  const ra = a.evaluate();
+  await until(() => a.started());
+  EC.WAIT.maxMs = 1; // the bound that refuses a called evaluation
+  let rb;
+  try {
+    rb = b.evaluate({ trigger: 'release' });
+    await until(() => EC.GATE.waiting.length === 1);
+    const w = EC.GATE.waiting[0];
+    assert.strictEqual(w.timer, undefined, 'no refusal timer was armed for it');
+    await tick(); await tick();
+    assert.strictEqual(EC.GATE.waiting.length, 1, 'still waiting past the bound');
+  } finally { EC.WAIT.maxMs = keep; }
+  assert.ok(!b.started());
+  a.open();
+  assert.strictEqual((await ra).state, 'done');
+  await until(() => b.started());
+  b.open();
+  const row = await rb;
+  assert.strictEqual(row.state, 'done');
+  assert.deepStrictEqual([row.results.queued.ahead, Number.isFinite(row.results.queued.waited_ms)], [1, true]);
+  assert.strictEqual(EC.GATE.active, 0);
+});
+
 test('wait plus run stays inside the command budget, whatever the wait', () => {
   assert.ok(EC.WAIT.maxMs + EC.budgetAfter(EC.WAIT.maxMs, ACCEPTANCE_BUDGET_MS) <= ACCEPTANCE_BUDGET_MS);
   assert.ok(EC.budgetAfter(EC.WAIT.maxMs, ACCEPTANCE_BUDGET_MS) > 0, 'a call that waited the whole bound still has time to run');
