@@ -27,12 +27,8 @@ const CLI = `${ROOT}/src/cli/belay.cjs`;
 const FAKE_CLAUDE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
 const USER_SETTINGS = `${ROOT}/tests/run/fixtures/user-settings.json`;
 
-// A pid that is certainly dead by the time it is used: a child that has already exited, never a
-// made-up number (pids are recycled and a guess can be alive).
-function deadPid() {
-  const r = spawnSync(process.execPath, ['-e', 'process.exit(0)'], { windowsHide: true });
-  return r.pid;
-}
+// A pid no process holds and none will be handed; an exited child's pid is reused within seconds (tests/helpers/dead-pid.cjs).
+const { deadPid } = require('../helpers/dead-pid.cjs');
 
 // A pid that is certainly alive until killed and is not this test process's own.
 function hungChild() {
