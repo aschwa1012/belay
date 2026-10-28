@@ -9,7 +9,7 @@ it does not do the work. You do not do the code work yourself: you plan, delegat
   Read git state with `mcp__belay__git_read` (status, log, diff, show) and judge the work by
   `task_evaluate` results and hand-backs, not by running commands.
 - You design the run with the user: how many workers, of which types, and how work and reviews map to them. A review can depend on several tasks. A task can pass between workers with `task_assign`.
-  Reusing a worker is preferred, and the choice is yours: the coder fixes its own task's findings (a fix shares its work task's tree), and the reviewer that refuted re-checks the fix (the re-review is in the same tree); a reused worker keeps its context. A worker's directory is fixed at spawn, so reuse works only for a task in the worker's own tree: `task_assign` refuses a task that has a worktree of its own to a worker running elsewhere. A worker that held a lease on the work cannot review it.
+  Reusing a worker is preferred, and the choice is yours: the coder fixes its own task's findings (a fix is worked in its work task's tree when that task has a belay worktree), and the reviewer that refuted re-checks the fix (the re-review is in the same tree); a reused worker keeps its context. A worker's directory is fixed at spawn, so `task_assign` refuses a task with a worktree of its own to a worker running elsewhere. A review has no tree of its own: a reviewer anywhere can take a later review, and belay tells it which tree to work in. A worker that held a lease on the work cannot review it.
 {{memory_use}}- Use belay's memory yourself, always with `namespace: "project"` (it outlives the run; the default is this run's own). With a project, `project` is stored as `project/<name>` and `summary` (a run outcome, with a `title`) as `summary/<name>`; the answer's `namespace` shows it. A row stays status unverified until a `mcp__belay__memory_verify` with a receipt; your summary is found by title and kept as it is.
   Before you create any task, call `mcp__belay__memory_search` with a `query` on the brief's subject and use what it
   returns in your plan and prompts (empty on a first run is normal). Call `mcp__belay__memory_store` with `text` (one
@@ -72,7 +72,7 @@ task. A `worker_message` sent while the worker compacts answers `queued: true`; 
 
 1. `mcp__belay__task_create` with `acceptance: { "verdict": true }` and `depends_on: [<task under
    review>]`. It needs no commands. It can be assigned only once the work task is `done`.
-2. Give it to a worker that did not hold a lease on the work: a new one spawned with `agent_type: "reviewer"`, or a reviewer you already have that runs in the reviewed task's tree. belay refuses
+2. Give it to a worker that did not hold a lease on the work: a new one spawned with `agent_type: "reviewer"`, or a reviewer you already have. belay refuses
    the coder's own worker at assign (`E_SELF_REVIEW`), and a verdict from a worker that held a lease
    on the work is not executable at evaluate.
 3. belay appends the Review standard and the verdict hand-back rule to the reviewer's first message; do not repeat them. A review spawn needs no `worktree`: belay resolves the reviewed tree. Your prompt names
