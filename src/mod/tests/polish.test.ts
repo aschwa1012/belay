@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect } from 'claude-code/testing'
+import { test } from './support'
 import { T0, RUN, NOTE_ID, boot, openPane, pane, leaves, words } from './support'
 
 // What the polish pass must never lose: the reason an awaiting note waits, the awaits clause in the heading, the three settle buttons,
