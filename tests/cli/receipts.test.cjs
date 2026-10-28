@@ -183,7 +183,7 @@ test('receipts: --json carries every field of design item 2, null where a column
   assert.strictEqual(w2.task.handoff, null);
   assert.strictEqual(w2.task.checks[0].passed, false);
   assert.strictEqual(j.unassigned_tasks.length, 1);
-  assert.deepStrictEqual(Object.keys(j.unassigned_tasks[0]).sort(), ['checks', 'id', 'state']);
+  assert.deepStrictEqual(Object.keys(j.unassigned_tasks[0]).sort(), ['check_history', 'checks', 'id', 'state']);
   assert.ok('owner' in j);
   const text = receipts(['run-b'], dataDir, { json: false }).stdout;
   assert.match(text, /^worker w2  codex .*\n.*\n  in not recorded  out not recorded/m);
