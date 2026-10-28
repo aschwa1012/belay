@@ -205,7 +205,6 @@ test('run: the orchestrator that ignores a closed stdin is killed after close_gr
   const { specPath, orchestratorDir } = makeSpec(dir, { close_grace_ms: 1500 });
   const env = { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_IGNORE_STDIN_END: '1' };
 
-  const t0 = Date.now();
   const runCliProc = runCli(specPath, dataDir, env);
   try {
     const streamPath = `${orchestratorDir}/stream.jsonl`;
@@ -213,10 +212,9 @@ test('run: the orchestrator that ignores a closed stdin is killed after close_gr
     assert.ok(gotResult, `stream.jsonl at ${streamPath} never held a result line within 10,000 ms`);
     const turnEndAt = Date.now();
 
-    // A hang guard: the exact bound is asserted below, with the kill's snapshot subtracted (it is in the receipt).
-    const exited = await waitForExit(runCliProc.proc, 9000 + 2 * SNAPSHOT_TIMEOUT_MS);
-    assert.ok(exited, `the CLI did not exit within ${9000 + 2 * SNAPSHOT_TIMEOUT_MS} ms`);
-    const totalMs = Date.now() - t0;
+    // A hang guard only. How long the kill takes is a time bound and lives in the quiet budget phase (tests/budgets/run-budgets.test.cjs).
+    const exited = await waitForExit(runCliProc.proc, 60000);
+    assert.ok(exited, 'the CLI did not exit within 60,000 ms');
     const sinceTurnEnd = Date.now() - turnEndAt;
     // ADR 0048, rule a: the orchestrator kill's own identity snapshot is not what this bound is about. It is read from
     // the receipt below and subtracted; it is itself bounded by one caller's worst wait for a snapshot.
@@ -225,8 +223,7 @@ test('run: the orchestrator that ignores a closed stdin is killed after close_gr
     const receipt = receiptOf(runCliProc, 1);
     const snapMs = (receipt.orchestrator.kill && receipt.orchestrator.kill.snapshot_ms) || 0;
     assert.ok(snapMs <= 2 * SNAPSHOT_TIMEOUT_MS, `the orchestrator kill's snapshot took ${snapMs} ms`);
-    assert.ok(sinceTurnEnd >= 1400 && sinceTurnEnd - snapMs <= 6000, `time since the turn end (${sinceTurnEnd} ms) was not within [1,500, 6,000] ms of close_grace_ms 1,500`);
-    assert.ok(totalMs - snapMs < 9000, `total run time ${totalMs} ms (${snapMs} ms of it the kill's snapshot) was not under 9,000 ms`);
+    assert.ok(sinceTurnEnd >= 1400, `time since the turn end (${sinceTurnEnd} ms) was under close_grace_ms 1,500: the kill came before the grace ran out`);
     assert.match(receipt.ended_by, /stdin closed/);
     assert.strictEqual(receipt.orchestrator.killed_after_close, true);
     assert.notStrictEqual(receipt.orchestrator.exit_code, 0, 'a killed orchestrator must not report a clean exit code');
