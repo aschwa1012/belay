@@ -187,3 +187,27 @@ test('a stop or run end cancels a queued release evaluation: it leaves the queue
   assert.strictEqual((await ra).state, 'done');
   assert.strictEqual(EC.GATE.active, 0);
 });
+
+test('a release evaluation that joined a called evaluation refused at its queue bound re-runs unbounded and lands', async () => {
+  const a = await gatedTask(), b = await gatedTask();
+  const ra = a.evaluate();
+  await until(() => a.started());
+  EC.WAIT.maxMs = 50; // the called evaluation's bound is met by its own rejection; no release exists yet
+  let called, rel;
+  try {
+    called = rejectsCode(b.evaluate(), 'E_BUSY');
+    await until(() => EC.GATE.waiting.length === 1);
+    rel = b.evaluate({ trigger: 'release' }); // joins the called, bounded one
+    await called; // the called evaluation is refused queued
+  } finally { EC.WAIT.maxMs = keep; }
+  await until(() => EC.GATE.waiting.length === 1); // the release evaluation re-queued on its own, with no bound
+  assert.strictEqual(EC.GATE.waiting[0].timer, undefined, 'no refusal timer');
+  a.open();
+  await ra;
+  await until(() => b.started());
+  b.open();
+  const row = await rel;
+  assert.strictEqual(row.state, 'done');
+  assert.strictEqual(row.results.trigger, 'release');
+  assert.strictEqual(EC.GATE.active, 0);
+});

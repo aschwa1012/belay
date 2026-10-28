@@ -163,3 +163,57 @@ test('a watched hand-back whose worker is not live is still forgotten past PENDI
   await RE.enrichWakes(coreOf(h.s), 'r', [], h.seen, { holdMs: 0, now: () => h.s.t, workers: dead });
   assert.strictEqual(h.seen.pending.size, 0);
 });
+
+const failedEv = (task_id, code, at = 30, seq = 5, id = `f${seq}`) => ({ id, seq, kind: 'release_failed', ok: 0, code, task_id, worker_id: 'w1', written_at: at });
+const coreWithFails = (s) => ({ task: { list: async () => ({ tasks: s.tasks }) }, memory: { events: async () => ({ events: s.fails || [] }) } });
+const liveW = [{ id: 'w1', run_id: 'r', state: 'idle', pid_alive: true }];
+
+test('a release evaluation that ended without a result while its worker stays live drops the entry, wakes the orchestrator, and frees the idle close', async () => {
+  for (const code of ['E_ARGS', 'E_OWNER_LOST', 'E_TIMEOUT', 'E_GIT']) {
+    const s = { tasks: [released('t1')], t: 1000, fails: [] };
+    const seen = new Map();
+    const poll = (events = []) => RE.enrichWakes(coreWithFails(s), 'r', events, seen, { holdMs: HOLD, now: () => s.t, workers: liveW });
+    await poll([turnEnd()]);
+    s.t += HOLD;
+    assert.deepStrictEqual((await poll()).map((e) => e.event), ['turn_end']);
+    s.t += RE.PENDING_MAX_MS * 2;
+    assert.deepStrictEqual(await poll(), [], 'still watched: no owner fact yet');
+    assert.deepStrictEqual(RE.evaluatingHolds(seen, liveW, 'r'), ['eval:t1']);
+    s.fails = [failedEv('t1', code)];
+    const out = await poll();
+    assert.deepStrictEqual(out.map((e) => e.event), ['evaluated'], code);
+    assert.ok(wakeText(out[0]).includes(`task t1 could not be evaluated at release (${code}); call task_evaluate to run it`), wakeText(out[0]));
+    assert.deepStrictEqual(RE.evaluatingHolds(seen, liveW, 'r'), [], 'the idle close proceeds');
+    assert.deepStrictEqual(await poll(), [], 'one wake only');
+  }
+});
+
+test('a failure that landed before the turn_end poll rides on the held wake; a failure of an earlier hand-back is ignored; a cancel drops the entry silently', async () => {
+  const s = { tasks: [released('t1')], t: 1000, fails: [failedEv('t1', 'E_ARGS', 5, 1)] }; // written before this hand-back (at 10)
+  const seen = new Map();
+  const poll = (events = []) => RE.enrichWakes(coreWithFails(s), 'r', events, seen, { holdMs: HOLD, now: () => s.t, workers: liveW });
+  assert.deepStrictEqual(await poll([turnEnd()]), [], 'the stale failure is not this hand-back\'s');
+  s.fails.push(failedEv('t1', 'E_INTERNAL', 12, 2));
+  const out = await poll();
+  assert.deepStrictEqual(out.map((e) => e.event), ['turn_end']);
+  assert.match(wakeText(out[0]), /task t1 could not be evaluated at release \(E_INTERNAL\); call task_evaluate/);
+  assert.deepStrictEqual(RE.evaluatingHolds(seen, liveW, 'r'), []);
+
+  const c = { tasks: [released('t2')], t: 1000, fails: [] };
+  const seenC = new Map();
+  const pollC = (events = []) => RE.enrichWakes(coreWithFails(c), 'r', events, seenC, { holdMs: 0, now: () => c.t, workers: liveW });
+  await pollC([turnEnd()]);
+  assert.deepStrictEqual(RE.evaluatingHolds(seenC, liveW, 'r'), ['eval:t2']);
+  c.fails = [failedEv('t2', 'E_CANCELLED', 20, 3)];
+  assert.deepStrictEqual(await pollC(), [], 'a lifecycle cancel is no news');
+  assert.deepStrictEqual(RE.evaluatingHolds(seenC, liveW, 'r'), []);
+});
+
+test('the run manager records an event naming the code when a release evaluation ends without a result, and for a cancel', async () => {
+  const recorded = [];
+  const core = { task: { list: async () => ({ tasks: [] }), evaluate: async ({ task_id }) => { throw Object.assign(new Error('owner gone'), { code: 'E_OWNER_LOST' }); } }, memory: { recordEvent: async (a) => { recorded.push(a); return a; } } };
+  const w = { id: 'w1', turns: 1, worktree: '/x', releaseIds: { turn: 1, ids: ['t1', 't2'] } };
+  const ev = RE.startRelease(w, { core, runId: 'r', shutdownFlags: {} });
+  await ev.promise;
+  assert.deepStrictEqual(recorded.map((a) => [a.kind, a.ok, a.code, a.task_id, a.worker_id]), [['release_failed', 0, 'E_OWNER_LOST', 't1', 'w1'], ['release_failed', 0, 'E_OWNER_LOST', 't2', 'w1']]);
+});

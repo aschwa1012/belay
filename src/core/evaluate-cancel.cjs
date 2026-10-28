@@ -65,7 +65,8 @@ async function joinOrRun(E, args, run) {
         { op: 'evaluate', task_id: task.id, queued: true, ahead: queuedRelease.ahead, running: { trigger: 'release', worktree: run0.worktree, base: run0.base } });
     }
     try { return { ...(await cur), joined_evaluation: true }; } catch (e) {
-      if (!(e && e.detail && e.detail.cancelled)) throw e; // the joined run's own refusal is this call's too
+      // The joined run's own refusal is this call's too, except a cancel and, for a release evaluation, the queue refusal of a called (240 s bound) evaluation it joined: it re-runs unbounded.
+      if (!(e && e.detail && (e.detail.cancelled || (args.trigger === 'release' && e.detail.queued)))) throw e;
       return joinOrRun(E, args, run); // look again: another joiner may already have started the re-run
     }
   }

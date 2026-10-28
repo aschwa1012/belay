@@ -53,19 +53,30 @@ async function notePending(w, ctx) {
   return w.releaseIds;
 }
 
+// A release evaluation that ends without writing a result leaves the hand-back released and unevaluated. The run process polls from
+// another process and cannot see that, so the end is a ledger event (kind release_failed, ok 0, the code), the same cross-process
+// path call_detached/call_ended use; enrichWakes reads it, drops the watched entry and tells the orchestrator. Best effort: a write
+// that fails is dropped, and the entry is then forgotten by age once its worker is not live.
+function recordFailure(ctx, w, taskId, code, message) {
+  const rec = ctx.core && ctx.core.memory && ctx.core.memory.recordEvent;
+  if (typeof rec !== 'function') return Promise.resolve();
+  return Promise.resolve().then(() => rec({ kind: 'release_failed', ok: 0, code: String(code || 'E_INTERNAL'), worker_id: w.id, task_id: taskId, message: String(message || '').slice(0, 200) })).catch(() => {});
+}
+
 async function run(w, ctx, ev) {
   const core = ctx.core;
   const out = [];
   // One evaluation at a time per worker, in order: a hand-back released while this runs joins ev.task_ids (startRelease).
   for (ev.next = 0; ev.next < ev.task_ids.length; ev.next += 1) {
     const t = { id: ev.task_ids[ev.next] };
-    if (ev.cancelled) { out.push({ task_id: t.id, cancelled: true, by: ev.cancelled }); continue; }
+    if (ev.cancelled) { out.push({ task_id: t.id, cancelled: true, by: ev.cancelled }); recordFailure(ctx, w, t.id, 'E_CANCELLED', ev.cancelled); continue; }
     try {
       const row = await core.task.evaluate({ task_id: t.id, worktree: w.worktree, trigger: 'release', cancel_key: ev.key });
       out.push(summaryOf(row));
       // ADR 0058 decision 8: the stop waits for the worker's queue itself, and this is not on it.
       if (row.state === 'done' && ctx.stopIdleOnDone && ctx.manager && !ev.cancelled) { out[out.length - 1].stop_idle_on_done = true; w.idleStopping = ctx.manager.idleStop(row).then((r) => { if (r) w.idleStop = r; }, () => {}); }
     } catch (e) {
+      recordFailure(ctx, w, t.id, e && e.detail && e.detail.cancelled ? 'E_CANCELLED' : (e && e.code) || 'E_INTERNAL', (e && e.message) || e);
       out.push(e && e.detail && e.detail.cancelled ? { task_id: t.id, cancelled: true, by: e.detail.by || ev.cancelled }
         : { task_id: t.id, error: (e && e.code) || 'E_INTERNAL', message: String((e && e.message) || e).slice(0, 200) });
     }
@@ -127,7 +138,7 @@ function clause(evs, room) {
   const waited = (e) => (e.queued ? ` (queued behind ${e.queued.ahead}, waited ${Math.round(e.queued.waited_ms / 1000)} s)` : '');
   const parts = evs.map((e) => `${one(e)}${waited(e)}`);
   function one(e) { return (e.error === 'E_BUSY' ? `task ${e.task_id} not evaluated at release: another evaluation of it is running`
-    : e.error ? `task ${e.task_id} could not be evaluated at release (${e.error})`
+    : e.error ? `task ${e.task_id} could not be evaluated at release (${e.error}); call task_evaluate to run it`
     : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? `${e.flaky ? 'passed on a retry (flaky), done' : 'passed, done'}${e.uncommitted ? '; uncommitted changes: commit before integrate' : ''}` : `not done; failing: ${e.failing.join(', ') || 'no executable check'}`}`); }
   return cut(` ${parts.join('; ')}.`, room);
 }
@@ -161,6 +172,9 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
   if (!tasks) { const flushed = [...held.values()].map((h) => h.ev); held.clear(); return flushed.concat(events); }
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const landed = (t) => t.results && t.results.trigger === 'release' && seen.get(t.id) !== t.results.evaluated_at && (!t.handoff || Number(t.results.evaluated_at) >= Number(t.handoff.at));
+  const fails = await releaseFailures(core, runId, seen, pending, held, events, tasks);
+  const failedOf = (t) => t.handoff && fails.find((f) => f.task_id === t.id && !seen.failedIds.has(f.id) && Number(f.written_at) >= Number(t.handoff.at));
+  const failure = (f) => { seen.failedIds.add(f.id); return f.code === 'E_CANCELLED' ? null : { task_id: f.task_id, error: f.code, seq: Number(f.seq) || 0 }; }; // a cancel is the lifecycle call's own doing: no wake
   const t0 = now();
   const liveWorkers = workers ? new Set(workers.filter((r) => r.run_id === runId && r.pid_alive === true && !["stopped", "dead", "paused"].includes(r.state)).map((r) => r.id)) : null;
   const out = [];
@@ -169,6 +183,8 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     h.ids = h.ids.filter((id) => {
       const t = byId.get(id);
       if (t && landed(t)) { seen.set(id, t.results.evaluated_at); pending.delete(id); h.evs.push(summaryOf(t)); return false; }
+      const f = t && unevaluated(t, runId, h.ev.worker_id) && failedOf(t);
+      if (f) { pending.delete(id); const s = failure(f); if (s) h.evs.push(s); return false; }
       if (!t || !unevaluated(t, runId, h.ev.worker_id)) { pending.delete(id); return false; }
       return true;
     });
@@ -187,7 +203,7 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     const evs = []; const ing = [];
     for (const t of tasks) {
       if (t.run_id !== runId || !t.handoff || t.handoff.by !== ev.worker_id) continue;
-      if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); evs.push(summaryOf(t)); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: t0 }); ing.push(t.id); }
+      if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); evs.push(summaryOf(t)); } else if (unevaluated(t, runId, ev.worker_id) && failedOf(t)) { const s = failure(failedOf(t)); if (s) evs.push(s); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: t0 }); ing.push(t.id); }
     }
     if (ing.length && holdMs > 0) { held.set(ev.worker_id, { ev, evs, ids: ing, since: t0 }); continue; }
     if (evs.length) ev.evaluated = evs;
@@ -206,14 +222,26 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
       seen.set(id, t.results.evaluated_at); pending.delete(id);
       if (!follow.has(p.worker_id)) follow.set(p.worker_id, []);
       follow.get(p.worker_id).push(summaryOf(t));
+    } else if (t && unevaluated(t, runId, p.worker_id) && failedOf(t)) {
+      pending.delete(id);
+      const s = failure(failedOf(t));
+      if (s) { if (!follow.has(p.worker_id)) follow.set(p.worker_id, []); follow.get(p.worker_id).push(s); }
     } else if (!t || !unevaluated(t, runId, p.worker_id) || (t0 - p.since > PENDING_MAX_MS && !(liveWorkers && liveWorkers.has(p.worker_id)))) pending.delete(id);
   }
   for (const [wid, evs] of follow) {
     const text = cut(`belay: worker ${wid}'s hand-back:${clause(evs, WAKE_TEXT_MAX)}`, WAKE_TEXT_MAX);
-    const seq = Math.max(...evs.map((e) => Number(seen.get(e.task_id)) || 0));
+    const seq = Math.max(...evs.map((e) => Number(seen.get(e.task_id)) || Number(e.seq) || 0));
     out.push({ event: 'evaluated', worker_id: `eval:${evs[0].task_id}`, turn: 0, seq, task_id: evs[0].task_id, ...(evs.length > 1 ? { task_ids: evs.map((e) => e.task_id) } : {}), text });
   }
   return out;
+}
+
+// The release_failed events of this run, read only when a hand-back is awaiting its evaluation (nothing is read otherwise).
+async function releaseFailures(core, runId, seen, pending, held, events, tasks) {
+  if (!seen.failedIds) seen.failedIds = new Set();
+  const awaiting = pending.size || held.size || (events.some((e) => e.event === 'turn_end') && tasks.some((t) => t.run_id === runId && t.state === 'released' && t.handoff));
+  if (!awaiting || !core.memory || typeof core.memory.events !== 'function') return [];
+  try { return (((await core.memory.events({ run_id: runId, kinds: ['release_failed'] })) || {}).events || []).filter((e) => e.kind === 'release_failed'); } catch { return []; }
 }
 
 // The headless idle close (orchestrator.cjs) holds while a watched evaluation runs for a worker of this run that is still live:
