@@ -52,7 +52,10 @@ function refusal(command) {
     const n = normalize(command, quote, unescape);
     if (segments(n).some(segmentRefused)) return MESSAGE;
     // Stop-Process fed by a name lookup in an earlier segment of the same command.
-    if (new RegExp(String.raw`\b${STOP}\b`).test(n) || (/(?:^|[\s;|&(])kill\s+-/.test(n) && /powershell|pwsh/.test(n))) {
+    if (/\bgetprocessesbyname\b/.test(n) && /\.kill\s*\(/.test(n)) return MESSAGE;
+    // A taskkill whose pid is a variable, in a loop over a process lookup.
+    if (/\btaskkill(?:\.exe)?\b[^;]*(?:^|\s)[/-]{1,2}pid\s+["']?[$%]/.test(n) && /(?:\$\(|`)\s*(?:tasklist|pgrep|pidof|ps|get-process|gps)\b/.test(n)) return MESSAGE;
+    if (new RegExp(String.raw`\b${STOP}\b`).test(n) || /\.kill\s*\(/.test(n) || (/(?:^|[\s;|&(])kill\s+-/.test(n) && /powershell|pwsh/.test(n))) {
       for (const m of n.matchAll(/\b(?:get-process|gps)\b([^;|&)\n]*)/g)) if (!/\s-(?:id|pid)\s+\d/.test(m[1])) return MESSAGE;
     }
   }
