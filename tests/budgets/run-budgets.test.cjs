@@ -12,7 +12,8 @@ const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const P = require('../../src/run/process.cjs');
 const { emptyScript } = require('../cli/budget.cjs');
-const { makeSpec, runCli, receiptOf, waitForFileLine, waitForExit, fwd, cleanup } = require('../cli/stop-helpers.cjs');
+const { makeSpec, runCli, receiptOf, waitUntil, waitForFileLine, waitForExit, fwd, cleanup } = require('../cli/stop-helpers.cjs');
+const { sampleHolds } = require('../cli/holds-helpers.cjs');
 
 const ROOT = path.resolve(__dirname, '..', '..').split(path.sep).join('/');
 const FAKE_CLAUDE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
@@ -43,30 +44,31 @@ async function onceIgnoringStdin() {
   }
 }
 
-test('budgets: an orchestrator that ignores a closed stdin is killed within its grace plus 4,500 ms, minimum of 3', async () => {
-  const samples = [];
-  const floors = []; // the host's own spawn floor, taken between the runs and printed beside the figure (ADR 0018), never asserted
-  const floorScript = emptyScript();
-  for (let i = 0; i < N; i += 1) {
-    const s = await onceIgnoringStdin();
-    assert.strictEqual(s.killed, true, `run ${i} did not kill the orchestrator after the close`);
-    samples.push(s);
-    const f0 = Date.now();
-    spawnSync(process.execPath, [floorScript], { windowsHide: true, timeout: 20000 });
-    floors.push(Date.now() - f0);
-  }
-  const afterTurn = Math.min(...samples.map((s) => s.sinceTurnEnd - s.snapMs));
-  const total = Math.min(...samples.map((s) => s.totalMs - s.snapMs));
-  console.log(JSON.stringify({ close_grace_ms: CLOSE_GRACE_MS, since_turn_end_minus_snapshot_min: afterTurn, total_minus_snapshot_min: total, host_floor_ms: floors, samples }));
-  assert.ok(afterTurn <= CLOSE_GRACE_MS + KILL_OVER_GRACE_MS, `the kill came ${afterTurn} ms after the turn end (minimum of ${N}), over ${CLOSE_GRACE_MS + KILL_OVER_GRACE_MS} ms; samples ${JSON.stringify(samples)}`);
-  assert.ok(total < TOTAL_MS, `the run took ${total} ms (minimum of ${N}), over ${TOTAL_MS} ms; samples ${JSON.stringify(samples)}`);
+// ADR 0018 amendment 1: a gate is floor-relative. Each sample is taken between two reads of the host's own empty-script spawn time, the
+// minimum of n is taken for both, and the gate is on the difference. The raw minimum, the floor and every sample are recorded beside it.
+const floorScript = emptyScript();
+const floorOnce = () => { const t = Date.now(); spawnSync(process.execPath, [floorScript], { windowsHide: true, timeout: 20000 }); return Date.now() - t; };
+
+async function gate(name, boundMs, sampleFn) {
+  const samples = []; const floors = [floorOnce()];
+  for (let i = 0; i < N; i += 1) { samples.push(await sampleFn(i)); floors.push(floorOnce()); }
+  const min = Math.min(...samples); const floor = Math.min(...floors);
+  console.log(JSON.stringify({ gate: name, bound_ms: boundMs, min_over_floor_ms: min - floor, raw_min_ms: min, floor_min_ms: floor, raw_samples_ms: samples, floor_samples_ms: floors }));
+  assert.ok(min - floor <= boundMs, `${name}: ${min - floor} ms above the host floor (minimum of ${N}), over ${boundMs} ms; raw min ${min}, floor ${floor}, samples ${samples.join(', ')}`);
+}
+
+test('budgets: an orchestrator that ignores a closed stdin is killed within its grace plus 4,500 ms, and the run ends within 9,000 ms', { timeout: 300000 }, async () => {
+  const runs = [];
+  const once = async (i) => { const r = await onceIgnoringStdin(); assert.strictEqual(r.killed, true, `run ${i} did not kill the orchestrator after the close`); runs.push(r); return r; };
+  await gate('kill after the turn end (identity snapshot subtracted)', CLOSE_GRACE_MS + KILL_OVER_GRACE_MS, async (i) => { const r = await once(i); return r.sinceTurnEnd - r.snapMs; });
+  await gate('whole run (identity snapshot subtracted)', TOTAL_MS, async (i) => { const r = runs[i]; return r.totalMs - r.snapMs; });
 });
 
 // ---- the death wake's lag behind the kill (moved from tests/cli/run-wake.test.cjs, which keeps the ordering facts) -------------
 
 const { createRunManager } = require('../../src/run/index.cjs');
 const { cleanupRun } = require('../cli/run-teardown.cjs');
-const { sampleHolds, waitUntil } = require('../cli/holds-helpers.cjs');
+
 
 const USER_SETTINGS = `${ROOT}/tests/run/fixtures/user-settings.json`;
 const WAKE_LAG_MS = 3000; // about one poll (300 ms) plus the detector's landing
@@ -105,9 +107,32 @@ async function deathWakeLag() {
   }
 }
 
-test('budgets: the death wake lands within 3,000 ms of the kill, minimum of 3', { timeout: 300000 }, async () => {
-  const lags = [];
-  for (let i = 0; i < N; i += 1) lags.push(await deathWakeLag());
-  console.log(JSON.stringify({ death_wake_lag_ms: lags, min: Math.min(...lags) }));
-  assert.ok(Math.min(...lags) <= WAKE_LAG_MS, `the death wake came ${Math.min(...lags)} ms after the kill (minimum of ${N}), over ${WAKE_LAG_MS} ms; samples ${lags.join(', ')}`);
+test('budgets: the death wake lands within 3,000 ms of the kill', { timeout: 300000 }, async () => {
+  await gate('death wake lag behind the kill', WAKE_LAG_MS, () => deathWakeLag());
+});
+
+// ---- the stop's own exit speed (moved from tests/cli/stop.test.cjs, which keeps the facts) --------------------------------------
+
+const { runStopSync, currentRunRow } = require('../cli/stop-helpers.cjs');
+
+async function stopMsToExit() {
+  const dir = fwd(fs.mkdtempSync(path.join(os.tmpdir(), 'belay-run-budgets-')));
+  const dataDir = `${dir}/.belay`;
+  const { specPath, runId } = makeSpec(dir, { startup_timeout_ms: 120000, close_grace_ms: 5000 });
+  const run = runCli(specPath, dataDir, { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_HANG: '1' });
+  try {
+    assert.ok(await waitUntil(() => currentRunRow(dataDir, runId), 60000, 100), 'the run row never appeared');
+    const stop = runStopSync(dataDir, runId);
+    assert.strictEqual(stop.status, 0, `stop: ${stop.stdout} / ${stop.stderr}`);
+    assert.strictEqual(stop.receipt.orchestrator.graceful, true);
+    assert.ok(await waitForExit(run.proc, 90000), 'the run did not exit after the stop');
+    return stop.receipt.orchestrator.ms_to_exit;
+  } finally {
+    if (run.proc.exitCode === null) { try { await P.killTree(run.proc); } catch { /* best effort */ } }
+    cleanup(dir);
+  }
+}
+
+test('budgets: a stop closes a hung orchestrator within 4,999 ms of its 5,000 ms grace', { timeout: 300000 }, async () => {
+  await gate('stop ms_to_exit', 4999, () => stopMsToExit());
 });
