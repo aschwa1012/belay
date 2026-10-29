@@ -22,12 +22,13 @@ const { EventEmitter } = require('node:events');
 const ROOT = path.resolve(__dirname, '..', '..').split(path.sep).join('/');
 const FIX = `${ROOT}/tests/core/fixtures`;
 
-async function startOwner(script, dir, extra = []) {
+// `ready` is the output line that means the owner is up; the wedged fixture's WEDGED line means its event loop is blocked.
+async function startOwner(script, dir, extra = [], ready = /READY|"ready":true/) {
   const child = spawn(process.execPath, [`${FIX}/${script}`, dir, ...extra], { windowsHide: true, stdio: ['ignore', 'pipe', 'inherit'] });
   let buf = '';
   child.stdout.on('data', d => { buf += d; });
-  for (let i = 0; i < 400 && !/READY|"ready":true/.test(buf); i += 1) await new Promise(r => setTimeout(r, 25));
-  assert.match(buf, /READY|"ready":true/, `the owner did not start: ${buf}`);
+  for (let i = 0; i < 1200 && !ready.test(buf); i += 1) await new Promise(r => setTimeout(r, 25));
+  assert.match(buf, ready, `the owner did not start: ${buf}`);
   return child;
 }
 
@@ -44,9 +45,9 @@ test('a wedged owner: 8 reads in one process cost one dial and finish fast, each
   const dir = sandbox();
   let child = null;
   try {
-    child = await startOwner('owner-wedged.cjs', dir, ['12000']);
-    await new Promise(r => setTimeout(r, 700)); // now wedged
+    child = await startOwner('owner-wedged.cjs', dir, ['40000'], /WEDGED/);
     unresponsive.reset();
+    unresponsive.setClock(() => 1000000); // the 10 s back-off must not lapse inside the test, however slow the host
     const c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
     tcx.after(() => Promise.resolve().then(() => c.close()));
     const t0 = Date.now();
@@ -66,6 +67,7 @@ test('a wedged owner: 8 reads in one process cost one dial and finish fast, each
     assert.ok(vias.every(v => /owner unresponsive \(answer timed out at 300 ms; pid \d+, .*\); read from copy until \d{4}-/.test(v)), JSON.stringify(vias));
     await c.close();
   } finally {
+    unresponsive.reset();
     if (child && child.exitCode === null) { try { process.kill(child.pid); } catch { /* gone */ } }
     cleanup(dir);
   }
@@ -195,8 +197,7 @@ test('during the backoff a vector read still pings, and against a wedged owner f
   const dir = sandbox();
   let child = null;
   try {
-    child = await startOwner('owner-wedged.cjs', dir, ['30000']);
-    await new Promise(r => setTimeout(r, 700));
+    child = await startOwner('owner-wedged.cjs', dir, ['30000'], /WEDGED/);
     unresponsive.reset();
     const c = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
     tcx.after(() => Promise.resolve().then(() => c.close()));
@@ -252,8 +253,7 @@ test('a process that does 6 reads against a wedged owner and returns from main e
   const dir = sandbox();
   let owner = null;
   try {
-    owner = await startOwner('owner-wedged.cjs', dir, ['20000']);
-    await new Promise(r => setTimeout(r, 700));
+    owner = await startOwner('owner-wedged.cjs', dir, ['20000'], /WEDGED/);
     const reader = spawn(process.execPath, [`${FIX}/wedged-reads.cjs`, dir, '6'], { windowsHide: true, stdio: ['ignore', 'pipe', 'inherit'] });
     let out = '';
     reader.stdout.on('data', d => { out += d; });

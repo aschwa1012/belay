@@ -34,6 +34,20 @@ function cliAsync(args, dataDir) {
   });
 }
 
+// A follow in text mode: its lines arrive as the file is read, so a test appends after the CLI has printed what it started from (its
+// start-up is slower than any fixed sleep on a loaded host). `seen(needle)` resolves true once stdout holds the needle, false if the CLI exits first.
+function followAsync(args, dataDir) {
+  const proc = spawn(process.execPath, [CLI, 'transcript', ...args, '--data', dataDir], { cwd: ROOT, windowsHide: true });
+  let stdout = ''; let stderr = '';
+  const waiters = [];
+  const check = () => { for (const w of waiters.slice()) if (stdout.includes(w.needle)) { waiters.splice(waiters.indexOf(w), 1); w.resolve(true); } };
+  proc.stdout.on('data', (d) => { stdout += d; check(); });
+  proc.stderr.on('data', (d) => { stderr += d; });
+  const done = new Promise((resolve) => proc.once('exit', (status) => { for (const w of waiters) w.resolve(false); resolve({ status, stdout, stderr }); }));
+  const seen = (needle) => new Promise((resolve) => { waiters.push({ needle, resolve }); check(); });
+  return { seen, done };
+}
+
 async function plantRun(dataDir) {
   const core = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: RUN, pid: process.pid }, embed: false });
   try { await core.run.attach({ adapter_pid: process.pid }); } finally { await core.shutdownOwner(); await core.close(); }
@@ -165,19 +179,19 @@ test('transcript -f: reads appended bytes from an offset, completes a partial li
     fs.mkdirSync(orch, { recursive: true });
     const file = `${orch}/stream.jsonl`;
     fs.writeFileSync(file, text('first words'));
-    const running = cliAsync([RUN, '-f', '--for', '3000', '--dir', orch], dataDir);
-    await sleep(500);
+    const running = followAsync([RUN, '-f', '--for', '12000', '--dir', orch], dataDir);
+    assert.ok(await running.seen('first words'), 'the follow never printed the line it started from');
     const half = text('second words, written in two parts');
     const cut = Math.floor(half.length / 2);
     fs.appendFileSync(file, text('later words') + half.slice(0, cut));
-    await sleep(700);
-    fs.appendFileSync(file, half.slice(cut));
-    const r = await running;
+    assert.ok(await running.seen('later words'), 'the follow never read the appended whole line');
+    fs.appendFileSync(file, half.slice(cut)); // the partial line is completed on a later poll
+    assert.ok(await running.seen('second words, written in two parts'), 'the completed line never arrived');
+    const r = await running.done;
     assert.strictEqual(r.status, 0, r.stderr);
-    const j = JSON.parse(r.stdout);
-    assert.strictEqual(j.followed, true);
-    assert.strictEqual(j.ended_because, 'bound');
-    assert.deepStrictEqual(j.entries.map((e) => e.text), ['first words', 'later words', 'second words, written in two parts']);
+    assert.match(r.stdout, /ended because: bound[.] entries: 3[.]/);
+    const at = ['first words', 'later words', 'second words, written in two parts'].map((w) => r.stdout.indexOf(w));
+    assert.ok(at[0] >= 0 && at[0] < at[1] && at[1] < at[2], r.stdout);
   } finally { cleanup(dir); }
 });
 
@@ -227,15 +241,15 @@ test('transcript -f: a stream that shrinks is read again from its start and says
     fs.mkdirSync(orch, { recursive: true });
     const file = `${orch}/stream.jsonl`;
     fs.writeFileSync(file, text('a long first line of words '.repeat(10)));
-    const running = cliAsync([RUN, '-f', '--for', '2500', '--dir', orch], dataDir);
-    await sleep(800);
+    const running = followAsync([RUN, '-f', '--for', '12000', '--dir', orch], dataDir);
+    assert.ok(await running.seen('a long first line of words'), 'the follow never printed the line it started from');
     fs.writeFileSync(file, text('new'));
-    const r = await running;
+    assert.ok(await running.seen('new\n'), 'the follow never read the rewritten stream');
+    const r = await running.done;
     assert.strictEqual(r.status, 0, r.stderr);
-    const j = JSON.parse(r.stdout);
-    assert.deepStrictEqual(j.entries.map((e) => e.kind), ['text', 'note', 'text']);
-    assert.ok(j.entries[1].text.includes('shrank'));
-    assert.strictEqual(j.entries[2].text, 'new');
+    const at = ['a long first line of words', 'shrank', 'new\n'].map((w) => r.stdout.indexOf(w));
+    assert.ok(at[0] >= 0 && at[0] < at[1] && at[1] < at[2], r.stdout);
+    assert.match(r.stdout, /entries: 3[.]/);
   } finally { cleanup(dir); }
 });
 

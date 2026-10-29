@@ -99,7 +99,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   const child = P.spawnWorker({ exe: command, args: fullArgs, cwd: worktree, env, stdin: 'pipe' });
 
   const state = {
-    sessionId: null, turns: 0, externallyTriggeredTurns: 0,
+    sessionId: null, turns: 0, skippedTurn: null, externallyTriggeredTurns: 0,
     readyVerified: false, readyGateStarted: false, readyMs: null, idle: false, laterInits: 0, surface: null, instructions: I.instructionsFields(instructions),
     holds: [], polls: 0, endedBy: null, finishing: false, boundStarted: false,
     killedAfterClose: false, exitCode: null, exitSignal: null,
@@ -117,6 +117,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   const usage = createUsage();
   let pollHandle = null;
   let pollInFlight = false; // 5a-2: at most one store read at a time, guard not a queue
+  let pollByTurnEnd = false; // whether the read in flight was started by a turn end
   const holdRecorder = createHoldRecorder(); // wake.cjs (design item 9): moved out of this file
   const leftovers = require('./orchestrator-leftovers.cjs').createLeftovers({ child, P, state, core, runId }); // ADR 0054 amendment 2
   const preClose = require('./pre-close-wake.cjs').createPreCloseNotice({ core, runId }); // ADR 0065 amendment 1
@@ -259,16 +260,21 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   // the snapshot): no worker of this run mid-turn (the store's own `mid_turn` column, every turn, not
   // only the first), no wake still unanswered, and (5b-4) no non-terminal row whose pid just died
   // still inside its detector grace.
-  async function pollOnce() {
+  async function pollOnce(byTurnEnd = false) {
     if (state.finishing || pollInFlight) return;
     pollInFlight = true;
-    const turnAtCall = state.turns;
+    pollByTurnEnd = byTurnEnd;
+    const turnAtStart = state.turns;
     let list = null;
     let failReason = null;
     try { list = await core.worker.list({}); }
     catch (e) { failReason = (e && (e.code || e.message)) || String(e); }
     state.polls += 1;
     pollInFlight = false;
+    // A turn end whose poll was skipped because a read the ready event or the timer started was in flight is the turn a hold from
+    // this read names, not the turn the read started at (stale). A later turn end in the same chunk as the end that started this read is neither.
+    const turnAtCall = state.skippedTurn == null ? turnAtStart : state.skippedTurn;
+    state.skippedTurn = null;
     if (state.finishing) return; // the run ended while this read was in flight
 
     if (failReason !== null) {
@@ -353,7 +359,8 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       // idle period, not to the whole run (ADR 0015's evidence table counts a hold at each turn end).
       holdRecorder.reset();
       if (pollHandle) { clearTimeout(pollHandle); pollHandle = null; }
-      pollOnce();
+      if (pollInFlight && !pollByTurnEnd && state.skippedTurn == null) state.skippedTurn = state.turns;
+      pollOnce(true);
       return;
     }
     // A write the substrate reports completed, or (ADR 0023 decision 8) cancelled by an interrupt.

@@ -24,11 +24,7 @@ after(async () => {
 });
 
 const child = () => spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { windowsHide: true, stdio: 'ignore' });
-const deadPid = () => new Promise((resolve, reject) => {
-  const c = spawn(process.execPath, ['-e', ''], { windowsHide: true, stdio: 'ignore' });
-  c.once('error', reject);
-  c.once('exit', () => resolve(c.pid));
-});
+const deadPid = async () => require('../helpers/dead-pid.cjs').deadPid(); // never an exited child's pid: Windows reuses those
 const WIN = { skip: process.platform !== 'win32' };
 
 test('run.attach: a live adapter with a verified creation time is refused with E_RUN_LIVE, and nothing is written', WIN, async () => {
