@@ -40,7 +40,16 @@ if (!globalThis[KEY]) {
 
   // The machine-wide spawn register (src/core/spawn-register.cjs) is this process's own for the run of the tests: a worker one test
   // starts is never taken for the ancestor of another test's operator, and nothing is left in the real register.
-  if (!process.env.BELAY_SPAWN_REGISTRY) process.env.BELAY_SPAWN_REGISTRY = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-spawned-test-'));
+  // `node --test --require` loads this helper in the runner too, and every test file's process inherits the runner's variable, so a bare
+  // "only if unset" gave all concurrent files one register: a fake orchestrator one file registers covers the invented process roots of
+  // another file's operator check. The helper marks the register it made with its own pid and path; a process that inherits that pair
+  // from another process makes a register of its own, and an explicit value (a test's or the operator's) is kept.
+  const madeBy = (process.env.BELAY_TEST_SPAWN_REGISTRY_MADE_BY || '').split('|');
+  const inherited = !!madeBy[1] && madeBy[1] === process.env.BELAY_SPAWN_REGISTRY && madeBy[0] !== String(process.pid);
+  if (!process.env.BELAY_SPAWN_REGISTRY || inherited) {
+    process.env.BELAY_SPAWN_REGISTRY = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-spawned-test-'));
+    process.env.BELAY_TEST_SPAWN_REGISTRY_MADE_BY = `${process.pid}|${process.env.BELAY_SPAWN_REGISTRY}`;
+  }
 
   // One attempt per directory when budgetMs is 0; otherwise retried within the budget. Returns what remains.
   function cleanup(budgetMs = 3000) {
