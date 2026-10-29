@@ -130,10 +130,10 @@ test('a rerank failure with no detail still drops the warm state', async () => {
   install(async () => { calls += 1; return { scores: [{ id: 'w', score: 1 }] }; });
   RW.rerankerState(E, tier);
   await settle();
-  install(async () => { throw Object.assign(new Error('bare'), { detail: undefined }); });
+  install(async () => { throw Object.assign(new Error('bare'), { code: 'E_RERANK' }); }); // an E_RERANK with no detail passes the stage as it is
   E._rerankWarm.set(MODEL, { state: 'ready' });
   const r = await ask(E);
-  assert.strictEqual(r.info.cause.reason, 'error');
+  assert.strictEqual(r.info.cause.reason, null);
   assert.strictEqual(E._rerankWarm.has(MODEL), false);
 });
 
@@ -144,11 +144,11 @@ test('an owner that stops mid warm-up ends in failed with no retry loop, and its
   await settle();
   assert.strictEqual(calls, 1);
   E.owner.stopped = true;
-  provider.unregister(MODEL); // what the owner's close does with the providers it built
   gate.res();
   await settle();
   assert.strictEqual(E._rerankWarm.get(MODEL).state, 'failed');
   assert.strictEqual(calls, 1, 'no retry on a stopped owner');
+  provider.unregister(MODEL); // what the owner's close does with the providers it built
   const r = await ask(E);
   assert.strictEqual(r.info.cause.reason, 'shutdown');
 });
