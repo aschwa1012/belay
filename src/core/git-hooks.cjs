@@ -11,6 +11,7 @@ const path = require('node:path');
 const { err } = require('./errors.cjs');
 const G = require('./git.cjs');
 const rows = require('./rows.cjs');
+const T = require('./trace-sweep.cjs');
 
 const HOOK_NAMES = ['pre-merge-commit', 'prepare-commit-msg', 'commit-msg', 'post-merge', 'post-checkout', 'pre-commit', 'reference-transaction'];
 
@@ -46,7 +47,7 @@ function hooksIn(text) {
 // Runs git with trace2 events written to a temporary file. -> the run result plus `hooks`: the hooks that ran with their exit
 // codes (null when the trace could not be read).
 async function runTraced(cwd, args, opts = {}) {
-  const file = path.join(os.tmpdir(), `belay-trace-${process.pid}-${rows.newId()}.json`);
+  const file = path.join(os.tmpdir(), T.traceFileName(process.pid, rows.newId()));
   try {
     const r = await G.run(cwd, args, { ...opts, env: { ...(opts.env || {}), GIT_TRACE2_EVENT: file } });
     let hooks = null;
@@ -54,6 +55,7 @@ async function runTraced(cwd, args, opts = {}) {
     return { ...r, hooks };
   } finally {
     fs.rmSync(file, { force: true });
+    try { T.sweepOnce(); } catch { /* never fails the git call */ } // after the git run, not awaited: sweeps the temp folder of traces whose writer died
   }
 }
 

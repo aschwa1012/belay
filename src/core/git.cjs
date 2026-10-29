@@ -56,6 +56,15 @@ async function branchExists(cwd, name) {
   return (await run(cwd, ['rev-parse', '--verify', '--quiet', `refs/heads/${name}`])).ok;
 }
 
+// The existing branch that `name` is another spelling of, or null: refs compare equal across case on some hosts (Windows, core.ignorecase),
+// and a packed ref is not found by resolving a variant, so the exact listing is read and compared folded.
+async function branchVariant(cwd, name) {
+  const out = await must(cwd, ['for-each-ref', '--format=%(refname)', 'refs/heads/'], 'the branches could not be listed');
+  const names = out.split(/\r?\n/).map((l) => l.trim().replace(/^refs\/heads\//, '')).filter(Boolean);
+  if (names.includes(name)) return null;
+  return names.find((b) => b.toLowerCase() === String(name).toLowerCase()) || null;
+}
+
 // `git status --porcelain -z --untracked-files=all`: every changed or untracked path (ignored files excluded).
 async function dirtyPaths(cwd) {
   const out = await must(cwd, ['status', '--porcelain', '-z', '--untracked-files=all'], `the status of ${fwd(cwd)} could not be read`);
@@ -80,4 +89,4 @@ const samePath = (a, b) => {
   return process.platform === 'win32' ? x.toLowerCase() === y.toLowerCase() : x === y;
 };
 
-module.exports = { run, must, failure, toplevel, commitOf, validBranch, branchExists, dirtyPaths, worktrees, samePath, fwd, GIT_TIMEOUT_MS };
+module.exports = { run, must, failure, toplevel, commitOf, validBranch, branchExists, branchVariant, dirtyPaths, worktrees, samePath, fwd, GIT_TIMEOUT_MS };

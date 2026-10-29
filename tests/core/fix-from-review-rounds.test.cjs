@@ -4,11 +4,12 @@
 // it fixes, so the coder idle in that tree can take it, and the tree is removed for every task that shares it. Real core, a
 // sandbox store and a throwaway repository (worktree-helpers.cjs), never this checkout.
 
-const { test, before, after } = require('node:test');
+const { test: nodeTest, before, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
-const { makeRepo, write, commit, rejectsCode } = require('./worktree-helpers.cjs');
+const { makeRepo, write, commit, rejectsCode, guarded } = require('./worktree-helpers.cjs');
+const test = guarded(nodeTest); // a longer hang guard than the runner's 60 s; see guarded
 
 const { openCore } = core('index.cjs');
 
@@ -209,7 +210,7 @@ async function finishFix(w, f, name, text = 'fixed\n') {
 }
 const integrationOf = async (id) => (await orch.task.get({ task_id: id })).integration;
 
-test('a shared branch lands as one: merging the fix marks the work merged, merging the work marks the fix, and a later round is not', async () => {
+test('a shared branch lands as one: merging the fix marks the work merged', async () => {
   const a = await workWithOpenFix('unit-a');
   await finishFix(a.w, a.f, 'unit-a');
   const ra = await orch.integration.merge({ task_ids: [a.f.id], into: 'int/unit-a' });
@@ -218,7 +219,9 @@ test('a shared branch lands as one: merging the fix marks the work merged, mergi
   assert.deepStrictEqual([wa.state, wa.via, wa.id, wa.into], ['merged', a.f.id, ra.id, 'int/unit-a'], 'the work landed with its fix');
   const listed = (await orch.task.list({})).tasks.find((t) => t.id === a.w.id).integration;
   assert.deepStrictEqual([listed.state, listed.via], ['merged', a.f.id], 'task.list says the same');
+});
 
+test('a shared branch lands as one: merging the work marks the fix, and a later round is not', async () => {
   const b = await workWithOpenFix('unit-b');
   await finishFix(b.w, b.f, 'unit-b');
   await orch.integration.merge({ task_ids: [b.w.id], into: 'int/unit-b' });

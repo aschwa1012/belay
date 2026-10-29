@@ -121,7 +121,8 @@ test('the pre-close notice over a real plan: an idle worker in a dirty or off-br
   const r = await notice('test-run').check();
   assert.ok(r.ran && r.wake, JSON.stringify(r));
   assert.match(r.wake.text, /wip\.txt/);
-  assert.ok(r.wake.text.includes(a.path) && r.wake.text.includes(b.path), r.wake.text);
-  assert.ok(!r.wake.text.includes(c.path), 'a clean tree with an idle worker is not named');
+  // The wake cuts a long path to its tail (a worker-chosen string, clip in pre-close-wake), and the suite's TEMP is long enough to hit that; the task id is whole.
+  assert.ok(r.wake.text.includes(`task ${a.id};`) && r.wake.text.includes(`task ${b.id};`), r.wake.text);
+  assert.ok(!r.wake.text.includes(c.id), 'a clean tree with an idle worker is not named');
   for (const x of [a, b, c]) await call('worker.write', { id: x.wid, substrate: 'claude-code', pid: null, state: 'dead' });
 });

@@ -263,7 +263,11 @@ test('a Codex worker is ready only once its adapter log shows tools/list', async
   const sb = sandbox();
   const core = createFakeCore();
   const m = mgr(sb, core, FAKE_CODEX);
-  tcx.after(() => Promise.resolve().then(() => m.shutdown()));
+  // The fake's turn ends about 400 ms after it starts; a late readiness poll would find it exited and the
+  // state idle. Hold the turn open on a gate file, released after the assertions that need a running worker.
+  const gate = path.join(sb.data, 'codex-turn.gate');
+  process.env.FAKE_CODEX_GATE_FILE = gate;
+  tcx.after(() => { delete process.env.FAKE_CODEX_GATE_FILE; return Promise.resolve().then(() => m.shutdown()); });
   const row = await m.spawn({ substrate: 'codex', worktree: sb.worktree, prompt: 'do it', worker_id: 'cx', startup_timeout_ms: 8000 });
   assert.equal(row.state, 'running');
   assert.equal(row.substrate, 'codex');
@@ -280,6 +284,7 @@ test('a Codex worker is ready only once its adapter log shows tools/list', async
   assert.equal(m._worker('cx').readyEvidence.adapter_log, fwd(logPath));
 
   // One process per turn: it completes and settles idle, which is not a death.
+  fs.writeFileSync(gate, 'go');
   await m._waitTurn('cx', 8000);
   await m._waitExit('cx', 8000);
   await m._worker('cx').queue;

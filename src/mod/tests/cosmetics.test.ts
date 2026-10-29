@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect } from 'claude-code/testing'
+import { test } from './support'
 import { boot, band, pane, openPane, leaves, words, RUN, T0 } from './support'
 
 // Cosmetic rules the operator saw in the GUI: a compact memory notice that wraps cleanly, a visible name cut, an interactive

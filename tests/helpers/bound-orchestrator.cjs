@@ -9,7 +9,19 @@ const { claimBind } = require('../../src/core/bind.cjs');
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-async function connectBoundOrchestrator(dataDir, runId, { waitMs = 60000, embed } = {}) {
+// `diagnose` (optional) returns a line about the run's process, for example its stderr tail. A failure names the run row's own
+// exit_reason (read from a copy of the store) and that line, so a lost owner is explained by what the run said and not only by its code.
+async function describeRun(dataDir, runId, diagnose) {
+  const parts = [];
+  try {
+    const row = require('../cli/stop-helpers.cjs').currentRunRow(dataDir, runId);
+    parts.push(row ? `run row: ended_at ${row.ended_at == null ? 'null' : row.ended_at}, exit_reason ${JSON.stringify(row.exit_reason)}` : 'run row: none');
+  } catch (e) { parts.push(`run row unreadable: ${e.message}`); }
+  try { if (diagnose) parts.push(String(diagnose())); } catch (e) { parts.push(`diagnose failed: ${e.message}`); }
+  return parts.join('; ');
+}
+
+async function connectBoundOrchestrator(dataDir, runId, { waitMs = 60000, embed, diagnose } = {}) {
   const base = { dataDir, ...(embed === undefined ? {} : { embed }) };
   const operator = await openCore({ ...base, caller: { role: 'operator', run_id: runId, pid: process.pid } });
   const t0 = Date.now();
@@ -19,8 +31,16 @@ async function connectBoundOrchestrator(dataDir, runId, { waitMs = 60000, embed 
     if (!row) await sleep(100);
   }
   if (!row) { await operator.close(); throw new Error(`the CLI's run row never appeared within ${waitMs} ms${last ? ` (${last.code}: ${last.message})` : ''}`); }
-  const opened = await operator.bindOpen({ role: 'orchestrator', run_id: runId });
-  const claimed = await claimBind(opened.pipe, { timeoutMs: 5000 });
+  let opened; let claimed;
+  try {
+    opened = await operator.bindOpen({ role: 'orchestrator', run_id: runId });
+    claimed = await claimBind(opened.pipe, { timeoutMs: 5000 });
+  } catch (e) {
+    const why = await describeRun(dataDir, runId, diagnose);
+    await operator.close();
+    e.message = `${e.message} [${why}]`;
+    throw e;
+  }
   const core = await openCore({ ...base, caller: { ...claimed.caller, pid: process.pid }, key: claimed.key });
   const close = core.close.bind(core);
   core.close = async () => { try { await close(); } finally { await operator.close(); } };

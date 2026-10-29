@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect } from 'claude-code/testing'
+import { test } from './support'
 import { T0, RUN, boot, later, pane, openPane, band } from './support'
 
 // A read that times out or fails is never silent: the panel keeps the last data and says so in a dim line, with the time the data was last

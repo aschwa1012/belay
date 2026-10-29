@@ -27,10 +27,8 @@ const CLI = `${ROOT}/src/cli/belay.cjs`;
 const FAKE_CLAUDE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
 const USER_SETTINGS = `${ROOT}/tests/run/fixtures/user-settings.json`;
 
-function deadPid() {
-  const r = spawnSync(process.execPath, ['-e', 'process.exit(0)'], { windowsHide: true });
-  return r.pid;
-}
+// A pid no process holds and none will be handed; an exited child's pid is reused within seconds (tests/helpers/dead-pid.cjs).
+const { deadPid } = require('../helpers/dead-pid.cjs');
 
 function cliAsync(args, dataDir, extraEnv) {
   return new Promise((resolve) => {

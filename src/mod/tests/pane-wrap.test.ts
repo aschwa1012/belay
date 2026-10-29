@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect } from 'claude-code/testing'
+import { test } from './support'
 import { boot, pane, openPane, leaves, squeezed, RUN, T0, TASK4 } from './support'
 
 // The docked pane is 72 columns and may be narrower. A single part longer than a line wraps under its label and

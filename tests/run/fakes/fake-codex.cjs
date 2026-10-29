@@ -6,6 +6,8 @@
 // adapter log named in those overrides. That log is the only evidence ADR 0001 §8 has on this
 // substrate (WR-5: a crashed Codex MCP server is otherwise silent), so the gate is drivable both
 // ways: FAKE_CODEX_NO_TOOLS_LIST=1 connects nothing, FAKE_CODEX_HANG=1 stays alive after it.
+// FAKE_CODEX_GATE_FILE=<path> holds the turn open (the process alive, as fake-claude's FAKE_ANSWER_GATE_FILE
+// does) until that file exists, so a test asserts on a running worker without racing the turn's end.
 
 const fs = require('node:fs');
 
@@ -14,6 +16,7 @@ const NO_TOOLS_LIST = process.env.FAKE_CODEX_NO_TOOLS_LIST === '1';
 const HANG = process.env.FAKE_CODEX_HANG === '1';
 const TOOLS_LIST_MS = Number(process.env.FAKE_CODEX_TOOLS_LIST_MS || 30);
 const TURN_MS = Number(process.env.FAKE_CODEX_TURN_MS || 400);
+const GATE_FILE = process.env.FAKE_CODEX_GATE_FILE || null;
 
 const say = (o) => process.stdout.write(JSON.stringify(o) + '\n');
 
@@ -47,9 +50,14 @@ if (!NO_TOOLS_LIST) {
 // A hung worker has to stay alive to be hung: nothing else holds this event loop open.
 if (HANG) setInterval(() => {}, 1000);
 
-setTimeout(() => {
-  if (HANG) return;
+function finish() {
   say({ type: 'item.completed', item: { type: 'agent_message', text: 'echo: ' + prompt } });
   say({ type: 'turn.completed', usage: { input_tokens: 120, cached_input_tokens: 100, output_tokens: 20 } });
   process.exit(0);
+}
+
+setTimeout(() => {
+  if (HANG) return;
+  if (!GATE_FILE || fs.existsSync(GATE_FILE)) return finish();
+  const timer = setInterval(() => { if (fs.existsSync(GATE_FILE)) { clearInterval(timer); finish(); } }, 20);
 }, TURN_MS);

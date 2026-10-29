@@ -25,7 +25,7 @@ test('worker kill calls killProcess inside the kill lock', async () => {
   try {
     const plant = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: 'run-a', pid: process.pid } });
     try {
-      await plant.worker.write({ id: 'w1', substrate: 'claude-code', pid: s.pid, pid_created: 1, state: 'running', turns: 0, started_at: Date.now() });
+      await plant.worker.write({ id: 'w1', substrate: 'claude-code', pid: s.pid, pid_created: 1, state: 'starting', turns: 0, started_at: Date.now() });
     } finally { await plant.shutdownOwner(); await plant.close(); }
     P.withKillLock = (fn) => orig.lock(async () => { inside = true; try { return await fn(); } finally { inside = false; } });
     P.killProcess = (...a) => { seen.push(inside); return orig.kill(...a); };

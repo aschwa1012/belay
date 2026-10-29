@@ -27,31 +27,7 @@ function ttlFrom(args) {
 
 const dependsOf = (task) => (Array.isArray(task && task.depends_on) ? task.depends_on : []);
 
-// ADR 0013 §1: a model told in prose to wait does not wait, it goes looking, and what it finds is a
-// person to ask. The edges are data on the task row and the refusal is computed here, so the store
-// answers the question the worker would otherwise aim at the orchestrator.
-//
-// Acyclicity does not rest on this walk. `create` refuses a dependency that has no row, and refuses an
-// id that already has one, so an edge can only ever point at a task created earlier and a cycle cannot
-// be built through the only method that writes `depends_on`. The walk is the invariant stated as a
-// check rather than as an argument: it fires if a row reaches the table by any other route, and it is
-// what a future writer of dependency edges will have to keep passing.
-function findCycle(store, id, dependsOn) {
-  const edges = (taskId) => (taskId === id ? dependsOn : dependsOf(rows.current(store, 'task', taskId)));
-  const path = [], onPath = new Set(), done = new Set();
-  const walk = (at) => {
-    if (onPath.has(at)) return [...path.slice(path.indexOf(at)), at];
-    if (done.has(at)) return null;
-    onPath.add(at); path.push(at);
-    for (const next of edges(at)) {
-      const cycle = walk(next);
-      if (cycle) return cycle;
-    }
-    onPath.delete(at); path.pop(); done.add(at);
-    return null;
-  };
-  return walk(id);
-}
+const { findCycle } = require('./task-cycle.cjs'); // ADR 0013 §1: the acyclicity walk over depends_on
 
 async function create(E, caller, args, own = {}) { // own: core-internal, task.fixFromReview's inherited worktree and answered reviews; no tool reaches it
   const AM = require('./methods-task-amend.cjs'); // ADR 0061: amend revises an existing task; tree_of gives a new one another's tree
@@ -159,6 +135,8 @@ async function assign(E, caller, args) {
   // grant would be made against a store that no longer says what it said. The lease row and the task
   // row are one effect for the same reason — a granted lease on a task still `open`, or a released lease
   // on a task still `assigned`, is a state the contract has no name for (ADR 0002 §4).
+  // A worker's pid must run as the process its row records (ADR 0039); the transaction below is synchronous, so the snapshot comes first, from a read in a transaction of its own.
+  const identity = await require('./live-as.cjs').prepare(require('./live-as.cjs').pairsOf(checkOnly ? null : E.store.tx(() => rows.current(E.store, 'worker', args.worker_id))));
   const out = E.store.tx(() => {
     const task = rows.current(E.store, 'task', args.task_id);
     if (!task) throw err('E_NOT_FOUND', `no task row exists for ${args.task_id}`, { task_id: args.task_id });
@@ -214,7 +192,7 @@ async function assign(E, caller, args) {
     // different, legitimate fact, not a dead one: src/run/manager.cjs writes the `starting` row and
     // calls task.assign before the launch has a pid to report — only `worker.write`'s own `running`
     // check treats a pid as required, and this must not narrow that.
-    if (worker.pid != null && !pidAlive(worker.pid)) {
+    if (worker.pid != null && !identity.runsAs(worker.pid, worker.pid_created)) {
       throw err('E_WORKER_NOT_LIVE', `worker ${args.worker_id} claims state ${worker.state} but its pid ${worker.pid} is dead`,
         { worker_id: args.worker_id, state: worker.state, pid: worker.pid, pid_alive: false });
     }

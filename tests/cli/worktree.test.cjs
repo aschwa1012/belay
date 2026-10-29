@@ -3,13 +3,14 @@
 // its own process against a sandbox store whose owner is this test's orchestrator core. The CLI is spawned asynchronously:
 // this process serves the store, so a synchronous spawn would wait on itself.
 
-const { test, before, after } = require('node:test');
+const { test: nodeTest, before, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { core, sandbox, cleanup, callerFor } = require('../core/helpers.cjs');
-const { makeRepo, write, commit } = require('../core/worktree-helpers.cjs');
+const { makeRepo, write, commit, guarded } = require('../core/worktree-helpers.cjs');
+const test = guarded(nodeTest); // a longer hang guard than the runner's 60 s; see guarded
 
 const { openCore } = core('index.cjs');
 const BIN = path.resolve(__dirname, '..', '..', 'src', 'cli', 'belay.cjs');
@@ -107,8 +108,9 @@ async function doneTask(files, commands) {
   return t;
 }
 
-test('the operator sees unchecked, failed and not merged work: in merge output and in belay tasks', async () => {
-  const keep = { argv: [process.execPath, '-e', "require('fs').accessSync('base/keep.txt')"] };
+const keep = { argv: [process.execPath, '-e', "require('fs').accessSync('base/keep.txt')"] };
+
+test('the operator sees unchecked and not merged work: in merge output and in belay tasks', async () => {
   const a = await doneTask({ 'base/keep.txt': 'from a\n' }, [keep]);
   const b = await doneTask({ 'base/keep.txt': 'from b\n' }, [keep]);
   const stopped = await belay(['worktree', 'merge', a.id, b.id, '--into', 'int/cli-stop', '--no-evaluate', '--data', data], repo);
@@ -120,22 +122,25 @@ test('the operator sees unchecked, failed and not merged work: in merge output a
   assert.match(checked.err, /pass .*\n {2}passed: true/, 'a stopped integration prints the checks of what landed');
   assert.doesNotMatch(checked.err, /merged work unchecked/);
 
-  const notBoth = { argv: [process.execPath, '-e', "const f=require('fs');process.exit(f.existsSync('x.txt')&&f.existsSync('y.txt')?1:0)"] };
-  const x = await doneTask({ 'x.txt': 'x\n' }, [notBoth]);
-  const y = await doneTask({ 'y.txt': 'y\n' }, [notBoth]);
-  const failed = await belay(['worktree', 'merge', x.id, y.id, '--into', 'int/cli-fail', '--data', data], repo);
-  assert.strictEqual(failed.code, 1);
-
   const listed = await belay(['tasks', '--all', '--data', data, '--json'], repo);
   assert.strictEqual(listed.code, 0, listed.err);
   const text = (await belay(['tasks', '--all', '--data', data], repo)).out;
   const line = (id) => text.split('\n').find((l) => l.startsWith(id)) || '';
   assert.match(line(a.id), /merged:int\/cli-stop2:passed/, 'the newest merge of a leads');
   assert.match(line(b.id), /conflict:int\/cli-stop2/);
-  assert.match(line(x.id), /merged:int\/cli-fail:failed/);
   const ia = listed.json.tasks.find((t) => t.id === a.id).integration;
   assert.deepStrictEqual(ia.elsewhere, [{ into: 'int/cli-stop', state: 'merged' }]);
-  // a's merge into int/cli-stop was never checked: belay tasks says so when that is the newest merge.
+});
+
+test('the operator sees failed and unchecked merges in belay tasks', async () => {
+  const notBoth = { argv: [process.execPath, '-e', "const f=require('fs');process.exit(f.existsSync('x.txt')&&f.existsSync('y.txt')?1:0)"] };
+  const x = await doneTask({ 'x.txt': 'x\n' }, [notBoth]);
+  const y = await doneTask({ 'y.txt': 'y\n' }, [notBoth]);
+  const failed = await belay(['worktree', 'merge', x.id, y.id, '--into', 'int/cli-fail', '--data', data], repo);
+  assert.strictEqual(failed.code, 1);
+  const text = (await belay(['tasks', '--all', '--data', data], repo)).out;
+  assert.match(text.split('\n').find((l) => l.startsWith(x.id)) || '', /merged:int\/cli-fail:failed/);
+  // A merge made with --no-evaluate was never checked: belay tasks says so when that is the newest merge.
   const solo = await doneTask({ 'solo.txt': 's\n' }, [keep]);
   await belay(['worktree', 'merge', solo.id, '--into', 'int/cli-solo', '--no-evaluate', '--data', data], repo);
   const after = (await belay(['tasks', '--all', '--data', data], repo)).out;

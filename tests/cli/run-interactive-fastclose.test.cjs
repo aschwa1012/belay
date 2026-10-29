@@ -72,7 +72,7 @@ test('fast close: a live worker with pid_created is killed through the SIGHUP sn
 test('fast close: a row whose pid_created is not the process\'s own is refused as a mismatch on the SIGHUP snapshot, and survives', async (t) => withRun(t, async (dir) => {
   const w = sleeper();
   try {
-    const { res, k, counts } = await fastCloseWith(dir, w, (s, m) => ({ pid: s.pid, pid_created: m.created - 1, pid_image: 'node.exe' }));
+    const { res, k, counts } = await fastCloseWith(dir, w, (s, m) => ({ pid: s.pid, pid_created: m.created - 1, pid_image: 'node.exe', state: 'starting' }));
     assert.ok(k && k.refused === 'identity' && k.kind === 'mismatch', JSON.stringify(res.json.workers_closed) + ' ' + res.json.ended_by);
     assert.strictEqual(k.gone, false);
     assert.strictEqual(w.exitCode, null, 'the process another row names wrongly must survive');
