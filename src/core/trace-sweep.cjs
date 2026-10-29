@@ -16,6 +16,9 @@ const TRACE_NAME = /^belay-trace-(\d+)-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a
 const CAP = 50; // matching entries examined in one sweep
 // A second guard beside the dead pid: a writer that lives where this process cannot see it (another pid namespace sharing the
 // temp folder) looks dead, and git can hold a trace open for a long merge; ten minutes is longer than either is likely to matter.
+// The pid in the name is belay's; the trace's actual writer is git. A git orphaned by a killed belay and still running can lose
+// its trace once the file is ten minutes old. That is harmless: nobody reads that trace (and on Windows unlink succeeds on an
+// open handle).
 const MIN_AGE_MS = 10 * 60 * 1000;
 const TRACE2_HEAD = '{"event":';
 
@@ -26,10 +29,10 @@ function pidGone(pid) {
 }
 
 // First bytes of the file, or null when it cannot be read. '' for an empty file.
-async function head(file) {
+async function head(file, open = f => fs.promises.open(f, 'r')) {
   let fh;
   try {
-    fh = await fs.promises.open(file, 'r');
+    fh = await open(file);
     const buf = Buffer.alloc(TRACE2_HEAD.length);
     const { bytesRead } = await fh.read(buf, 0, buf.length, 0);
     return buf.toString('utf8', 0, bytesRead);
@@ -37,12 +40,14 @@ async function head(file) {
 }
 
 // One sweep of `dir` (top level only). -> the names removed. Never throws; an error on one file skips that file.
-// Seams for tests: dir, gone(pid), now, cap, unlink, selfPid.
+// Seams for tests: dir, gone(pid), now, cap, lstat, head, unlink, selfPid.
 async function sweep(opts = {}) {
   const dir = opts.dir || os.tmpdir();
   const gone = opts.gone || pidGone;
   const now = opts.now === undefined ? Date.now() : opts.now;
   const cap = opts.cap || CAP;
+  const lstat = opts.lstat || (f => fs.promises.lstat(f));
+  const readHead = opts.head || head;
   const unlink = opts.unlink || (f => fs.promises.unlink(f));
   const selfPid = opts.selfPid === undefined ? process.pid : opts.selfPid;
   const removed = [];
@@ -55,12 +60,12 @@ async function sweep(opts = {}) {
     if (examined++ >= cap) break;
     try {
       const file = path.join(dir, ent.name);
-      const st = await fs.promises.lstat(file);
+      const st = await lstat(file);
       if (!st.isFile() || st.isSymbolicLink()) continue;
       const pid = Number(m[1]);
       if (pid === selfPid || !gone(pid)) continue;
-      if (now - st.mtimeMs < MIN_AGE_MS) continue;
-      const first = await head(file);
+      if (!(now - st.mtimeMs >= MIN_AGE_MS)) continue; // fails closed on NaN
+      const first = await readHead(file);
       if (first === null || (first !== '' && first !== TRACE2_HEAD)) continue; // an empty file is git dying before it wrote
       await unlink(file);
       removed.push(ent.name);

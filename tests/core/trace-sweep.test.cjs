@@ -74,6 +74,36 @@ test('an undecidable pid keeps the file (only ESRCH proves a pid gone)', async (
   assert.ok(fs.existsSync(z));
 });
 
+test('pidGone: EPERM is not gone (win32 pid 4 is System), a bad pid is not gone', () => {
+  if (process.platform === 'win32') assert.strictEqual(S.pidGone(4), false);
+  assert.strictEqual(S.pidGone(process.pid), false);
+  assert.strictEqual(S.pidGone(deadPid()), true);
+  assert.strictEqual(S.pidGone(0), false);
+  assert.strictEqual(S.pidGone(NaN), false);
+});
+
+test('only the type guard decides: a non-regular entry with good content is never read or unlinked', async () => {
+  const d = fresh(); const f = put(d, name(deadPid()));
+  const kinds = {
+    symlink: { isFile: () => false, isSymbolicLink: () => true, mtimeMs: OLD.getTime() },
+    other: { isFile: () => false, isSymbolicLink: () => false, mtimeMs: OLD.getTime() },
+    both: { isFile: () => true, isSymbolicLink: () => true, mtimeMs: OLD.getTime() },
+  };
+  for (const [k, st] of Object.entries(kinds)) {
+    const calls = [];
+    const removed = await run(d, { lstat: async () => st, head: async x => { calls.push(['head', x]); return EVENT.slice(0, 9); }, unlink: async x => { calls.push(['unlink', x]); } });
+    assert.deepStrictEqual([removed, calls], [[], []], k);
+  }
+  assert.ok(fs.existsSync(f));
+});
+
+test('a NaN mtime keeps the file (the age check fails closed)', async () => {
+  const d = fresh(); const f = put(d, name(deadPid()));
+  const st = { isFile: () => true, isSymbolicLink: () => false, mtimeMs: NaN };
+  assert.deepStrictEqual(await run(d, { lstat: async () => st }), []);
+  assert.ok(fs.existsSync(f));
+});
+
 test('a file under the age floor is kept', async () => {
   const d = fresh(); const f = put(d, name(deadPid()), EVENT, new Date(NOW - S.MIN_AGE_MS + 5000));
   assert.deepStrictEqual(await run(d), []);
@@ -168,17 +198,20 @@ test('the sweep runs once per process', async () => {
   S.resetForTests();
 });
 
-test('runTraced still returns its result when the sweep throws, and starts the sweep after the git run', async () => {
+test('runTraced still returns its result when the sweep throws, and dispatches the sweep only after the git run returned', async () => {
   const repo = fresh();
   spawnSync('git', ['init', '-q'], { cwd: repo });
   S.resetForTests();
   const real = S.sweepOnce;
-  let calls = 0;
-  S.sweepOnce = () => { calls++; throw new Error('sweep exploded'); };
+  let calls = 0, gitReturned = false, afterGit = null;
+  const G = require('../../src/core/git.cjs'); const realRun = G.run;
+  G.run = async (...a) => { const r = await realRun(...a); gitReturned = true; return r; };
+  S.sweepOnce = () => { calls++; afterGit = gitReturned; throw new Error('sweep exploded'); };
   try {
     const r = await H.runTraced(repo, ['status', '--short']);
     assert.strictEqual(r.exit_code, 0);
     assert.ok(Array.isArray(r.hooks));
     assert.strictEqual(calls, 1);
-  } finally { S.sweepOnce = real; S.resetForTests(); }
+    assert.strictEqual(afterGit, true);
+  } finally { G.run = realRun; S.sweepOnce = real; S.resetForTests(); }
 });
