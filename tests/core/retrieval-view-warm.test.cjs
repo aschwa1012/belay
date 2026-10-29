@@ -44,7 +44,17 @@ test('a fallback in force shows both models as fallback, whatever the last warm-
 test('a warm-up still marked loading on an ended run is unfinished, never warming', () => {
   const r = row([W({ state: 'loading', ended_at: undefined, ms: undefined })]);
   const v = RV.describe({ ...r, ended_at: 99 });
-  assert.ok(RV.lines(v).includes('retrieval: reranker rr warm-up did not finish before the run ended (first search)'));
-  const m = RV.models(v).find((x) => x.role === 'reranker');
-  assert.deepStrictEqual([m.state, m.warm.error], ['failed', 'did not finish before the run ended']);
+  assert.ok(RV.lines(v).some((l) => /warm-up did not finish: the owner that started it stopped \(first search\)/.test(l)));
+  assert.strictEqual(RV.models(v).find((x) => x.role === 'reranker').state, 'unfinished', 'a stop is a shutdown, not a failure');
+});
+
+test('a loading record from an owner that no longer serves is unfinished on a live run: no owner, a dead one, another pid, the same pid created later', () => {
+  const live = row([W({ state: 'loading', ended_at: undefined, ms: undefined, owner_pid: 100, owner_created: 5 })]);
+  const state = (owner) => RV.models(RV.describe(live, owner)).find((m) => m.role === 'reranker').state;
+  assert.strictEqual(state(undefined), 'warming', 'owner unknown: the record stands');
+  assert.strictEqual(state({ pid: 100, created: 5, alive: true }), 'warming', 'the same owner still serves');
+  assert.strictEqual(state(null), 'unfinished');
+  assert.strictEqual(state({ pid: 100, alive: false }), 'unfinished');
+  assert.strictEqual(state({ pid: 200, alive: true }), 'unfinished');
+  assert.strictEqual(state({ pid: 100, created: 9, alive: true }), 'unfinished');
 });

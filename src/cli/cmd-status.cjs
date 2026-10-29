@@ -89,7 +89,7 @@ async function run(ctx) {
     }
     const st = await core.status.get(runId ? { run_id: runId } : {});
     const notice = require('../core/memory-notice.cjs').noticeForRun(runs.find(r => r.id === runId) || null, found); // a live run's own levers win over the config file
-    const retrieval = require('../core/retrieval-view.cjs').describe(runs.find(r => r.id === runId) || null); // the pinned routing and any fallback in force, from the run row
+    const retrieval = require('../core/retrieval-view.cjs').describe(runs.find(r => r.id === runId) || null, core.ownerInfo()); // the pinned routing and any fallback in force, from the run row
     const receipt = { ...st, run_id_source: runIdSource, ...(notice ? { memory_notice: notice } : {}), ...(retrieval ? { retrieval } : {}) };
     // Exit 0 whenever the ladder was read, whatever the verdict: a dead system is a valid answer.
     return { code: 0, text: renderText(receipt), json: receipt };

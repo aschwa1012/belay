@@ -48,7 +48,7 @@ function rerankerState(E, tier, runId) {
   const REC = require('./rerank-warm-record.cjs');
   const begin = (trigger) => {
     const t0 = Date.now();
-    entry.base = { id: `${model}@${t0}:${trigger}`, model, trigger, started_at: t0 };
+    entry.base = { id: `${model}@${t0}:${trigger}`, model, trigger, started_at: t0, owner_pid: process.pid, ...(Number.isFinite(E.owner.opts && E.owner.opts.created) ? { owner_created: E.owner.opts.created } : {}) }; // the owner that serves this warm-up: a reader can tell a stopped one
     entry.attempts += 1;
     entry.recs = new Map();
     for (const rid of entry.runs) { const r = { ...entry.base, state: 'loading', served_warming: 0 }; entry.recs.set(rid, r); REC.upsert(E, rid, r); }

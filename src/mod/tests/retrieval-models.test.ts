@@ -51,4 +51,20 @@ describe('retrieval models line', () => {
     await openPane($, wd)
     expect((await pane($)).text).toContain('fallback profile')
   })
+
+  test('an unfinished warm-up is shown as unfinished, not failed', async ($, on) => {
+    const wd = await boot($, on, { retrievalModels: models('unfinished', { trigger: 'first_search', ms: null, served_warming: 1, error: null }) })
+    await openPane($, wd)
+    const { text } = await pane($)
+    expect(text).toContain('unfinished (the owner stopped)')
+    expect(text).not.toContain('failed')
+  })
+
+  test('a state an older panel does not know is dropped, not drawn', async ($, on) => {
+    const wd = await boot($, on, { retrievalModels: [{ role: 'embedder', id: 'nano', state: 'ready', warm: null }, { role: 'reranker', id: R4, state: 'from-the-future', warm: null }] })
+    await openPane($, wd)
+    const { text } = await pane($)
+    expect(text).toContain('embedder nano ready')
+    expect(text).not.toContain('from-the-future')
+  })
 })

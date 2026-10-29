@@ -82,7 +82,7 @@ export type BelayMemoryNotice = { title: string; why: string; fix: string; confi
 export type BelayRetrievalModel = {
   role: 'embedder' | 'reranker'
   id: string | null
-  state: 'off' | 'warming' | 'ready' | 'failed' | 'fallback'
+  state: 'off' | 'warming' | 'ready' | 'failed' | 'unfinished' | 'fallback'
   /** The newest warm-up of this model: what started it, how long it took, the searches that waited, the error if it failed. */
   warm: { trigger: string | null; ms: number | null; served: number; error: string | null } | null
 }

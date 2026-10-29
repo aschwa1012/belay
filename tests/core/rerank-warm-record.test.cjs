@@ -118,8 +118,10 @@ test('an owner that stops mid warm-up writes no failed record: the closed provid
     const ws = RV.describe(rowOf('wr-stop')).warmups.filter((w) => w.trigger !== 'pin');
     assert.deepStrictEqual(ws.map((w) => w.state), ['loading'], 'the record the start wrote stands; no failed record follows');
     const ended = RV.describe({ ...rowOf('wr-stop'), ended_at: Date.now() });
-    assert.ok(RV.lines(ended).some((l) => /did not finish before the run ended/.test(l)), RV.lines(ended).join('|'));
-    assert.strictEqual(RV.models(ended).find((m) => m.role === 'reranker').state, 'failed');
+    assert.ok(RV.lines(ended).some((l) => /did not finish/.test(l)), RV.lines(ended).join('|'));
+    assert.strictEqual(RV.models(ended).find((m) => m.role === 'reranker').state, 'unfinished');
+    assert.strictEqual(RV.describe(rowOf('wr-stop'), { pid: process.pid + 1, alive: true }).warmups.find((w) => w.trigger !== 'pin').state, 'unfinished', 'a live run, another owner now');
+    assert.strictEqual(RV.describe(rowOf('wr-stop'), { pid: process.pid, alive: true }).warmups.find((w) => w.trigger !== 'pin').owner_pid, process.pid, 'the record names its owner');
   } finally { E.owner.stopped = false; g.restore(); }
 });
 
