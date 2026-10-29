@@ -31,7 +31,9 @@ function fixRoundsOf(row, byId) {
   const dep = byId && Array.isArray(row.depends_on) && row.depends_on.length === 1 ? byId.get(row.depends_on[0]) : null;
   const rv = dep && dep.review;
   if (!rv || r.passed || !r.executable || !(r.checks || []).some((c) => c.kind === 'verdict') || rv.max_fix_rounds == null) return null;
-  return { work: dep.id, used: rv.fix_rounds_used, max: rv.max_fix_rounds, hard: rv.fix_hard_cap == null ? null : rv.fix_hard_cap };
+  let root = dep; // a fix of a fix names the work it began from, not the fix before it
+  for (let n = 0; root.repairs && byId.get(root.repairs) && n < 100; n++) root = byId.get(root.repairs);
+  return { work: root.id, used: rv.fix_rounds_used, max: rv.max_fix_rounds, hard: rv.fix_hard_cap == null ? null : rv.fix_hard_cap };
 }
 
 // The work a refuted review judged, read for the turn's own summary (worker_wait): a Map of that one task, or null.
