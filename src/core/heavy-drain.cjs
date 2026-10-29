@@ -76,6 +76,7 @@ async function drainHeavy(E, tierKey, { namespaces, onProgress, boundMs = DEFAUL
   if (total && !impl) throw err('E_NO_EMBEDDER', `no embedder for ${key.model} is available here (only the store owner loads a heavy embedder)`, { embedder: key.model });
   for (let i = 0; i < total; i += batch) {
     if (i > 0 && now() - t0 >= boundMs) break;
+    if (cancelled && cancelled()) break; // the owner is stopping (or the catch-up was ended): no further batch
     try { await embedIds(E, key, impl, missing.slice(i, i + batch).map((r) => r.id), { deadline: t0 + boundMs, cancelled, now }); } catch (e) {
       e.detail = { ...(e.detail || {}), written: total - MV.backlog(db, key, { namespaces }).length, embedder: key.model };
       throw e;
@@ -95,7 +96,7 @@ async function drainMethod(E, caller, args = {}) {
   if (!Array.isArray(namespaces) || !namespaces.length || namespaces.some((n) => typeof n !== 'string' || !n)) throw err('E_ARGS', 'memory.drainHeavy needs a project or a list of namespaces', { field: 'namespaces' });
   const bound = args.bound_ms === undefined ? DEFAULT_BOUND_MS : args.bound_ms;
   if (!Number.isInteger(bound) || bound < 1 || bound > 120000) throw err('E_ARGS', 'memory.drainHeavy bound_ms must be an integer from 1 to 120000', { field: 'bound_ms' });
-  return drainHeavy(E, args.model, { namespaces, boundMs: bound, probe: args.probe === true, headroomGb: typeof args.headroom_gb === 'number' ? args.headroom_gb : undefined });
+  return drainHeavy(E, args.model, { namespaces, cancelled: () => !!(E.owner && typeof E.owner === 'object' && E.owner.stopped), boundMs: bound, probe: args.probe === true, headroomGb: typeof args.headroom_gb === 'number' ? args.headroom_gb : undefined });
 }
 
 module.exports = { embedIds, drainHeavy, drainMethod, backlogOf, keyOfModel, DEFAULT_BOUND_MS };
