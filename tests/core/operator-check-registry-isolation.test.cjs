@@ -17,6 +17,7 @@ const OC = core('operator-check.cjs');
 const SR = core('spawn-register.cjs');
 const Prov = core('spawn-provenance.cjs');
 
+const { deadPid } = require('../helpers/dead-pid.cjs');
 const HELPER = path.join(__dirname, '..', 'helpers', 'tmp.cjs');
 const NOW = Date.now();
 const snap = (root) => new Map([[4242, { ppid: 4000, created: NOW - 5000, image: 'node.exe' }], [4000, { ppid: 1, created: root, image: 'pwsh.exe' }]]);
@@ -53,13 +54,12 @@ test('a test-file process that inherits the runner\'s register makes its own; an
     const script = path.join(scratch, 'print.cjs');
     fs.writeFileSync(script, 'console.log(process.env.BELAY_SPAWN_REGISTRY);');
     const run = (env) => spawnSync(process.execPath, ['--require', HELPER, script], { encoding: 'utf8', env }).stdout.trim();
-    // the runner: loads the helper, so its environment names its own register and the marker
-    const runner = spawnSync(process.execPath, ['--require', HELPER, '-e', 'console.log(JSON.stringify(process.env))'], { encoding: 'utf8', env: { ...process.env, BELAY_SPAWN_REGISTRY: '', BELAY_TEST_SPAWN_REGISTRY_MADE_BY: '' } });
-    const renv = JSON.parse(runner.stdout);
-    assert.ok(renv.BELAY_SPAWN_REGISTRY && renv.BELAY_TEST_SPAWN_REGISTRY_MADE_BY, 'the runner made a register and marked it');
+    // the runner's environment, built by hand: a register path and the marker naming a pid no process holds or will be handed
+    const made = path.join(scratch, 'runner-register');
+    const renv = { ...process.env, BELAY_SPAWN_REGISTRY: made, BELAY_TEST_SPAWN_REGISTRY_MADE_BY: `${deadPid()}|${made}` };
     const child = run(renv); // a test-file process: inherits both
     assert.ok(path.basename(child).startsWith('belay-spawned-test-'), child);
-    assert.notStrictEqual(child.toLowerCase(), renv.BELAY_SPAWN_REGISTRY.toLowerCase(), 'not the runner\'s register');
+    assert.notStrictEqual(child.toLowerCase(), made.toLowerCase(), 'not the runner\'s register');
     const explicit = path.join(scratch, 'explicit');
     assert.strictEqual(run({ ...renv, BELAY_SPAWN_REGISTRY: explicit }), explicit, 'an explicit register is kept');
   } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
