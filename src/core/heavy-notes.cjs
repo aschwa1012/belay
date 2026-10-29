@@ -74,7 +74,7 @@ async function afterWrite(E, caller, method, boundMs = TOTAL_BOUND_MS, t0 = Date
     })();
     res.settled = work.catch(() => {});
     try { await Promise.race([work, deadline]); } finally { clearTimeout(timer); over = true; }
-    if (res.failed.length) policy(E, caller, method, res.failed[0]);
+    if (res.failed.length) { if (!E.owner.stopped) policy(E, caller, method, res.failed[0]); } // a stopping owner closed the provider: not a heavy failure, no pause and no sticky fallback; the rows stay in the backlog for the next owner
     else if (res.deadline && E.owner && !E.owner.stopped) { // not a failure: the rest is the background catch-up's
       const HB = require('./heavy-behind.cjs'), scope = scopeOfRun(E, caller.run_id);
       for (const id of heavyOf(E, caller.run_id)) HB.startCatchUp(E, caller, id, scope);
