@@ -238,3 +238,28 @@ test('B2 (owner side): a drain the caller reports failed pins the demoted routin
   assert.strictEqual(r.routing.run.embedder, RP.NANO);
   assert.strictEqual(r.behind.choice, 'fallback');
 });
+
+for (const mode of ['pause', 'fallback']) {
+  test(`B1: a heavy embed after a write that fails because the owner is stopping neither pauses nor falls back under on_heavy_failure ${mode}, and the row stays in the backlog`, async () => {
+    await R.restore(); fresh();
+    const run = `wr-s-${mode}`, p = `wrs${mode}`;
+    await pinnedRun(run, p, { on_heavy_failure: mode });
+    const EP = core('embed-provider.cjs'), HN = core('heavy-notes.cjs');
+    await EP.closeAll(); GS.reopen(); // no heavy provider is built: a stopping owner builds none
+    const t0 = Date.now() - 1;
+    const note = T.note(`${p} a note written while the owner stops`, { ns: ns(p), vec: [1, 0.5, 0] });
+    seen.length = 0;
+    const setFallback = HT.setFallback; let sets = 0;
+    HT.setFallback = (...a) => { sets += 1; return setFallback(...a); };
+    E.owner.stopped = true;
+    try {
+      const res = await HN.afterWrite(E, operator(run), 'memory.store', 5000, t0);
+      assert.strictEqual(res.failed.length, 1, 'the embed did fail');
+      assert.strictEqual(res.failed[0].code, 'E_NO_EMBEDDER');
+    } finally { E.owner.stopped = false; HT.setFallback = setFallback; }
+    assert.strictEqual(seen.length, 0, 'the run hook was not called');
+    assert.strictEqual(sets, 0, 'no sticky fallback was attempted');
+    assert.strictEqual(HT.fallbackOf(E, run), null);
+    assert.ok(HD.backlogOf(E, EMB4, [ns(p)]).some((r) => r.id === note), 'the row is still in the backlog');
+  });
+}

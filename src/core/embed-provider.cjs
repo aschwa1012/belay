@@ -52,7 +52,7 @@ function get(tier, opts) {
   if (providers.has(name)) return providers.get(name);
   const owner = opts && opts.owner;
   if (!owner) return null;
-  if (typeof owner === 'object' && owner.stopped) return null; // a stopping owner forks no GPU child: its close has already taken its list
+  if (typeof owner === 'object' && owner.stopped) return null; // a stopping owner forks no GPU child: its close may already have taken its list. The callers read the null as a shutdown (heavy-embed failure(): never sticky, never a pause)
   const { describeModel } = require('./retrieval-profiles.cjs');
   const m = describeModel(name);
   if (!m || m.kind !== 'embedder' || m.runtime !== 'gguf') return null; // nano, or an id that is not a GPU embedder: nothing to build
