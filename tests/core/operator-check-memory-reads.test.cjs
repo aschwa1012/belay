@@ -6,7 +6,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
-const { core, sandbox, cleanup } = require('./helpers.cjs');
+const { core, sandbox, cleanup, OLD_ROOT_CREATED, ownSpawnRegistry } = require('./helpers.cjs');
 
 const { Owner } = core('owner.cjs');
 const { Client } = core('client.cjs');
@@ -15,6 +15,7 @@ const OC = core('operator-check.cjs');
 const RUN = 'run-mem-reads';
 const OTHER_NS = 'run/some-other-run';
 const T0 = Date.now();
+ownSpawnRegistry(); // this file's fixture invents a shell as the root of the fake chain; no other file's spawned process may cover it
 const caller = { role: 'operator', run_id: RUN, pid: process.pid };
 
 test('a new operator connection reads another run\'s row by get, get_many and timeline; the row is not reported missing', { skip: !OC.SUPPORTED && 'bound mode needs the Windows peer check', timeout: 60000 }, async () => {
@@ -22,7 +23,7 @@ test('a new operator connection reads another run\'s row by get, get_many and ti
   const ports = new Set();
   const o = new Owner(dir, { embed: false, mode: 'bound', operatorCheckDeps: {
     table: async () => [...ports].map(p => `  TCP    127.0.0.1:${p}        127.0.0.1:${o.tcpPort}        ESTABLISHED     4242\r\n`).join(''),
-    snapshot: async () => new Map([[4242, { ppid: 4000, created: T0 - 5000, image: 'node.exe' }], [4000, { ppid: 1, created: T0 - 9000, image: 'pwsh.exe' }]]),
+    snapshot: async () => new Map([[4242, { ppid: 4000, created: T0 - 5000, image: 'node.exe' }], [4000, { ppid: 1, created: OLD_ROOT_CREATED, image: 'pwsh.exe' }]]),
   } });
   await o.start();
   const clients = [];
