@@ -24,8 +24,8 @@ async function warmReranker(E, model) {
 // here), 'loading' (a background warm-up is running; the search keeps the fusion order and does not wait), or 'failed' (the warm-up threw;
 // the search then tries the reranker itself, so the real error follows on_heavy_failure). An owner that has not warmed this reranker yet
 // (a pin made before this owner started, or a failure that dropped the state) starts the warm-up in the background and answers 'loading'.
-// Never throws, never waits.
-function rerankerState(E, tier) {
+// Never throws, never waits. `runId` names the run the warm-up is recorded on (rerank-warm-record.cjs); none keeps it on the owner only.
+function rerankerState(E, tier, runId) {
   const model = tier && tier.reranker, owner = E.owner;
   if (!model || !owner || (typeof owner === 'object' && owner.stopped)) return 'ready';
   const RPV = require('./rerank-provider.cjs');
@@ -38,16 +38,40 @@ function rerankerState(E, tier) {
   const hit = m.get(model);
   // A 'ready' state outlives its child only on paper: a provider that can say whether its model is still loaded (its child exited, was closed or
   // was replaced outside a rerank) is asked, and a model that is gone is warmed again in the background.
-  if (hit && !(hit.state === 'ready' && typeof impl.loaded === 'function' && !impl.loaded())) return hit.state;
-  const entry = { state: 'loading', attempts: 0 };
+  const gone = hit && hit.state === 'ready' && typeof impl.loaded === 'function' && !impl.loaded();
+  if (hit && !gone) return hit.state;
+  const forgot = !!(E._rerankForgot && E._rerankForgot.delete(model));
+  const entry = { state: 'loading', attempts: 0, rec: null };
   m.set(model, entry);
+  const REC = require('./rerank-warm-record.cjs');
+  const begin = (trigger) => {
+    const t0 = Date.now();
+    entry.rec = { id: `${model}@${t0}:${trigger}`, model, trigger, state: 'loading', started_at: t0, served_warming: 0 };
+    entry.attempts += 1;
+    REC.upsert(E, runId, entry.rec);
+  };
+  const end = (state, e) => {
+    const r = entry.rec, now = Date.now();
+    Object.assign(r, { state, ended_at: now, ms: now - r.started_at, ...(e ? { error: ((e && e.message) || String(e)).slice(0, 300) } : {}) });
+    REC.upsert(E, runId, r);
+  };
   // One background retry of a failed warm-up before the state falls to 'failed' (and the next search loads inside its own bound).
-  const attempt = () => { entry.attempts += 1; warmReranker(E, model).then(() => { entry.state = 'ready'; }, (e) => { if (entry.attempts < 2 && !(E.owner && E.owner.stopped)) attempt(); else { entry.state = 'failed'; entry.cause = (e && e.message) || String(e); } }); };
-  attempt();
+  const attempt = (trigger) => {
+    begin(trigger);
+    warmReranker(E, model).then(() => { entry.state = 'ready'; end('ready'); }, (e) => {
+      end('failed', e);
+      if (entry.attempts < 2 && !(E.owner && E.owner.stopped)) attempt('retry'); else { entry.state = 'failed'; entry.cause = (e && e.message) || String(e); }
+    });
+  };
+  attempt(gone || forgot ? 'child_gone' : 'first_search');
   return 'loading';
 }
+// A search that kept the fusion order because the reranker was still loading counts on the warm-up in progress.
+const servedWarming = (E, model) => { const e = E._rerankWarm && E._rerankWarm.get(model); if (e && e.rec) e.rec.served_warming += 1; };
 // A rerank that failed leaves the model's state unknown (the provider rebuilds its child on the next call): drop it, so the next search warms again.
-const forgetReranker = (E, model) => { if (E._rerankWarm) E._rerankWarm.delete(model); };
+const forgetReranker = (E, model) => { if (E._rerankWarm && E._rerankWarm.delete(model)) (E._rerankForgot || (E._rerankForgot = new Set())).add(model); };
+// The owner's own view of its reranker warm-ups: [{ model, state, trigger, started_at, ended_at?, ms?, served_warming, error? }].
+const warmList = (E) => [...((E && E._rerankWarm) || new Map()).entries()].map(([model, e]) => ({ ...(e.rec || {}), model, state: e.state }));
 
 // -> { ok: true, models: [{ model, kind, ms }] } or { ok: false, model, kind, code, message, models }. Never throws.
 async function warmUp(E, routing, onStep) {
@@ -68,4 +92,4 @@ async function warmUp(E, routing, onStep) {
   return { ok: true, models: done };
 }
 
-module.exports = { warmUp, warmReranker, rerankerState, forgetReranker, WARM_BOUND_MS };
+module.exports = { warmUp, warmReranker, rerankerState, servedWarming, forgetReranker, warmList, WARM_BOUND_MS };
