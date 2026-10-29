@@ -27,5 +27,5 @@ test('a fix of a fix counts on the original work: the review reads two rounds us
   assert.strictEqual(review.rounds, 2);
   assert.strictEqual(review.fix_rounds_used, 2);
   assert.strictEqual((await orch.task.get({ task_id: work.id })).review.fix_rounds_used, 2, 'the work and its last fix read the same count');
-  await assert.rejects(orch.task.create({ spec: 'fix 3', repairs: f2.id }), (e) => e.code === 'E_FIX_ROUNDS' && e.detail.fix_rounds_used === 2);
+  await assert.rejects(orch.task.create({ spec: 'fix 3', repairs: f2.id }), (e) => e.code === 'E_FIX_ROUNDS' && e.detail.fix_rounds_used === 2 && e.message.startsWith(`task ${work.id} already has 2 fix tasks`));
 });
