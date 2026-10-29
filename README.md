@@ -4,9 +4,9 @@
 
 belay is a local orchestration harness for AI coding agents. It runs Claude Code and codex sessions as worker processes on one machine, keeps every task, lease, checkpoint, review verdict and per-agent cost in one SQLite store, and lets one human watch and step in. The planner is a Claude session, headless or your own interactive one, that drives the workers through belay's MCP tools. The name is the climbing sense: belay does not do the climbing. It holds the rope, keeps the record and catches the fall.
 
-**belay is early.** It is being built toward four things: memory that lasts across sessions, several orchestrators coordinating one body of work, workers that can be any model, including open-source and local ones, and autonomy: taking a queue of work and starting its own runs to work through it. None of the four is finished. 0.2.0 added the first large piece, a shared memory you can check. 0.3.0 adds [notes](#notes-experimental-new-in-030), experimental and on by default once a project is named. [Where this is going](#where-this-is-going) says what each direction stands on today and what is planned.
+**belay is early.** It is being built toward four things: memory that lasts across sessions, several orchestrators coordinating one body of work, workers that can be any model, including open-source and local ones, and autonomy: taking a queue of work and starting its own runs to work through it. None of the four is finished. 0.2.0 added the first large piece, a shared memory you can check. 0.3.0 added [notes](#notes-experimental-new-in-030), experimental and on by default once a project is named. 0.3.1 adds a worktree and branch per task and merges finished work into an integration branch, so one run can work on many tasks at once. [Where this is going](#where-this-is-going) says what each direction stands on today and what is planned.
 
-Status: **0.3.0, early**, built and used by one developer. Interfaces, spec keys and the store layout may change. Upgrading from 0.2.0 changes some defaults; see the upgrade warning in [CHANGELOG.md](CHANGELOG.md) and [INSTALL.md](INSTALL.md#updating).
+Status: **0.3.1, early**, built and used by one developer. Interfaces, spec keys and the store layout may change. Upgrading from 0.3.0 changes some defaults; see the upgrade warning in [CHANGELOG.md](CHANGELOG.md) and [INSTALL.md](INSTALL.md#updating).
 
 ## Why, and what it does differently
 
@@ -27,7 +27,7 @@ belay also sets a model and effort for each worker. That is a feature, not somet
 
 - **Mixed substrates.** Claude Code and Codex CLI workers can run in the same run today, under the same task model. The launch table is designed to take more agent CLIs, so open-source or local-model agents could be added as substrates. That is an aim; it is not built.
 - **Workers are processes belay spawns and owns.** Each worker is a separate OS process with its own context window, and belay is its parent; there is no supervisor service or daemon. You can kill, pause (park and resume) or restart each worker on its own. When a worker dies, belay detects it and reports it to the orchestrator. One worker crashing does not take the run down.
-- **Leases record who owns which task.** A lease names the one worker that owns a task. The worker's adapter keeps the lease alive while the worker lives, and the worker releases it with a structured result. Tasks have dependencies. A task counts as `done` only when its checks pass, or, for a review task, when the reviewer's verdict holds. Fix rounds after a refuted review are capped. A lease records ownership; it does not limit what a worker can do.
+- **Leases record who owns which task.** A lease names the one worker that owns a task. The worker's adapter keeps the lease alive while the worker lives, and the worker releases it with a structured result. Tasks have dependencies. A task counts as `done` only when its checks pass, or, for a review task, when the reviewer's verdict holds. Fix rounds after a refuted review are counted, and the orchestrator is told when a task passes `max_fix_rounds`. A lease records ownership; it does not limit what a worker can do.
 - **A verified launch surface.** belay starts each worker with no personal settings, plugins, auto memory or parent-directory instruction files. It passes in a chosen tool list and the worktree's own instructions. Then it checks what the worker actually loaded at startup and fails the launch if that differs. Native Claude Code lets you configure these things; belay also checks that they took effect.
 - **Shared memory you can check.** One SQLite store that every agent in a run can read and write, persisting across runs, with a `project` namespace that outlives any one run. Search tells you which modes ran and whether an empty result means anything. Every row carries a status (unverified, verified or refuted) and records who wrote it; the writer and status are what the caller claimed, see the trust limit under [Notes](#notes-experimental-new-in-030). Secrets are redacted before a row is stored, and what an agent reads from memory is marked as data, not instructions. Once you name a project, workers hand back notes for later workers to find. Capture, summaries and an index in each worker's first message are built too, but stay off unless you turn them on. In a controlled experiment, workers given the right memory row avoided mistakes that workers without it made every time; see [What we have measured](#what-we-have-measured).
 - **Operator control with receipts.** You can pause and resume a whole run. A permission request is a row you approve or deny. Every intervention names an id and returns proof. Kills are by exact pid, with proof of the process's identity. There is no daemon, and reading never writes.
@@ -271,12 +271,15 @@ The goal is that, once belay is mature, it can take a large queue of work and st
 
 - **Headless runs.** `belay run` without `--interactive` runs a headless orchestrator from start to finish, with no one at the keyboard.
 - **Tasks with dependencies.** A task cannot be assigned until the tasks it depends on are done.
+- **Parallel tasks, merged.** Each task can have its own worktree and branch. `integrate` merges finished tasks into an integration branch at the commit that was judged, checks the merged head (plus any checks of its own), and reports conflicts and what was left out. `max_parallel_evaluations` caps how many checks run at once.
 - **Review verdicts gate `done`.** A task counts as done only when its checks pass, or, for a review task, when the reviewer's verdict holds.
-- **Capped fix rounds.** `max_fix_rounds` limits how many fix tasks can follow refuted reviews. The store refuses one more, and `fix_cutoff` says whether the orchestrator may stop sooner.
+- **Counted fix rounds.** Past `max_fix_rounds` a new fix task carries a notice to the orchestrator; `fix_hard_cap` is the only refusal (5 by default for a run with no `timeout_ms`, none for a run with one), and `fix_cutoff` says whether the orchestrator may stop sooner.
 - **Run time bound.** `timeout_ms` ends a headless run that runs too long. A paused run's clock stops.
 - **Pause and resume a whole run.**
 - **Death detection and wakes.** A worker that dies or ends a turn wakes the orchestrator, which can restart it or move on.
-- **Receipts** for every action: rows, pids, exit codes, costs per agent, and a `run.json` for each run.
+- **Receipts** for every action: rows, pids, exit codes, costs per agent (a worker killed mid-turn gets an estimate, labelled as one), each task's check history, and a `run.json` for each run.
+
+**Measured in 0.3.1.** The same 10 tickets of a small command-line product were run in parallel by 0.3.1 twice, headless, with the orchestrator choosing how to split and bundle them. Each run took about an hour (59 and 64 minutes) against about 5 hours for the same tickets done one at a time on a 0.3.0-era build, and cost $18.68 and $16.20 against $28.31 (about 35 to 45% less). Both met the quality bar fixed before the runs: hidden regression tests passed at 0.914 and 0.919 against the sequential run's 0.928 (the bar allowed 0.05 less), and 5 of 9 scored tickets passed all their own tests, as in the sequential run. Two runs on one product are a pilot, not a benchmark.
 
 **Planned:**
 
@@ -354,6 +357,7 @@ Every command declares one mode: **R** read-only (starts no process, creates no 
 | `logs <worker-id> [-f]` | R | A worker's raw stream |
 | `receipts [run-id]` | R | Per-agent model, turns, tokens, cost, tool calls, wall clock, checks |
 | `diff [run-id] [--since ts]` | R | Rows changed since a mark |
+| `worktrees [run-id] [--all]` | R | Each task's worktree and branch, and the run's integrations |
 | `briefing <worker-id>` | R | The resume material a worker would get |
 | `memory search <q> [--mode hybrid\|keyword\|semantic] [--index]` | R | Search shared memory; the result says which modes ran |
 | `memory list` / `show` / `timeline` / `stats` | R | Filtered rows, full rows, what was written around a row, counts |
@@ -366,6 +370,7 @@ Every command declares one mode: **R** read-only (starts no process, creates no 
 | `run <spec.json> [--interactive] [--effort level]` | W | Start a run; the store owner for its lifetime |
 | `embedder fetch\|verify` | W | Download or re-hash the embedding model |
 | `settings [<key> [<value>]]` | W | Panel display settings, memory lever defaults and per-agent-type model and effort defaults, written to the config file only |
+| `worktree create\|remove\|merge <task-id>...` | W | Make or remove a task's worktree and branch, or merge tasks into an integration branch, as the orchestrator's tools do |
 | `memory verify <id> --status s --receipt r` | W | Mark a row verified or refuted, with its evidence (a note can be refuted this way, but is verified only by a review) |
 | `memory import <file> --namespace-map from=to` | W | Import rows as unverified, into namespaces you name |
 | `memory review` / `memory scrub` | W | The archive review of held notes, or the run-close scrub, by hand; each starts one read-only model child |
@@ -385,7 +390,7 @@ Every intervention returns proof: the row it wrote, the pid it acted on, the exi
 ## Configuration
 
 - **`belay.config.json`**, found by walking up from the current directory to the project root (never into your home directory). Keys: `data_dir` (default `.belay`), `claude_exe`, `codex_exe`, the panel's `mod.*` display settings, a `memory` block of lever defaults (`project` among them), and an `agents` block of model and effort defaults per agent type (`agents.reviewer.model`, `agents.coder.effort`, `agents.<type>.codex_model`, and `agents.orchestrator.model|effort`). `belay settings` lists and sets the `mod.*`, `memory` and `agents` keys; edit `data_dir`, `claude_exe` and `codex_exe` in the file itself (or use `BELAY_CLAUDE_EXE` and `BELAY_CODEX_EXE`), and see them with `belay config`. A run spec's own values win. With no `agents` defaults set, coders and testers run Sonnet 5.5, reviewers and researchers Opus 5.5 at effort high.
-- **The run spec** (`belay run <spec.json>`): `worktree` and `prompt_file` are required. Optional keys include `model` (default `claude-opus-5-5`), `mode`, `timeout_ms`, `max_fix_rounds` (default 2), `fix_cutoff`, `on_embedder_failure`, and a `memory` block of levers (see [Memory](#memory-that-lasts-across-sessions)). An unknown key is an error. Full list in [INSTALL.md](INSTALL.md#run-spec-keys).
+- **The run spec** (`belay run <spec.json>`): `worktree` and one of `prompt_file` (your own prompt) or `brief_file` (your brief inside belay's current template) are required. Optional keys include `model` (default `claude-opus-5-5`), `mode`, `timeout_ms`, `max_fix_rounds` (default 2), `fix_hard_cap`, `fix_cutoff`, `max_parallel_evaluations`, `on_embedder_failure`, and a `memory` block of levers (see [Memory](#memory-that-lasts-across-sessions)). An unknown key is an error. Full list in [INSTALL.md](INSTALL.md#run-spec-keys).
 - **Finding Claude Code and Codex**: `BELAY_CLAUDE_EXE`, then `claude_exe` in the config, then `claude` on PATH (Codex likewise with `BELAY_CODEX_EXE`, `codex_exe`, `codex`); `belay doctor` shows which path it found and where it came from. See [INSTALL.md](INSTALL.md#finding-claude-code).
 
 ## Design rules
@@ -406,9 +411,10 @@ These are settled rules, not aspirations:
 
 - **Windows only.** Off Windows, identity-checked kills are refused and survivors are left running. Do not try it on macOS or Linux yet.
 - **The embedder is required for a run.** An optional npm dependency plus a ~253 MB model. Read commands work without it; `belay run` refuses to start.
-- **No prompt helper.** You copy the shipped prompt template and add your brief by hand. An upgrade does not refresh your copy: copy the template again after one (`belay run` warns when your copy is older than the shipped template).
-- **No worktree management.** A worker runs in the directory you give it. belay creates no worktree or branch per task and merges nothing back. Workers that share one worktree are kept off each other's files by their tasks' `files_owned` holds, but they still share git: give parallel workers their own worktrees (created by you, and named in the brief), and merge them yourself.
-- **The orchestrator's restraint is a prompt rule.** Its launch has the same six tools as a worker; the template tells it not to edit.
+- **A copied prompt does not update itself.** With `prompt_file` you own a copy of the template, and an upgrade does not refresh it: copy the template again after one (`belay run` warns when your copy is older than the shipped template), or use `brief_file`, which always wraps your brief in the current template.
+- **Merges into your own branches are not guarded.** belay makes a worktree and branch per task and merges finished work into an integration branch, but the orchestrator can also merge into any branch it names, your checked-out branch included, with no approval step. Keep its work on the integration branch and merge that yourself.
+- **No sandbox.** A worker acts with your permissions, and a program it runs can write anywhere you can. belay's worktrees, file holds and tool lists keep agents apart from each other; they do not contain them.
+- **The orchestrator's restraint is a prompt rule.** It has the same six tools as a worker, plus read-only `git_read`; the template tells it to plan and delegate rather than do the code work. Shell commands that stop processes by name are refused for a headless orchestrator and for workers, but that guard matches command text and is not a sandbox.
 - **Reviewer severity is a prompt rubric**, and reviewers have under-rated real defects.
 - **Pause and compaction are Claude Code features.** A Codex worker can't be paused or parked yet, and the compaction lever applies to Claude Code workers only.
 - **The panel depends on Claude Code's plugin engine**, measured on Claude Code 2.1.293.
@@ -417,7 +423,7 @@ These are settled rules, not aspirations:
 
 ## Status and roadmap
 
-belay is at 0.3.0. It already drives real multi-agent runs, and parts of belay itself were built by belay: a coder, a reviewer, fix rounds and a second reviewer, run unattended with a receipt for every agent. Before 0.3.0 shipped, a pre-release 0.3.0 build drove a 40-task build of a separate product from start to finish on real Claude Code, one task per run (see [What we have measured](#what-we-have-measured)). Many tasks at once in one run, with their work merged together, has not been measured yet; it needs worktree management first (see [Limitations](#limitations)), and that is the next step.
+belay is at 0.3.1. It already drives real multi-agent runs, and parts of belay itself were built by belay: a coder, a reviewer, fix rounds and a second reviewer, run unattended with a receipt for every agent. Before 0.3.0 shipped, a pre-release 0.3.0 build drove a 40-task build of a separate product from start to finish on real Claude Code, one task per run (see [What we have measured](#what-we-have-measured)). In 0.3.1, two runs did 10 tickets of that product at once, each in its own worktree with its work merged together, in about an hour each against about 5 hours one ticket at a time (see [Autonomy](#autonomy-working-through-a-queue)).
 
 **How 0.2.0 was built.** The memory work was built in about two days by many Claude Code agents working in parallel, each on its own branch, with a lead session planning and merging. Every wave of branches was checked by an independent reviewer agent and fixed before merging. belay itself drove part of the work: the redaction commits by `belay job` came from a belay run with its own reviewers. The commit history keeps those branches, merges and timestamps as they happened. The design decisions and experiments behind it were pre-registered and measured, and are summarised under [What we have measured](#what-we-have-measured).
 
