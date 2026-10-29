@@ -41,7 +41,7 @@ before(async () => {
   E2 = new Engine({ dataDir: T.dir, store: T.store, getEmbedder: null, owner: { opts: {} }, establishedBy: 'test' });
 });
 after(async () => { await provider.closeAll(); provider.setAutoOptions(null); await T.close(); cleanup(dir); });
-afterEach(async () => { await provider.closeAll(); T.E._rerankFallback = null; E2._rerankFallback = null; });
+afterEach(async () => { await provider.closeAll(); T.E._rerankFallback = null; E2._rerankFallback = null; E2._rerankWarm = null; });
 
 const tier = (over = {}) => ({ profile: 'custom', embedder: RP.NANO, reranker: RR, device: 'cpu', depth: 4, ...over });
 const ask = (E, internal = {}) => search(E, T.who.operator('plain'), { namespaces: [NS], query: 'stop a worker by its pid', query_embedding: [1, 0, 0], embedding_model: 'm', mode: 'semantic', k: 4 }, { tier: tier(), ...internal });
@@ -66,7 +66,11 @@ test('a GPU, unknown or missing reranker id is not auto-built', () => {
   for (const id of ['Qwen/Qwen3-Reranker-0.6B-GGUF', 'no/such-reranker', null]) assert.strictEqual(provider.get(tier({ reranker: id }), { owner: true }), null, String(id));
 });
 
+const warmed = async (E) => { for (const e of (E._rerankWarm || new Map()).values()) while (e.state === 'loading') await new Promise((r) => setTimeout(r, 5)); };
 test('an end-to-end search in the owner builds the provider and reorders the rows', async () => {
+  const first = await ask(E2); // the first search starts the load in the background and keeps the fusion order
+  assert.strictEqual(first.rerank.cause.reason, 'warming', JSON.stringify(first.rerank));
+  await warmed(E2);
   const r = await ask(E2);
   assert.strictEqual(r.rerank.ran, true, JSON.stringify(r.rerank));
   assert.strictEqual(r.rerank.reranked, 4);

@@ -116,7 +116,7 @@ async function pinRouting(E, caller, args = {}) {
   const fresh = rows.current(E.store, 'run', runId);
   if (!fresh) throw err('E_NOT_FOUND', `no run row exists for ${runId}`, { run_id: runId });
   if (fresh.ended_at != null) throw err('E_ARGS', `run ${runId} ended while its routing was being resolved, so nothing was pinned`, { run_id: runId, ended_at: fresh.ended_at });
-  const record = { v: 1, pinned_at: Date.now(), routing: ctx.routing, probe, warm: warm && warm.ok ? warm.models : null, notices: ctx.notices, behind: { choice, embedders: behind } };
+  const record = { v: 1, pinned_at: Date.now(), routing: ctx.routing, probe, warm: warm && warm.ok ? warm.models : null, ...(warm && warm.ok ? { warmups: require('./rerank-warm-record.cjs').fromPin(warm.models, Date.now()) } : {}), notices: ctx.notices, behind: { choice, embedders: behind } };
   require('./methods-run.cjs').appendRun(E, { ...fresh, retrieval_routing: JSON.stringify(record) }, E.writtenBy(caller));
   E.noteWrite();
   return { pinned: true, action: 'pinned', ...record };

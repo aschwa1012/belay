@@ -418,10 +418,10 @@ class Core {
   isOwner() { return !!(this.owner && !this.owner.stopped); }
 
   ownerInfo() {
-    if (this.isOwner()) return { pid: process.pid, pipe: this.owner.pipe, alive: true, established_by: 'this process holds the lock' };
+    if (this.isOwner()) return { pid: process.pid, ...(Number.isFinite(this.owner.opts && this.owner.opts.created) ? { created: this.owner.opts.created } : {}), pipe: this.owner.pipe, alive: true, established_by: 'this process holds the lock' };
     const lock = readOwnerLock(this.dataDir);
     if (!lock) return null;
-    return { pid: lock.pid, pipe: lock.pipe || pipeName(this.dataDir), alive: pidAlive(lock.pid), established_by: 'owner.lock pid check' };
+    return { pid: lock.pid, ...(Number.isFinite(lock.created) ? { created: lock.created } : {}), pipe: lock.pipe || pipeName(this.dataDir), alive: pidAlive(lock.pid), established_by: 'owner.lock pid check' };
   }
 
   async close() { await this._dropClient(); }
