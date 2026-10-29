@@ -167,6 +167,12 @@ async function rerankHead(E, caller, o, ranked, rowsOf, lv) {
     const cause = { code: 'E_RERANK', reason: 'fallback_sticky', first_cause: first, message: `the reranker failed earlier in this run (${first.reason}: ${first.message}), so reranking stays off for the rest of it` };
     return { ranked, info: { ran: false, skipped: true, cause }, failed: { mode: 'rerank', code: cause.code, message: cause.message } };
   }
+  // The reranker's cold load never runs inside the rerank bound: an owner that has not loaded it yet loads it in the background (retrieval-warm.cjs),
+  // and a search that meets it still loading keeps the fusion order, says so, and neither sticks nor pauses. Lazy: owner only (invariant 9).
+  if (E.owner && require('./retrieval-warm.cjs').rerankerState(E, tier) === 'loading') {
+    const cause = { code: 'E_RERANK', reason: 'warming', message: `the reranker ${tier.reranker} is still loading in the background, so this search keeps the fusion order; searches rerank once it is loaded` };
+    return { ranked, info: { ran: false, skipped: true, cause }, failed: { mode: 'rerank', code: cause.code, message: cause.message } };
+  }
   const depth = Math.min(tier.depth > 0 ? tier.depth : lv.rerank_depth, ranked.length);
   const rows = rowsOf(ranked.slice(0, depth).map(h => h.id));
   try {
@@ -177,6 +183,7 @@ async function rerankHead(E, caller, o, ranked, rowsOf, lv) {
       const cause = { code: e.code, reason: 'shutdown', message: e.message };
       return { ranked, info: { ran: false, skipped: true, cause }, failed: { mode: 'rerank', code: cause.code, message: cause.message } };
     }
+    if (E.owner && e.detail && e.detail.reason !== 'no_query') require('./retrieval-warm.cjs').forgetReranker(E, tier.reranker); // the provider rebuilds its child: the next search warms it again, in the background
     // A search with no query text (a vector only) cannot be reranked: that is the caller's shape, not a failing model, so it never pauses.
     if (lv.on_heavy_failure === 'pause' && !(e.detail && e.detail.reason === 'no_query')) {
       e.detail = { ...e.detail, advised: true }; // the reranker's own advice below; adviseEmbedderFailure's text is about the embedder

@@ -14,13 +14,16 @@ const { err } = require('./errors.cjs');
 
 const CLOSE_BOUND_MS = 3000; // closeAll's default bound per provider
 const providers = new Map();
+const built = new Set(); // names this module built itself (autoBuild); any other registered name came from a caller
 
 function register(name, impl) {
   if (typeof name !== 'string' || !name) throw err('E_ARGS', 'a rerank provider needs the reranker model id it serves', { field: 'name' });
   if (!impl || typeof impl.rerank !== 'function') throw err('E_ARGS', `the rerank provider for ${name} needs an async rerank({ query, docs, depth, boundMs }) function`, { field: 'impl' });
   providers.set(name, impl);
 }
-function unregister(name) { return providers.delete(name); }
+function unregister(name) { built.delete(name); return providers.delete(name); }
+// True when a caller registered a provider under this name (a fake or its own): nothing of it is loaded by the owner's warm-up.
+const isExternal = (name) => providers.has(name) && !built.has(name);
 
 // The impl for the tier's reranker, or null when the tier has none or nobody registered it. Only the store OWNER ever builds one
 // (ADR 0050 decision 5): with `opts.owner` (the Owner, or true) set and a pinned CPU reranker id nobody registered, the CPU provider is built here, once
@@ -36,6 +39,8 @@ function get(tier, opts) {
   return autoBuild(name, owner);
 }
 
+// Test seam (BELAY_TEST_MODE=1 alone): marks a registered fake as one this module built, so the owner's warm-up treats it as its own.
+function __asBuilt(name) { if (process.env.BELAY_TEST_MODE !== '1') throw err('E_ARGS', '__asBuilt is a test seam', {}); built.add(name); }
 // Test seam (BELAY_TEST_MODE=1 alone): options merged into the auto-built CPU provider (pkg, cacheDir, table, workerPath, workerOpts).
 let autoOpts = null;
 const gpuNames = new Set(); // names of the GPU providers built
@@ -51,13 +56,13 @@ function autoBuild(name, owner) {
     const m = require('./retrieval-profiles.cjs').describeModel(name); // a pure table
     if (!m || m.kind !== 'reranker' || m.runtime !== 'gguf') return null;
     const { gpuRerankProvider } = require('./gpu-rerank.cjs'); // lazy: the owner's GPU tiers only
-    providers.set(name, gpuRerankProvider({ model: name })); gpuNames.add(name);
+    providers.set(name, gpuRerankProvider({ model: name })); gpuNames.add(name); built.add(name);
     if (owner && typeof owner === 'object') { (owner.rerankBuilt = owner.rerankBuilt || new Set()).add(name); owner.gpuUsed = true; } else usesGpu = true;
     return providers.get(name);
   }
   const { cpuRerankProvider } = require('./rerank-cpu.cjs'); // lazy: the owner's search only
   const impl = cpuRerankProvider({ model: name, ...extra });
-  providers.set(name, { rerank: impl, close: impl.close });
+  providers.set(name, { rerank: impl, close: impl.close }); built.add(name);
   if (owner && typeof owner === 'object') (owner.rerankBuilt = owner.rerankBuilt || new Set()).add(name);
   return providers.get(name);
 }
@@ -70,7 +75,7 @@ async function closeAll(boundMs = CLOSE_BOUND_MS, names, timers) {
   const all = [...providers.entries()].filter(([n]) => !names || names.has(n));
   await Promise.all(all.map(async ([name, impl]) => {
     if (!impl || typeof impl.close !== 'function') return;
-    if (providers.get(name) === impl) providers.delete(name);
+    if (providers.get(name) === impl) { providers.delete(name); built.delete(name); }
     let timer;
     try { await Promise.race([Promise.resolve().then(() => impl.close()), new Promise((r) => { timer = T.setTimeout(r, boundMs); })]); } catch { /* best effort */ } finally { T.clearTimeout(timer); }
   }));
@@ -83,4 +88,4 @@ async function closeAll(boundMs = CLOSE_BOUND_MS, names, timers) {
 
 const closeOwned = (owner, boundMs, timers) => closeAll(boundMs, new Set((owner && owner.rerankBuilt) || []), timers);
 
-module.exports = { register, unregister, get, closeAll, closeOwned, setAutoOptions, CLOSE_BOUND_MS };
+module.exports = { register, unregister, isExternal, __asBuilt, get, closeAll, closeOwned, setAutoOptions, CLOSE_BOUND_MS };

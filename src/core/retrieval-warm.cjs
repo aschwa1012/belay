@@ -3,7 +3,8 @@
 // pay a cold model load inside the 10 s rerank bound, and the first heavy query must not pay the GPU load inside a search. After the probe
 // and before the run's first prompt, every distinct reranker (CPU or GPU) and heavy embedder of the routing is loaded here through its own
 // provider, by one tiny real call. Owner only (the providers are built there). A failure names the model and is handled by the caller as a
-// probe refusal is (on_heavy_failure).
+// probe refusal is (on_heavy_failure). An owner that starts after the pin (a restart mid-run) or lost a reranker's state to a failure warms it in the
+// background from the first search that needs it (rerankerState): that search keeps the fusion order and says so.
 
 const RP = require('./retrieval-profiles.cjs');
 
@@ -11,15 +12,44 @@ const WARM_BOUND_MS = 300000; // a cold 4B load with a first Vulkan shader build
 
 const tiersOf = (r) => [r.run, ...Object.values(r.tiers)];
 
+// One tiny real call through the reranker's own provider: the load happens here, on the warm-up's own wall clock (WARM_BOUND_MS), never
+// inside a search's rerank bound. Throws what the provider throws.
+async function warmReranker(E, model) {
+  const p = require('./rerank-provider.cjs').get({ reranker: model }, { owner: E.owner || false });
+  if (!p) throw new Error(`no rerank provider for ${model}`);
+  await p.rerank({ query: 'warm up', docs: [{ id: 'w', text: 'warm up' }], depth: 1, boundMs: WARM_BOUND_MS });
+}
+
+// The warm state of a search's reranker in this owner: 'ready' (loaded, or a provider the caller registered itself, which loads nothing
+// here), 'loading' (a background warm-up is running; the search keeps the fusion order and does not wait), or 'failed' (the warm-up threw;
+// the search then tries the reranker itself, so the real error follows on_heavy_failure). An owner that has not warmed this reranker yet
+// (a pin made before this owner started, or a failure that dropped the state) starts the warm-up in the background and answers 'loading'.
+// Never throws, never waits.
+function rerankerState(E, tier) {
+  const model = tier && tier.reranker, owner = E.owner;
+  if (!model || !owner || (typeof owner === 'object' && owner.stopped)) return 'ready';
+  const RPV = require('./rerank-provider.cjs');
+  if (RPV.isExternal(model) || !RPV.get({ reranker: model }, { owner })) return 'ready'; // nothing of the owner's to load: the stage reports an absent provider itself
+  const m = E._rerankWarm || (E._rerankWarm = new Map());
+  const hit = m.get(model);
+  if (hit) return hit.state;
+  const entry = { state: 'loading' };
+  m.set(model, entry);
+  warmReranker(E, model).then(() => { entry.state = 'ready'; }, (e) => { entry.state = 'failed'; entry.cause = (e && e.message) || String(e); });
+  return 'loading';
+}
+// A rerank that failed leaves the model's state unknown (the provider rebuilds its child on the next call): drop it, so the next search warms again.
+const forgetReranker = (E, model) => { if (E._rerankWarm) E._rerankWarm.delete(model); };
+
 // -> { ok: true, models: [{ model, kind, ms }] } or { ok: false, model, kind, code, message, models }. Never throws.
 async function warmUp(E, routing, onStep) {
-  const RPV = require('./rerank-provider.cjs'), EP = require('./embed-provider.cjs');
+  const EP = require('./embed-provider.cjs');
   const rerankers = [...new Set(tiersOf(routing).map((t) => t.reranker).filter(Boolean))].sort();
   const embedders = [...new Set(tiersOf(routing).map((t) => t.embedder).filter((id) => id && id !== RP.NANO))].sort();
   const done = [];
   const steps = [
     ...embedders.map((model) => ({ model, kind: 'embedder', run: async () => { const p = EP.get({ embedder: model }, { owner: E.owner || false }); if (!p) throw new Error(`no embed provider for ${model}`); await p.embedQuery('warm up'); } })),
-    ...rerankers.map((model) => ({ model, kind: 'reranker', run: async () => { const p = RPV.get({ reranker: model }, { owner: E.owner || false }); if (!p) throw new Error(`no rerank provider for ${model}`); await p.rerank({ query: 'warm up', docs: [{ id: 'w', text: 'warm up' }], depth: 1, boundMs: WARM_BOUND_MS }); } })),
+    ...rerankers.map((model) => ({ model, kind: 'reranker', run: async () => { await warmReranker(E, model); (E._rerankWarm || (E._rerankWarm = new Map())).set(model, { state: 'ready' }); } })),
   ];
   for (const s of steps) {
     const t0 = Date.now();
@@ -30,4 +60,4 @@ async function warmUp(E, routing, onStep) {
   return { ok: true, models: done };
 }
 
-module.exports = { warmUp, WARM_BOUND_MS };
+module.exports = { warmUp, warmReranker, rerankerState, forgetReranker, WARM_BOUND_MS };
