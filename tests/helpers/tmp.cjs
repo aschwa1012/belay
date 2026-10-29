@@ -44,11 +44,18 @@ if (!globalThis[KEY]) {
   // "only if unset" gave all concurrent files one register: a fake orchestrator one file registers covers the invented process roots of
   // another file's operator check. The helper marks the register it made with its own pid and path; a process that inherits that pair
   // from another process makes a register of its own, and an explicit value (a test's or the operator's) is kept.
+  // A process that inherits such a pair makes its register INSIDE the inherited one, so the registers of all the processes of a run hang
+  // under the one directory the runner made (the only one in the temp dir's top level). The runner removes the whole tree when it exits,
+  // which also takes the registers of processes that were killed and could not remove their own; each process still removes its own.
   const madeBy = (process.env.BELAY_TEST_SPAWN_REGISTRY_MADE_BY || '').split('|');
   const inherited = !!madeBy[1] && madeBy[1] === process.env.BELAY_SPAWN_REGISTRY && madeBy[0] !== String(process.pid);
   if (!process.env.BELAY_SPAWN_REGISTRY || inherited) {
-    process.env.BELAY_SPAWN_REGISTRY = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-spawned-test-'));
-    process.env.BELAY_TEST_SPAWN_REGISTRY_MADE_BY = `${process.pid}|${process.env.BELAY_SPAWN_REGISTRY}`;
+    const parent = inherited ? process.env.BELAY_SPAWN_REGISTRY : os.tmpdir();
+    fs.mkdirSync(parent, { recursive: true });
+    const own = fs.mkdtempSync(path.join(parent, 'belay-spawned-test-'));
+    process.env.BELAY_SPAWN_REGISTRY = own;
+    process.env.BELAY_TEST_SPAWN_REGISTRY_MADE_BY = `${process.pid}|${own}`;
+    if (inherited) process.on('exit', () => { try { fs.rmSync(own, { recursive: true, force: true }); } catch { /* the runner's removal of the tree follows */ } });
   }
 
   // One attempt per directory when budgetMs is 0; otherwise retried within the budget. Returns what remains.

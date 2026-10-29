@@ -64,3 +64,25 @@ test('a test-file process that inherits the runner\'s register makes its own; an
     assert.strictEqual(run({ ...renv, BELAY_SPAWN_REGISTRY: explicit }), explicit, 'an explicit register is kept');
   } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
 });
+
+test('the registry of a test-file process that is killed is removed with the runner\'s, and the suite\'s temp directory is left empty', () => {
+  const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-reg-kill-'));
+  try {
+    const tmp = path.join(scratch, 'tmp');
+    fs.mkdirSync(tmp);
+    const child = path.join(scratch, 'child.cjs');
+    fs.writeFileSync(child, "console.log(process.env.BELAY_SPAWN_REGISTRY); process.kill(process.pid, 'SIGKILL');");
+    const runner = path.join(scratch, 'runner.cjs');
+    fs.writeFileSync(runner, [
+      "const { spawnSync } = require('node:child_process');",
+      `const r = spawnSync(process.execPath, ['--require', ${JSON.stringify(HELPER.split(path.sep).join('/'))}, ${JSON.stringify(child.split(path.sep).join('/'))}], { encoding: 'utf8', env: process.env });`,
+      "console.log(r.stdout.trim());",
+    ].join('\n'));
+    const env = { ...process.env, TEMP: tmp, TMP: tmp, TMPDIR: tmp };
+    delete env.BELAY_SPAWN_REGISTRY; delete env.BELAY_TEST_SPAWN_REGISTRY_MADE_BY;
+    const r = spawnSync(process.execPath, ['--require', HELPER, runner], { encoding: 'utf8', env });
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.ok(path.basename(r.stdout.trim()).startsWith('belay-spawned-test-'), `the killed child made a register: ${r.stdout}`);
+    assert.deepStrictEqual(fs.readdirSync(tmp), [], 'nothing is left in the temp directory once the runner has exited');
+  } finally { fs.rmSync(scratch, { recursive: true, force: true }); }
+});
