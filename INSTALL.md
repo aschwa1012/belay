@@ -26,7 +26,7 @@ npm install -g github:aschwa1012/belay
 
 npm may print warnings about install scripts for `onnxruntime-node` and `protobufjs`. They come from the optional embedding library and are harmless.
 
-To pin a tagged release, add the tag, for example `npm install -g github:aschwa1012/belay#v0.3.0`.
+To pin a tagged release, add the tag, for example `npm install -g github:aschwa1012/belay#v0.3.1`.
 
 This installs the package `@aschwa1012/belay` and puts the `belay` command on your PATH. The installed files live under:
 
@@ -108,13 +108,15 @@ The orchestrator's instructions are a prompt file. belay ships two templates:
 - `src\run\prompts\orchestrator-interactive.md`, for interactive runs. It carries the line `<!-- belay-mode: interactive -->`, and an interactive run refuses a prompt file without it.
 - `src\run\prompts\orchestrator.md`, for headless runs. You append your brief to it.
 
-Copy the interactive one next to your spec:
+Instead of copying a template you can name your brief with `brief_file` in the spec: belay then wraps it in its own current template for the run's mode, under a `## Your brief` heading, so an upgrade refreshes the prompt. A spec names exactly one of `prompt_file` and `brief_file`.
+
+To copy the interactive one next to your spec:
 
 ```powershell
 Copy-Item "$(npm root -g)\@aschwa1012\belay\src\run\prompts\orchestrator-interactive.md" .\prompt.md
 ```
 
-The templates explain the orchestrator's role (plan, delegate, check; never edit itself), how to create tasks with acceptance commands and owned files, the review protocol and what counts as a blocking finding. Placeholders such as `{{max_fix_rounds}}` are filled in by belay from the spec. You can add project-specific guidance at the end.
+The templates explain the orchestrator's role (plan, delegate, check; leave the code work to workers), task worktrees and `integrate`, how to create tasks with acceptance commands and owned files, the review protocol and what counts as a blocking finding. Placeholders such as `{{max_fix_rounds}}` are filled in by belay from the spec. You can add project-specific guidance at the end.
 
 ### 3. The spec
 
@@ -162,7 +164,8 @@ An unknown key is a usage error.
 | Key | Default | Meaning |
 |---|---|---|
 | `worktree` | required | The orchestrator's working directory. |
-| `prompt_file` | required | The orchestrator's prompt. |
+| `prompt_file` | one of these two | The orchestrator's prompt, your own copy of a template. |
+| `brief_file` | one of these two | Your brief; belay wraps it in its current template for the run's mode. |
 | `run_id` | random UUID | The run id. |
 | `model` | `claude-opus-5-5` | The orchestrator's model. |
 | `allowed_tools` | none | Tools pre-approved for the orchestrator (`--allowedTools`). |
@@ -172,10 +175,15 @@ An unknown key is a usage error.
 | `mcp_tool_timeout_ms` | 120000 | The orchestrator's MCP tool timeout. At most 120000 in interactive mode. |
 | `poll_ms` | 1000 | Wake and status poll interval. |
 | `close_grace_ms` | 10000 | Grace period when the run closes. |
-| `max_fix_rounds` | 2 | Fix rounds per task after a refuted review. |
+| `max_fix_rounds` | 2 | Fix rounds per task after a refuted review before the orchestrator gets a notice. Not a refusal. |
+| `fix_hard_cap` | 5 with no `timeout_ms`, else none | The only fix-round refusal: fix tasks per piece of work. `null` means no cap. |
 | `fix_cutoff` | `orchestrator` | `orchestrator` (may stop early under named conditions) or `cap-only`. |
 | `on_embedder_failure` | `required` | `required` (a failed embedder pauses the run), `keyword` (go on ranking by keywords only) or `off` (memory off for the run). The 0.2.0 values `stop` and `continue` are still accepted, as `required` and `keyword`. A run paused this way resumes with `belay resume <run-id> --embedder keyword\|off`, or plain `belay resume <run-id>` once the embedder is fixed. `--embedder` also writes the choice to the config file as `memory.on_embedder_failure`, so later runs inherit it. Also settable in the `memory` block or as a config default. |
 | `compact_at_tokens` | none | Optional compaction threshold for Claude Code workers. |
+| `max_parallel_evaluations` | unlimited | How many task checks run at once; the rest wait for a slot. |
+| `stop_idle_on_done` | false | Stop a worker once its task is done and it is idle. |
+| `permission_prompt` | false | Turn on the permission channel: workers' tool approvals become rows, and the orchestrator is shown `permission_list` and `permission_decide`. |
+| `keep_review_scratch` | false | Keep reviewers' per-run scratch folders after the run. |
 | `mode` | `headless` | `headless` or `interactive` (`--interactive` wins). |
 | `interactive_surface_ms` | 15000 | How long the interactive launch check waits. |
 | `fullscreen` | true | Interactive only: Claude Code's fullscreen mode. |
@@ -184,6 +192,8 @@ An unknown key is a usage error.
 Two further keys, `native_memory` and `handback_question`, exist for belay's own evaluations and are not supported. `native_memory` takes an absolute folder path (not `true`) and turns Claude Code's own auto memory back on for workers, which belay otherwise switches off.
 
 `belay run` also takes `--effort low|medium|high|xhigh|max` for the orchestrator.
+
+Workers' tools come from their type: coders, testers and reviewers get Read, Edit, Write, Glob, Grep and Bash; researchers get Read, Glob, Grep, WebFetch and WebSearch, with no shell. `agents.<type>.tools` in the config file changes a type's list, and a spawn may narrow it, never widen it.
 
 Workers' models and efforts come from the orchestrator's spawn call, then from the config file's `agents` block (`belay settings agents.reviewer.model claude-opus-5-5`, `agents.coder.effort`, `agents.<type>.codex_model` for Codex workers), then from built-in defaults: Sonnet 5.5 for coders and testers, Opus 5.5 at effort high for reviewers and researchers.
 
@@ -212,6 +222,19 @@ npm install -g github:aschwa1012/belay
 ```
 
 The embedding model stays in its cache and does not need fetching again unless a release changes it (`belay doctor` will say so). Stop any live run before updating.
+
+**From 0.3.0 to 0.3.1: back up `.belay\` first, and copy the prompt template again.**
+
+- The store keeps schema version 2; the first 0.3.1 run adds a table and columns in place. Going back to 0.3.0 on the same store is not tested, so keep the backup if you might.
+- `max_fix_rounds` is now a notice, not a limit: past it, a fix task carries a notice to the orchestrator. The only refusal is `fix_hard_cap`, 5 by default for a run with no `timeout_ms` and none for a run with one. Set `"fix_hard_cap": 2` to keep 0.3.0's limit.
+- The orchestrator can merge into any branch it names, your checked-out branch included, with no approval step. Keep its work on the integration branch and merge that yourself.
+- Copy the orchestrator prompt template again, or switch to `brief_file`. Both templates changed and carry `<!-- belay-prompt 0.3.1 -->`; `belay run` warns when your copy is older.
+- Researcher workers have no shell; they get Read, Glob, Grep, WebFetch and WebSearch.
+- Shell commands that stop processes by name (`taskkill /IM`, `Stop-Process -Name`, `pkill` and the like) are refused for workers and a headless orchestrator. A headless orchestrator's `belay` commands are refused as the operator.
+- Workers are no longer shown `lease_renew`, `checkpoint_write`, `status` or `memory_stats`. The orchestrator is shown `permission_list` and `permission_decide` only when the spec sets `"permission_prompt": true`.
+- A review task is refused to a worker that held a lease on the work it reviews. A message to a worker is refused as busy while that worker is being stopped, restarted or resumed.
+- The orchestrator's task tools, `worker_spawn` and `memory_search` answer in compact views by default.
+- `belay run` removes each finished, clean task worktree when the run ends, and reports the ones it kept.
 
 **From 0.2.0 to 0.3.0: back up `.belay\` first, and check your memory settings.**
 

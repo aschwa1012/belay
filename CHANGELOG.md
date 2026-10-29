@@ -1,5 +1,141 @@
 # Changelog
 
+## 0.3.1
+
+Parallel work: belay now gives each task its own git worktree and branch,
+merges finished work into an integration branch and checks the merged
+result, so one run can work on many tasks at once.
+
+Upgrade warning (from 0.3.0)
+- fix rounds are no longer capped by max_fix_rounds. Past it, a new fix
+  task carries a notice to the orchestrator instead of being refused. The
+  only refusal is the new fix_hard_cap: 5 by default for a run with no
+  timeout_ms, none for a run with one. Set "fix_hard_cap": 2 in the run
+  spec to keep 0.3.0's limit
+- the orchestrator can merge into any branch it names, your checked-out
+  branch included, with no approval step. Keep work on the integration
+  branch and merge it into your own branches yourself (see Known limits)
+- copy the orchestrator prompt template again, or switch the spec to
+  brief_file (below). Both templates changed (worktrees, integrate, fix
+  rounds, reuse of workers); they now carry <!-- belay-prompt 0.3.1 -->,
+  and belay run warns when your copy is older
+- researcher workers get Read, Glob, Grep, WebFetch and WebSearch, and no
+  shell. Coders, testers and reviewers keep the six tools. Change a type's
+  list with agents.<type>.tools in the config file
+- shell commands that stop processes by name (taskkill /IM, Stop-Process
+  -Name, pkill and the like) are refused for workers and for a headless
+  orchestrator; stop a process by its exact pid
+- a headless orchestrator has a shell, but belay commands it runs are
+  refused as the operator; the interactive orchestrator acts as you
+- workers are no longer shown lease_renew, checkpoint_write, status or
+  memory_stats (no worker called them; the adapter renews leases itself).
+  permission_list and permission_decide are shown to the orchestrator only
+  when the run spec sets "permission_prompt": true
+- a review task is refused to a worker that held a lease on the work it
+  reviews
+- a message to a worker is refused as busy while that worker is being
+  stopped, restarted or resumed
+- the orchestrator's task tools and worker_spawn answer with compact rows
+  by default (view: "debug" gives the full row); memory_search answers in a
+  compact view with one relevance figure, and flags results below a
+  measured relevance floor
+- belay run removes each finished, clean task worktree when the run ends,
+  and reports the ones it kept
+- the store keeps schema version 2; the first 0.3.1 run adds a table and
+  columns in place. Going back to 0.3.0 on the same store is not tested:
+  back up .belay\ first
+
+Added
+- a worktree and branch per task: the orchestrator's task_worktree makes,
+  removes and reports one from a recorded base, and spawns, checks and
+  reviews default to the task's own tree. Tasks in separate worktrees may
+  own the same files; belay reports the overlap. From the command line:
+  belay worktree create|remove|merge and belay worktrees
+- integrate: merges each finished task into an integration branch at the
+  commit that was judged, never past it, checks the merged head, and
+  reports conflicts, what landed and what was left out. It can run extra
+  checks of its own on the merged head (integrate checks), and can force a
+  merge past failing checks with a stated reason, which is recorded
+- run lever max_parallel_evaluations: caps how many task checks run at
+  once; the rest wait for a slot
+- belay checks a worker's hand-back as its turn ends and puts the result
+  in the orchestrator's wake; fix_from_review makes the fix task for a
+  refuted review; task_cancel; worker_last_reply; git_read, read-only git
+  that belay runs for the orchestrator
+- brief_file in the run spec: belay wraps your brief in its own current
+  template, so an upgrade refreshes the prompt
+- cost estimates: a worker killed in the middle of a turn has that turn's
+  cost estimated from its stream, labelled as an estimate and kept apart
+  from the cost Claude Code reported; belay agents and belay receipts show
+  both
+- check history: each task's check commands and how they changed between
+  rounds, in the integrate answer and the run-end summary
+- fix-round notice: past max_fix_rounds, the fix task's answer, the
+  refuted review's wake and task_list carry the round count
+- the orchestrator's shell: Read, Glob, Grep, Edit, Write and Bash, plus
+  git_read. At the close belay ends what the orchestrator's shell left
+  running, by exact pid, never belay's own processes or workers
+- tool lists per worker type (agents.<type>.tools); a spawn may narrow its
+  type's list, never widen it
+- reviewers write their probes to a scratch folder per run, outside every
+  worktree, and a change to the tree under review is flagged at the
+  hand-back; keep_review_scratch keeps the folders after the run
+- stop_idle_on_done stops a worker once its task is done and it is idle
+
+Fixed
+- a hand-back missing a field the task requires is refused, naming the
+  missing fields, and the worker is told the required fields up front
+- a worker killed mid-turn no longer shows that turn as free (see cost
+  estimates)
+- a check that finds every evaluation slot taken now waits for one instead
+  of being refused
+- task worktrees were left behind at the end of a run: clean ones are now
+  removed, and before the close a headless orchestrator is told once which
+  trees would be kept as dirty or off their branch
+- a shell command that stops processes by name could reach any process on
+  the machine, belay's own store owner included: such commands are refused
+- a reused process id could be read as a live worker, run, merge or store
+  owner: belay now checks the process creation time it recorded
+- a store owner that is stopping finishes the calls it accepted and sends
+  their replies, and turns new ones away so the client re-runs them
+- a read copy taken while the owner writes is retried for a time budget;
+  a torn copy is detected and taken again instead of giving a wrong answer;
+  and a copy no longer stops an owner from writing (an owner elected during
+  a copy could open the store read-only)
+- a git trace file left in the temp folder by a belay process that died
+  mid-merge is swept by a later belay process: only belay's own file
+  names, only for a process that is gone, and only after 10 minutes
+- a task branch named as another spelling of an existing branch (Main for
+  main) is refused; on Windows it could move your branch
+- many smaller fixes to waits, wakes, restarts, leases and messages, found
+  in trial runs. belay's own tests that failed only under load were fixed,
+  not excluded
+
+Measured
+- the same 10 tickets of a small command-line product, run in parallel by
+  0.3.1 twice: about 1 h each (59 and 64 min) against about 5 h done one
+  ticket at a time on a 0.3.0-era build, at about 35 to 45% lower cost
+  ($18.68 and $16.20 against $28.31). Both runs met the pre-registered
+  quality bar: hidden regression tests passed at 0.914 and 0.919 against
+  the sequential run's 0.928 (the bar allowed 0.05 less), and 5 of 9
+  scored tickets passed all their own tests, as in the sequential run
+
+Known limits
+- four 0.3.1 fixes are covered by tests but not yet exercised in a live
+  run: the fix-round notice, the refusal of a hand-back missing required
+  fields, the kill-by-name guard and the pre-close tree notice
+- belay does not sandbox workers. A worker acts with your permissions, and
+  a program it runs can write anywhere you can. In one trial run a
+  reviewer ran the product under test with an empty home setting, and the
+  product wrote into the real user's configuration folder (the reviewer
+  noticed and restored it)
+- merges into your own branches have no approval step yet
+- the kill-by-name guard matches command text; a command assembled at run
+  time can slip past it
+- a resumed Codex reviewer loses its scratch folder as a writable root
+- the orchestrator's restraint (plan and delegate, not do the work) is a
+  prompt rule; it has a shell
+
 ## 0.3.0
 
 Notes: short facts a worker hands back at the end of a task, kept in the
