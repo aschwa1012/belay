@@ -100,9 +100,15 @@ function peakFrom({ vulkanDelta, smiDelta, hint }) {
   return { peak_mb: hint, source: 'hint' };
 }
 
+// What the summed per-model peaks leave out when the set is loaded together in the run's one child. The 2026-10-25 smoke measured it twice:
+// dedicated memory in use after loading the set was 3183.1 MiB for the 0.6B pair and 6932.3 MiB for the 4B pair, against needed_mb of 2393
+// and 6153 (sum 1625 + 768, sum 5385 + 768): short by 790.1 and 779.3 MiB. The larger is used. Receipt: gpu-smoke-2026-10-25T23-39-04-877Z.json
+// (steps "use sets ...", field vram_used_mb_after_load, against "probe sets ...", field needed_mb).
+const ESTIMATE_OVERHEAD_MB = 790;
+
 function needed(peaks, headroomMb) {
   const sum = Object.values(peaks).reduce((n, p) => n + p.peak_mb, 0);
-  return { sum_mb: r1(sum), headroom_mb: headroomMb, needed_mb: r1(sum + headroomMb) };
+  return { sum_mb: r1(sum), overhead_mb: ESTIMATE_OVERHEAD_MB, headroom_mb: headroomMb, needed_mb: r1(sum + ESTIMATE_OVERHEAD_MB + headroomMb) };
 }
 
 // The recorded key: model, the settings the peak was measured at, and the driver.
@@ -312,7 +318,7 @@ async function probeInner(opts = {}) {
     const result = { device, dedicated, driver, headroom_mb: headroomMb, peaks, sum_mb: n.sum_mb, needed_mb: n.needed_mb, free_mb: fd.free_mb, measured_set_mb: mb(before.used - base.used), rerank, models: ids, ms: Date.now() - t0 };
     if (Object.keys(peaks).length < entries.length || n.needed_mb > fd.free_mb) {
       const detail = Object.entries(peaks).map(([id, p]) => `${id} ${p.peak_mb} MiB`).join(' + ');
-      return refuse('insufficient_vram', `the set needs ${n.needed_mb} MiB (${detail}${Object.keys(peaks).length < entries.length ? ' and more not loaded' : ''}, plus ${headroomMb} MiB headroom) and ${fd.free_mb} MiB of dedicated memory is free on ${device.name}`,
+      return refuse('insufficient_vram', `the set needs ${n.needed_mb} MiB (${detail}${Object.keys(peaks).length < entries.length ? ' and more not loaded' : ''}, plus ${ESTIMATE_OVERHEAD_MB} MiB the set's own overhead was measured to add, plus ${headroomMb} MiB headroom) and ${fd.free_mb} MiB of dedicated memory is free on ${device.name}`,
         ['choose smaller models', 'close other programs that use the GPU', 'lower the vram_headroom_gb lever (the headroom is a safety margin, not a measurement)'], result);
     }
     if (opts.record !== false) {
@@ -363,6 +369,7 @@ async function probe(opts = {}) {
 }
 
 module.exports = {
+  ESTIMATE_OVERHEAD_MB,
   probe, readLast, recordLast, dedicatedFrom, freeDedicated, peakFrom, needed, peakKey, sampler, recordedPeak, recordPeaks, readPeaks, peaksFile, defaultSmi,
   deriveChunkTokens: C.deriveChunkTokens, HEADROOM_MB, CHUNK_TARGET_MS, BATCH_TOKENS, SANITY_DOCS, QUERY,
 };

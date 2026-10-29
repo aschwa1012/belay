@@ -215,7 +215,7 @@ test('a re-pin takes one fresh reading: 8 GB laptop numbers fit; another program
   const again = await pin('bh-f');
   assert.strictEqual(again.pinned, true);
   assert.deepStrictEqual(again.notices.map(n => n.code), ['gpu_probe_refused']);
-  assert.match(again.notices[0].message, /needs 6153 MiB.*free now/);
+  assert.match(again.notices[0].message, /needs 6943 MiB.*free now/);
   assert.strictEqual(again.routing.run.profile, 'cpu-fast');
 });
 
