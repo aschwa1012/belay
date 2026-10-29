@@ -119,7 +119,7 @@ test('a merge that fails without a conflict checks what landed and names the tas
   assert.strictEqual(row.error.task_id, b.id);
   assert.strictEqual(row.error.tree_clean, true);
   assert.deepStrictEqual(row.not_merged, [{ task_id: b.id, reason: 'failed' }]);
-  assert.strictEqual(row.passed, true);
+  assert.strictEqual(row.passed, false, "a step that stopped is not passed");
   assert.deepStrictEqual(row.checks.map((ch) => ch.task_ids), [[a.id]]);
   assert.strictEqual((await integ(b.id)).state, 'failed');
 });
@@ -189,7 +189,7 @@ test('a merge that throws (a branch deleted) still checks what landed and names 
   assert.strictEqual(row.error.task_id, b.id);
   assert.strictEqual(row.error.tree_clean, true);
   assert.deepStrictEqual(row.not_merged, [{ task_id: b.id, reason: 'failed' }]);
-  assert.strictEqual(row.passed, true);
+  assert.strictEqual(row.passed, false, "a step that stopped is not passed, though the check on what landed passed");
   assert.deepStrictEqual(row.checks.map((ch) => ch.task_ids), [[a.id]]);
   assert.strictEqual(row.head_sha, git(row.worktree, 'rev-parse', 'HEAD'));
   assert.strictEqual((await integ(b.id)).state, 'failed');

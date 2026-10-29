@@ -403,7 +403,8 @@ async function merge(E, caller, args) {
         const reuse = INC.reuseFor(E, repo, into, out.head_sha, (await G.dirtyPaths(tree.path)).length === 0);
         const endSpan = EC.beginSpan(`integration ${base.id}`); // ADR 0061 section 4 (b): it ran beside the evaluations that overlapped it, and they beside it
         try { out.checks = await rerun(args.evaluate === false ? [] : [...tasks, ...older].filter((t) => landed.has(t.id)), tree.path, reuse, out.head_sha, (a, b) => EC.during(`integration ${base.id}`, a, b), extra, t0call + ACCEPTANCE_BUDGET_MS); } finally { endSpan(); }
-        out.passed = out.checks.length > 0 ? out.checks.every((c) => c.passed) : null;
+        // A step that stopped did not integrate what was asked, so it is never passed: the checks on what landed stay on the row, each with its own result.
+        out.passed = out.checks.length > 0 ? !stop && out.checks.every((c) => c.passed) : null;
         if (!stop) {
           if (!out.checks.length) out.error = { message: 'the merged tasks declare no acceptance commands, so nothing was re-run and nothing is proven' };
           out.state = 'evaluated';
