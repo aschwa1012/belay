@@ -140,6 +140,7 @@ async function mergeIntoUser(E, caller, args, c) {
   } catch (e) {
     out.error = { ...(out.error || {}), tree_not_removed: `${tree.path} could not be removed (${e.message}); belay worktree remove --integration ${id} will` };
   }
+  if (out.state === 'conflict' || out.state === 'failed') out.passed = false; // a step that stopped is never passed, whether or not a check ran
   // The outcome row first, then the row that records the tree's removal over it (as integration.remove does), so the outcome is what the task facts read.
   const row = E.store.tx(() => { const o = rows.append(E.store, 'integration', out, by, Date.now()); return removedAt ? rows.append(E.store, 'integration', { ...o, removed_at: removedAt }, by, Date.now()) : o; });
   E.noteWrite();
@@ -157,7 +158,7 @@ async function mergeIntoUser(E, caller, args, c) {
           head_after: now, applied: kept ? 'prepared' : moved && now === mergedSha ? 'ref' : 'none',
           ...(kept ? { prepared: { sha: kept, ref: `refs/belay/prepared/${id}`, checkout: null, ff_command: `git merge --ff-only ${kept}`, task_ids: [...args.task_ids], merge_commits: [], into_head: place.head } } : {}),
         };
-        E.store.tx(() => rows.append(E.store, 'integration', { ...wrote, ...facts, state: 'failed', error: { code: e.code || 'E_INTERNAL', message: `${e.message}${kept ? ' (after the merge was kept under its prepared ref)' : moved ? (now === mergedSha ? ` (after ${into} was moved to the merge)` : ` (${into} had moved to ${now} by other means)`) : ''}` } }, by, Date.now()));
+        E.store.tx(() => rows.append(E.store, 'integration', { ...wrote, ...facts, state: 'failed', passed: false, error: { code: e.code || 'E_INTERNAL', message: `${e.message}${kept ? ' (after the merge was kept under its prepared ref)' : moved ? (now === mergedSha ? ` (after ${into} was moved to the merge)` : ` (${into} had moved to ${now} by other means)`) : ''}` } }, by, Date.now()));
       } catch (_) { /* the store may be closing */ }
     }
     throw e;

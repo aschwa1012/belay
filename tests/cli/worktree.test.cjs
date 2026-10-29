@@ -120,7 +120,7 @@ test('the operator sees unchecked and not merged work: in merge output and in be
   assert.match(stopped.err, /merged work unchecked/);
   const checked = await belay(['worktree', 'merge', a.id, b.id, '--into', 'belay/integrate/cli-stop2', '--data', data], repo);
   assert.strictEqual(checked.code, 1);
-  assert.match(checked.err, /pass .*\n {2}passed: true/, 'a stopped integration prints the checks of what landed');
+  assert.match(checked.err, /pass .*\n {2}passed: false/, 'a stopped integration prints the checks of what landed');
   assert.doesNotMatch(checked.err, /merged work unchecked/);
 
   const listed = await belay(['tasks', '--all', '--data', data, '--json'], repo);
