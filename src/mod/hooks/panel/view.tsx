@@ -12,6 +12,7 @@ import { clip, INDENT, Line, Section, shortModel, tp, type Act, type Ctx, type E
 import { Table } from './table'
 import { badgeOf } from './memory'
 import { MemoryPane } from './memview'
+import { modelSegs } from './warm'
 
 export type { Act, Els }
 
@@ -342,6 +343,7 @@ export function Pane(c: Ctx) {
       <Line E={E} w={cols} k="pr" segs={[{ t: '─'.repeat(cols), dim: true }]} />
       {stale && wrapHard(stale, cols).map((t, i) => <Line E={E} w={cols} k={`pstale${i}`} segs={[{ t, dim: true }]} />)}
       {tasksLine.length > 0 && <Line E={E} w={cols} k="pt" segs={tasksLine} />}
+      {snap.retrievalModels.length > 0 && <Line E={E} w={cols} k="pm" segs={modelSegs(snap.retrievalModels)} />}
       <Line E={E} w={cols} k="pc" segs={costLine} />
       <Button key="mem" plain dimColor label={`◇ memory menu${badge > 0 ? ` [${badge}]` : ''}`} onPress={() => act.mem({ kind: 'tab', tab: 'profiles' })} />
       {ui.legend && <Legend {...c} />}

@@ -359,6 +359,7 @@ async function run(ctx) {
         max_fix_rounds: nn(chosen.max_fix_rounds), // the run row records the limit, not the rounds used
         fix_hard_cap: nn(chosen.fix_hard_cap), fix_hard_cap_source: nn(chosen.fix_hard_cap_source),
         memory_notice: require('../core/memory-notice.cjs').noticeForRun(chosen, null), // this run's own notice (or null): the panel shows it, never the config's
+        retrieval_models: require('../core/retrieval-view.cjs').models(require('../core/retrieval-view.cjs').describe(chosen)), // the pinned embedder and reranker with their state, from the run row
         agents, footer: footerOf(agents), owner: core.ownerInfo(),
       };
       return { code: 0, text: renderText(receipt), json: receipt };

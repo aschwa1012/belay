@@ -74,6 +74,7 @@ test('agents: one row for the orchestrator and one per worker, context from the 
     assert.strictEqual(r.status, 0, r.stderr);
     const j = JSON.parse(r.stdout);
     const by = Object.fromEntries(j.agents.map((a) => [a.id, a]));
+    assert.deepStrictEqual(j.retrieval_models, [], 'a run that pinned nothing has no retrieval models');
     assert.deepStrictEqual(j.agents.map((a) => a.id), ['orchestrator', 'w1', 'w2', 'w3']);
 
     const o = by.orchestrator;

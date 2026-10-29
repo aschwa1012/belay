@@ -79,6 +79,14 @@ export type BelayHeld = { count: number; queued?: number; unsupported: number; b
 /** `belay settings`' memory_notice: notes are on by default but no memory.project is set, so memory is off. null once a project is set. */
 export type BelayMemoryNotice = { title: string; why: string; fix: string; configLine: string; short: string }
 
+export type BelayRetrievalModel = {
+  role: 'embedder' | 'reranker'
+  id: string | null
+  state: 'off' | 'warming' | 'ready' | 'failed'
+  /** The newest warm-up of this model: what started it, how long it took, the searches that waited, the error if it failed. */
+  warm: { trigger: string | null; ms: number | null; served: number; error: string | null } | null
+}
+
 export type BelayPanelSnap = {
   fetchedAt: number
   runId: string | null
@@ -103,6 +111,8 @@ export type BelayPanelSnap = {
   fixHardCap: number | null
   fixHardCapSource: string | null
   embedder: string | null
+  /** The run's pinned embedder and reranker with their live state, from the run row (`retrieval_models` of `belay agents --json`). Empty when the run pinned nothing. */
+  retrievalModels: BelayRetrievalModel[]
   agents: BelayAgent[]
   footer: BelayPanelFooter | null
   notices: BelayNotice[]
