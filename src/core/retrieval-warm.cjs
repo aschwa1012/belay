@@ -29,13 +29,18 @@ function rerankerState(E, tier) {
   const model = tier && tier.reranker, owner = E.owner;
   if (!model || !owner || (typeof owner === 'object' && owner.stopped)) return 'ready';
   const RPV = require('./rerank-provider.cjs');
-  if (RPV.isExternal(model) || !RPV.get({ reranker: model }, { owner })) return 'ready'; // nothing of the owner's to load: the stage reports an absent provider itself
+  const impl = RPV.isExternal(model) ? null : RPV.get({ reranker: model }, { owner });
+  if (!impl) return 'ready'; // nothing of the owner's to load: the stage reports an absent provider itself
   const m = E._rerankWarm || (E._rerankWarm = new Map());
   const hit = m.get(model);
-  if (hit) return hit.state;
-  const entry = { state: 'loading' };
+  // A 'ready' state outlives its child only on paper: a provider that can say whether its model is still loaded (its child exited, was closed or
+  // was replaced outside a rerank) is asked, and a model that is gone is warmed again in the background.
+  if (hit && !(hit.state === 'ready' && typeof impl.loaded === 'function' && !impl.loaded())) return hit.state;
+  const entry = { state: 'loading', attempts: 0 };
   m.set(model, entry);
-  warmReranker(E, model).then(() => { entry.state = 'ready'; }, (e) => { entry.state = 'failed'; entry.cause = (e && e.message) || String(e); });
+  // One background retry of a failed warm-up before the state falls to 'failed' (and the next search loads inside its own bound).
+  const attempt = () => { entry.attempts += 1; warmReranker(E, model).then(() => { entry.state = 'ready'; }, (e) => { if (entry.attempts < 2 && !(E.owner && E.owner.stopped)) attempt(); else { entry.state = 'failed'; entry.cause = (e && e.message) || String(e); } }); };
+  attempt();
   return 'loading';
 }
 // A rerank that failed leaves the model's state unknown (the provider rebuilds its child on the next call): drop it, so the next search warms again.

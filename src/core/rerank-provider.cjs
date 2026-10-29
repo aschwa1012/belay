@@ -62,7 +62,7 @@ function autoBuild(name, owner) {
   }
   const { cpuRerankProvider } = require('./rerank-cpu.cjs'); // lazy: the owner's search only
   const impl = cpuRerankProvider({ model: name, ...extra });
-  providers.set(name, { rerank: impl, close: impl.close }); built.add(name);
+  providers.set(name, { rerank: impl, close: impl.close, loaded: impl.loaded }); built.add(name);
   if (owner && typeof owner === 'object') (owner.rerankBuilt = owner.rerankBuilt || new Set()).add(name);
   return providers.get(name);
 }

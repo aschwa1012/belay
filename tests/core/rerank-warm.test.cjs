@@ -91,3 +91,64 @@ test('the pin-time warm-up marks a reranker ready, so the first search reranks a
   assert.strictEqual(RW.rerankerState(E, tier), 'ready');
   assert.strictEqual(calls, 1);
 });
+
+test('a ready state is dropped when the provider says its model is gone (child exited or closed outside a rerank), and the model is warmed again', async () => {
+  const E = ownerE();
+  let live = true;
+  install(async () => { calls += 1; return { scores: [{ id: 'w', score: 1 }] }; });
+  provider.__asBuilt(MODEL);
+  provider.get(tier, { owner: E.owner }).loaded = () => live;
+  assert.strictEqual(RW.rerankerState(E, tier), 'loading');
+  await settle();
+  assert.strictEqual(RW.rerankerState(E, tier), 'ready');
+  live = false;
+  assert.strictEqual(RW.rerankerState(E, tier), 'loading', 'the next search does not trust a state whose child is gone');
+  await settle();
+  live = true;
+  assert.strictEqual(calls, 2);
+  assert.strictEqual(RW.rerankerState(E, tier), 'ready');
+});
+
+test('a transient warm-up failure is retried once in the background before the state falls to failed', async () => {
+  const E = ownerE();
+  install(async () => { calls += 1; if (calls === 1) throw new Error('transient'); return { scores: [{ id: 'w', score: 1 }] }; });
+  assert.strictEqual(RW.rerankerState(E, tier), 'loading');
+  await settle();
+  assert.strictEqual(calls, 2);
+  assert.strictEqual(RW.rerankerState(E, tier), 'ready');
+  E._rerankWarm = null;
+  install(async () => { calls += 1; throw new Error('persistent'); });
+  calls = 0;
+  RW.rerankerState(E, tier);
+  await settle();
+  assert.strictEqual(calls, 2, 'one retry only');
+  assert.strictEqual(RW.rerankerState(E, tier), 'failed');
+});
+
+test('a rerank failure with no detail still drops the warm state', async () => {
+  const E = ownerE();
+  install(async () => { calls += 1; return { scores: [{ id: 'w', score: 1 }] }; });
+  RW.rerankerState(E, tier);
+  await settle();
+  install(async () => { throw Object.assign(new Error('bare'), { detail: undefined }); });
+  E._rerankWarm.set(MODEL, { state: 'ready' });
+  const r = await ask(E);
+  assert.strictEqual(r.info.cause.reason, 'error');
+  assert.strictEqual(E._rerankWarm.has(MODEL), false);
+});
+
+test('an owner that stops mid warm-up ends in failed with no retry loop, and its next search reads as shutdown', async () => {
+  const E = ownerE();
+  install(async () => { calls += 1; await gate.p; throw new Error('the provider was closed'); }); // the closed provider rejects the load in flight
+  RW.rerankerState(E, tier);
+  await settle();
+  assert.strictEqual(calls, 1);
+  E.owner.stopped = true;
+  provider.unregister(MODEL); // what the owner's close does with the providers it built
+  gate.res();
+  await settle();
+  assert.strictEqual(E._rerankWarm.get(MODEL).state, 'failed');
+  assert.strictEqual(calls, 1, 'no retry on a stopped owner');
+  const r = await ask(E);
+  assert.strictEqual(r.info.cause.reason, 'shutdown');
+});

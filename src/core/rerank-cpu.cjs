@@ -265,6 +265,7 @@ function cpuRerankProvider(opts = {}) {
   let loaded = null; // the load promise of c, kept while it is pending or succeeded
   const closing = new Set(); // closes in flight; each leaves the set when it settles
   const inflight = new Set(); // ensure() calls in flight, which close() waits for
+  let loadedBy = null; // the client whose model finished loading
   let shut = false; // set by close(): nothing is forked or loaded after it
   const shutError = () => err('E_MODEL_ABSENT', 'the CPU rerank provider was closed; it starts no child after close()', rr('dead'));
   const abandoned = new WeakSet(); // clients this provider closed on purpose
@@ -296,6 +297,7 @@ function cpuRerankProvider(opts = {}) {
     mine.start();
     if (!loaded) loaded = mine.load(model).catch((e) => { if (c === mine) loaded = null; throw e; });
     await loaded;
+    loadedBy = mine;
     if (shut) { abandon(); throw shutError(); }
     return mine;
   };
@@ -335,6 +337,8 @@ function cpuRerankProvider(opts = {}) {
     if (r.truncated > 0) out.warnings = [{ code: 'RERANK_TRUNCATED', message: `${r.truncated} of ${take.length} pairs reached the model's ${r.max_length}-token limit (a longer pair is cut there)`, truncated: r.truncated, max_length: r.max_length }];
     return out;
   }
+  rerank.loaded = () => !shut && !!c && loadedBy === c && !c.exit && !c.hung; // the model is in a live child now
+  rerank.__client = () => { if (process.env.BELAY_TEST_MODE !== '1') throw err('E_ARGS', '__client is a test seam', {}); return c; };
   rerank.model = model;
   rerank.close = async () => {
     shut = true;

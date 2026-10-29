@@ -183,7 +183,7 @@ async function rerankHead(E, caller, o, ranked, rowsOf, lv) {
       const cause = { code: e.code, reason: 'shutdown', message: e.message };
       return { ranked, info: { ran: false, skipped: true, cause }, failed: { mode: 'rerank', code: cause.code, message: cause.message } };
     }
-    if (E.owner && e.detail && e.detail.reason !== 'no_query') require('./retrieval-warm.cjs').forgetReranker(E, tier.reranker); // the provider rebuilds its child: the next search warms it again, in the background
+    if (E.owner && !(e.detail && e.detail.reason === 'no_query')) require('./retrieval-warm.cjs').forgetReranker(E, tier.reranker); // the provider rebuilds its child: the next search warms it again, in the background
     // A search with no query text (a vector only) cannot be reranked: that is the caller's shape, not a failing model, so it never pauses.
     if (lv.on_heavy_failure === 'pause' && !(e.detail && e.detail.reason === 'no_query')) {
       e.detail = { ...e.detail, advised: true }; // the reranker's own advice below; adviseEmbedderFailure's text is about the embedder

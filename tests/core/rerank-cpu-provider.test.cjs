@@ -346,3 +346,18 @@ test('close() during an in-flight ensure forks and loads nothing after it: a cra
     assert.strictEqual(pids.length, Math.min(pids.length, before + 1));
   } finally { CpuRerankClient.prototype.start = realStart; await rerank.close(); r.done(); }
 });
+
+test('loaded() is true while the model sits in a live child, and false once the child exits outside a rerank or the provider closes', async () => {
+  const r = rig();
+  const p = r.provider();
+  try {
+    assert.strictEqual(p.loaded(), false, 'nothing is loaded before the first call');
+    await p({ query: QUERY, docs: NOTES, depth: 2 });
+    assert.strictEqual(p.loaded(), true);
+    const c = p.__client ? p.__client() : null;
+    assert.ok(c, 'the test seam exposes the live client');
+    await crash(c, 3);
+    assert.strictEqual(p.loaded(), false, 'a child that exited while idle no longer holds the model');
+  } finally { await p.close(); r.done(); }
+  assert.strictEqual(p.loaded(), false);
+});
