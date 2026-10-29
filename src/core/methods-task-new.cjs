@@ -54,7 +54,11 @@ function one(E, caller, args, own, runTop) {
     const run = rows.current(E.store, 'run', caller.run_id);
     const hard = run && run.fix_hard_cap != null ? Number(run.fix_hard_cap) : null;
     const cap = run && run.max_fix_rounds != null ? Number(run.max_fix_rounds) : null;
-    const used = rows.currentAll(E.store, 'task').filter(o => o.repairs === repairs && o.run_id === caller.run_id).length;
+    // A chain of fixes counts its rounds on the work it began from (as the derived review reads them), whichever fix a new one names.
+    const all = rows.currentAll(E.store, 'task'), byTask = new Map(all.map(o => [o.id, o]));
+    const rootOf = (t) => { for (let n = 0; t.repairs && byTask.has(t.repairs) && n < 100; n++) t = byTask.get(t.repairs); return t.id; };
+    const root = rootOf(byTask.get(repairs));
+    const used = all.filter(o => o.repairs && !(o.follows_up && o.follows_up.root) && rootOf(o) === root && o.run_id === caller.run_id).length;
     if (hard != null && used >= hard) {
       throw err('E_FIX_ROUNDS', `task ${repairs} already has ${used} fix task${used === 1 ? '' : 's'} and this run's fix_hard_cap is ${hard}${run.fix_hard_cap_source ? ` (${run.fix_hard_cap_source})` : ''}; no further fix task can be created for it in this run, and nothing was written`, { task_id: id, repairs, fix_rounds_used: used, fix_hard_cap: hard, fix_hard_cap_source: run.fix_hard_cap_source || null });
     }
