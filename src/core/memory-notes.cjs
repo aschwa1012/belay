@@ -32,7 +32,7 @@ function checkTitle(title, at) {
   if (typeof title !== 'string') throw bad(`${at}title must be a string: the claim itself`, { field: 'title' });
   const t = oneLine(title);
   if (!t) throw bad(`${at}title is empty: it must be the claim itself`, { field: 'title' });
-  if (bytes(t) > TITLE_MAX) throw bad(`${at}title is ${bytes(t)} bytes and the limit is ${TITLE_MAX}; it is never truncated, so state the claim shorter`, { field: 'title', bytes: bytes(t), max: TITLE_MAX });
+  if (bytes(t) > TITLE_MAX) throw bad(`${at}title is ${bytes(t)} bytes and the limit is ${TITLE_MAX} (${bytes(t) - TITLE_MAX} over, counted in UTF-8 bytes, not characters); it is never truncated, so state the claim shorter`, { field: 'title', bytes: bytes(t), max: TITLE_MAX, over: bytes(t) - TITLE_MAX });
   return t;
 }
 

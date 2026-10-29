@@ -413,6 +413,8 @@ async function merge(E, caller, args) {
         if (!stop) { out.state = 'failed'; out.error = { code: e.code || 'E_INTERNAL', message: `the checks could not be run: ${e.message}`, detail: e.detail || null }; }
       }
     }
+    // A step that stopped did not integrate what was asked, so it is never passed, whether or not any check ran: the checks on what landed stay on the row, each with its own result.
+    if (out.state === 'conflict' || out.state === 'failed') out.passed = false;
     // The merges have happened whatever the run did meanwhile, so the row that records them is written without a second run check.
     // A forced merge says so on its row, and only for what force let in: the tasks merged that were not done, with the failing
     // checks among theirs. A done task is never marked, and with none merged that were not done the row is as without force.

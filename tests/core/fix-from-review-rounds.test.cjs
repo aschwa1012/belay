@@ -407,3 +407,23 @@ test('a finding with a title reads as its title, with the detail after it', asyn
   const f = await orch.task.fixFromReview({ review_id: r.id });
   assert.deepStrictEqual(f.spec.split('\n').slice(3), ['- [blocking] expiry never fires -- where: src/c.cjs:3', '- [should-fix] rename x -- detail: the old name is kept']);
 });
+
+test('a fix made from a review after a hand-made fix of a fix repairs the original work, and its answer is matched there', async () => {
+  const w = await orch.task.create({ spec: 'chain root work', acceptance: PASS });
+  await handBack(w.id, 'c-chain-0', dir);
+  assert.strictEqual((await orch.task.evaluate({ task_id: w.id, worktree: dir })).state, 'done');
+  const hand = await orch.task.create({ spec: 'hand-made fix', acceptance: PASS, repairs: w.id, depends_on: [w.id] });
+  await handBack(hand.id, 'c-chain-h', dir);
+  assert.strictEqual((await orch.task.evaluate({ task_id: hand.id, worktree: dir })).state, 'done');
+  const mid = await orch.task.create({ spec: 'hand-made fix of the fix', acceptance: PASS, repairs: hand.id, depends_on: [hand.id] });
+  await handBack(mid.id, 'c-chain-1', dir);
+  assert.strictEqual((await orch.task.evaluate({ task_id: mid.id, worktree: dir })).state, 'done');
+  const r = await orch.task.create({ spec: 'review of the chain', depends_on: [mid.id], acceptance: { verdict: true } });
+  await handBack(r.id, 'j-chain', dir, { verdict: 'refuted', summary: 's', findings: [{ severity: 'blocking', clause: 'a', note: 'n' }] });
+  await orch.task.evaluate({ task_id: r.id, worktree: dir });
+  const f = await orch.task.fixFromReview({ review_id: r.id });
+  assert.strictEqual(f.repairs, w.id, 'the root, not the intermediate fix');
+  assert.match(f.spec, new RegExp(`a fix of task ${w.id}`));
+  const again = await orch.task.fixFromReview({ review_id: r.id });
+  assert.deepStrictEqual([again.id, again.existing], [f.id, true], 'the same review is answered by that fix, no round spent');
+});

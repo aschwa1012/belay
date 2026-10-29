@@ -216,7 +216,7 @@ test('a refutation decided in the same millisecond a fix was made is not answere
     const f = { id: 'f', state: 'done', repairs: 'w', depends_on: ['w'], run_id: 'r' }; // no answers: a row from before the field
     const fr = { id: 'fr', ...done, acceptance: { verdict: true }, depends_on: ['f'], results: { evaluated_at: 200, checks: [] } };
     const ix = { born: new Map([['w', { s: 1, at: 1 }], ['rv', { s: 2, at: 2 }], ['f', { s: 3, at: fixBorn }], ['fr', { s: 4, at: 150 }]]),
-      reviewsOf: new Map([['w', [r]], ['f', [fr]]]), fixesOf: new Map([['w', [f]]]), caps: new Map(), notice: new Map() };
+      rootOf: (t) => t.repairs || t.id, reviewsOf: new Map([['w', [r]], ['f', [fr]]]), fixesOf: new Map([['w', [f]]]), caps: new Map(), notice: new Map() };
     return RS.ofTask(w, ix).state;
   };
   assert.strictEqual(run(100), 'refuted', 'a tie is not an answer');

@@ -23,21 +23,23 @@ function index(store, tasks) {
   // SQLite takes the bare written_at from the row MIN(seq) chose: the first row's.
   const born = new Map(store.p('SELECT id, MIN(seq) AS s, written_at AS at FROM task GROUP BY id').all().map((r) => [r.id, { s: r.s, at: Number(r.at) }]));
   const reviewsOf = new Map(), fixesOf = new Map(), followsOf = new Map();
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  // The work a chain of fixes began from: a fix of a fix counts its round on the original work, as the review reads it.
+  const rootOf = (t) => { for (let n = 0; t.repairs && byId.has(t.repairs) && n < 100; n++) t = byId.get(t.repairs); return t.id; };
   // A cancelled review judged nothing; a cancelled fix still spent its round, as task.create counts it.
   for (const t of tasks) {
     if (isReview(t)) {
       if (t.state === 'cancelled') continue;
       for (const d of t.depends_on || []) (reviewsOf.get(d) || reviewsOf.set(d, []).get(d)).push(t);
     } else if (t.follows_up && t.follows_up.root) (followsOf.get(t.follows_up.root) || followsOf.set(t.follows_up.root, []).get(t.follows_up.root)).push(t); // ADR 0064: counted by its own cap, never a fix
-    else if (t.repairs) (fixesOf.get(t.repairs) || fixesOf.set(t.repairs, []).get(t.repairs)).push(t);
+    else if (t.repairs) { const r = rootOf(t); (fixesOf.get(r) || fixesOf.set(r, []).get(r)).push(t); }
   }
   const runs = rows.currentAll(store, 'run');
   const caps = new Map(runs.map((r) => [r.id, r.fix_hard_cap == null ? null : Number(r.fix_hard_cap)]));
   const capSource = new Map(runs.map((r) => [r.id, r.fix_hard_cap == null ? null : (r.fix_hard_cap_source || null)]));
   const notice = new Map(rows.currentAll(store, 'run').map((r) => [r.id, r.max_fix_rounds == null ? null : Number(r.max_fix_rounds)]));
   const followCaps = new Map(runs.map((r) => [r.id, r.max_follow_ups == null ? null : Number(r.max_follow_ups)]));
-  const byId = new Map(tasks.map((t) => [t.id, t]));
-  return { born, reviewsOf, fixesOf, followsOf, caps, capSource, notice, followCaps, byId };
+  return { born, rootOf, reviewsOf, fixesOf, followsOf, caps, capSource, notice, followCaps, byId };
 }
 
 const decidedAt = (r) => Number(r.results && r.results.evaluated_at) || 0;
@@ -87,7 +89,7 @@ function capRoot(task, ix) {
 }
 
 function ofTask(task, ix) {
-  const root = task.repairs || task.id;
+  const root = ix.rootOf(task);
   const fixes = (ix.fixesOf.get(root) || []).slice().sort((a, b) => ix.born.get(a.id).s - ix.born.get(b.id).s);
   const reviews = [root, ...fixes.map((f) => f.id)].flatMap((id) => ix.reviewsOf.get(id) || []);
   if (!reviews.length) return null;

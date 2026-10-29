@@ -177,6 +177,8 @@ test('a conflict in an append keeps the tasks already on the branch and checks t
   assert.deepStrictEqual(r2.not_merged.map((m) => [m.task_id, m.reason]), [[b.id, 'conflict']]);
   assert.strictEqual(runs(c), 1, 'the head did not move, so the passed check was reused');
   assert.strictEqual(r2.reused_checks.length, 1);
+  assert.strictEqual(r2.checks.every((ch) => ch.passed), true, 'the checks on what landed passed');
+  assert.strictEqual(r2.passed, false, 'a step that stopped on a conflict is not passed, whatever its reused checks say');
 });
 
 test('two integrates into one branch at once: one is refused, and the retry appends to what the other left', async () => {

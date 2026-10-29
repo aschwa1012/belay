@@ -107,8 +107,10 @@ async function fixFromReview(E, caller, args) {
   }
   const judged = rows.current(E.store, 'task', judgedId);
   if (!judged) throw err('E_NOT_FOUND', `review ${review.id} depends on ${judgedId}, which has no row in this store`, { review_id: review.id, missing: judgedId });
-  const repairs = judged.repairs || judged.id;
-  const original = (judged.repairs && rows.current(E.store, 'task', judged.repairs)) || judged;
+  // The work a chain of fixes began from, however many hand-made fixes of fixes lie between it and the judged task.
+  let original = judged;
+  for (let n = 0; original.repairs && n < 100; n++) { const up = rows.current(E.store, 'task', original.repairs); if (!up) break; original = up; }
+  const repairs = original.id;
   // Called again for a review an open fix of this run already answers (the same review, or another refutation that fix took in),
   // that fix is returned, and no fix round is spent. A refutation decided after the fix was made is not in it: it gets its own.
   let { refs, existing } = unanswered(E, caller, judged, review, repairs);

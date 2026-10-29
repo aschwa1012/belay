@@ -240,6 +240,7 @@ test('a conflict aborts: the branch is untouched, the tree is gone, and the row 
   assert.deepStrictEqual(row.conflict.files, ['base/keep.txt']);
   assert.strictEqual(row.conflict.aborted, true);
   assert.strictEqual(row.applied, 'none');
+  assert.strictEqual(row.passed, false, 'a stopped step is not passed, though no check ran');
   assert.strictEqual(head(repo, 'feature/c'), before);
   assert.strictEqual(row.head_after, before);
   assert.ok(!fs.existsSync(row.worktree));

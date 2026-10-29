@@ -20,7 +20,7 @@ before(async () => {
   dir = sandbox();
   orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
   await orch.run.attach({ adapter_pid: process.pid });
-  await stageRuns(`${dir}/data`, ["b-alone", "bases", "gone", "hook", "noeval", "o1", "o2", "ok", "p1", "p2", "p2b", "s", "s2", "stop", "unclean"]);
+  await stageRuns(`${dir}/data`, ["b-alone", "bases", "gone", "hook", "noeval", "o1", "o2", "ok", "p1", "p2", "p2b", "s", "s2", "stop", "unclean", "first-fail"]);
   op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
 });
 
@@ -82,7 +82,7 @@ test('evaluate: false leaves the landed work unchecked, and says so with checks 
   const row = await orch.integration.merge({ task_ids: [a.id, b.id], into: 'belay/integrate/noeval', evaluate: false });
   assert.strictEqual(row.state, 'conflict');
   assert.strictEqual(row.checks, null);
-  assert.strictEqual(row.passed, null);
+  assert.strictEqual(row.passed, false, 'a stopped step is not passed even when no check ran');
   assert.strictEqual((await integ(a.id)).passed, null);
   // The latest integration that names a task decides: b merged alone later reads merged, no longer conflict.
   const later = await orch.integration.merge({ task_ids: [b.id], into: 'belay/integrate/b-alone' });
@@ -119,7 +119,7 @@ test('a merge that fails without a conflict checks what landed and names the tas
   assert.strictEqual(row.error.task_id, b.id);
   assert.strictEqual(row.error.tree_clean, true);
   assert.deepStrictEqual(row.not_merged, [{ task_id: b.id, reason: 'failed' }]);
-  assert.strictEqual(row.passed, true);
+  assert.strictEqual(row.passed, false, "a step that stopped is not passed");
   assert.deepStrictEqual(row.checks.map((ch) => ch.task_ids), [[a.id]]);
   assert.strictEqual((await integ(b.id)).state, 'failed');
 });
@@ -177,6 +177,19 @@ test('a task named but not tried keeps its earlier merge: a later stop on anothe
   assert.deepStrictEqual(both.elsewhere, [{ into: 'belay/integrate/p2', state: 'merged' }]);
 });
 
+test('a step that stopped on its first task, with nothing merged and no check run, is passed false, not null', async () => {
+  const repo = makeRepo(dir);
+  const hook = path.join(repo, '.git', 'hooks', 'pre-merge-commit');
+  fs.writeFileSync(hook, '#!/bin/sh\ntest ! -f fail.txt\n');
+  fs.chmodSync(hook, 0o755);
+  const b = await doneTask(repo, { 'fail.txt': 'x\n' }, [exists('fail.txt')]);
+  const row = await orch.integration.merge({ task_ids: [b.id], into: 'belay/integrate/first-fail' });
+  assert.strictEqual(row.state, 'failed');
+  assert.deepStrictEqual(row.merged, []);
+  assert.strictEqual(row.checks, null);
+  assert.strictEqual(row.passed, false);
+});
+
 test('a merge that throws (a branch deleted) still checks what landed and names the task failed', async () => {
   const repo = makeRepo(dir);
   const a = await doneTask(repo, { 'a.txt': 'a\n' }, [exists('a.txt')]);
@@ -189,7 +202,7 @@ test('a merge that throws (a branch deleted) still checks what landed and names 
   assert.strictEqual(row.error.task_id, b.id);
   assert.strictEqual(row.error.tree_clean, true);
   assert.deepStrictEqual(row.not_merged, [{ task_id: b.id, reason: 'failed' }]);
-  assert.strictEqual(row.passed, true);
+  assert.strictEqual(row.passed, false, "a step that stopped is not passed, though the check on what landed passed");
   assert.deepStrictEqual(row.checks.map((ch) => ch.task_ids), [[a.id]]);
   assert.strictEqual(row.head_sha, git(row.worktree, 'rev-parse', 'HEAD'));
   assert.strictEqual((await integ(b.id)).state, 'failed');
