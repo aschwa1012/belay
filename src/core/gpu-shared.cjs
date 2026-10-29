@@ -117,6 +117,8 @@ async function close() {
 
 const testTable = () => (test().clientOpts || {}).table;
 const holds = (model) => !!shared && !shared.closed && !shared.exit && loads.has(model); // the shared child has (or is loading) this model
+// The shared child died, hung or closed itself: it is not replaced here, and its coded error is the answer to the next call (see client()).
+const dead = () => !!shared && !latched && !!(shared.closed || shared.exit || shared.hung);
 const isOpen = () => !!shared && !shared.closed;
 
-module.exports = { holds, recycle, reopen, client, ensureLoaded, probeOnce, close, isOpen, setTestOptions, testTable };
+module.exports = { dead, holds, recycle, reopen, client, ensureLoaded, probeOnce, close, isOpen, setTestOptions, testTable };

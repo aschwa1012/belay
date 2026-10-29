@@ -31,6 +31,9 @@ function rerankerState(E, tier) {
   const RPV = require('./rerank-provider.cjs');
   const impl = RPV.isExternal(model) ? null : RPV.get({ reranker: model }, { owner });
   if (!impl) return 'ready'; // nothing of the owner's to load: the stage reports an absent provider itself
+  // A dead child (the GPU's shared one is never replaced by a call) is not warmed again: the search goes straight to the reranker, whose coded
+  // error drives on_heavy_failure. A CPU child that died is replaced by its provider on the next call, so that one is warmed again.
+  if (typeof impl.dead === 'function' && impl.dead()) return 'failed';
   const m = E._rerankWarm || (E._rerankWarm = new Map());
   const hit = m.get(model);
   // A 'ready' state outlives its child only on paper: a provider that can say whether its model is still loaded (its child exited, was closed or
