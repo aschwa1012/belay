@@ -170,7 +170,7 @@ async function rerankHead(E, caller, o, ranked, rowsOf, lv) {
   // The reranker's cold load never runs inside the rerank bound: an owner that has not loaded it yet loads it in the background (retrieval-warm.cjs),
   // and a search that meets it still loading keeps the fusion order, says so, and neither sticks nor pauses. Lazy: owner only (invariant 9).
   if (E.owner && require('./retrieval-warm.cjs').rerankerState(E, tier, caller && caller.run_id) === 'loading') {
-    require('./retrieval-warm.cjs').servedWarming(E, tier.reranker);
+    require('./retrieval-warm.cjs').servedWarming(E, tier.reranker, caller && caller.run_id);
     const cause = { code: 'E_RERANK', reason: 'warming', message: `the reranker ${tier.reranker} is still loading in the background, so this search keeps the fusion order; searches rerank once it is loaded` };
     return { ranked, info: { ran: false, skipped: true, cause }, failed: { mode: 'rerank', code: cause.code, message: cause.message } };
   }

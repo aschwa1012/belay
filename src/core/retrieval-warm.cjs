@@ -41,19 +41,25 @@ function rerankerState(E, tier, runId) {
   const gone = hit && hit.state === 'ready' && typeof impl.loaded === 'function' && !impl.loaded();
   if (hit && !gone) return hit.state;
   const forgot = !!(E._rerankForgot && E._rerankForgot.delete(model));
-  const entry = { state: 'loading', attempts: 0, rec: null };
+  // The warm state belongs to the owner, the record to a run: every run whose search was served 'warming' gets its own record of this warm-up,
+  // counting only its own searches (servedWarming adds a run to `runs`).
+  const entry = { state: 'loading', attempts: 0, base: null, recs: new Map(), runs: new Set(runId ? [runId] : []) };
   m.set(model, entry);
   const REC = require('./rerank-warm-record.cjs');
   const begin = (trigger) => {
     const t0 = Date.now();
-    entry.rec = { id: `${model}@${t0}:${trigger}`, model, trigger, state: 'loading', started_at: t0, served_warming: 0 };
+    entry.base = { id: `${model}@${t0}:${trigger}`, model, trigger, started_at: t0 };
     entry.attempts += 1;
-    REC.upsert(E, runId, entry.rec);
+    entry.recs = new Map();
+    for (const rid of entry.runs) { const r = { ...entry.base, state: 'loading', served_warming: 0 }; entry.recs.set(rid, r); REC.upsert(E, rid, r); }
   };
   const end = (state, e) => {
-    const r = entry.rec, now = Date.now();
-    Object.assign(r, { state, ended_at: now, ms: now - r.started_at, ...(e ? { error: ((e && e.message) || String(e)).slice(0, 300) } : {}) });
-    REC.upsert(E, runId, r);
+    const now = Date.now();
+    for (const [rid, r] of entry.recs) {
+      Object.assign(r, { state, ended_at: now, ms: now - r.started_at, ...(e ? { error: ((e && e.message) || String(e)).slice(0, 300) } : {}) });
+      REC.upsert(E, rid, r);
+    }
+    entry.ended = { state, ended_at: now, ms: now - entry.base.started_at, ...(e ? { error: ((e && e.message) || String(e)).slice(0, 300) } : {}) };
   };
   // One background retry of a failed warm-up before the state falls to 'failed' (and the next search loads inside its own bound).
   const attempt = (trigger) => {
@@ -66,12 +72,21 @@ function rerankerState(E, tier, runId) {
   attempt(gone || forgot ? 'child_gone' : 'first_search');
   return 'loading';
 }
-// A search that kept the fusion order because the reranker was still loading counts on the warm-up in progress.
-const servedWarming = (E, model) => { const e = E._rerankWarm && E._rerankWarm.get(model); if (e && e.rec) e.rec.served_warming += 1; };
+// A search that kept the fusion order because the reranker was still loading counts on the warm-up in progress, for the run that searched.
+function servedWarming(E, model, runId) {
+  const e = E._rerankWarm && E._rerankWarm.get(model);
+  if (!e || !e.base) return;
+  if (!runId) { e.owned = (e.owned || 0) + 1; return; }
+  e.runs.add(runId);
+  let r = e.recs.get(runId);
+  if (!r) { r = { ...e.base, state: 'loading', served_warming: 0 }; e.recs.set(runId, r); }
+  r.served_warming += 1;
+  if (r.served_warming === 1) require('./rerank-warm-record.cjs').upsert(E, runId, r);
+}
 // A rerank that failed leaves the model's state unknown (the provider rebuilds its child on the next call): drop it, so the next search warms again.
 const forgetReranker = (E, model) => { if (E._rerankWarm && E._rerankWarm.delete(model)) (E._rerankForgot || (E._rerankForgot = new Set())).add(model); };
 // The owner's own view of its reranker warm-ups: [{ model, state, trigger, started_at, ended_at?, ms?, served_warming, error? }].
-const warmList = (E) => [...((E && E._rerankWarm) || new Map()).entries()].map(([model, e]) => ({ ...(e.rec || {}), model, state: e.state }));
+const warmList = (E) => [...((E && E._rerankWarm) || new Map()).entries()].map(([model, e]) => ({ ...(e.base || {}), ...(e.ended || {}), model, state: e.state, served_warming: (e.owned || 0) + [...(e.recs || new Map()).values()].reduce((n, r) => n + r.served_warming, 0) }));
 
 // -> { ok: true, models: [{ model, kind, ms }] } or { ok: false, model, kind, code, message, models }. Never throws.
 async function warmUp(E, routing, onStep) {

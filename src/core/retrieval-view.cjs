@@ -10,11 +10,12 @@ function describe(row) {
   try { p = typeof row.retrieval_routing === 'string' ? JSON.parse(row.retrieval_routing) : row.retrieval_routing; } catch { return null; }
   if (!p || !p.routing || !p.routing.run) return null;
   const t = (x) => ({ profile: x.profile, embedder: x.embedder, reranker: x.reranker, device: x.device });
+  // An owner that stopped mid warm-up never wrote its end: on an ended run that record is unfinished, not warming.
   const fb = p.fallback && p.fallback.epoch === row.epoch ? p.fallback : null;
   return {
     pinned_at: p.pinned_at, profile: p.routing.run.profile, run: t(p.routing.run),
     tiers: Object.fromEntries(Object.entries(p.routing.tiers || {}).map(([k, x]) => [k, t(x)])),
-    probe: p.probe || null, warm: p.warm || null, warmups: Array.isArray(p.warmups) ? p.warmups : [], notices: p.notices || [], behind: p.behind || null,
+    probe: p.probe || null, warm: p.warm || null, warmups: (Array.isArray(p.warmups) ? p.warmups : []).map((w) => (w.state === 'loading' && row.ended_at != null ? { ...w, state: 'unfinished' } : w)), notices: p.notices || [], behind: p.behind || null,
     fallback: fb ? { since: fb.at, cause: fb.cause } : null,
   };
 }
@@ -28,24 +29,27 @@ function warmLines(v) {
   for (const w of newest.values()) {
     const n = w.served_warming || 0, kept = n ? `; ${n} search${n === 1 ? '' : 'es'} kept the fusion order meanwhile` : '';
     if (w.state === 'loading') out.push(`retrieval: reranker ${w.model} is warming (${w.trigger.replace('_', ' ')})`);
+    else if (w.state === 'unfinished') out.push(`retrieval: reranker ${w.model} warm-up did not finish before the run ended (${w.trigger.replace('_', ' ')})`);
     else if (w.state === 'failed') out.push(`retrieval: reranker ${w.model} warm-up failed after ${w.ms} ms (${w.trigger.replace('_', ' ')}): ${w.error || 'no reason recorded'}${kept}`);
     else out.push(`retrieval: reranker ${w.model} warmed in ${w.ms} ms (${w.trigger.replace('_', ' ')})${kept}`);
   }
   return out;
 }
 
-// The pinned models and each one's state, from the row alone: [{ role, id, state: 'off' | 'warming' | 'ready' | 'failed', warm }]. An embedder is
-// 'ready' once the pin warmed it and 'failed' while the fallback profile is in force; a reranker takes its newest warm-up record, 'ready' when
-// the pin warmed it, and 'off' when the profile pins none.
+// The pinned models and each one's state, from the row alone: [{ role, id, state: 'off' | 'warming' | 'ready' | 'failed' | 'fallback', warm }].
+// 'fallback' is the row's own fact that the heavy tier failed and the run is served on the fallback profile, for both models. Otherwise an
+// embedder is 'ready' once the pin warmed it, and a reranker's state is its NEWEST WARM-UP's ('ready' when the pin warmed it): it says the model
+// was loaded, not that reranking is on. A dead GPU child or the in-memory sticky rerank fallback are not on the row, so they are not shown here
+// (the panel labels the value as the warm-up's). 'off' when the profile pins no reranker.
 function models(v) {
   if (!v) return [];
-  const out = [{ role: 'embedder', id: v.run.embedder, state: v.fallback ? 'failed' : 'ready', warm: null }];
+  const out = [{ role: 'embedder', id: v.run.embedder, state: v.fallback ? 'fallback' : 'ready', warm: null }];
   const rr = v.run.reranker;
   if (!rr) return [...out, { role: 'reranker', id: null, state: 'off', warm: null }];
   const mine = (v.warmups || []).filter((w) => w.model === rr).sort((a, b) => a.started_at - b.started_at);
   const last = mine[mine.length - 1] || null;
-  const state = !last ? (v.fallback ? 'failed' : 'ready') : last.state === 'loading' ? 'warming' : last.state;
-  return [...out, { role: 'reranker', id: rr, state, warm: last ? { trigger: last.trigger, ms: last.ms === undefined ? null : last.ms, served_warming: last.served_warming || 0, error: last.error || null } : null }];
+  const state = v.fallback ? 'fallback' : !last ? 'ready' : last.state === 'loading' ? 'warming' : last.state === 'unfinished' ? 'failed' : last.state;
+  return [...out, { role: 'reranker', id: rr, state, warm: last ? { trigger: last.trigger, ms: last.ms === undefined ? null : last.ms, served_warming: last.served_warming || 0, error: last.error || (last.state === 'unfinished' ? 'did not finish before the run ended' : null) } : null }];
 }
 
 function lines(v) {

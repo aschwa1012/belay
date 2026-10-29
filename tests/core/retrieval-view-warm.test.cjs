@@ -35,3 +35,16 @@ test('a profile with no reranker shows it off, and a pin before the record exist
   assert.deepStrictEqual(RV.models(v).map((m) => [m.role, m.state]), [['embedder', 'ready'], ['reranker', 'off']]);
   assert.deepStrictEqual(RV.models(null), []);
 });
+
+test('a fallback in force shows both models as fallback, whatever the last warm-up said', () => {
+  const v = RV.describe(row([W({ served_warming: 1 })], { fallback: { epoch: 1, at: 5, cause: { code: 'E_MODEL_ABSENT', message: 'the GPU process exited' } } }));
+  assert.deepStrictEqual(RV.models(v).map((m) => [m.role, m.state]), [['embedder', 'fallback'], ['reranker', 'fallback']]);
+});
+
+test('a warm-up still marked loading on an ended run is unfinished, never warming', () => {
+  const r = row([W({ state: 'loading', ended_at: undefined, ms: undefined })]);
+  const v = RV.describe({ ...r, ended_at: 99 });
+  assert.ok(RV.lines(v).includes('retrieval: reranker rr warm-up did not finish before the run ended (first search)'));
+  const m = RV.models(v).find((x) => x.role === 'reranker');
+  assert.deepStrictEqual([m.state, m.warm.error], ['failed', 'did not finish before the run ended']);
+});

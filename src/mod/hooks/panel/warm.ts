@@ -7,7 +7,7 @@ const str = (x: unknown): string | null => (typeof x === 'string' && x !== '' ? 
 const num = (x: unknown): number | null => (typeof x === 'number' && Number.isFinite(x) ? x : null)
 const obj = (x: unknown): Record<string, unknown> | null => (x !== null && typeof x === 'object' && !Array.isArray(x) ? (x as Record<string, unknown>) : null)
 const one = (s: string, cap = 60): string => { const t = s.replace(/[\u0000-\u001f\u007f-\u009f]+/g, ' ').replace(/\s{2,}/g, ' ').trim(); return t.length > cap ? t.slice(0, cap - 1) + '…' : t }
-const STATES = ['off', 'warming', 'ready', 'failed'] as const
+const STATES = ['off', 'warming', 'ready', 'failed', 'fallback'] as const
 
 export function normRetrievalModels(raw: unknown): BelayRetrievalModel[] {
   if (!Array.isArray(raw)) return []
@@ -35,9 +35,11 @@ export function modelSegs(models: BelayRetrievalModel[]): { t: string; c?: 'succ
     segs.push({ t: i ? '   ' : 'models ', dim: true }, { t: `${m.role} `, dim: true })
     if (m.state === 'off') { segs.push({ t: 'off', dim: true }); return }
     segs.push({ t: `${m.id ? short(m.id) : ''} `.trimStart() })
-    segs.push({ t: m.state, c: m.state === 'ready' ? 'success' : m.state === 'failed' ? 'error' : 'warning' })
+    // A reranker's state is its warm-up's (it says the model was loaded, not that reranking is on), so it says so.
+    if (m.role === 'reranker' && m.state !== 'fallback') segs.push({ t: 'warm-up ', dim: true })
+    segs.push({ t: m.state === 'fallback' ? 'fallback profile' : m.state, c: m.state === 'ready' ? 'success' : m.state === 'failed' ? 'error' : 'warning' })
     const w = m.warm
-    if (w && m.state === 'ready' && w.ms !== null) segs.push({ t: ` (warmed in ${w.ms} ms${w.served ? `, ${w.served} search${w.served === 1 ? '' : 'es'} waited` : ''})`, dim: true })
+    if (w && m.state === 'ready' && w.ms !== null) segs.push({ t: ` (warmed in ${w.ms} ms${w.served ? `; ${w.served} search${w.served === 1 ? '' : 'es'} kept the fusion order meanwhile` : ''})`, dim: true })
     if (w && m.state === 'failed') segs.push({ t: w.error ? ` (${w.error})` : '', dim: true })
   })
   return segs

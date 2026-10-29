@@ -14,7 +14,7 @@ const CAP = 20; // the newest records kept on the row
 // -> true when the row was written. Never throws: a background warm-up must not fail on a row that moved on.
 function upsert(E, runId, rec) {
   try {
-    if (!runId || !E.owner) return false;
+    if (!runId || !E.owner || E.owner.stopped) return false; // a stopping owner's closed providers fail the warm-up in flight: that is not a fact of the run
     const HT = require('./heavy-tier.cjs');
     const run = rows.current(E.store, 'run', runId);
     const pin = HT.pinOfRow(run);

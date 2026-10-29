@@ -95,3 +95,47 @@ test('a warm-up with no run is kept on the owner only: nothing is written to any
   assert.strictEqual(list[0].model, RR4);
   assert.strictEqual(list[0].state, 'ready');
 });
+
+// A gated provider: the warm-up stays in flight until `release` is called, so the interleavings below are forced, not raced.
+function gated() {
+  const p = RPV.get({ reranker: RR4 }, { owner: E.owner });
+  const orig = p.rerank;
+  let release, fail = null;
+  const gate = new Promise((r) => { release = r; });
+  p.rerank = async (...a) => { await gate; if (fail) throw fail; return orig(...a); };
+  return { release: (err) => { fail = err || null; release(); }, restore: () => { p.rerank = orig; } };
+}
+
+test('an owner that stops mid warm-up writes no failed record: the closed provider is not a fact of the run', async () => {
+  await pinnedRun('wr-stop', 'wrstop');
+  const g = gated();
+  try {
+    E._rerankWarm = null;
+    await ask('wr-stop');
+    E.owner.stopped = true; // what stop() sets before it closes the providers
+    g.release(new Error('the provider was closed'));
+    await until(() => (E._rerankWarm.get(RR4) || {}).state === 'failed');
+    const ws = RV.describe(rowOf('wr-stop')).warmups.filter((w) => w.trigger !== 'pin');
+    assert.deepStrictEqual(ws.map((w) => w.state), ['loading'], 'the record the start wrote stands; no failed record follows');
+    const ended = RV.describe({ ...rowOf('wr-stop'), ended_at: Date.now() });
+    assert.ok(RV.lines(ended).some((l) => /did not finish before the run ended/.test(l)), RV.lines(ended).join('|'));
+    assert.strictEqual(RV.models(ended).find((m) => m.role === 'reranker').state, 'failed');
+  } finally { E.owner.stopped = false; g.restore(); }
+});
+
+test('two runs on one owner: each run is counted for its own searches and gets its own record of the warm-up', async () => {
+  await pinnedRun('wr-two-a', 'wrtwoa');
+  await pinnedRun('wr-two-b', 'wrtwob');
+  const g = gated();
+  try {
+    E._rerankWarm = null;
+    await ask('wr-two-a');
+    await ask('wr-two-b'); await ask('wr-two-b'); await ask('wr-two-b');
+    g.release();
+    const done = (id) => (RV.describe(rowOf(id)).warmups || []).find((w) => w.trigger === 'first_search' && w.state === 'ready');
+    await until(() => done('wr-two-a') && done('wr-two-b'));
+    assert.strictEqual(done('wr-two-a').served_warming, 1);
+    assert.strictEqual(done('wr-two-b').served_warming, 3);
+    assert.strictEqual(done('wr-two-a').started_at, done('wr-two-b').started_at, 'one warm-up, a record on each run it served');
+  } finally { g.restore(); }
+});
