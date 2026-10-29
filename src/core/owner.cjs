@@ -455,12 +455,13 @@ class Owner {
     // (a settle marker, never a verdict) before the socket it would have answered over is torn down.
     try { if (this.engine) this.engine.settleWaiters(); } catch (e) { record(e); }
     // A call already being served answers before its connection is destroyed (a committed write must not read as a lost owner);
-    // bounded at 5,000 ms like the controls above.
+    // bounded at 5,000 ms like the controls above. Known gap: an in-process owner's own `_local` calls (index.cjs) are not in
+    // inFlightCalls, so this wait does not cover them.
     if (this.inFlightCalls.size) await new Promise((resolve) => { const timer = setTimeout(resolve, 5000); Promise.allSettled([...this.inFlightCalls]).then(() => { clearTimeout(timer); resolve(); }); });
     try { this.binds.close(); } catch (e) { record(e); } // ADR 0045: an owner takes its keys with it
     try { for (const t of this.timers || []) clearInterval(t); } catch (e) { record(e); }
-    // MF1: the embedder child process ends with the owner, even mid-load or mid-embed: `close` over IPC,
-    // at most 2,000 ms of grace, then a kill by its exact pid (embedder.cjs close()).
+    // MF1: the embedder child process ends with the owner, even mid-load or mid-embed (after the in-flight wait above, so a stop can
+    // take up to about 5 s before these closes' own bounds): `close` over IPC, at most 2,000 ms of grace, then a kill by its exact pid (embedder.cjs close()).
     // ADR 0050: the CPU rerank child, if this owner built one, ends with it too. The two children close CONCURRENTLY, and both are
     // awaited here, BEFORE the connections are destroyed: the embedder's close rejects its in-flight requests, and those replies must
     // reach their callers over a connection that is still open (m11). The rerank close is bounded (3,000 ms) and never throws.
