@@ -169,7 +169,7 @@ test('B3: a re-pin after a wait drain keeps the first probe verdict (8 GB laptop
   assert.strictEqual(done.probe.ok, true, JSON.stringify([done.probe, done.notices]));
   assert.deepStrictEqual(done.notices, [], 'no spurious refusal after the drain');
   assert.strictEqual(done.routing.run.profile, 'gpu-balanced');
-  assert.strictEqual(done.probe.needed_mb, 2622 + 2763 + 790 + 768);
+  assert.strictEqual(done.probe.needed_mb, 2622 + 2763 + 768);
   assert.strictEqual(smi().free_mb, 7899 - 2622, 'the embedder really was resident when the second pin ran: a fresh probe would have been refused');
 });
 

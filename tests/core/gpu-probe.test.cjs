@@ -48,9 +48,9 @@ test('dedicated memory is total minus the shared heap, and matches nvidia-smi on
   assert.strictEqual(P.dedicatedFrom({ total: 8 * GB, unified: 0, used: 0 }).total_mb, 8192, 'a discrete-only machine has no shared heap');
 });
 
-test('the needed memory is the SUM of peaks plus the measured overhead plus headroom, and a peak is the larger growth of the two meters', () => {
+test('the needed memory is the SUM of peaks plus headroom, and a peak is the larger growth of the two meters', () => {
   const n = P.needed({ a: { peak_mb: 2782 }, b: { peak_mb: 2629 } }, P.HEADROOM_MB);
-  assert.deepStrictEqual(n, { sum_mb: 5411, overhead_mb: 790, headroom_mb: 768, needed_mb: 6969 });
+  assert.deepStrictEqual(n, { sum_mb: 5411, headroom_mb: 768, needed_mb: 6179 });
   assert.deepStrictEqual(P.peakFrom({ vulkanDelta: 752, smiDelta: 764, hint: 1 }), { peak_mb: 764, source: 'nvidia-smi' });
   assert.deepStrictEqual(P.peakFrom({ vulkanDelta: 752, smiDelta: NaN, hint: 1 }), { peak_mb: 752, source: 'vulkan' });
   assert.deepStrictEqual(P.peakFrom({ vulkanDelta: 0, smiDelta: NaN, hint: 879 }), { peak_mb: 879, source: 'hint' });
@@ -75,7 +75,7 @@ test('probe: a set that fits returns the peaks, the sum against free, the chunk,
     assert.strictEqual(r.peaks['org/emb'].peak_mb, 760);
     assert.strictEqual(r.peaks['org/rr'].peak_mb, 880);
     assert.strictEqual(r.sum_mb, 1640);
-    assert.strictEqual(r.needed_mb, 1640 + 790 + 768);
+    assert.strictEqual(r.needed_mb, 1640 + 768);
     assert.ok(r.needed_mb <= r.free_mb);
     assert.strictEqual(r.measured_set_mb, 1640, 'the set grew by what the sum says');
     const rr = r.rerank['org/rr'];
@@ -96,9 +96,9 @@ test('probe: the sum plus headroom against free is what refuses, naming needed a
     const r = await P.probe(base({ models: ['org/emb', 'org/rr'] }));
     assert.strictEqual(r.ok, false);
     assert.strictEqual(r.refusal.reason, 'insufficient_vram');
-    assert.strictEqual(r.needed_mb, 3800 + 3700 + 790 + 768);
+    assert.strictEqual(r.needed_mb, 3800 + 3700 + 768);
     assert.strictEqual(r.free_mb, 7899);
-    assert.match(r.refusal.message, /needs 9058 MiB/);
+    assert.match(r.refusal.message, /needs 8268 MiB/);
     assert.ok(r.refusal.options.length >= 2);
     const rec = JSON.parse(fs.readFileSync(path.join(cache, 'peaks.json'), 'utf8'));
     assert.deepStrictEqual(rec.entries, {}, 'a refusal records no peaks');
