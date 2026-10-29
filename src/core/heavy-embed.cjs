@@ -50,6 +50,12 @@ async function queryVector(E, caller, o, lv) {
 // throws; `fallback` records the sticky fallback on the run row and answers { fallback: { tier, cause } } for the caller to serve on nano.
 function failure(E, caller, o, lv, e) {
   {
+    // A stopping owner closed or never built the provider: that is not a heavy failure. This search is served on the fallback tier, with no
+    // pause, no run hook and no sticky fallback written.
+    if (E.owner && typeof E.owner === 'object' && E.owner.stopped) {
+      const cause = { code: e.code || 'E_INTERNAL', reason: 'shutdown', message: e.message };
+      return { fallback: { tier: { ...HT.FALLBACK_TIER, fallback_from: o.tier.profile, fallback_cause: cause }, cause } };
+    }
     if (lv.on_heavy_failure === 'pause') {
       e.detail = { ...e.detail, advised: true };
       e.message = `${e.message} ${pauseAdvice(caller, !E.owner)}`;

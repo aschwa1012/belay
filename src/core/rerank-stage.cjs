@@ -16,6 +16,7 @@ async function rerank({ tier, query, ranked, textOf, depth, boundMs, owner, time
   const T = { now: () => Date.now(), setTimeout: (...a) => setTimeout(...a), clearTimeout: (t) => clearTimeout(t), ...(timers || {}) }; // injectable, like `clock` in memory-index-rank
   if (typeof query !== 'string' || !query) throw fail('no_query', 'a rerank needs the query text, and this search was given only a vector');
   const impl = provider.get(tier, { owner });
+  if (!impl && owner && typeof owner === 'object' && owner.stopped) throw fail('shutdown', 'the store owner is stopping, so no reranker was built', { reranker: tier.reranker }); // not the reranker's fault: never sticky, never a pause
   if (!impl) throw fail('absent', `no rerank provider is registered for ${tier.reranker}`, { reranker: tier.reranker });
   const head = ranked.slice(0, depth);
   const docs = [];

@@ -32,7 +32,7 @@ function get(tier, opts) {
   if (providers.has(name)) return providers.get(name);
   const owner = opts && opts.owner;
   if (!owner) return null;
-  if (typeof owner === 'object' && owner.stopped) return null; // a stopping owner builds nothing: its close has already taken its list
+  if (typeof owner === 'object' && owner.stopped) return null; // a stopping owner builds nothing: its close may already have taken its list. The caller reads the null as `shutdown` (never sticky, never a pause)
   return autoBuild(name, owner);
 }
 
