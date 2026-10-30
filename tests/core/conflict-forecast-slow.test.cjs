@@ -34,7 +34,7 @@ test('a forecast prepares git once: the task and integration refs share one prep
   try {
     const repo = repoWithConflict(dir);
     spawns = 0;
-    const r = await forecastTask({ id: 't1', worktree: { repo, branch: 'a' } }, 'run1');
+    const r = await forecastTask({ id: 't1', worktree: { repo, branch: 'a' } }, 'run1', { totalMs: 120000 });
     assert.deepStrictEqual(r.files, ['shared.txt']);
     // prepare 2 (system and local filter reads), 2 ref reads, version, common dir, merge-tree
     assert.ok(spawns <= 7, `${spawns} git spawns`);

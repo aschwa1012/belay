@@ -26,7 +26,7 @@ const FILES_MAX = 50;
 const noop = () => {};
 // The result carries `exited` (not enumerable): a promise that resolves when every git call the forecast made has exited, which can be after
 // the deadline returned the result. A caller capping how many forecasts run counts one as running until then.
-const withExited = (o, p) => Object.defineProperty(o, 'exited', { value: Promise.resolve(p).then(noop, noop), enumerable: false });
+const withExited = (o, p) => Object.defineProperty(o, 'exited', { value: Promise.resolve(p).then(noop, noop), enumerable: false, configurable: true });
 
 const sha = (s) => { const l = String(s || '').trim().split('\n')[0]; return /^[0-9a-f]{40,64}$/.test(l) ? l : null; };
 
