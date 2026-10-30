@@ -311,7 +311,7 @@ test('orchestrator: an init that reports a tool beyond the list aborts the run, 
   const sb = sandbox();
   try {
     const result = await orchestrate(sb, 'extra-tool');
-    assert.match(result.ended_by, /extra built-in tool\(s\) beyond ADR 0024's list: Task(;|$)/, result.ended_by);
+    assert.match(result.ended_by, /extra built-in tool\(s\) beyond the allowed list: Task(;|$)/, result.ended_by);
     assert.equal(result.orchestrator.exit_code === 0, false, 'the orchestrator was killed, not let finish on its own');
   } finally { cleanup(sb.data); }
 });

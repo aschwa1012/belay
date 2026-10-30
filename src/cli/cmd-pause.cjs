@@ -169,7 +169,7 @@ async function runForm(core, command, run, msgText, embedder, cwd, budget = {}) 
     const receipt = { run_id: run.id, resumed: false, reason: `the budget options are for a run paused because a budget was reached, and this run was not (paused_by: ${run.paused_by || 'not paused'}); nothing was changed` };
     return { code: 2, text: renderRunResumeText(receipt), json: receipt };
   }
-  if (command === 'resume' && msgText != null) return usageError('resume', '--message is not an option of a run resume (ADR 0023 amendment 3 decision 6)');
+  if (command === 'resume' && msgText != null) return usageError('resume', '--message is not an option of a run resume');
   if (run.ended_at != null) {
     const receipt = { run_id: run.id, [command === 'pause' ? 'paused' : 'resumed']: false, reason: `run ${run.id} has already ended (ended_at ${run.ended_at}, ${run.exit_reason})`, ended_at: run.ended_at };
     return { code: 1, text: (command === 'pause' ? renderRunPauseText : renderRunResumeText)(receipt), json: receipt };
@@ -216,7 +216,7 @@ async function runForm(core, command, run, msgText, embedder, cwd, budget = {}) 
     return { code: interruptUnconfirmed || resumeFailed ? 1 : 0, text: render(receipt), json: receipt };
   } catch (e) {
     const reason = e.code === 'E_NOT_FOUND' && e.detail && e.detail.controls
-      ? `a run pause exists only for a headless run or an interactive run (ADR 0023 amendment 5); its workers can be paused one by one (this owner is not a belay run process)`
+      ? `a run pause exists only for a headless run or an interactive run; its workers can be paused one by one (this owner is not a belay run process)`
       : e.message;
     const receipt = { run_id: run.id, [key]: false, reason, error: { code: e.code, message: e.message, detail: e.detail } };
     // A resume that lands after this call timed out still changes the run's mode, but this process writes no config for it.

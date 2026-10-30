@@ -10,7 +10,7 @@ const { buildObservation } = require('../../src/run/observe.cjs');
 const goodFields = () => ({ asked: 'do x', looked_at: ['a'], learned: 'worker-stated: y', done: { files_modified: [] }, next: '', notes: { errors: 0 } });
 
 test('model kind rejects E_SUMMARISER_ABSENT by name', async () => {
-  await assert.rejects(summarise({}, { kind: 'model' }), (e) => e.code === 'E_SUMMARISER_ABSENT' && /ADR 0041/.test(e.message));
+  await assert.rejects(summarise({}, { kind: 'model' }), (e) => e.code === 'E_SUMMARISER_ABSENT' && /summariser is not built/.test(e.message));
   await assert.rejects(summarise({}, { kind: 'bogus' }), (e) => e.code === 'E_ARGS');
 });
 

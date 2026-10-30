@@ -322,7 +322,7 @@ test('agents: task, display_state and cache per worker and the run mode, through
     assert.deepStrictEqual(states, { orchestrator: 'idle', w1: 'running', w2: 'idle', w3: 'stalled', w4: 'parked', w5: 'dead', w6: 'done', w7: 'permission', w8: 'dead', w9: 'idle', w10: 'starting' });
     assert.match(by.w3.display_state_established_by, /last event \d+ ms ago by row/);
     assert.match(by.w8.display_state_established_by, /not alive/);
-    assert.match(by.w4.display_state_established_by, /ADR 0023 amendment 2/);
+    assert.match(by.w4.display_state_established_by, /the process ended, the session is kept/);
     assert.match(by.w7.display_state_established_by, /pending permission/);
 
     const text = renderText(j); // the text table, over the same receipt: a second CLI call here waits about 30 s on the open owner

@@ -125,7 +125,7 @@ function workerDisplay(w, { pending, stall, stallMs = STALL_MS }) {
   const pid = `pid ${hasPid ? w.pid : 'not recorded'}`;
   if (w.state === 'dead') return ds('dead', `worker row state dead${w.death_established_by ? `, death_established_by ${w.death_established_by}` : ''}`);
   if (w.state === 'stopped' || w.state === 'forgotten') return ds('done', `worker row state ${w.state}`);
-  if (w.state === 'paused') return ds('parked', 'worker row state paused (ADR 0023 amendment 2: the process ended, the session is kept)');
+  if (w.state === 'paused') return ds('parked', 'worker row state paused (the process ended, the session is kept)');
   if (w.substrate === 'codex' && w.state === 'idle') return ds('idle', 'worker row state idle; Codex between turns has no process by design (api.md §2)');
   if (w.state === 'starting' && !hasPid) return ds('starting', 'worker row state starting, no pid recorded yet');
   if (hasPid && w.pid_alive === false) return ds('dead', `worker row state ${w.state} but ${pid} is not alive (worker.list pid_alive)`);
@@ -148,7 +148,7 @@ function workerDisplay(w, { pending, stall, stallMs = STALL_MS }) {
 function orchestratorDisplay(run, scan, now, stallMs = STALL_MS) {
   if (run.ended_at != null) return ds('done', 'run row ended_at set');
   if (!run.alive) return ds('dead', 'run row not ended and run.alive false (the adapter pid is not alive; the orchestrator process is not checked)');
-  if (run.paused_at != null) return ds('idle', 'run row paused_at set: the run is paused and the orchestrator interrupted (ADR 0023 amendment 3); run.alive is the adapter pid\'s liveness, not the orchestrator process\'s');
+  if (run.paused_at != null) return ds('idle', 'run row paused_at set: the run is paused and the orchestrator interrupted; run.alive is the adapter pid\'s liveness, not the orchestrator process\'s');
   const ev = scan && scan.tail_event;
   if (!ev) return ds('unknown', 'run alive (adapter pid); no stream event of the orchestrator\'s own to read, so running cannot be told apart from idle');
   if (ev.kind === 'result') return ds('idle', 'run alive (adapter pid); the last stream event is a result line');

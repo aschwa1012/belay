@@ -237,7 +237,7 @@ function mechanical(input) {
 async function summarise(input, opts) {
   const kind = (opts && opts.kind) || 'mechanical';
   if (kind === 'model') {
-    throw coded('E_SUMMARISER_ABSENT', 'the model summariser is not built; a later decision record must add it as a belay-spawned, budgeted process (ADR 0041 section 4)');
+    throw coded('E_SUMMARISER_ABSENT', 'the model summariser is not built; a later decision record must add it as a belay-spawned, budgeted process');
   }
   if (kind !== 'mechanical') throw coded('E_ARGS', `unknown summariser kind '${kind}'; expected 'mechanical' or 'model'`);
   const fields = mechanical(input);

@@ -213,7 +213,7 @@ function createPause({ core, forWorker, doStop, doRestart, runOp, adapterPid = p
       }
       if (w.substrate === 'codex') {
         fail('E_SUBSTRATE', 'codex has no interrupt channel: a Codex turn is a process with stdin ignored; '
-          + 'pause is docked for Codex (ADR 0023 decision 2); worker stop or worker kill end a Codex turn',
+          + 'pause is docked for Codex; worker stop or worker kill end a Codex turn',
           { worker_id, substrate: w.substrate });
       }
       if (w.settled || !P.pidAlive(w.pid) || !w.child || !w.child.stdin || w.child.stdin.destroyed) {

@@ -179,7 +179,7 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
   fs.rmSync(debugFile, { force: true });
 
   const argvFn = deps.argv || L.orchestratorInteractiveArgv;
-  if (typeof argvFn !== 'function') throw new Error('launch.cjs has no orchestratorInteractiveArgv (ADR 0037 decision 2) and none was injected');
+  if (typeof argvFn !== 'function') throw new Error('launch.cjs has no orchestratorInteractiveArgv and none was injected');
   // ADR 0037 amendments 2 and 5: belay's own mod, copied at spawn, its run facts written into the copy from
   // this launcher's own values (invariant 3), hashed before the spawn, and passed as --plugin-dir.
   const PC = require('./plugin-copy.cjs');
@@ -222,8 +222,8 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
   // Everything printed is printed here, before the console is handed over, and never again while claude lives.
   print([
     `belay run ${runId} (interactive)`,
-    'Type your first message once Claude Code opens; belay passes no prompt (ADR 0037 decision 3).',
-    'If Claude Code asks whether to trust this folder, answer yes: declining ends the run (ADR 0037 decision 9).',
+    'Type your first message once Claude Code opens; belay passes no prompt.',
+    'If Claude Code asks whether to trust this folder, answer yes: declining ends the run.',
     '',
   ].join('\n'));
 
