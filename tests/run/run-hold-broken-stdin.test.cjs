@@ -24,6 +24,7 @@ test('a resume after the orchestrator stdin broke records no wake as written and
   assert.deepStrictEqual(wakes, [], 'no unwritten wake is recorded');
   assert.deepStrictEqual(suppressed.map((r) => r.event), ['resume_line', 'death', 'turn_end']);
   assert.deepStrictEqual(out.held, [], 'no held wake is reported as delivered');
+  assert.deepStrictEqual(hold.wakesHeld.map((w) => !!w.delivered), [false, false], 'a suppressed held wake is not marked delivered');
 });
 
 test('a resume with a working pipe still records the line and every held wake', async () => {

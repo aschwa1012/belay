@@ -159,10 +159,10 @@ function createRunHold({ child, getIdle, onDeadline, writeStdinLine, wakeText, p
     const held = wakesHeld.filter((w) => !w.delivered);
     const delivered = [];
     for (const w of held) {
-      w.delivered = true;
       const heldRec = { ...w, held_ms: nowMs() - w.held_at_ms };
       delete heldRec.held_at_ms; delete heldRec.delivered;
       if (writeStdinLine(wakeText(w), w.worker_id, heldRec) === false) { suppressWake(heldRec); continue; }
+      w.delivered = true;
       pushWake(heldRec);
       delivered.push(heldRec);
     }
