@@ -9,10 +9,28 @@
 // seq, which forgets the memory, so the worst a forgotten entry does is read the pid as the bare check does. Only `starting`,
 // `running` and `stopping` rows are remembered; a terminal or parked row has no life to hold open.
 //
+// The one case a memory cannot cover is a pid reused before it was ever read dead. For a row that records its creation time, whose
+// adapter is gone and whose last event is older than the death grace, one identity check (live-as.cjs, one snapshot) is started in
+// the background and its verdict used by a later poll; it never delays a poll and runs once per row seq.
 const LIFE = new Set(['starting', 'running', 'stopping']);
+const CHECK_TIMEOUT_MS = 5000; // a stalled snapshot leaves the row reading as the bare check does
 
-function createDeadPids({ now = Date.now } = {}) {
+function createDeadPids({ now = Date.now, graceMs = 8000, adapterAlive = null, prepare = null, checkTimeoutMs = CHECK_TIMEOUT_MS } = {}) {
   const seen = new Map();    // worker id -> { pid, created, seq, seenAt, by }
+  const inflight = new Set();
+  const checked = new Set(); // `${id}|${pid}|${created}|${seq}` whose identity check was started
+  const preparer = () => prepare || require('../core/live-as.cjs').prepare;
+
+  function check(w, k) {
+    checked.add(k);
+    const done = (async () => {
+      const id = await preparer()([{ pid: w.pid, created: w.pid_created }]);
+      if (!id.runsAs(w.pid, w.pid_created)) seen.set(w.id, { pid: w.pid, created: w.pid_created, seq: w.seq, seenAt: now(), by: 'identity' });
+    })().catch(() => {}); // an unreadable snapshot is not proof of death
+    const timer = new Promise((r) => { const t = setTimeout(r, checkTimeoutMs); if (t.unref) t.unref(); });
+    const p = Promise.race([done, timer]).then(() => inflight.delete(p));
+    inflight.add(p);
+  }
 
   // -> rows, with pid_alive false (and pid_dead_seen_at, pid_dead_by) on any life-claiming row whose process was seen dead.
   function apply(rows) {
@@ -25,10 +43,15 @@ function createDeadPids({ now = Date.now } = {}) {
         return w;
       }
       if (e) return { ...w, pid_alive: false, pid_dead_seen_at: e.seenAt, pid_dead_by: e.by };
+      if (w.pid_created != null && adapterAlive && !adapterAlive(w.adapter_pid)) {
+        const age = w.last_event_age_ms != null ? w.last_event_age_ms : now() - Number(w.started_at || now());
+        const k = `${w.id}|${w.pid}|${w.pid_created}|${w.seq}`;
+        if (age > graceMs && !checked.has(k)) check(w, k);
+      }
       return w;
     });
   }
-  return { apply };
+  return { apply, settled: () => Promise.all([...inflight]) }; // settled(): for a test to wait on the real event
 }
 
 module.exports = { createDeadPids };

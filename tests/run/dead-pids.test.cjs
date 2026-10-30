@@ -45,3 +45,73 @@ test('a row without a pid, or a pid_alive that is not a boolean, is passed throu
   const a = row({ pid: null, pid_alive: false }); const b = row({ pid_alive: undefined });
   assert.deepStrictEqual(m.apply([a, b]), [a, b]);
 });
+
+// The pid reused before it was ever read dead (an orphan: its adapter is gone, so no one writes its row).
+const orphan = (o) => row({ pid_created: 111, adapter_pid: 99, last_event_age_ms: 20000, ...o });
+const gone = () => false;
+const mk = (extra) => { const calls = []; const m = createDeadPids({ graceMs: 8000, adapterAlive: gone, prepare: async (pairs) => { calls.push(pairs); return { runsAs: () => false }; }, ...extra }); return { m, calls }; };
+
+test('an orphan whose pid runs as another process reads dead from the next poll, after one snapshot, never on the poll that asked', async () => {
+  const { m, calls } = mk();
+  assert.strictEqual(m.apply([orphan()])[0].pid_alive, true, 'the poll that starts the check is not delayed or changed');
+  await m.settled();
+  const r = m.apply([orphan()])[0];
+  assert.strictEqual(r.pid_alive, false);
+  assert.strictEqual(r.pid_dead_by, 'identity');
+  m.apply([orphan()]); m.apply([orphan()]);
+  assert.strictEqual(calls.length, 1, 'one snapshot for the row seq');
+  assert.deepStrictEqual(calls[0], [{ pid: 4242, created: 111 }]);
+});
+
+test('no snapshot unless a row with a creation time reads alive past the grace with a stale event age and a dead adapter', async () => {
+  for (const [name, extra, opts] of [
+    ['adapter alive', {}, { adapterAlive: () => true }],
+    ['no creation time', { pid_created: null }, {}],
+    ['a recent event', { last_event_age_ms: 1000 }, {}],
+    ['not a life-claiming state', { state: 'dead' }, {}],
+    ['already read dead', { pid_alive: false }, {}],
+  ]) {
+    const { m, calls } = mk(opts);
+    m.apply([orphan(extra)]); await m.settled();
+    assert.strictEqual(calls.length, 0, name);
+  }
+  const { m: m2, calls } = mk();
+  m2.apply([orphan({ last_event_age_ms: null, started_at: Date.now() - 60000 })]); await m2.settled();
+  assert.strictEqual(calls.length, 1, 'no event yet: the age is the time since the row started');
+});
+
+test('a snapshot that stalls, fails or cannot tell leaves the row reading alive, and does not hold the poll', async () => {
+  const stalled = createDeadPids({ graceMs: 8000, adapterAlive: gone, prepare: () => new Promise(() => {}), checkTimeoutMs: 30 });
+  const t = Date.now();
+  assert.strictEqual(stalled.apply([orphan()])[0].pid_alive, true);
+  assert.ok(Date.now() - t < 25, 'apply returned at once');
+  await stalled.settled();
+  assert.strictEqual(stalled.apply([orphan()])[0].pid_alive, true);
+  const failing = createDeadPids({ graceMs: 8000, adapterAlive: gone, prepare: async () => { throw new Error('snapshot'); } });
+  failing.apply([orphan()]); await failing.settled();
+  assert.strictEqual(failing.apply([orphan()])[0].pid_alive, true);
+  const unverifiable = createDeadPids({ graceMs: 8000, adapterAlive: gone, prepare: async () => ({ runsAs: () => true }) });
+  unverifiable.apply([orphan()]); await unverifiable.settled();
+  assert.strictEqual(unverifiable.apply([orphan()])[0].pid_alive, true);
+});
+
+test('a verdict is for the row seq it was taken at: a changed row is read afresh', async () => {
+  const { m } = mk();
+  m.apply([orphan()]); await m.settled();
+  assert.strictEqual(m.apply([orphan({ seq: 6 })])[0].pid_alive, true);
+});
+
+test('with the real identity check, a live pid whose creation time differs reads dead and its own creation time reads alive', { timeout: 60000 }, async () => {
+  const { spawn } = require('node:child_process');
+  const ID = require('../../src/core/proc-identity.cjs');
+  const child = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { windowsHide: true, stdio: 'ignore' });
+  await new Promise((r) => child.once('spawn', r));
+  try {
+    const snap = await ID.processSnapshot({ kind: 'test' });
+    const created = snap && snap.get(child.pid) && snap.get(child.pid).created;
+    if (created == null) return; // no readable creation time on this host: nothing to compare
+    const run = async (c) => { const m = createDeadPids({ graceMs: 8000, adapterAlive: gone }); const r = orphan({ pid: child.pid, pid_created: c }); m.apply([r]); await m.settled(); return m.apply([r])[0].pid_alive; };
+    assert.strictEqual(await run(created), true, 'the process the row names');
+    assert.strictEqual(await run(created - 60000), false, 'another process holding the number');
+  } finally { child.kill(); }
+});
