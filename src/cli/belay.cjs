@@ -19,13 +19,13 @@
 
 const path = require('node:path');
 
-const VERSION = '0.3.0';
+const VERSION = '0.3.1';
 
 // The slice-3a surface. `mode` is the connection mode each command declares, exactly one, per
 // command table §1: R read-only, W store client, C run control. The remaining 18 commands of
 // command table §3 arrive in later slices and are deliberately absent rather than stubbed.
 // Static, so help loads no memory module; tests/cli/memory.test.cjs checks that it names every verb in memory-render's VERBS.
-const MEMORY_SUMMARY = 'memory search|list|show|timeline|verify|stats|export|import|embed|proposals|held|restore|report|archive purge|review|scrub|resolve|promote: reads answer from the store or its copy; semantic and hybrid search need a live owner; verify, import, embed, restore, report, purge, held settle, review, scrub, resolve and promote elect one (embed --dry-run only reads)';
+const MEMORY_SUMMARY = 'memory search|list|show|timeline|verify|stats|export|import|embed|proposals|held|restore|report|archive purge|review|scrub|resolve|promote|search-log|menu: reads answer from the store or its copy; semantic and hybrid search need a live owner; verify, import, embed, restore, report, purge, held settle, review, scrub, resolve and promote elect one (embed --dry-run only reads)';
 
 const COMMANDS = {
   help:   { mode: 'R', module: null,               summary: 'print this usage and exit' },
@@ -55,7 +55,7 @@ const COMMANDS = {
   pending: { mode: 'R', module: './cmd-pending.cjs', summary: 'list tool calls waiting on a verdict: id, worker, tool, input digest, age, whether the requesting adapter is alive' },
   approve: { mode: 'C', module: './cmd-decide.cjs', summary: 'approve <request-id>: allow one pending tool call over the owner pipe; the worker resumes at once' },
   deny:    { mode: 'C', module: './cmd-decide.cjs', summary: 'deny <request-id> [reason...]: refuse one pending tool call over the owner pipe; the worker is told the reason' },
-  embedder: { mode: 'W', module: './cmd-embedder.cjs', summary: 'embedder fetch|verify [--model <id>]: fetch the embedding model into belay\'s cache (the only network use), or re-hash it against the table' },
+  embedder: { mode: 'W', module: './cmd-embedder.cjs', summary: 'embedder fetch|verify|delete [--model <id>]: delete one nothing in this project settings or runs uses, or fetch the embedding model into belay\'s cache (the only network use), or re-hash it against the table' },
   pause:   { mode: 'C', module: './cmd-pause.cjs', summary: "pause <worker-id|run-id>: park a worker over the adapter's pipe, or hold a run's wakes and park every live worker over the owner's pipe" },
   settings: { mode: 'W', module: './cmd-settings.cjs', summary: 'settings [<key> [<value>]]: the display settings, notes levers and per-agent defaults; with a value, writes the config file only' },
   worktree: { mode: 'W', module: './cmd-worktree.cjs', summary: "worktree create|remove|merge <task-id>...: a task's own git worktree and branch from a recorded base, removed junction first; merge done tasks into an integration branch and re-run their checks" },

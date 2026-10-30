@@ -10,13 +10,17 @@ import { CONFIRM_MS, confirmLine, heldCount, heldDetail, heldLine, reviewLine, r
 import { cells, cmdLines, wordWrap, wrapHard } from './wrap'
 import { clip, INDENT, Line, Section, shortModel, tp, type Act, type Ctx, type Els } from './base'
 import { Table } from './table'
+import { badgeOf } from './memory'
+import { MemoryPane } from './memview'
+import { modelSegs } from './warm'
 
 export type { Act, Els }
 
 // ---- the band ----------------------------------------------------------------------------------
 
-export function Band({ E, snap, ui, now, cols, act }: Ctx) {
+export function Band({ E, snap, ui, now, cols, act, menu }: Ctx) {
   const { Box, Button } = E
+  const badge = badgeOf(menu)
   if (snap.fatal) return <Line E={E} w={cols} k="fatal" segs={[{ t: 'belay ', c: 'claude', bold: true }, { t: snap.fatal, c: 'error' }]} />
   const lines = bandLines(snap, ui, now, cols)
   const err = snap.errors[0]
@@ -28,8 +32,9 @@ export function Band({ E, snap, ui, now, cols, act }: Ctx) {
       {snap.memoryNotice && <MemoryNotice E={E} snap={snap} cols={cols} />}
       {lines.map((segs, i) => (
         <Box key={`band${i}`}>
-          <Line E={E} segs={segs} k={`l${i}`} w={i === 0 ? cols - toggle.length : cols} />
+          <Line E={E} segs={segs} k={`l${i}`} w={i === 0 ? cols - toggle.length - (badge > 0 ? String(badge).length + 3 : 0) : cols} />
           {i === 0 && <Button key="open" label={toggle} plain dimColor onPress={act.toggle} />}
+          {i === 0 && badge > 0 && <Line E={E} segs={[{ t: ` [${badge}]`, c: 'warning' }]} k="badge" />}
         </Box>
       ))}
       {stale && wrapHard(stale, cols).map((t, i) => <Line E={E} w={cols} segs={[{ t, dim: true }]} k={`stale${i}`} />)}
@@ -297,7 +302,7 @@ function MemoryOff({ E, n, cols }: { E: Els; n: BelayMemoryNotice; cols: number 
 // ---- the pane ----------------------------------------------------------------------------------
 
 export function Pane(c: Ctx) {
-  const { E, snap, ui, now, act, cols } = c
+  const { E, snap, ui, now, act, cols, menu } = c
   const { Box, Button } = E
   const t = snap.tasks
   const stale = staleLine(snap)
@@ -321,19 +326,26 @@ export function Pane(c: Ctx) {
     : [{ t: 'cost not read', dim: true }]
   const inner = { ...c, cols: cols - INDENT }
   const live = snap.agents.filter(isLive).length
+  const header = (
+    <Box justifyContent="space-between">
+      <Line E={E} w={cols - 6} k="ph" segs={runLine(snap, now)} />
+      <Box>
+        <Button key="legend" label="?" plain dimColor onPress={act.legend} />
+        <Button key="close" label=" ✕" plain dimColor onPress={act.close} />
+      </Box>
+    </Box>
+  )
+  if (ui.memTab !== null) return <Box flexDirection="column">{header}<MemoryPane E={E} state={menu} ui={ui} now={now} cols={cols} act={act} /></Box>
+  const badge = badgeOf(menu)
   return (
     <Box flexDirection="column">
-      <Box justifyContent="space-between">
-        <Line E={E} w={cols - 6} k="ph" segs={runLine(snap, now)} />
-        <Box>
-          <Button key="legend" label="?" plain dimColor onPress={act.legend} />
-          <Button key="close" label=" ✕" plain dimColor onPress={act.close} />
-        </Box>
-      </Box>
+      {header}
       <Line E={E} w={cols} k="pr" segs={[{ t: '─'.repeat(cols), dim: true }]} />
       {stale && wrapHard(stale, cols).map((t, i) => <Line E={E} w={cols} k={`pstale${i}`} segs={[{ t, dim: true }]} />)}
       {tasksLine.length > 0 && <Line E={E} w={cols} k="pt" segs={tasksLine} />}
+      {snap.retrievalModels.length > 0 && <Line E={E} w={cols} k="pm" segs={modelSegs(snap.retrievalModels)} />}
       <Line E={E} w={cols} k="pc" segs={costLine} />
+      <Button key="mem" plain dimColor label={`◇ memory menu${badge > 0 ? ` [${badge}]` : ''}`} onPress={() => act.mem({ kind: 'tab', tab: 'profiles' })} />
       {ui.legend && <Legend {...c} />}
       <Section E={E} k="sa" title="AGENTS" cols={cols} summary={snap.agents.length ? [{ t: `${live} live`, dim: true }] : []}>
         {snap.agents.length ? <Table {...inner} /> : <Line E={E} w={cols - INDENT} k="pn" segs={[{ t: 'no agents read', dim: true }]} />}

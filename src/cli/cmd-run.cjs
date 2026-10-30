@@ -53,41 +53,7 @@ const { parseSpec } = require('./run-spec.cjs'); // the spec's keys and their ch
 const { runCloseStages } = require('./run-close-stages.cjs'); // the scrubber and the archive reviewer, after the workers close and before run.end
 const { memoryRunEnd } = require('./run-memory-end.cjs'); // ADR 0043 decision 2: the run-end memory jobs, after the adapter
 
-// 5a-4 item 4: the two no-write paths (a refusal, an election failure) return before run.json is ever
-// attempted, so the old unconditional last line told an operator to go read a receipt that was never
-// written, in a directory that was never created. `receipt.receipt_path` is the path written, or
-// `null`, and the line prints only when it is not.
-function renderText(receipt) {
-  const lines = [
-    `run_id: ${receipt.run_id}`,
-    `orchestrator pid ${receipt.orchestrator.pid}, session ${receipt.orchestrator.session_id}, ${receipt.orchestrator.turns} turn(s)`,
-    `ended_by: ${receipt.ended_by}`,
-    `exit_code: ${receipt.orchestrator.exit_code}`,
-    `holds: ${receipt.holds.length}`,
-    `polls: ${receipt.polls}`,
-  ];
-  if (receipt.mode === 'interactive') lines.splice(1, 0, `mode: ${receipt.mode}`); // the headless text is unchanged
-  // 5c: named only when a `belay stop` actually ended this run — the operator's proof that the CLI
-  // exit they are looking at was an intervention, not the orchestrator ending on its own.
-  if (receipt.stop) lines.push(`stopped by: pid ${receipt.stop.caller_pid}`);
-  // ADR 0029: named only when the run itself closed a worker row or killed a process.
-  const wc = receipt.workers_closed;
-  if (wc && (wc.killed.length || (wc.marked_dead || []).length)) {
-    lines.push(`workers closed: ${wc.killed.length} killed, ${(wc.marked_dead || []).length} marked dead`);
-  }
-  if (receipt.mode === 'interactive' && wc && (wc.left_parked || []).length) lines.push(`left parked: ${wc.left_parked.join(', ')}`); // ADR 0023 amendment 5
-  const pl = receipt.mode === 'interactive' && receipt.orchestrator && receipt.orchestrator.interactive && receipt.orchestrator.interactive.plugin;
-  if (pl && pl.unreadable) lines.push('plugin copy unreadable at exit');
-  else if (pl && pl.unchanged === false) lines.push(`plugin copy changed after spawn: ${(pl.changed_files || []).join(', ') || 'unreadable'}`); // ADR 0037 amendment 5 decision 4
-  if (receipt.levers) {
-    const rr = receipt.review_rounds === null ? `unknown (${receipt.review_rounds_reason})` : receipt.review_rounds;
-    lines.push(`levers: max_fix_rounds ${receipt.levers.max_fix_rounds}${receipt.levers.max_follow_ups !== undefined ? `, max_follow_ups ${receipt.levers.max_follow_ups}` : ''}${receipt.levers.fix_hard_cap === undefined ? '' : `, fix_hard_cap ${receipt.levers.fix_hard_cap === null ? 'none' : `${receipt.levers.fix_hard_cap} (${receipt.levers.fix_hard_cap_source})`}`}, fix_cutoff ${receipt.levers.fix_cutoff}, on_embedder_failure ${receipt.levers.on_embedder_failure}${receipt.levers.max_parallel_evaluations ? `, max_parallel_evaluations ${receipt.levers.max_parallel_evaluations}` : ''}${memoryText(receipt.levers)}; review_rounds: ${rr}`);
-  }
-  lines.push(...RI.embedderLines(receipt), ...require('../run/review-scratch.cjs').lines(receipt), ...require('./run-trees.cjs').lines(receipt), ...require('./run-checks.cjs').lines(receipt)); // ADR 0054 amendment 1: what the close removed
-  if (receipt.receipt_path) lines.push(`receipt: ${receipt.receipt_path}`);
-  lines.push('');
-  return lines.join('\n');
-}
+const { renderText } = require('./run-render.cjs'); // the receipt's text form
 
 const { warmupSkipped, parseEffort } = require('./run-args.cjs'); // the warm-up test skip and the --effort flag
 
@@ -285,6 +251,7 @@ async function run(ctx) {
   // Step 5 (5a-2 design): run.attach is an in-process write by the owner; it cannot land on another
   // owner. `attachRow` stays null only if the write itself rejects.
   let attachRow = null;
+  let routingPin = null; // the retrieval routing the run was pinned with (run-routing.cjs), or null when it pinned nothing
   const RID = require('./run-identity.cjs').createRunIdentity(process.pid);
   async function onAttached({ pid }) {
     try {
@@ -292,6 +259,10 @@ async function run(ctx) {
       RID.watchOrchestrator(pid); // ADR 0039: run-identity.cjs; the attach never waits on a snapshot
       attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, max_follow_ups: parsed.levers.max_follow_ups, fix_hard_cap: parsed.levers.fix_hard_cap, fix_hard_cap_source: parsed.levers.fix_hard_cap_source, max_parallel_evaluations: parsed.levers.max_parallel_evaluations === undefined ? null : parsed.levers.max_parallel_evaluations, merge_into: parsed.levers.merge_into === undefined ? null : parsed.levers.merge_into, run_mode: mode, budget_usd: parsed.levers.budget_usd || null, budget_explicit: /^spec/.test(parsed.levers.budget_source || ''), project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
       await budget.loadAttach(attachRow.run); for (const w of attachRow.warnings || []) process.stderr.write("belay run: warning: " + w + String.fromCharCode(10));
+      // ADR 0050: the routing is resolved once, here, before the orchestrator's first prompt (a heavy backlog is drained or fallen back from first).
+      try {
+        routingPin = await require('./run-routing.cjs').pinAtStart(core, { levers: parsed.levers, write: ctx.json ? null : (m) => process.stderr.write(m) }); // as the memory notice: under --json stderr carries failure receipts, so the progress goes into the receipt's retrieval block instead
+      } catch (e) { return { ok: false, stage: 'pin', error: (e && e.message) || String(e) }; } // the attach landed; the pin is what failed
       return { ok: true, attach: attachRow };
     } catch (e) {
       return { ok: false, error: (e && e.message) || String(e) };
@@ -461,6 +432,7 @@ async function run(ctx) {
     ended_by: endedBy, holds, polls, wakes, wakes_suppressed: wakesSuppressed, wakes_expired: wakesExpired,
     wakes_held: wakesHeld, pauses, ...(leftovers && (leftovers.found.length || leftovers.not_taken) ? { orchestrator_leftovers: leftovers } : {}),
     stop: stopReceipt, ms: Date.now() - t0, receipt_path: null,
+    ...require('./run-routing.cjs').receiptBlock(routingPin, gotRun), // the pin as the row holds it at the end, so a fallback in force is in the receipt; under --json the start-up progress lines are here
     levers: parsed.levers, prompt_warnings: parsed.promptWarnings, on_embedder_failure_final: guard.mode(), memory_off: guard.memoryOff(), embedder: warm, embedder_failures: guard.events(), ...(embedBounds && embedBounds.length ? { embedder_bounds: embedBounds } : {}),
     review_rounds: reviewRounds.value, review_rounds_reason: reviewRounds.reason,
     workers_closed: closed ? workersClosedBlock(closed, endedRow ? (endedRow.workers_marked_dead || []) : null) : null,

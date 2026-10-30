@@ -29,13 +29,13 @@ const EDIT_TOOLS = ['Edit', 'Write', 'NotebookEdit', 'MultiEdit'];
 const sha12 = (v) => crypto.createHash('sha256').update(JSON.stringify(v === undefined ? null : v)).digest('hex').slice(0, 12);
 const now = () => Date.now();
 
-function newWorkerRecord({ id, substrate, worktree, dataDir, taskId, model, allowedTools, permissionMode, sandbox, permissionPrompt = false, permitWaitMs = 600000, captureBase = true, effort = null, tools = null, maxBudgetUsd = null, nativeMemory = null, nativeMemoryAuth = null, trustRecord = false }) {
+function newWorkerRecord({ id, substrate, worktree, dataDir, taskId, model, allowedTools, permissionMode, sandbox, permissionPrompt = false, permitWaitMs = 600000, captureBase = true, effort = null, tools = null, maxBudgetUsd = null, nativeMemory = null, nativeMemoryAuth = null, trustRecord = false, agentType = null }) {
   const narrowed = L.narrowTools(tools); // ADR 0024: checked before the directory exists; null is the full list
   const dir = L.workerDir(dataDir, id);
   fs.mkdirSync(dir, { recursive: true });
   const w = {
     id, substrate, worktree: L.fwd(path.resolve(worktree)), dir, taskId: taskId || null,
-    model: model || null, effort: effort || null, maxBudgetUsd, nativeMemory: nativeMemory == null ? null : trustRecord ? nativeMemory : require('./surface.cjs').checkNativeMemory(nativeMemory), nativeMemoryAuth, tools: narrowed, allowedTools: allowedTools || L.DEFAULT_ALLOWED_TOOLS,
+    model: model || null, effort: effort || null, agentType: agentType || null, maxBudgetUsd, nativeMemory: nativeMemory == null ? null : trustRecord ? nativeMemory : require('./surface.cjs').checkNativeMemory(nativeMemory), nativeMemoryAuth, tools: narrowed, allowedTools: allowedTools || L.DEFAULT_ALLOWED_TOOLS,
     permissionMode: permissionMode || L.DEFAULT_PERMISSION_MODE, sandbox: sandbox || L.DEFAULT_CODEX_SANDBOX,
     // ADR 0021 decisions 3-4: what the last launch's system/init said it started with (noteInit); null
     // until a ready event carries it, always null for Codex.
@@ -106,6 +106,7 @@ async function adopt({ core, workerId, dataDir }) {
     permissionMode: row.permission_mode_requested || null, sandbox: null,
     permissionPrompt: launchOpts.permissionPrompt, permitWaitMs: launchOpts.permitWaitMs || 600000,
     effort: row.effort_requested || null, // ADR 0028 decision 2: a cross-adapter relaunch keeps the level
+    agentType: row.agent_type || null, // the type it was spawned with, from the harness row: a relaunch keeps its retrieval tier
     captureBase: false, // W2-3: an adopted worker keeps the base_sha of its row
   });
   // W2-3: every receipt column comes from the row; head_sha is asked of git again if the adopted worker later settles (SF1).
@@ -185,6 +186,7 @@ function rowOf(w, state, { runId, adapterPid }) {
     permission_mode_requested: w.permissionModeEffective ? w.permissionMode : null,
     permission_mode_effective: w.permissionModeEffective, claude_code_version: w.claudeCodeVersion,
     effort_requested: w.effort || null, max_budget_usd: w.maxBudgetUsd == null ? null : w.maxBudgetUsd, model_requested: w.model || null, // ADR 0028 decision 3: the request, not the level the substrate used
+    agent_type: w.agentType || null, // spawn's agent_type: the retrieval tier of this worker's searches is read from here
     native_memory: w.nativeMemory || null, native_memory_auth: w.nativeMemoryAuth || null, // ADR 0024 amendment 3: the harness's record of the lever and of who opted in; a relaunch reads them here, and no write other than the spawn's own sets the second
     ...(w.substrate !== 'claude-code' ? { tools: null } : w.toolsUnknown ? {} : { tools: w.tools || require('./surface.cjs').CLAUDE_TOOLS }), // a refused adopt writes no tools: its row keeps whatever it had, never the six // ADR 0024 amendment 4: the built-in list this worker runs with, on the row; a relaunch reads it here and never from argv.json
     memory_queries: Array.isArray(w.indexQueries) && w.indexQueries.length ? w.indexQueries : null, // the orchestrator's index queries, kept for a relaunch

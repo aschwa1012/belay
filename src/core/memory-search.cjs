@@ -15,13 +15,14 @@ const { pickTerms, orMatch } = require('./memory-relevance.cjs');
 const { rrf, HYBRID_ALPHA, HYBRID_K } = require('./fusion.cjs');
 const { deriveTitle, indexRowOf, dupVeto, filterSql } = require('./memory-rows.cjs');
 const { ftsReady } = require('./memory-schema.cjs');
-const { scanCeiling } = require('./schema.cjs');
-const { toUnitF32 } = require('./store.cjs');
 const gate = require('./memory-note-gate.cjs');
+const ST = require('./search-tier.cjs');
+const HB = require('./heavy-behind.cjs');
 const W = require('./memory-withhold.cjs');
 const { notesDefaults } = require('./memory-search-scope.cjs');
 const V = require('./memory-search-view.cjs');
-const { nsFor, resolveNamespace, runAlpha, withEmbedding, reachOf, checkReach, runEmbedderMode } = require('./methods-memory.cjs');
+const { semanticStage } = require('./search-semantic.cjs'); // the query vector and the cosine scan
+const { nsFor, resolveNamespace, runAlpha, reachOf, checkReach, runEmbedderMode } = require('./methods-memory.cjs');
 
 const MODES = ['semantic', 'keyword', 'hybrid'];
 const VIEWS = ['full', 'index'];
@@ -104,55 +105,6 @@ function supersededAmong(E, ids) {
 
 // ---- the two stages ---------------------------------------------------------------------------------------
 
-async function queryVector(E, caller, o) {
-  if (o.queryEmbedding) return { vec: o.queryEmbedding, model: o.embeddingModel || null };
-  // The shared embedding phase: loads on first use, raises E_NO_EMBEDDER, E_MODEL_ABSENT or E_MODEL_CHANGED, and
-  // reports a failure to the ADR 0034 hook. A keyword stage never reaches this.
-  const e = await withEmbedding(E, { query: o.query }, 'query_embedding', 'query', caller);
-  return { vec: e.query_embedding, model: e.embedding_model };
-}
-
-// Exact cosine over the cached unit vectors of every stated namespace, restricted to the filter. Returns the
-// best `depth` hits best first. The scan ceiling, the model binding and the dimension are enforced as before.
-async function semanticStage(E, caller, o, depth) {
-  const { vec, model: qModel } = await queryVector(E, caller, o);
-  const db = E.store.db;
-  const scored = [];
-  const cos = new Map(); // every scanned row's cosine, below min_score too: a keyword-only hit's relevance and the absence claim read it
-  let scanned = 0, model = null, dim = null;
-  const t = Date.now();
-  for (const ns of o.namespaces) {
-    const m = E.store.p('SELECT embedding_model, dim FROM namespace_models WHERE namespace = ?').get(ns);
-    if (!m) continue;
-    if (qModel && qModel !== m.embedding_model) {
-      throw err('E_MODEL', `the query was embedded with ${qModel} but namespace ${ns} is bound to ${m.embedding_model}`, { namespace: ns, bound: m.embedding_model });
-    }
-    model = model || m.embedding_model; dim = dim || m.dim;
-    const q = toUnitF32(vec, m.dim);
-    const c = E.store._loadNs(ns);
-    const ceiling = scanCeiling(m.dim);
-    if (c.rows.length > ceiling && !o.allowSlow) {
-      throw err('E_NAMESPACE_TOO_LARGE', `namespace ${ns} holds ${c.rows.length} rows, above the ${ceiling}-row exact-scan ceiling; pass allow_slow to scan it anyway`, { namespace: ns, rows: c.rows.length, ceiling });
-    }
-    let allowed = null;
-    if (o.filterSql.where) {
-      allowed = new Set(db.prepare(`SELECT e.id FROM memory_entries e WHERE e.namespace = ? AND ${o.filterSql.where}`).all(ns, ...o.filterSql.params).map(r => r.id));
-    }
-    const hidden = o.hidden; // the notes the gate hides (a small set): one lookup per row
-    const legacy = gate.legacyIds(E, caller, ns); // the project's rows that are not notes, hidden from a gated caller in a notes run
-    for (const r of c.rows) {
-      if (!r.vec || (r.ttl_at && r.ttl_at < t) || (!o.includeSuperseded && c.superseded.has(r.id)) || (allowed && !allowed.has(r.id)) || (hidden && hidden.has(r.id)) || (legacy && legacy.has(r.id))) continue;
-      scanned++;
-      let s = 0;
-      for (let d = 0; d < m.dim; d++) s += r.vec[d] * q[d];
-      cos.set(r.id, s);
-      if (s >= o.minScore) scored.push({ id: r.id, score: s });
-    }
-  }
-  scored.sort((a, b) => b.score - a.score || (a.id < b.id ? -1 : 1));
-  return { hits: scored.slice(0, depth), scanned, model, dim, cos };
-}
-
 const fail = (code, message) => ({ failed: { code, message } });
 
 // FTS5 over title and text (trigram), restricted to the stated namespaces and filter, expired and superseded
@@ -183,11 +135,11 @@ function keywordStage(E, o, depth, base) {
 
 // The WHERE clause every keyword hit and the rows_considered count share (alias e).
 function baseWhere(o) {
-  const where = [`e.namespace IN (${marks(o.namespaces)})`, '(e.ttl_at IS NULL OR e.ttl_at >= ?)'];
-  const params = [...o.namespaces, Date.now()];
-  // The unary + keeps SQLite on ix_entries_supersedes for the inner lookup: on (namespace, created_at) it scans the
-  // whole namespace per outer row, which is quadratic (minutes, not milliseconds, at ten thousand rows).
-  if (!o.includeSuperseded) where.push('NOT EXISTS (SELECT 1 FROM memory_entries s WHERE s.supersedes = e.id AND +s.namespace = e.namespace)');
+  // The namespace, expiry and superseded terms are the one visibility rule every tier shares (memory-vectors visibleRowFilter; its
+  // superseded term keeps SQLite on ix_entries_supersedes with a unary +, as the old copy here did).
+  const v = ST.visibleRowFilter({ namespaces: o.namespaces, includeSuperseded: o.includeSuperseded });
+  const where = [v.where];
+  const params = [...v.params];
   if (o.filterSql.where) { where.push(o.filterSql.where); params.push(...o.filterSql.params); }
   if (o.gate) { where.push(o.gate.where); params.push(...o.gate.params); }
   return { where: where.join(' AND '), params };
@@ -265,8 +217,20 @@ function onSemanticFailure(E, caller, e) {
   throw err('E_SEMANTIC_REQUIRED', 'memory.search hybrid could not run its semantic half: ' + why + ' (' + cause.code + ': ' + cause.message + '), and the run embedder mode is required, so no keyword-only answer is given. ' + next, { cause: cause.code, mode: run.mode, run_id: caller.run_id, guarded });
 }
 
-async function search(E, caller, args) {
+// `internal` is never a request field (the engine passes none): { tier, levers, log } let a caller inside this process, and the tests, name the
+// retrieval tier and switch the log off (an internal search, such as the hand-back's duplicate check); a request cannot (invariant 3).
+// Without a tier it is ST.tierFor(E, caller).
+async function search(E, caller, args, internal = {}) {
+  const t0 = Date.now(), ms = {};
   const o = parseSearch(E, caller, args);
+  // A supplied query vector is searched on the tier whose embedder made it: one that does not name the pinned heavy embedder is nano's (the
+  // hand-back's duplicate check passes the note's nano vector), and a heavy tier would refuse it as another model's vector.
+  o.tier = internal.tier || ST.tierFor(E, caller);
+  if (!internal.tier && o.queryEmbedding && !ST.isNano(o.tier) && o.embeddingModel !== o.tier.embedder) o.tier = ST.NANO_TIER;
+  o.t0 = t0;
+  const lv = ST.leversOfSearch(E, caller, internal.levers);
+  // A heavy tier never serves a partial index. Mid-run on a pinned tier the rows behind are caught up inline or the search is served on nano (heavy-behind.cjs); elsewhere it refuses by name.
+  if (o.mode !== 'keyword') await HB.guard(E, caller, o, lv, () => ST.assertServable(E, o.tier, o.namespaces, caller.role !== 'worker'));
   const depth = o.order === 'score' ? Math.min(Math.max((o.offset + o.k) * 3, 60), DEPTH_MAX) : DEPTH_MAX;
   const base = baseWhere(o);
   const db = E.store.db;
@@ -275,12 +239,14 @@ async function search(E, caller, args) {
   const ran = [], failed = [];
   let sem = null, kw = null;
   if (o.mode !== 'keyword') {
-    try { sem = await semanticStage(E, caller, o, depth); ran.push('semantic'); }
+    const ts = Date.now();
+    try { sem = await HB.guard(E, caller, o, lv, () => semanticStage(E, caller, o, depth, lv)); ran.push('semantic'); }
     catch (e) {
-      if (o.mode === 'semantic') throw e; // unchanged: a semantic search that cannot run is refused by name
+      if (o.mode === 'semantic' || e.code === 'E_TIER_BEHIND') throw e; // a semantic search that cannot run is refused by name; a heavy tier never serves a partial index
       onSemanticFailure(E, caller, e);
       failed.push({ mode: 'semantic', code: asCode(e), message: e.message });
     }
+    ms.semantic = Date.now() - ts;
     // ADR 0057 decision 5: rows in scope and not one with a vector is a semantic half that saw nothing. It is degraded, not run. Not an
     // embedder failure (nothing to resume), so no run is paused and no hybrid search refused; a semantic-mode search answers it too.
     if (sem && sem.scanned === 0 && considered > 0) {
@@ -289,11 +255,20 @@ async function search(E, caller, args) {
       sem = null;
     }
   }
+  // A heavy tier that failed (this search, or earlier in the run: the fallback is on the run row) is said in EVERY answer served on the fallback profile.
+  const tierFb = o.tierFallback || (o.tier.source === 'fallback' && o.tier.fallback_cause ? { cause: o.tier.fallback_cause } : null);
+  if (tierFb) failed.push(HB.failedEntry(tierFb, o.tier));
   if (o.mode !== 'semantic') {
+    const tk = Date.now();
     const r = keywordStage(E, o, depth, base);
+    ms.keyword = Date.now() - tk;
     if (r.failed) failed.push({ mode: 'keyword', code: r.failed.code, message: r.failed.message });
     else { kw = r; ran.push('keyword'); }
   }
+
+  // The relevance floor was measured on nano (ADR 0057: re-measure for another model). A heavy embedder's cosine has no floor until it is
+  // measured: no row is marked below it and no absence is claimed. Read after the semantic stage, which may have fallen back to nano.
+  const floor = ST.isNano(o.tier) ? V.RELEVANCE_FLOOR : null;
 
   // One ranked list of { id, score, ranks? }. A row's cosine, for every scanned row, is in sem.cos.
   let ranked, fusion = null;
@@ -314,10 +289,16 @@ async function search(E, caller, args) {
   // and reaches the relevance floor, and above the ones that do not; below the floor the same order holds. Every view marks it from its hold
   // row, never from the note's own pointer, which can outlive its hold (ADR 0047 amendment of 2026-10-25). A row with no cosine is not below it.
   const holds = W.holdsAmong(E, ranked.map(h => h.id));
-  if (holds.size && o.order === 'score') {
-    const tier = h => (sem && cosine.has(h.id) && V.belowFloor(cosine.get(h.id)) ? 2 : 0) + (holds.has(h.id) ? 1 : 0);
-    ranked = ranked.map((h, i) => ({ h, i, t: tier(h) })).sort((a, b) => a.t - b.t || a.i - b.i).map(x => x.h);
-  }
+  const band = h => (sem && cosine.has(h.id) && V.belowFloor(cosine.get(h.id), floor) ? 2 : 0) + (holds.has(h.id) ? 1 : 0);
+  const byBand = list => list.map((h, i) => ({ h, i, t: band(h) })).sort((a, b) => a.t - b.t || a.i - b.i).map(x => x.h);
+  const banded = holds.size > 0 && o.order === 'score';
+  if (banded) ranked = byBand(ranked);
+  // The rerank stage (a tier with a reranker): the top of the fused list reordered by the provider, fusion rank as the tiebreak. The reranker
+  // orders within a band, never across one: a held note stays below every note that is not held, as above (a stable sort of the reranked list).
+  const fused = ranked, tr = Date.now();
+  const rr = await ST.rerankHead(E, caller, o, ranked, ids => rows || rowsByIds(E, ids), lv);
+  ranked = banded && rr.info ? byBand(rr.ranked) : rr.ranked;
+  if (rr.info) ms.rerank = Date.now() - tr;
   let pool = ranked;
   if (o.order !== 'score') {
     rows = rows || rowsByIds(E, ranked.map(h => h.id));
@@ -335,12 +316,13 @@ async function search(E, caller, args) {
     const r = rows.get(h.id);
     if (!r) continue; // deleted between the two reads
     const c = sem && cosine.has(h.id) ? cosine.get(h.id) : null;
-    const rel = V.relevanceFields(c);
+    const rel = V.relevanceFields(c, floor);
     if (rel.low_relevance) below++;
-    if (o.view === 'compact') { results.push(V.compactRow(r, c, !!(replaced && replaced.has(r.id)), holds.get(r.id) || null)); continue; }
+    if (o.view === 'compact') { results.push(V.compactRow(r, c, !!(replaced && replaced.has(r.id)), holds.get(r.id) || null, floor)); continue; }
     const out = { ...viewRow(r, debug ? 'full' : 'index', h.score), ...(o.view === 'index' ? rel : {}), ...(holds.has(r.id) ? { held: V.heldMark(holds.get(r.id)) } : {}) };
     if (debug) {
       out.score = h.score;
+      if (h.rerank_score !== undefined) out.rerank_score = h.rerank_score;
       Object.assign(out, rel);
       if (h.ranks) out.ranks = h.ranks;
       if (c !== null) {
@@ -360,23 +342,40 @@ async function search(E, caller, args) {
   const unembedded = sem ? Math.max(0, considered - sem.scanned) : 0;
   let top = -Infinity;
   for (const v of cosine.values()) if (v > top) top = v;
-  const absence = ran.includes('semantic') && ran.includes('keyword') && unembedded === 0 && V.belowFloor(top) && kw.hits.length === 0;
-  const out = { warning: V.warningFor(o, ran, failed, results, absence, unembedded, below), results, relevance: V.relevanceOf(sem, sem && sem.model) };
+  // The floor is measured for nano only (ADR 0057), so a heavy tier, which has no floor, never establishes absence.
+  const absence = floor !== null && ran.includes('semantic') && ran.includes('keyword') && unembedded === 0 && V.belowFloor(top, floor) && kw.hits.length === 0;
+  const out = { warning: V.warningFor(o, ran, failed, results, absence, unembedded, below, floor), results, relevance: V.relevanceOf(sem, sem && sem.model, floor) };
   if (below) out.below_floor = below;
   // A held note pushed off the page by the notes ranked above it still matched: the orchestrator and the operator get its id and kind. Workers never do.
   const heldOff = caller.role === 'worker' ? [] : pool.slice(o.offset + o.k).filter(h => holds.has(h.id)).map(h => ({ id: h.id, kind: holds.get(h.id).kind || null }));
   if (heldOff.length) out.held_matches = heldOff;
   if (unembedded) out.rows_without_vector = unembedded;
+  if (rr.info || !ST.isNano(o.tier)) { const { profile, embedder, reranker, device } = o.tier; out.tier = { profile, embedder, reranker, device }; }
+  if (rr.info) out.rerank = rr.info;
+  if (tierFb) out.tier_fallback = HB.answerOf(tierFb, o.tier);
+  if (rr.failed) { // loud (ADR 0040): the answer names the stage that did not run, in the warning and in modes_failed
+    failed.push(rr.failed);
+    out.warning = [`rerank did not run (${rr.failed.code}${rr.info.cause.reason ? `: ${rr.info.cause.reason}` : ''}); the results are in fusion order, not reranked`, out.warning].filter(Boolean).join('; ');
+  }
+  const modesRun = rr.info && rr.info.ran ? [...ran, 'rerank'] : ran;
+  ms.total = Date.now() - t0;
+  // Only with the search_log lever on (off by default), only the store owner, and only the run that answered: a copy writes nothing (invariant 6),
+  // an internal search asked not to, and a run the in-process timeout abandoned (index.cjs re-runs it as keyword) leaves the log to the re-run.
+  const abandoned = args[Symbol.for('belay.search.abandoned')];
+  if (lv.search_log && E.owner && internal.log !== false && !(abandoned && abandoned.abandoned)) {
+    ST.logSearch(E, caller, { kind: 'search', tier: o.tier, query: o.query, mode: o.mode, namespaces: o.namespaces, k: o.k, offset: o.offset, ms, capMb: lv.search_log_cap_mb,
+      ranks: ST.rankRecord(fused, ranked, Math.max(lv.rerank_depth, o.k), o.order), fallback: failed.length ? { failed } : null });
+  }
   if (debug) {
     const searched = { namespaces: o.namespaces, filter: o.filter, rows_considered: considered, fts: ftsReady(db) };
     if (unembedded) searched.rows_without_vector = unembedded;
     if (kw && kw.dropped.length) searched.keyword_terms_dropped = kw.dropped;
     Object.assign(out, { scanned: sem ? sem.scanned : 0, model: sem ? sem.model : null, dim: sem ? sem.dim : null, score_kind: V.scoreKind(sem, kw) });
-    out.modes_run = ran; out.modes_failed = failed; out.absence_established = absence;
+    out.modes_run = modesRun; out.modes_failed = failed; out.absence_established = absence;
     out.searched = searched; out.fusion = fusion;
     return out;
   }
-  out.modes_run = ran; out.modes_failed = failed; out.absence_established = absence;
+  out.modes_run = modesRun; out.modes_failed = failed; out.absence_established = absence;
   return out;
 }
 
