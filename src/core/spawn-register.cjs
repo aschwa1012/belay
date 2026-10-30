@@ -29,7 +29,9 @@ const TRANSIENT = new Set(['EPERM', 'EBUSY', 'EACCES']);
 const RETRIES = 12; // attempts after the first; the waits double from 5 ms to a cap of 80 ms, about 0.7 s in all
 const backoff = (i) => Math.min(5 * 2 ** i, 80);
 let tmpSeq = 0;
-const SEEN_REFRESH_MS = 30000; // a live record is stamped with the time it was last seen alive at most this often
+// A live record is stamped at most this often. The stamp timers fire every 30 s (run/seen-stamp.cjs), so a stamp is skipped only when the
+// last one is under 30 s old: the gap between two stamps is at most one timer period plus the timer's lateness, about 30 s.
+const SEEN_REFRESH_MS = 30000;
 const BOOT_SLACK_MS = 5000; // the boot time is derived from the uptime, so a record counts as older than the boot only by more than this
 const UNKNOWN_START_SLACK_MS = 2000; // a record with no creation time and no spawn time: it was made this long after the process started, at most
 
@@ -132,7 +134,7 @@ function unregister(pid) {
 function touch(pid, now = Date.now()) {
   let rec;
   try { rec = readJson(fileOf(pid)); } catch { return false; }
-  if (now - lastSeen(rec) <= SEEN_REFRESH_MS) return false;
+  if (now - lastSeen(rec) < SEEN_REFRESH_MS) return false;
   try { writeAtomic(fileOf(pid), JSON.stringify({ ...rec, seen_at: now })); return true; } catch { return false; }
 }
 

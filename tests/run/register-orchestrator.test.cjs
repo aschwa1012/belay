@@ -53,3 +53,9 @@ test('no pid, no record and no timer; cmd-run hands the hook itself, not its pid
   assert.match(src, /registerOrchestrator\(h\)/);
   assert.match(src, /register-orchestrator\.cjs/);
 }));
+
+test('a hook without exited() is refused loudly, and nothing is registered', () => withRegistry((dir) => {
+  assert.throws(() => registerOrchestrator({ pid: 7302 }, { dataDir: dir, proc: new EventEmitter() }), /no exited\(\) function/);
+  assert.throws(() => registerOrchestrator({ pid: 7302, exit: () => null }, { dataDir: dir, proc: new EventEmitter() }), /no exited\(\) function/, 'a renamed key');
+  assert.deepStrictEqual(fs.readdirSync(dir), [], 'no record that nothing would stamp');
+}));

@@ -23,7 +23,8 @@ function stampWhile(alive, pid, { every = SEEN_STAMP_MS, touch = (p) => SR.touch
 const adopted = new Map(); // pid -> { w, pid, created }
 let adoptedTimer = null;
 
-// One pass over the adopted workers; exported for a test to drive. `snapshot` and `touch` are seams.
+// Cost: one process snapshot (about a second of CIM) every SEEN_STAMP_MS for each adopting adapter that holds an adopted worker, and none
+// when it holds none. One pass over the adopted workers; exported for a test to drive. `snapshot` and `touch` are seams.
 async function tickAdopted({ snapshot = (o) => ID.processSnapshot(o), touch = (p, now) => SR.touch(p, now), retire = (p, now) => SR.retire(p, now, null, { checked: true }), now = Date.now() } = {}) {
   for (const [pid, a] of [...adopted]) if (a.w.pid !== pid || a.w.pidCreated !== a.created || !LIFE.has(a.w.state)) adopted.delete(pid); // relaunched, or no life to hold
   if (adopted.size === 0) { stopAdopted(); return; }
