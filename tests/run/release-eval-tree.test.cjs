@@ -70,9 +70,13 @@ test('a reused idle worker is refused a task with another worktree, naming both;
     const same = await core.task.evaluate({ task_id: c.task.id, worktree: c.path.split('/').join('\\').toUpperCase() });
     assert.strictEqual(same.results.passed, false);
     // And so is a relative spelling, and one through `..`: each is resolved before it is compared.
-    const rel = path.relative(process.cwd(), c.path);
-    assert.ok(!path.isAbsolute(rel), `${c.path} is reachable relatively from ${process.cwd()}`);
-    assert.strictEqual((await core.task.evaluate({ task_id: c.task.id, worktree: rel })).results.passed, false);
+    // No relative spelling exists when the checkout and the temp folder are on different drives (a CI runner checks out on D:
+    // with TEMP on C:), so that sub-check runs only when the two share a root.
+    if (path.parse(path.resolve(process.cwd())).root.toLowerCase() === path.parse(path.resolve(c.path)).root.toLowerCase()) {
+      const rel = path.relative(process.cwd(), c.path);
+      assert.ok(!path.isAbsolute(rel), `${c.path} is reachable relatively from ${process.cwd()}`);
+      assert.strictEqual((await core.task.evaluate({ task_id: c.task.id, worktree: rel })).results.passed, false);
+    }
     assert.strictEqual((await core.task.evaluate({ task_id: c.task.id, worktree: `${c.path}/sub/..` })).results.passed, false);
 
     // A task with no worktree of its own goes to the reused worker, and is judged where the worker runs.
