@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // instructions.test.cjs — build step S2-2, ADR 0024 amendment 1: the spawn-time copy of the worktree's
 // CLAUDE.md. Pure file-system tests in OS temp; each directory is removed in `finally`.
 

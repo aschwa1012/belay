@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // logs-diff.test.cjs — build steps 4c and 4c-2. Drives the built CLI's `logs` and `diff` as subprocesses,
 // with the scaffolding of tests/cli/observe.test.cjs and tests/cli/stop-helpers.cjs. Every invocation is
 // bracketed by a recursive listing of the data dir that must be identical before and after; every

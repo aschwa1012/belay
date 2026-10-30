@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // Build step H1: scripts/test.cjs runs each phase under a
 // wall-clock bound and, on expiry, stops that phase's exact child pid with its tree.
 

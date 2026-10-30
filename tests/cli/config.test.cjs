@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // config.test.cjs — the shared discovery module behind all four slice-3a commands. The gate in
 // slice-3a.test.cjs drives these behaviours through the built CLI; this file asserts the two that a
 // black-box test cannot reach without writing into the operator's real home directory, plus the

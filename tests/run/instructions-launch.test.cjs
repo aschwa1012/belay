@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // instructions-launch.test.cjs — build step S2-2, ADR 0024 amendment 1, over the fakes (never a real
 // session; A18 is the paid row). The spawn-time copy of the worktree's CLAUDE.md reaches every launch
 // through --append-system-prompt-file, and no later launch re-reads the worktree.

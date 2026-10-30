@@ -1,5 +1,6 @@
 // log-writer.test.cjs — build 12 A1: the adapter's bounded, non-blocking log writer.
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 
 const test = require('node:test');
 const assert = require('node:assert');

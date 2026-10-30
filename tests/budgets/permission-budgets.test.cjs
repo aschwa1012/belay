@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // permission-budgets.test.cjs — build step 6d, design
 // item 7, the shape of tests/budgets/worker-budgets.test.cjs. `pending` against a data dir that does
 // not exist and against a dead store; `approve x` and `deny x` against the same two, each an

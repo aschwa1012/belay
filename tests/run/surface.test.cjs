@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // surface.test.cjs — build step S2, ADR 0024: a worker
 // sees only the tools, instructions and settings belay gives it. Pure tests of src/run/surface.cjs
 // and the launch-table argv it feeds, plus one read of a real 2.1.283 receipt. No process spawned here.

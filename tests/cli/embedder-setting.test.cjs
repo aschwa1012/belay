@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // embedder-setting.test.cjs — the run-spec handling of on_embedder_failure (ADR 0034 amendment 1) and the small function that persists
 // the operator's choice in belay.config.json. Each value, the old names, the precedence (spec, memory block, config file, default), and
 // a write that is atomic, keeps the other keys, and writes nothing when refused.
