@@ -45,9 +45,11 @@ function covers(w, pid, e) {
 }
 
 // -> { alive: [{ pid, created, kind }] } the recorded descendants whose process is alive.
-function refresh(snap, { now = Date.now() } = {}) {
-  const liveRecords = SR.live(); // first: it retires the records whose process is gone, and those tombstones are read next
+function refresh(snap, { now = Date.now(), boot = SR.bootMs(now) } = {}) {
+  const liveRecords = SR.live({ snap, now, boot }); // first: it retires the records whose process is gone, and those tombstones are read next
   const tombs = SR.tombstones();
+  // A lifetime from before the current boot ended with it: what began at the boot (explorer, the system processes) is not its child.
+  for (let i = tombs.length - 1; i >= 0; i--) if (tombs[i].via == null && tombs[i].from + SR.BOOT_SLACK_MS < boot) { SR.dropTombstone(tombs[i]); tombs.splice(i, 1); }
   const known = new Map(tombs.map((t) => [keyOf(t), t]));
   for (const t of tombs) if (t.until == null && !present(t, snap)) { t.until = now; SR.saveTombstone(t); }
   const lifetimes = [
