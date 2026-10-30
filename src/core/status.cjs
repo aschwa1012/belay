@@ -153,6 +153,7 @@ async function get(E, caller, args = {}) {
     established_by: E.owner ? 'owner' : E.establishedBy,
     ms: Date.now() - t0,
     ...(storePresent && runRow ? require('./status-plans.cjs').plansOf(E, runRow.id) : {}), // ADR 0071 decision 5: the plan of each task that has one
+    ...(storePresent && runRow ? require('./policy-log.cjs').statusOf(E, runRow.id) : {}), // 0.4.0: the newest policy steps and the count; no key for a run with none
     rungs,
     // Fix round: reuse runAdapterAlive (the run-alive rung's own fact) so this can't drift from it.
     run: runRow
