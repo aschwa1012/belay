@@ -152,6 +152,7 @@ async function get(E, caller, args = {}) {
     notes_held: notesHeld,
     established_by: E.owner ? 'owner' : E.establishedBy,
     ms: Date.now() - t0,
+    ...(storePresent && runRow ? require('./status-plans.cjs').plansOf(E, runRow.id) : {}), // ADR 0071 decision 5: the plan of each task that has one
     rungs,
     // Fix round: reuse runAdapterAlive (the run-alive rung's own fact) so this can't drift from it.
     run: runRow
