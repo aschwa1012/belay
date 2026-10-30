@@ -117,7 +117,7 @@ function checkS8(r) {
 
   const w = workerRow(dataDir, 'w-s8');
   assert.strictEqual(w.state, 'dead');
-  assert.strictEqual(w.death_established_by, `run.end: pid ${worker.pid} not alive when the run ended; no adapter wrote its exit (ADR 0029)`);
+  assert.strictEqual(w.death_established_by, `run.end: pid ${worker.pid} not alive when the run ended; no adapter wrote its exit`);
   assert.strictEqual(w.head_sha, head);
   assert.ok(Number.isInteger(w.exited_at));
   assert.strictEqual(w.exit_code, null);

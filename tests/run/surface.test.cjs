@@ -102,7 +102,7 @@ const BASE_PLUGINS = [{ name: 'agents-md', path: 'builtin', source: 'agents-md@b
 test('surface: each way the surface can differ is refused and named', () => {
   const extraBuiltin = S.checkSurface({ tools: [...BASE_TOOLS, 'Task'], plugins: BASE_PLUGINS }, {});
   assert.equal(extraBuiltin.ok, false);
-  assert.match(extraBuiltin.reason, /^the system\/init surface is not the one ADR 0024 allows:/);
+  assert.match(extraBuiltin.reason, /^the system\/init surface is not the one belay allows:/);
   assert.match(extraBuiltin.reason, /Task/);
 
   const missingWrite = S.checkSurface({ tools: BASE_TOOLS.filter((t) => t !== 'Write'), plugins: BASE_PLUGINS }, {});

@@ -57,13 +57,13 @@ function refusal(mode, parsed) {
     return parsed.fullscreen_set ? 'fullscreen is an interactive key: a headless orchestrator has no screen; drop it or run with --interactive' : null;
   }
   if (parsed.timeout_ms > 0) {
-    return `an interactive run takes no timeout_ms: nothing in an interactive run enforces a run timeout, and the prompt must not promise one; got ${parsed.timeout_ms} (ADR 0037)`;
+    return `an interactive run takes no timeout_ms: nothing in an interactive run enforces a run timeout, and the prompt must not promise one; got ${parsed.timeout_ms}`;
   }
   if (parsed.mcp_tool_timeout_ms > MAX_INTERACTIVE_MCP_TOOL_TIMEOUT_MS) {
-    return `an interactive run needs mcp_tool_timeout_ms of at most ${MAX_INTERACTIVE_MCP_TOOL_TIMEOUT_MS}: at 120 s an interactive session moves a running call to the background whatever the variable says (ADR 0037 decision 8); got ${parsed.mcp_tool_timeout_ms}`;
+    return `an interactive run needs mcp_tool_timeout_ms of at most ${MAX_INTERACTIVE_MCP_TOOL_TIMEOUT_MS}: at 120 s an interactive session moves a running call to the background whatever the variable says; got ${parsed.mcp_tool_timeout_ms}`;
   }
   if (!hasMarker(parsed.promptText)) {
-    return `an interactive run needs an interactive prompt: ${parsed.promptFile} lacks the line ${INTERACTIVE_MARKER}; start from ${INTERACTIVE_PROMPT} (ADR 0037 decision 4)`;
+    return `an interactive run needs an interactive prompt: ${parsed.promptFile} lacks the line ${INTERACTIVE_MARKER}; start from ${INTERACTIVE_PROMPT}`;
   }
   return null;
 }

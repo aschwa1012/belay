@@ -147,7 +147,7 @@ test('a restart after the task went to another worker goes ahead holding no leas
 test('a death wake that released leases keeps its clause and its pointer under the interactive cap', () => {
   const id = '0f8b1c2e-1111-4222-8333-444455556666';
   const ev = (by, n) => ({ event: 'death', worker_id: 'coder-1', turn: 3, exit_code: 1, exit_signal: null, death_established_by: by, leases_released: Array.from({ length: n }, () => ({ lease_id: id, task_id: id })) });
-  const long = 'run.end: pid 12345 not alive when the run ended; no adapter wrote its exit (ADR 0029)';
+  const long = 'run.end: pid 12345 not alive when the run ended; no adapter wrote its exit';
   for (const [by, n, want] of [['exit-event', 1, /Released its lease on task /], ['exit-event', 3, /Released 3 leases; open unless a hand-back lands\./], [long, 1, /Released its lease on task 0f8b1c2e-1111-4222-8333-444455556666; open unless its hand-back lands\./]]) {
     const text = wakeText(ev(by, n));
     assert.ok(Buffer.byteLength(text, 'utf8') <= 221, `${Buffer.byteLength(text, 'utf8')} bytes: ${text}`);

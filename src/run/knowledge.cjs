@@ -128,7 +128,7 @@ async function doAsk(manager, ctx, state, args) {
     fail('E_LEVER_OFF', 'the knowledge agent is off for this run; set memory.knowledge_agent to true in the run spec', { lever: 'knowledge_agent' });
   }
   if (!ctx.dataDir) fail('E_ARGS', 'ask needs the run\'s data dir in its context');
-  if (!ctx.worktree) fail('E_ARGS', 'ask needs the run\'s worktree, the knowledge agent\'s cwd (ADR 0043 decision 1); this adapter was started without --worktree');
+  if (!ctx.worktree) fail('E_ARGS', 'ask needs the run\'s worktree, the knowledge agent\'s cwd; this adapter was started without --worktree');
   const deadline = t0 + Math.max(1, Number(timeout_ms) || 110000);
   const left = () => Math.max(1, deadline - Date.now());
 

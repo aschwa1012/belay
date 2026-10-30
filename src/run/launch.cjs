@@ -131,7 +131,7 @@ function readPluginConfig(settingsPath) {
       path: p,
       error: (e && e.code === 'ENOENT')
         ? 'no user settings file at ' + p + ', so no plugin was named to disable'
-        : 'could not read or parse ' + p + ': ' + (e && e.message) + '. The worker settings file disables nothing, so the worker may inherit the user plugins (ADR 0007 §6).',
+        : 'could not read or parse ' + p + ': ' + (e && e.message) + '. The worker settings file disables nothing, so the worker may inherit the user plugins.',
       unreadable: !(e && e.code === 'ENOENT'),
     };
   }
