@@ -101,6 +101,10 @@ async function attach(E, caller, args) {
   if (modeGiven && args.embedder_mode !== null && !require('./embedder-mode.cjs').normalize(args.embedder_mode)) throw err('E_ARGS', 'run.attach embedder_mode must be null, required, keyword or off', { embedder_mode: args.embedder_mode });
   // A merge into a user's branch: the setting and the run's mode are the launching process's (operator role) to state, never the orchestrator's.
   const mergeGiven = args.merge_into !== undefined, modeSet = args.run_mode !== undefined;
+  // ADR 0071 decision 3: the user's default plan is stated by the launching process, never by the orchestrator whose tasks it fills.
+  const policyGiven = args.policy_default !== undefined;
+  if (policyGiven && caller.role !== 'operator') throw err('E_ROLE', 'run.attach policy_default is stated by the process that launched the run, never by the orchestrator', { role: caller.role });
+  const policyDefault = policyGiven && args.policy_default !== null ? JSON.stringify(require('./policy-plan.cjs').check(args.policy_default, 'run.attach policy_default')) : null;
   if ((mergeGiven || modeSet) && caller.role !== 'operator') throw err('E_ROLE', 'run.attach merge_into and run_mode are stated by the process that launched the run, never by the orchestrator', { role: caller.role });
   if (mergeGiven && args.merge_into !== null && !['ask', 'allowed'].includes(args.merge_into)) throw err('E_ARGS', 'run.attach merge_into must be null, ask or allowed', { merge_into: args.merge_into });
   if (modeSet && args.run_mode !== null && !['headless', 'interactive'].includes(args.run_mode)) throw err('E_ARGS', 'run.attach run_mode must be null, headless or interactive', { run_mode: args.run_mode });
@@ -217,6 +221,7 @@ async function attach(E, caller, args) {
     merge_into: mergeGiven ? args.merge_into : (carryPause ? prev.merge_into : null), run_mode: modeSet ? args.run_mode : (carryPause ? prev.run_mode : null), // same carry rule
     budget_usd: require('./run-budget.cjs').attachLimit(args, prev, carryPause), // dollar limit; a raised limit survives a re-attach of the same life
     budget: carryPause ? prev.budget : null,
+    policy_default: policyGiven ? policyDefault : (carryPause ? prev.policy_default : null), // same carry rule
     retrieval_routing: carryPause ? prev.retrieval_routing : null, // pinned for the run's life; a re-run over an ended row pins again
     embedder_mode: modeGiven ? (args.embedder_mode === null ? null : require('./embedder-mode.cjs').normalize(args.embedder_mode)) : (carryPause ? prev.embedder_mode : null),
   }, by, t);

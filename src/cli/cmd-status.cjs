@@ -48,6 +48,7 @@ function renderText(receipt) {
     if (r.budget) lines.push(`budget: ${require('../core/run-budget.cjs').textOf(r.budget)}`);
     if (r.paused_at != null && r.ended_at == null) lines.push(`run paused at ${new Date(r.paused_at).toISOString()} by ${r.paused_by}${/embedder-failure [(]/.test(r.paused_by || '') ? ` (an embedder failure, on_embedder_failure required: fix the embedder and belay resume, or choose: belay resume ${r.id} --embedder keyword | --embedder off, which also saves the choice; belay settings memory.on_embedder_failure keyword | off saves it for later runs; or leave it paused)` : ''}`);
   }
+  lines.push(...require('../core/status-plans.cjs').lines(receipt)); // ADR 0071 decision 5
   for (const w of receipt.workers || []) { // a turn that has not ended: an estimate from the worker's stream, apart from the reported cost
     if (w.cost_in_flight_usd != null) lines.push(`worker ${w.id}: $${w.cost_in_flight_usd.toFixed(2)} ${w.cost_in_flight_source}${w.cost_in_flight_partial ? ' (partial: stream not yet read to its end)' : ''}, not in its reported cost ${w.cost_usd == null ? 'not recorded' : `$${Number(w.cost_usd).toFixed(2)}`}`);
   }

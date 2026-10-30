@@ -121,6 +121,7 @@ function compactTask(row, { detail = false } = {}) {
   if (out.review === null) delete out.review;
   if (Array.isArray(row.amended)) { if (!detail) out.amended = row.amended.length; } else delete out.amended; // ADR 0061: a listing counts the revisions, detail has them; none, nothing
   out.spec_head = head(row.spec);
+  if (row.policy && typeof row.policy === 'object' && !detail) out.policy = require('../core/policy-plan.cjs').tag(row.policy); // ADR 0071 decision 5: a listing shows the plan as a tag, the task's own detail whole
   if (row.lease !== undefined) out.lease = leaseOf(row.lease);
   if (detail) { if (row.worktree !== undefined) out.worktree = worktreeOf(row.worktree); } else if (row.worktree && row.worktree.branch) out.branch = row.worktree.branch;
   let allChecks = row.results && Array.isArray(row.results.checks) ? row.results.checks : [];
@@ -222,7 +223,7 @@ const CREATED_DROP = new Set(['spec', 'acceptance', 'files_owned', 'depends_on',
 function created(row) {
   if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
   const out = { id: row.id, seq: row.seq, state: row.state, spec_head: head(row.spec) };
-  for (const [k, v] of Object.entries(row)) if (!(k in out) && !CREATED_DROP.has(k) && !(k === 'amended' && v == null)) out[k] = v; // an amend's answer names what it replaced
+  for (const [k, v] of Object.entries(row)) if (!(k in out) && !CREATED_DROP.has(k) && !(k === 'amended' && v == null) && !((k === 'acted_by' || k === 'trigger') && v == null) && !((k === 'policy' || k === 'policy_rev') && row.policy_rev == null)) out[k] = v; // an amend's answer names what it replaced; the plan is shown back whole (a null one only after a hand-back)
   return out;
 }
 
