@@ -290,3 +290,24 @@ test('two executors on one run: a claim whose claimant is alive is not swept by 
     assert.strictEqual(outcome(), 'exception');
   } finally { await e.close(); }
 });
+
+test('the sweep of a fix that died between its task and its assignment is an exception that names the task, and the task is halted', async () => {
+  const e = await env();
+  try {
+    const { work } = await judged(e, 'z', 'refuted');
+    const dead = (v) => Object.freeze({ ...v, task: { ...v.task, assign: async () => { throw Object.assign(new Error('the adapter ended'), { code: 'E_TIMEOUT' }); } } });
+    const dying = wrap(e.h, {
+      policyAs: (orig) => (seq) => dead(orig(seq)),
+      policy: (p) => ({ ...p, finish: async () => { throw Object.assign(new Error('the owner is gone'), { code: 'E_TIMEOUT' }); } }),
+    });
+    await e.exec({}, dying).tick();
+    const fix = fixesOf(e, work.id)[0].id;
+    assert.strictEqual(stepsOf(e)[0].outcome, 'started');
+    assert.strictEqual(e.raw("SELECT COUNT(*) AS n FROM lease WHERE acted_by = 'policy'")[0].n, 0, 'it never assigned');
+    await e.exec({ identity: { pid: 999999, created: 'later' }, aliveBy: async () => false }).tick();
+    const [s] = stepsOf(e);
+    assert.deepStrictEqual([s.outcome, s.row_ref], ['exception', `task:${fix}`]);
+    assert.match(s.error, /last write/);
+    assert.ok((await halted(e)).has(work.id), 'E8 halts the task and wakes the orchestrator');
+  } finally { await e.close(); }
+});

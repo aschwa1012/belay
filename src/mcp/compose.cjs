@@ -56,6 +56,7 @@ function createCompose({ callCore, manager, openManager, dataDir = null, runId =
     const raw = await callCore('task.assign', coreArgs);
     const out = withWarnings(withScratch(raw, coreArgs.worker_id), raw && overlapWarning(raw.overlaps));
     const not = (reason, extra) => ({ ...out, delivered: { sent: false, reason, ...extra } });
+    if (raw && raw.existing === true && raw.new_lease && raw.new_lease.holder && raw.new_lease.holder !== coreArgs.worker_id) return not(`the task is already held by ${raw.new_lease.holder}, not ${coreArgs.worker_id}, so nothing was sent to ${coreArgs.worker_id}`); // task.assign answers a standing lease of any worker as existing
     const sentKey = raw && raw.new_lease ? `${coreArgs.worker_id}|${raw.new_lease.id}` : null;
     if (raw && raw.existing === true && sentKey && DELIVERED.has(sentKey)) return not('the assignment already stands (existing) and the worker was told of it, so nothing was sent again'); // a policy step or an earlier call made it and told the worker (ADR 0072 decision 2); with no record of the delivery it is sent again
     const r = manager();

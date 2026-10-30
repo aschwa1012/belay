@@ -34,3 +34,16 @@ test('an existing assignment this process already sent is not sent again, in any
   assert.strictEqual(out.delivered.sent, false);
   assert.match(out.delivered.reason, /already stands/);
 });
+
+test('an existing assignment held by another worker is not sent to the one asked for', async () => {
+  const sent = [];
+  const callCore = async (m, a) => {
+    if (m === 'task.assign') return { task: { id: a.task_id, spec: 'do it', state: 'assigned' }, new_lease: { id: 'LY1', holder: 'w2' }, existing: true };
+    throw new Error(`unexpected ${m}`);
+  };
+  const mgr = { _worker: () => ({}), message: async (a) => { sent.push(a); return {}; } };
+  const out = await createCompose({ callCore, manager: () => mgr }).assign({ task_id: 't9', worker_id: 'w1' });
+  assert.deepStrictEqual(sent, []);
+  assert.match(out.delivered.reason, /already held by w2, not w1/);
+  assert.strictEqual(out.existing, true);
+});

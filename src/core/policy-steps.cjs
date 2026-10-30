@@ -61,16 +61,19 @@ const byKey = (E, run_id, t, step) => E.store.p('SELECT * FROM policy_step WHERE
 
 // The row a step wrote under a claim, found by the stamp the core put on it (policy-stamp.cjs overrides): 'table:id', or null. A step that made a task
 // or a review is named by the task, one that merged by the integration, else by the lease it took.
+// -> { effect, partial }. `effect`: the row a step that was finished wrote (integrate: the integration; fix and re_review: the task, but only once the
+// step's lease for it is stamped too, since the assignment is the step's last write). `partial`: a row a step wrote before it died, short of its
+// last write, so the claim is an exception that still names it.
 function effectOf(E, r) {
   const trig = JSON.stringify({ table: r.trigger_table, id: r.trigger_id, seq: r.trigger_seq });
-  const order = r.step === 'integrate' ? ['integration', 'task', 'lease'] : ['task', 'integration', 'lease'];
-  for (const table of order) {
-    try {
-      const row = E.store.p(`SELECT id FROM ${table} WHERE run_id = ? AND acted_by = 'policy' AND "trigger" = ? ORDER BY seq LIMIT 1`).get(r.run_id, trig);
-      if (row) return `${table}:${row.id}`;
-    } catch { /* an old store without the columns has none */ }
-  }
-  return null;
+  const find = (table) => {
+    try { const row = E.store.p(`SELECT id FROM ${table} WHERE run_id = ? AND acted_by = 'policy' AND "trigger" = ? ORDER BY seq LIMIT 1`).get(r.run_id, trig); return row ? row.id : null; } catch { return null; } // an old store without the columns has none
+  };
+  if (r.step === 'integrate') { const i = find('integration'); return { effect: i ? `integration:${i}` : null, partial: null }; }
+  const t = find('task'); const l = find('lease');
+  if (t && l) return { effect: `task:${t}`, partial: null };
+  if (t) return { effect: null, partial: `task:${t}` };
+  return { effect: l ? `lease:${l}` : null, partial: null };
 }
 
 async function claim(E, caller, args) {
@@ -147,7 +150,7 @@ async function list(E, caller, args) {
   let rows = [];
   try { rows = E.store.p('SELECT * FROM policy_step WHERE run_id = ? AND seq > ? ORDER BY seq LIMIT ?').all(run_id, a.since_seq || 0, a.limit || LIST_DEFAULT); }
   catch (e) { if (!/no such table/i.test(e.message)) throw e; }
-  for (const r of rows) if (r.outcome === 'started') r.effect = effectOf(E, r); // what a claim left started wrote, if anything: the row stamped with its trigger
+  for (const r of rows) if (r.outcome === 'started') Object.assign(r, effectOf(E, r)); // what a claim left started wrote, if anything: the row stamped with its trigger
   return { rows, last_seq: rows.length ? rows[rows.length - 1].seq : (a.since_seq || 0) };
 }
 

@@ -112,6 +112,8 @@ function createPolicyExecutor({ core, runId, assignFor, closing = () => false, c
       try {
         await g.policy.finish(s.effect
           ? { seq: s.seq, outcome: 'done', row_ref: s.effect }
+          : s.partial
+          ? { seq: s.seq, outcome: 'exception', row_ref: s.partial, error: `interrupted: the adapter that claimed step ${s.step} on ${s.trigger_table}:${s.trigger_id}:${s.trigger_seq} ended after writing ${s.partial} and before the step's last write (its assignment); belay does not resume a step, so check and act` }
           : { seq: s.seq, outcome: 'exception', error: `interrupted: the adapter that claimed step ${s.step} on ${s.trigger_table}:${s.trigger_id}:${s.trigger_seq} ended before it finished it and wrote nothing that carries its stamp; belay does not resume a step, so check and act` });
         out.push(s.seq);
       } catch (e) { log(`policy sweep ${s.seq}: ${errText(e)}`); }
