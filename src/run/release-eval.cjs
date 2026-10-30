@@ -16,6 +16,7 @@ const reviewWake = require('./review-wake.cjs');
 const { forecastTask } = require('../core/conflict-forecast.cjs');
 
 const WAKE_TEXT_MAX = 221;
+const FORECASTS_MAX = 4; // conflict forecasts running at once (conflict-forecast.cjs)
 const PENDING_MAX_MS = 900000; // a watched evaluation that never lands (cancelled, or the owner gone) is forgotten after this, unless its worker is live: a release evaluation may queue for a slot and then run 540 s
 // ADR 0058 amendment 4: how long a turn_end wake waits for its hand-backs' evaluation; BELAY_RELEASE_WAKE_HOLD_MS (ms) overrides it.
 const RELEASE_WAKE_HOLD_MS = 30000;
@@ -50,11 +51,11 @@ async function workOf(core, row) {
   } catch { return null; }
 }
 
-// `forecasts` (optional): the conflict forecasts enrichWakes made, by `<task id>:<evaluated_at>` (conflict-forecast.cjs).
+// `forecasts` (optional): the conflict forecasts enrichWakes made, by `<task id>:<hand-back at>` (conflict-forecast.cjs).
 function summaryOf(row, byId, forecasts) {
   const r = row.results || {};
   const fr = fixRoundsOf(row, byId);
-  const fc = forecasts && forecasts.get(`${row.id}:${r.evaluated_at}`);
+  const fc = forecasts && forecasts.get(`${row.id}:${row.handoff && row.handoff.at}`);
   const review = reviewWake.reviewOf(row); // a review whose verdict check was executable: its facts ride on the wake (review-wake.cjs)
   return { task_id: row.id, state: row.state, passed: !!r.passed, executable: !!r.executable, checks: ((r.checks) || []).length, failing: failedKinds(row), ...(review ? { review } : {}), ...(r.flaky ? { flaky: true } : {}), ...(r.uncommitted ? { uncommitted: true } : {}), ...(r.queued ? { queued: r.queued } : {}), ...(fr ? { fix_rounds: fr } : {}), ...(fc ? { forecast: fc } : {}) };
 }
@@ -162,18 +163,29 @@ const cut = (s, max) => {
   return `${Buffer.from(s, 'utf8').subarray(0, max - 3).toString('utf8').replace(/�$/, '')}...`;
 };
 
-// A forecast conflict as a short tail of the clause (the first files, then a count); a clean, unavailable or absent forecast says nothing.
-const conflictText = (f) => (f && Array.isArray(f.files) && f.files.length ? `; forecast: conflicts with the integration branch in ${f.files.slice(0, 3).join(', ')}${f.files.length > 3 ? ` +${f.files.length - 3}` : ''}` : '');
-
+// A forecast conflict as a tail of a passed clause, at most `spare` bytes: the first whole file names, then a count; never part of a name.
+// A clean, unavailable or absent forecast says nothing, and neither does a conflict whose shortest form does not fit.
+function conflictTail(e, spare) {
+  const files = e.state === 'done' && e.forecast && Array.isArray(e.forecast.files) ? e.forecast.files : [];
+  const n = files.length;
+  for (let k = Math.min(3, n); k >= 0 && n; k -= 1) {
+    const t = k ? `; forecast: conflicts with the integration branch in ${files.slice(0, k).join(', ')}${n > k ? ` +${n - k}` : ''}` : `; forecast: ${n} file${n === 1 ? '' : 's'} would conflict with the integration branch`;
+    if (Buffer.byteLength(t, 'utf8') <= spare) return t;
+  }
+  return '';
+}
 // The evaluation clause, at most `room` bytes: " task T evaluated at release: passed, done." or "...: not done; failing: ...".
 function clause(evs, room) {
   // An evaluation that waited for a slot (max_parallel_evaluations) says so: queued behind `ahead` others, `waited_ms` before it ran.
   const waited = (e) => (e.queued ? ` (queued behind ${e.queued.ahead}, waited ${Math.round(e.queued.waited_ms / 1000)} s)` : '');
   const parts = evs.map((e) => `${one(e)}${waited(e)}`);
+  // The forecast tails take what room the bare clauses leave (the review render below is given room - 2, so they leave that too).
+  let spare = room - 2 - Buffer.byteLength(` ${parts.join('; ')}.`, 'utf8');
+  evs.forEach((e, i) => { const t = conflictTail(e, spare); parts[i] += t; spare -= Buffer.byteLength(t, 'utf8'); });
   function one(e) { return (e.stood_down ? `task ${e.task_id}: the worker stood down with no result (${e.stood_down}); nothing was evaluated`
     : e.error === 'E_BUSY' ? `task ${e.task_id} not evaluated at release: another evaluation of it is running`
     : e.error ? `task ${e.task_id} could not be evaluated at release (${e.error}); call task_evaluate to run it`
-    : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? `${e.flaky ? 'passed on a retry (flaky), done' : 'passed, done'}${e.uncommitted ? '; uncommitted changes: commit before integrate' : ''}${conflictText(e.forecast)}` : `not done${e.fix_rounds ? `; fix rounds ${e.fix_rounds.used} of max ${e.fix_rounds.max}${e.fix_rounds.hard == null ? '' : `, hard cap ${e.fix_rounds.hard}`}` : ''}; failing: ${e.failing.join(', ') || 'no executable check'}`}`); }
+    : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? `${e.flaky ? 'passed on a retry (flaky), done' : 'passed, done'}${e.uncommitted ? '; uncommitted changes: commit before integrate' : ''}` : `not done${e.fix_rounds ? `; fix rounds ${e.fix_rounds.used} of max ${e.fix_rounds.max}${e.fix_rounds.hard == null ? '' : `, hard cap ${e.fix_rounds.hard}`}` : ''}; failing: ${e.failing.join(', ') || 'no executable check'}`}`); }
   if (evs.some((e) => e.review)) {
     const body = reviewWake.render(parts, evs, room - 2);
     if (body) return ` ${body}.`;
@@ -213,12 +225,17 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
   if (!tasks) { const flushed = [...held.values()].map((h) => h.ev); held.clear(); return flushed.concat(events); }
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const landed = (t) => t.results && t.results.trigger === 'release' && seen.get(t.id) !== t.results.evaluated_at && (!t.handoff || Number(t.results.evaluated_at) >= Number(t.handoff.at));
-  // A passed evaluation that landed gets one conflict forecast (a warning on the wake; it never gates anything), kept for the later reads of the poll.
+  // The conflict forecast (a warning on the wake; it never gates anything) is started, never awaited, when a hand-back is first watched, so
+  // it has usually settled when the evaluation lands; a wake carries it only if it has. One per hand-back, at most FORECASTS_MAX at once.
   const forecasts = seen.forecasts || (seen.forecasts = new Map());
-  for (const t of tasks) {
-    const key = t.run_id === runId && t.state === 'done' && landed(t) && `${t.id}:${t.results.evaluated_at}`;
-    if (key && !forecasts.has(key)) { try { const f = await forecaster(t, runId); if (f) forecasts.set(key, f); } catch { /* a forecast is optional */ } }
-  }
+  const kick = (t) => {
+    const key = `${t.id}:${t.handoff && t.handoff.at}`;
+    const started = seen.forecastStarted || (seen.forecastStarted = new Set());
+    if (started.has(key) || (seen.forecastRunning || 0) >= FORECASTS_MAX) return;
+    started.add(key); seen.forecastRunning = (seen.forecastRunning || 0) + 1;
+    let p; try { p = Promise.resolve(forecaster(t, runId)); } catch { p = Promise.resolve(null); }
+    p.then((fc) => { if (fc) forecasts.set(key, fc); }, () => { /* a forecast is optional */ }).finally(() => { seen.forecastRunning -= 1; });
+  };
   const fails = await releaseFailures(core, runId, seen, pending, held, events, tasks);
   // A failure ends the attempt of its own turn: a hand-back gets a new attempt after every cancel or error, so a failure from an earlier turn
   // (stale, not yet read) is not this attempt's. `turn` is the turn_end turn the attempt belongs to.
@@ -253,7 +270,7 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     for (const t of tasks) {
       if (t.run_id !== runId || !t.handoff || t.handoff.by !== ev.worker_id) continue;
       if (t.handoff.stood_down) { const key = `${t.id}:${t.handoff.at}`; if (!(seen.stood = seen.stood || new Set()).has(key) && t.state === 'released') { seen.stood.add(key); evs.push({ task_id: t.id, stood_down: t.handoff.stood_down }); } continue; } // a stand-down is a fact for the wake, once
-      if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); evs.push(summaryOf(t, byId, forecasts)); } else if (unevaluated(t, runId, ev.worker_id) && failedOf(t, ev.turn)) { const s = failure(failedOf(t, ev.turn)); if (s) evs.push(s); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: t0, turn: ev.turn }); ing.push(t.id); }
+      if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); evs.push(summaryOf(t, byId, forecasts)); } else if (unevaluated(t, runId, ev.worker_id) && failedOf(t, ev.turn)) { const s = failure(failedOf(t, ev.turn)); if (s) evs.push(s); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: t0, turn: ev.turn }); ing.push(t.id); kick(t); }
     }
     if (ing.length && holdMs > 0) { held.set(ev.worker_id, { ev, evs, ids: ing, since: t0 }); continue; }
     if (evs.length) ev.evaluated = evs;

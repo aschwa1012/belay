@@ -82,7 +82,7 @@ test('a timeout, or a commit that does not exist, is unavailable: never a throw'
   try {
     const repo = conflictRepo(dir);
     const [a, b] = ['a', 'b'].map((x) => git(repo, 'rev-parse', x));
-    const slow = await forecast({ repo, head: a, against: b, timeoutMs: 1 });
+    const slow = await forecast({ repo, head: a, against: b, totalMs: 1 });
     assert.strictEqual(typeof slow.unavailable, 'string');
     assert.strictEqual(slow.files, undefined); assert.strictEqual(slow.clean, undefined);
     const bad = await forecast({ repo, head: 'f'.repeat(40), against: b });
