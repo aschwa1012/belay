@@ -96,24 +96,27 @@ function createWait({ workers, get, core = null }) {
     // restart in flight is skipped by the already-finished checks and watched through its relaunch instead; the call answers
     // whichever comes first, a worker that has already finished or any relaunch (a failed one is the answer, naming its worker).
     const failedOf = (w, e) => ({ worker_id: w.id, event: 'restart_failed', established_by: `the relaunch failed: ${(e && e.message) || e}`, error_code: (e && e.code) || null, exit_code: w.exitCode, exit_signal: w.exitSignal, turn: w.turns });
-    const finishedOf = (w) => (w.staleSince ? { ...staleOf(w), already: true } : w.settled ? { ...settledOf(w), already: true } : w.turnEnded ? { ...turnOf(w, null), already: true } : null);
+    // Every answer about a hand-back whose evaluation a stop, park or other operation cancelled says so (the last evaluation of this turn).
+    const cancelOf = (w) => (w.lastEvaluation && w.lastEvaluation.cancelled && w.lastEvaluation.turn === w.turns ? { evaluation: 'cancelled' } : {});
+    const finishedOf = (w) => (w.staleSince ? { ...staleOf(w), already: true } : w.settled ? { ...settledOf(w), ...cancelOf(w), already: true } : w.turnEnded ? { ...turnOf(w, null), ...cancelOf(w), already: true } : null);
     // Gap 9 (ADR 0058's evaluation at release): a turn that already ended with its hand-back still being evaluated is not answered at
     // once with `evaluating` again; the wait holds, within its own bound, until that evaluation ends, and answers with its result.
     const evaluating = [];
     for (const w of ws) {
       if (w.restartInFlight) continue;
       if (w.staleSince) return done({ ...staleOf(w), already: true });
-      if (w.settled) { if (w.exitCode == null && w.exitSignal == null) await withCode(w); return done({ ...settledOf(w), already: true }); }
+      if (w.settled) { if (w.exitCode == null && w.exitSignal == null) await withCode(w); return done({ ...settledOf(w), ...cancelOf(w), already: true }); }
       if (w.turnEnded && EV.evaluatingOf(w)) { evaluating.push(w); continue; }
-      if (w.turnEnded) return done({ ...turnOf(w, null), already: true });
+      if (w.turnEnded) return done({ ...turnOf(w, null), ...cancelOf(w), already: true });
     }
     // The hold ended. A stop that cancelled the evaluation has not settled yet: answer as the stop will (its settled state), never as
     // a finished turn. Any other cancel is named in the answer, so a caller can tell a cancelled evaluation from one that found nothing.
     const afterHold = (w, ev) => {
-      if (w.stopRequested && !w.settled) return watch(w);
+      const cancelled = !!(ev && ev.cancelled);
+      if (w.stopRequested && !w.settled) return watch(w).then((x) => (cancelled && x.turn === w.turns ? { ...x, evaluation: 'cancelled' } : x));
       const r = finishedOf(w);
       if (!r) return watch(w);
-      return ev && ev.cancelled && r.event === 'turn_end' ? { ...r, evaluation: 'cancelled' } : r;
+      return cancelled && !r.evaluation && r.turn === w.turns ? { ...r, evaluation: 'cancelled' } : r;
     };
     const never = new Promise(() => {});
     // build step 6e-6 item 2 (`settle`, worker.cjs): `waitTurn` now also resolves on the worker's own
@@ -134,7 +137,6 @@ function createWait({ workers, get, core = null }) {
     const partial = [];
     const holdTurn = (w, r) => {
       if (r.event !== 'turn_end' || !r.evaluating || !EV.evaluatingOf(w)) return r;
-      partial.push(r);
       const left = () => Math.max(1, ms - (now() - t0));
       const stopping = () => !!(w.stopRequested || w.parkRequested);
       // Read when the hold resolves, never at the turn end: the evaluation starts only after the turn's row is written (ids noted
@@ -147,6 +149,7 @@ function createWait({ workers, get, core = null }) {
         return stopping() && !v.evaluating && !v.evaluated;
       };
       const finish = () => { const { evaluating, ...rest } = r; return { ...rest, ...require('./release-eval.cjs').evalOf(w), ...(cancelled() ? { evaluation: 'cancelled' } : {}) }; };
+      partial.push(() => (cancelled() ? finish() : r)); // the bound ran out: the turn as it stands then, not as it stood at its end
       return Promise.race([
         // The worker's death, a turn begun meanwhile, and its stop or park settling: a stop or park that cancelled the evaluation
         // answers the turn with evaluation 'cancelled', not as a bare settled state.
@@ -162,7 +165,7 @@ function createWait({ workers, get, core = null }) {
       ...ws.filter((w) => !evaluating.includes(w)).map((w) => watch(w).then((r) => holdTurn(w, r))),
       // The worker stays watched through the hold: its death, stop or park, and a turn begun or ended meanwhile, answer as they would
       // without it. Once the evaluation ends the worker is looked at again, so a turn begun during the hold is not answered as the old one.
-      ...evaluating.map((w) => { const ev = w.evaluation; return Promise.race([watch(w), EV.evaluationEnded(w).then(() => afterHold(w, ev))]); }),
+      ...evaluating.map((w) => { const ev = w.evaluation; return Promise.race([watch(w).then((x) => (x.event !== 'turn_end' && x.event !== 'turn_failed' ? { ...x, ...cancelOf(w) } : x)), EV.evaluationEnded(w).then(() => afterHold(w, ev))]); }),
       new Promise((res) => { const t = setTimeout(() => res(null), ms); if (t.unref) t.unref(); }),
     ]);
     if (winner && winner.event !== 'restart_failed' && 'exit_code' in winner && winner.exit_code == null && winner.exit_signal == null) {
@@ -170,7 +173,7 @@ function createWait({ workers, get, core = null }) {
       if (w) { await withCode(w); return done({ ...settledOf(w) }); }
     }
     if (winner) return done(winner);
-    if (partial.length) return done(partial[0]); // the bound ran out mid-evaluation: the turn as it stood, still evaluating
+    if (partial.length) return done(partial[0]()); // the bound ran out mid-evaluation: the turn as it stands, still evaluating, or cancelled
     // Only what is still in flight: a cancelled evaluation, or one that ended without an answer, is not listed with empty tasks.
     const stillEvaluating = evaluating.map((w) => ({ worker_id: w.id, turn: w.turns, tasks: EV.evaluatingOf(w) })).filter((e) => e.tasks);
     return {

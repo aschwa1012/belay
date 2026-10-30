@@ -121,3 +121,36 @@ for (const [name, run] of [
     assert.deepStrictEqual([got.event, got.evaluation, got.evaluating, got.evaluated, got.turn], ['turn_end', 'cancelled', undefined, undefined, 1]);
   });
 }
+
+test('the bound running out while a cancelling stop has not settled answers the turn as cancelled, not still evaluating', { timeout: 20000 }, async () => {
+  const w = stub('w1');
+  const p = waitOf(w)({ worker_ids: ['w1'], timeout_ms: 300 });
+  await tick();
+  const t = turnEnds(w);
+  await tick();
+  t.begin();
+  w.stopRequested = true; cancel(w, 'stop of worker w1');
+  const got = await p;
+  assert.deepStrictEqual([got.event, got.evaluation, got.evaluating, got.timed_out], ['turn_end', 'cancelled', undefined, false]);
+});
+
+test('a later wait about a cancelled hand-back says so: the settled worker, and a wait already holding when the stop came', { timeout: 20000 }, async () => {
+  // A wait begun after the stop settled (the already-finished path).
+  const a = stub('a');
+  const ta = turnEnds(a);
+  ta.begin();
+  a.stopRequested = true; cancel(a, 'stop of worker a');
+  settle(a, 'stopped');
+  const later = await waitOf(a)({ worker_ids: ['a'], timeout_ms: 5000 });
+  assert.deepStrictEqual([later.event, later.already, later.evaluation], ['stopped', true, 'cancelled']);
+  // A wait begun while the turn was over and its evaluation ran (the hold of a later wait), cancelled by a stop meanwhile.
+  const b = stub('b');
+  const tb = turnEnds(b);
+  tb.begin();
+  const p = waitOf(b)({ worker_ids: ['b'], timeout_ms: 10000 });
+  await tick();
+  b.stopRequested = true; cancel(b, 'stop of worker b');
+  settle(b, 'stopped');
+  const got = await p;
+  assert.deepStrictEqual([got.event, got.evaluation, got.turn], ['stopped', 'cancelled', 1]);
+});
