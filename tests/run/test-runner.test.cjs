@@ -163,18 +163,36 @@ function fakeSpawn(argvs) {
 }
 const flagOf = (argv) => argv.filter((a) => a.startsWith('--test-concurrency'));
 
-test('test-runner: a valid concurrency is passed to the node --test argv of both phases', async () => {
+test('test-runner: a valid concurrency is passed to phase 1; phase 2 always gets 1', async () => {
   const argvs = [];
   await runPhases({ globs1: ['a'], glob2: 'b', guard: false, concurrency: 3, spawnImpl: fakeSpawn(argvs) });
   assert.strictEqual(argvs.length, 2);
-  for (const a of argvs) assert.deepStrictEqual(flagOf(a), ['--test-concurrency=3']);
+  assert.deepStrictEqual(flagOf(argvs[0]), ['--test-concurrency=3']);
+  assert.deepStrictEqual(flagOf(argvs[1]), ['--test-concurrency=1'], 'the budget files run one at a time (invariant 9)');
 });
 
-test('test-runner: no concurrency means no flag on either phase', async () => {
+test('test-runner: the phase-2 runner bound passed to runPhase is 900000 ms by default', async () => {
+  const saved = process.env.BELAY_TEST_PHASE2_TIMEOUT_MS;
+  delete process.env.BELAY_TEST_PHASE2_TIMEOUT_MS;
+  const delays = [];
+  const realSet = global.setTimeout;
+  global.setTimeout = (fn, ms, ...rest) => { delays.push(ms); return realSet(fn, ms, ...rest); };
+  try {
+    await runPhases({ globs1: ['a'], glob2: 'b', guard: false, timeout1: 111111, spawnImpl: fakeSpawn([]) });
+  } finally {
+    global.setTimeout = realSet;
+    if (saved !== undefined) process.env.BELAY_TEST_PHASE2_TIMEOUT_MS = saved;
+  }
+  assert.ok(delays.includes(111111), 'phase 1 got the bound it was given');
+  assert.ok(delays.includes(900000), `phase 2 got 900000 ms, saw ${JSON.stringify(delays)}`);
+});
+
+test('test-runner: no concurrency means no flag on phase 1, and phase 2 still gets 1', async () => {
   const argvs = [];
   await runPhases({ globs1: ['a'], glob2: 'b', guard: false, concurrency: null, spawnImpl: fakeSpawn(argvs) });
   assert.strictEqual(argvs.length, 2);
-  for (const a of argvs) assert.deepStrictEqual(flagOf(a), []);
+  assert.deepStrictEqual(flagOf(argvs[0]), []);
+  assert.deepStrictEqual(flagOf(argvs[1]), ['--test-concurrency=1']);
 });
 
 test('test-runner: BELAY_TEST_CONCURRENCY is read as a positive integer; anything else is ignored with a log line', () => {
