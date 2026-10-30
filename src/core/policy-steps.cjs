@@ -3,7 +3,7 @@
 // is the INSERT, and the table's UNIQUE key is what serializes the run's executor and the orchestrator, so a second claim of one
 // trigger cannot write a second row whoever makes it and however the two interleave. The executor that acts on a claim lives in
 // src/run; this module only records.
-//   policy.claim   { task_id?, step, trigger: { table, id, seq? }, policy_rev?, worker_id?, turn? } -> { row, existing }
+//   policy.claim   { task_id?, step, trigger: { table, id, seq (required for task, lease, integration) }, policy_rev?, worker_id?, turn? } -> { row, existing }
 //   policy.finish  { seq, outcome, row_ref? | error? }                                              -> { row }
 //   policy.list    { run_id?, since_seq?, limit? }                                                  -> { rows, last_seq }
 // claim and finish are the harness channel's (the run manager's executor), never a tool call; list is a read. The run is the
@@ -17,6 +17,10 @@ const { err } = require('./errors.cjs');
 const OUTCOMES = ['done', 'exception', 'superseded', 'skipped'];
 const NEEDS_REF = new Set(['done', 'superseded']); // the row the step (or the orchestrator, when it acted first) wrote
 const NEEDS_WHY = new Set(['exception', 'skipped']);
+// The tables a trigger or a row_ref may name. A row of the first three is versioned (every write is a new seq of its id), so a trigger on
+// one names the exact version it acted on; `worker` and `run` rows are named by id alone.
+const TABLES = ['task', 'lease', 'integration', 'worker', 'run'];
+const VERSIONED = new Set(['task', 'lease', 'integration']);
 const STEP_RE = /^[a-z][a-z_]{0,31}$/;
 const TEXT_MAX = 1000;
 const LIST_DEFAULT = 500;
@@ -38,6 +42,19 @@ function unknownFields(a, allowed, method) {
   for (const k of Object.keys(a)) if (!allowed.includes(k)) throw err('E_ARGS', `${method}: ${k} is not an argument`, { field: k });
 }
 
+// row_ref grammar: `table:id` or `table:id:seq` (ids hold no colon). Returns { table, id, seq|null }.
+function parseRef(ref) {
+  const p = typeof ref === 'string' ? ref.split(':') : [];
+  const ok = (p.length === 2 || (p.length === 3 && /^[0-9]+$/.test(p[2]))) && TABLES.includes(p[0]) && p[1];
+  if (!ok) throw err('E_ARGS', `row_ref must be table:id or table:id:seq with table one of ${TABLES.join(', ')}; got ${JSON.stringify(ref)}`, { field: 'row_ref' });
+  return { table: p[0], id: p[1], seq: p.length === 3 ? Number(p[2]) : null };
+}
+// The row a step says it wrote must be in the store (invariant 5); checked inside finish's transaction.
+function refExists(E, r) {
+  const q = r.table === 'run' || r.seq === null ? `SELECT 1 AS x FROM ${r.table} WHERE id = ? LIMIT 1` : `SELECT 1 AS x FROM ${r.table} WHERE id = ? AND seq = ? LIMIT 1`;
+  return !!(r.table === 'run' || r.seq === null ? E.store.p(q).get(r.id) : E.store.p(q).get(r.id, r.seq));
+}
+
 const byKey = (E, run_id, t, step) => E.store.p('SELECT * FROM policy_step WHERE run_id = ? AND trigger_table = ? AND trigger_id = ? AND trigger_seq = ? AND step = ?').get(run_id, t.table, t.id, t.seq, step);
 
 async function claim(E, caller, args) {
@@ -49,8 +66,11 @@ async function claim(E, caller, args) {
   if (!t || typeof t !== 'object' || !isStr(t.table) || !isStr(t.id) || (t.seq !== undefined && !isInt(t.seq))) throw err('E_ARGS', 'policy.claim needs trigger: { table, id, seq? }, the store row that is the fact the step acts on', { field: 'trigger' });
   for (const k of ['task_id', 'worker_id']) if (a[k] !== undefined && a[k] !== null && !isStr(a[k])) throw err('E_ARGS', `policy.claim ${k} must be a non-empty string`, { field: k });
   for (const k of ['policy_rev', 'turn']) if (a[k] !== undefined && a[k] !== null && !isInt(a[k])) throw err('E_ARGS', `policy.claim ${k} must be an integer`, { field: k });
+  if (!TABLES.includes(t.table)) throw err('E_ARGS', `policy.claim trigger.table must be one of ${TABLES.join(', ')}`, { field: 'trigger' });
+  if (VERSIONED.has(t.table) && t.seq === undefined) throw err('E_ARGS', `a trigger on a ${t.table} row needs its seq: the step acts on that version of the row, and a later version is a new trigger`, { field: 'trigger' });
   const trig = { table: t.table, id: t.id, seq: t.seq === undefined ? 0 : t.seq };
   const run_id = caller.run_id;
+  if (!isStr(run_id)) throw err('E_ARGS', 'policy.claim needs a caller with a run_id', { field: 'run_id' });
   if (hooks.beforeInsert) await hooks.beforeInsert({ run_id, step: a.step, trigger: trig });
   return E.store.tx(() => {
     const info = E.store.p('INSERT OR IGNORE INTO policy_step(run_id, task_id, step, trigger_table, trigger_id, trigger_seq, policy_rev, outcome, worker_id, turn, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
@@ -72,7 +92,10 @@ async function finish(E, caller, args) {
   if (NEEDS_REF.has(a.outcome) && !isStr(a.row_ref)) throw err('E_ARGS', `a step finished ${a.outcome} must name the row it wrote (row_ref)`, { field: 'row_ref' });
   if (NEEDS_WHY.has(a.outcome) && !isStr(a.error)) throw err('E_ARGS', `a step finished ${a.outcome} must say why (error)`, { field: 'error' });
   for (const k of ['row_ref', 'error']) if (a[k] !== undefined && a[k] !== null && (typeof a[k] !== 'string' || a[k].length > TEXT_MAX)) throw err('E_ARGS', `policy.finish ${k} must be a string of at most ${TEXT_MAX} characters`, { field: k });
+  const ref = a.row_ref ? parseRef(a.row_ref) : null;
+  if (!isStr(caller.run_id)) throw err('E_ARGS', 'policy.finish needs a caller with a run_id', { field: 'run_id' });
   return E.store.tx(() => {
+    if (ref && !refExists(E, ref)) throw err('E_NOT_FOUND', `row_ref ${a.row_ref} names a row that is not in the store, so the step has no effect to record`, { row_ref: a.row_ref });
     const cur = E.store.p('SELECT * FROM policy_step WHERE seq = ?').get(a.seq);
     if (!cur || cur.run_id !== caller.run_id) throw err('E_NOT_FOUND', `no policy step ${a.seq} in this run`, { seq: a.seq });
     if (cur.outcome !== 'started') throw err('E_BUSY', `policy step ${a.seq} is already finished (${cur.outcome}); a step is finished once`, { seq: a.seq, outcome: cur.outcome, reason: 'already_finished' });

@@ -19,6 +19,7 @@ const { SCHEMA_VERSION } = core('schema-stamp.cjs');
 const HARNESS = { role: 'operator', run_id: 'r1', channel: 'harness' };
 const E = (store) => ({ store, noteWrite() {}, writtenBy: (c) => c.role });
 const TRIG = { table: 'task', id: 't-1', seq: 4 };
+const seedTask = (store, id) => Number(store.p("INSERT INTO task(id, run_id, spec, state, written_at, written_by) VALUES (?, 'r1', 'x', 'open', 1, 'orchestrator')").run(id).lastInsertRowid);
 const rowsOf = (store) => store.p('SELECT * FROM policy_step ORDER BY seq').all();
 
 async function rejectsCode(p, code) {
@@ -97,16 +98,41 @@ test('finish moves a claim once and names its effect; it refuses a step without 
     await rejectsCode(steps.finish(E(s), HARNESS, { seq: 999, outcome: 'skipped', error: 'x' }), 'E_NOT_FOUND');
     await rejectsCode(steps.finish(E(s), { ...HARNESS, run_id: 'other' }, { seq: row.seq, outcome: 'skipped', error: 'x' }), 'E_NOT_FOUND');
     assert.strictEqual(rowsOf(s)[0].outcome, 'started', 'every refusal left the claim as it was');
-    const done = await steps.finish(E(s), HARNESS, { seq: row.seq, outcome: 'done', row_ref: 'task:fix-1' });
+    // The row a step says it wrote must exist, in a grammar the checkers can split.
+    for (const bad of ['task:fix-1', 'task:fix-1:1', 'nowhere:x', 'task', 'task:', 'task:a:b', 'task:a:1:2']) {
+      await rejectsCode(steps.finish(E(s), HARNESS, { seq: row.seq, outcome: 'done', row_ref: bad }), bad === 'task:fix-1' || bad === 'task:fix-1:1' ? 'E_NOT_FOUND' : 'E_ARGS');
+    }
+    assert.strictEqual(rowsOf(s)[0].outcome, 'started', 'a ref to nothing recorded nothing');
+    const tseq = seedTask(s, 'fix-1');
+    await rejectsCode(steps.finish(E(s), HARNESS, { seq: row.seq, outcome: 'done', row_ref: `task:fix-1:${tseq + 50}` }), 'E_NOT_FOUND'); // the id exists, that version does not
+    const done = await steps.finish(E(s), HARNESS, { seq: row.seq, outcome: 'done', row_ref: `task:fix-1:${tseq}` });
     assert.strictEqual(done.row.seq, row.seq);
     assert.strictEqual(done.row.outcome, 'done');
-    assert.strictEqual(done.row.row_ref, 'task:fix-1');
+    assert.strictEqual(done.row.row_ref, `task:fix-1:${tseq}`);
     assert.ok(done.row.finished_at >= row.at);
     await rejectsCode(steps.finish(E(s), HARNESS, { seq: row.seq, outcome: 'exception', error: 'later' }), 'E_BUSY');
     assert.strictEqual(rowsOf(s)[0].outcome, 'done');
     const c2 = (await steps.claim(E(s), HARNESS, { step: 'fix', trigger: { ...TRIG, seq: 9 } })).row;
     const ex = await steps.finish(E(s), HARNESS, { seq: c2.seq, outcome: 'exception', error: 'E_BUSY: w-1 is working' });
     assert.deepStrictEqual([ex.row.outcome, ex.row.error, ex.row.row_ref], ['exception', 'E_BUSY: w-1 is working', null]);
+  } finally { s.close(); cleanup(d); }
+});
+
+test('a trigger names a known table and, for a versioned row, the version it acted on', async () => {
+  const d = sandbox();
+  const s = new Store(path.join(d, 'memory.db'), { stamp: true });
+  try {
+    for (const trigger of [{ table: 'task', id: 't-1' }, { table: 'lease', id: 'l-1' }, { table: 'integration', id: 'i-1' }, { table: 'review', id: 'x', seq: 1 }, { table: 'task', id: 't-1', seq: 1.5 }, { id: 'x', seq: 1 }]) {
+      await rejectsCode(steps.claim(E(s), HARNESS, { step: 'fix', trigger }), 'E_ARGS');
+    }
+    assert.strictEqual(rowsOf(s).length, 0);
+    // A later version of the row is a new trigger, so a second fix on a newer review is a new claim, not existing: true.
+    assert.strictEqual((await steps.claim(E(s), HARNESS, { step: 'fix', trigger: { table: 'task', id: 'rev-1', seq: 10 } })).existing, false);
+    assert.strictEqual((await steps.claim(E(s), HARNESS, { step: 'fix', trigger: { table: 'task', id: 'rev-1', seq: 11 } })).existing, false);
+    for (const trigger of [{ table: 'worker', id: 'w-1' }, { table: 'run', id: 'r1' }]) assert.strictEqual((await steps.claim(E(s), HARNESS, { step: 'fix', trigger })).row.trigger_seq, 0);
+    await rejectsCode(steps.claim(E(s), { role: 'operator', channel: 'harness' }, { step: 'fix', trigger: TRIG }), 'E_ARGS'); // no run_id on the caller
+    await rejectsCode(steps.finish(E(s), { role: 'operator', channel: 'harness' }, { seq: 1, outcome: 'skipped', error: 'x' }), 'E_ARGS');
+    assert.strictEqual(rowsOf(s).length, 4);
   } finally { s.close(); cleanup(d); }
 });
 
@@ -146,7 +172,7 @@ test('through the core: claim and finish are the harness channel\'s alone, and t
   const worker = await openCore({ dataDir: `${d}/data`, caller: callerFor('worker', { worker_id: 'w-1' }), embed: false });
   tcx.after(() => worker.close());
   await rejectsCode(worker.policy.claim({ step: 'fix', trigger: TRIG }), 'E_ROLE');
-  const fin = await h.policy.finish({ seq: c.row.seq, outcome: 'done', row_ref: 'task:fix-1' });
+  const fin = await h.policy.finish({ seq: c.row.seq, outcome: 'done', row_ref: 'run:test-run' });
   assert.strictEqual(fin.row.outcome, 'done');
   const listed = await worker.policy.list({});
   assert.deepStrictEqual(listed.rows.map((r) => [r.seq, r.outcome]), [[c.row.seq, 'done']]);
@@ -191,6 +217,10 @@ test('reading the store\'s steps creates no file in the data dir', async (tcx) =
     const before = listDataDir(d);
     const c = await openCore({ dataDir: d, caller: callerFor('operator'), embed: false });
     tcx.after(() => Promise.resolve().then(() => c.close()));
+    const st = await c.status.get({});
+    assert.strictEqual(st.established_by, 'copy');
+    assert.strictEqual(st.store.schema_version, 3);
+    assert.deepStrictEqual(listDataDir(d), before, 'status.get of a version-3 store created nothing');
     const got = await c.policy.list({});
     assert.deepStrictEqual(got.rows.map((r) => r.seq), [claim.row.seq]);
     assert.deepStrictEqual(listDataDir(d), before, 'a read of the new tables created nothing');
