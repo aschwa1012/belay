@@ -56,7 +56,7 @@ class Owner {
     // ADR 0045 decision 4: a `bound` owner vouches for an operator by the operator's process (operator-check.cjs), unless the caller
     // brought its own check. Where the peer cannot be examined (not Windows) it has no check and fails closed.
     if (this.mode === 'bound' && typeof this.opts.operatorCheck !== 'function' && OperatorCheck.SUPPORTED) {
-      this.opts.operatorCheck = OperatorCheck.create({ startedAt: this.startedAt, spawned: () => this._spawnedProcesses(), provenance: (snap) => require('./spawn-provenance.cjs').refresh(snap), deps: this.opts.operatorCheckDeps });
+      this.opts.operatorCheck = OperatorCheck.create({ startedAt: this.startedAt, spawned: (ctx) => this._spawnedProcesses(ctx), provenance: (snap, o) => require('./spawn-provenance.cjs').refresh(snap, o), deps: this.opts.operatorCheckDeps });
     }
     this.conns = new Set();
     this.counters = { calls: 0, errors: 0 };
@@ -214,7 +214,7 @@ class Owner {
   // process's creation time matches on pid and creation time; one that does not is counted only while it is a worker's latest
   // row and claims life, so a dead row's recycled pid never refuses the operator. `opts.spawnedProcesses()` adds the run's own
   // (the headless orchestrator, known only to the run process) and the machine-wide spawn register (spawn-register.cjs), which holds every store's.
-  _spawnedProcesses() {
+  _spawnedProcesses({ snap = null, persist = true } = {}) {
     const out = [];
     try {
       const live = require('./methods-run.cjs').LIFE_CLAIMING_STATES;
@@ -223,7 +223,7 @@ class Owner {
       for (const r of db.prepare('SELECT w.pid, w.state FROM worker w JOIN (SELECT id, MAX(seq) m FROM worker GROUP BY id) x ON w.id = x.id AND w.seq = x.m WHERE w.pid IS NOT NULL AND w.pid_created IS NULL').all()) if (live.has(r.state)) out.push({ pid: r.pid, created: null, kind: 'worker' });
     } catch { /* a store that cannot be read has no workers to name; the chain rule still stands */ }
     if (typeof this.opts.spawnedProcesses === 'function') { try { out.push(...this.opts.spawnedProcesses()); } catch { /* the run's own list is best effort */ } }
-    out.push(...require('./spawn-register.cjs').list()); // every harness on the machine, other stores' workers among them; unreadable throws, and the operator check refuses on it
+    out.push(...require('./spawn-register.cjs').list({ snap, persist })); // every harness on the machine, other stores' workers among them; unreadable throws, and the operator check refuses on it
     return out;
   }
 

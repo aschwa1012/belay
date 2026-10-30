@@ -141,3 +141,31 @@ test('a register update that fails is kept on the worker and never rejects the c
     fs.rmSync(dir, { recursive: true, force: true });
   }
 });
+
+// The record carries the last moment its process was seen alive. A worker in a long tool call writes no row, so the stamp comes from a
+// timer the harness holds while the child handle says the child lives, not from row writes.
+test('the harness stamps a silent worker\'s record on its own timer, and stops when the child exits', () => {
+  const { EventEmitter } = require('node:events');
+  const PI = require('../../src/run/pid-identity.cjs');
+  const keep = process.env.BELAY_SPAWN_REGISTRY;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-stamp-'));
+  process.env.BELAY_SPAWN_REGISTRY = dir;
+  try {
+    const T0 = Date.now() - 600000;
+    const file = path.join(dir, '5150.json');
+    fs.writeFileSync(file, JSON.stringify({ pid: 5150, created: T0, kind: 'worker', data_dir: null, worker_id: 'w', spawned_at: T0, by_pid: 1, at: T0 }));
+    const seen = () => JSON.parse(fs.readFileSync(file, 'utf8')).seen_at;
+    const child = Object.assign(new EventEmitter(), { pid: 5150, exitCode: null, signalCode: null });
+    let tick = null; let cleared = null;
+    const clock = { t: T0 + 90000 };
+    PI.stampWhileAlive(child, { every: 30000, touch: (pid) => SR.touch(pid, clock.t), setTimer: (fn, ms) => { tick = fn; assert.strictEqual(ms, 30000); return 'timer'; }, clearTimer: (t) => { cleared = t; } });
+    tick(); // 90 s after the spawn, no row written in all that time
+    assert.strictEqual(seen(), T0 + 90000, 'fresh well past 60 s of silence');
+    clock.t = T0 + 125000; tick();
+    assert.strictEqual(seen(), T0 + 125000);
+    child.exitCode = 0; clock.t = T0 + 150000; tick();
+    assert.strictEqual(seen(), T0 + 125000, 'an exited child is not stamped');
+    child.emit('exit', 0, null);
+    assert.strictEqual(cleared, 'timer');
+  } finally { process.env.BELAY_SPAWN_REGISTRY = keep; fs.rmSync(dir, { recursive: true, force: true }); }
+});
