@@ -98,7 +98,9 @@ export const modelById = (m: BelayMenu, id: string): BelayMenuModel | null => m.
 // One profile as the picker row's text: models, extra time and VRAM.
 export function profileText(p: BelayMenuProfile): string {
   const models = p.reranker ? `${p.embedderLabel} + ${p.rerankerLabel}` : `${p.embedderLabel}, no reranker`
-  return `${p.name}  ${models}  ${secs(p.timeS)}  ${p.vramMb > 0 ? gb(p.vramMb) : 'no VRAM'}`
+  // The cost is one unit for the wrap (no-break spaces): a profile line breaks between its name, its models and its cost, never inside the cost.
+  const cost = `${secs(p.timeS)}  ${p.vramMb > 0 ? gb(p.vramMb) : 'no VRAM'}`.replace(/ /g, '\u00a0')
+  return `${p.name}  ${models}  ${cost}`
 }
 
 // ---- routing ------------------------------------------------------------------------------------

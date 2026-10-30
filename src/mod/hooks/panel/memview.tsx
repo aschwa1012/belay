@@ -26,7 +26,7 @@ function Pick({ E, k, on, text, a, ui, now, cols, act }: { E: Els; k: string; on
   const { Box, Button } = E
   const waiting = !!ui.memConfirm && ui.memConfirm.id === actionId(a) && now - ui.memConfirm.at <= CONFIRM_MS
   // The rest of a long text wraps under the pick, dim and indented past its mark, instead of being cut off at the side.
-  const [first = '', ...rest] = cells(text) + 6 <= cols ? [text] : wrapHard(text, Math.max(8, cols - 6))
+  const [first = '', ...rest] = cells(text) + 6 <= cols ? [text.replace(/\u00a0/g, ' ')] : wrapHard(text, Math.max(8, cols - 6))
   return (
     <Box key={k} flexDirection="column">
       <Button key={k} plain dimColor={!on && !waiting} label={clipCells(`  ${waiting ? '(?)' : on ? '(•)' : '( )'} ${first}`, cols)} onPress={press(act, a)} />
@@ -186,7 +186,7 @@ export function MemoryPane(c: MCtx) {
       {menu && tab === 'profiles' && <Profiles {...c} menu={menu} />}
       {menu && tab === 'routing' && <Routing {...c} menu={menu} />}
       {menu && tab === 'models' && <Models {...c} menu={menu} />}
-      <FreeRow E={E} w={cols} k="mf" segs={[{ t: 'writes the config file through belay settings · two presses · /orch toggles', dim: true }]} />
+      <FreeRow E={E} w={cols} k="mf" segs={[{ t: 'writes config via belay settings · two presses · /orch toggles', dim: true }]} />
     </Box>
   )
 }
