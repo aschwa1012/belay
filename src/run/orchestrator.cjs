@@ -270,7 +270,6 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     let failReason = null;
     try { list = await core.worker.list({}); }
     catch (e) { failReason = (e && (e.code || e.message)) || String(e); }
-    if (spec.budgetWake) spec.budgetWake.tick(); // the in-flight figure and, with the lever on, the check, while a worker's turn runs and the orchestrator is silent
     state.polls += 1;
     pollInFlight = false;
     // A turn end whose poll was skipped because a read the ready event or the timer started was in flight is the turn a hold from
@@ -285,6 +284,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       return;
     }
 
+    if (spec.budgetWake) spec.budgetWake.tick(list.workers || []); // the live workers' turns in flight and, with the lever on, the check, while the orchestrator is silent
     const rows = deadPids.apply(list.workers || []); // a pid seen dead stays dead: a reused number is not the worker (dead-pids.cjs)
     const nowMs = Date.now() - t0;
     const { events, next, pending_deaths } = diffWorkers({

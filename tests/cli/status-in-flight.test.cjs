@@ -5,7 +5,6 @@
 
 const { test, before, after } = require('node:test');
 const assert = require('node:assert');
-const fs = require('node:fs');
 const { spawn, spawnSync } = require('node:child_process');
 
 const P = require('../../src/run/process.cjs');
@@ -13,7 +12,6 @@ const { openCore } = require('../../src/core/index.cjs');
 const { ROOT, CLI, sandbox, cleanup } = require('./stop-helpers.cjs');
 
 let dir, dataDir, liveProc;
-const msg = (id) => JSON.stringify({ type: 'assistant', message: { id, model: 'claude-sonnet-5-5', usage: { input_tokens: 0, output_tokens: 100000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } });
 
 before(async () => {
   dir = sandbox();
@@ -24,9 +22,11 @@ before(async () => {
   try {
     c = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: 'run-fl', pid: process.pid } });
     await c.run.attach({ adapter_pid: liveProc.pid, budget_usd: 20 });
-    fs.mkdirSync(`${dataDir}/workers/w1`, { recursive: true });
-    fs.writeFileSync(`${dataDir}/workers/w1/stream.jsonl`, `${msg('m1')}\n${msg('m2')}\n`);
     await c.worker.write({ id: 'w1', substrate: 'claude-code', pid: liveProc.pid, pid_image: 'node.exe', state: 'running', turns: 1, mid_turn: 1, cost_usd: 0.25, started_at: Date.now() });
+    const op = await openCore({ dataDir, caller: { role: 'operator', run_id: 'run-fl', pid: process.pid } });
+    try { // what the run process publishes while the turn runs
+      await op.run.setBudget({ budget: { counts_in_flight: false, orchestrator: { counted: true, usd: 0, in_flight_usd: 0 }, in_flight_workers: { usd: 2, by_worker: { w1: 2 }, partial: [], unpriced: [] } } });
+    } finally { await op.close(); }
   } finally {
     if (c) { try { await c.shutdownOwner(); } catch { /* best effort */ } try { await c.close(); } catch { /* best effort */ } }
   }

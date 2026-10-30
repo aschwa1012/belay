@@ -181,7 +181,7 @@ async function run(ctx) {
     mode: parsed.levers.on_embedder_failure, stopRun, interactive: !!ce, // an interactive run is never ended by an embedder failure: it pauses (ADR 0034 amendment 2)
     pauseRun: (why) => runPauseControl.pause({ run_id: parsed.runId, caller: opCaller }, why),
   });
-  budget = require('../run/budget-guard.cjs').createBudgetGuard({ core, runId: parsed.runId, runLimit: parsed.levers.budget_usd || null, source: parsed.levers.budget_source || null, countInFlight: parsed.levers.budget_counts_in_flight === true, interactive: !!ce, warn: ctx.json ? null : (m) => process.stderr.write(m), pauseRun: (why) => runPauseControl.pause({ run_id: parsed.runId, caller: opCaller }, why) });
+  budget = require('../run/budget-guard.cjs').createBudgetGuard({ dataDir, core, runId: parsed.runId, runLimit: parsed.levers.budget_usd || null, source: parsed.levers.budget_source || null, countInFlight: parsed.levers.budget_counts_in_flight === true, interactive: !!ce, warn: ctx.json ? null : (m) => process.stderr.write(m), pauseRun: (why) => runPauseControl.pause({ run_id: parsed.runId, caller: opCaller }, why) });
   if (ce && ctx.interactiveDeps && ctx.interactiveDeps.onGuard) ctx.interactiveDeps.onGuard(guard); // test seam
   const attachHook = { attach: (h) => { stopControl.attach(h); Object.assign(hookBox, h); if (!ce) registerOrchestrator(h.pid); } };
 

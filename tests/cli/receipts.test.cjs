@@ -452,12 +452,12 @@ test('receipts: an estimate whose stream tail lay beyond the scan window says so
 }));
 
 test('receipts: a live worker turn that has not ended shows an in-flight estimate, labelled and apart from the reported cost', guarded(async (dir, dataDir) => {
-  const msgLine = JSON.stringify({ type: 'assistant', message: { id: 'm1', model: 'claude-sonnet-5-5', usage: { input_tokens: 0, output_tokens: 100000, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } });
   await withOwner(dataDir, 'run-fl', 'orchestrator', async (orch) => {
     await orch.run.attach({ adapter_pid: process.pid });
-    fs.mkdirSync(`${dataDir}/workers/wf`, { recursive: true });
-    fs.writeFileSync(`${dataDir}/workers/wf/stream.jsonl`, `${msgLine}\n`);
     await orch.worker.write({ id: 'wf', substrate: 'claude-code', pid: process.pid, state: 'running', started_at: Date.now() - 1000, cost_usd: 0.5, turns: 1 });
+  });
+  await withOwner(dataDir, 'run-fl', 'operator', async (op) => { // what the run process publishes while the turn runs
+    await op.run.setBudget({ budget_usd: 5, budget: { counts_in_flight: false, orchestrator: { counted: true, usd: 0, in_flight_usd: 0 }, in_flight_workers: { usd: 1, by_worker: { wf: 1 }, partial: [], unpriced: [] } } });
   });
   const j = JSON.parse(receipts([], dataDir).stdout);
   const w = j.workers.find((x) => x.id === 'wf');

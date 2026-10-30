@@ -93,6 +93,36 @@ test('budgets: status.get adds under 100 ms in process on a real store with no o
   } finally { await c.close(); }
 });
 
+test('budgets: status.get adds under 100 ms in process over 10 live workers in 9 MB turns (the in-flight figure is read from the run row, never from a stream), interleaved', async (tcx) => {
+  const dir = sandbox();
+  tcx.after(() => cleanup(dir));
+  const caller = (role) => ({ role, run_id: 'test-run', pid: process.pid });
+  const o = await openCore({ dataDir: dir, caller: caller('orchestrator'), embed: false });
+  const op = await openCore({ dataDir: dir, caller: caller('operator'), embed: false });
+  try {
+    await o.run.attach({ adapter_pid: process.pid, budget_usd: 50 });
+    const by = {};
+    const line = JSON.stringify({ type: 'assistant', message: { id: 'x', model: 'claude-sonnet-5-5', content: [{ type: 'text', text: 'y'.repeat(900) }], usage: { input_tokens: 10, output_tokens: 10 } } }) + '\n';
+    for (let i = 0; i < 10; i++) {
+      const id = `w${i}`; by[id] = 1;
+      fs.mkdirSync(`${dir}/workers/${id}`, { recursive: true });
+      fs.writeFileSync(`${dir}/workers/${id}/stream.jsonl`, line.repeat(Math.ceil(9 * 1024 * 1024 / line.length)));
+      await o.worker.write({ id, substrate: 'claude-code', pid: process.pid, state: 'running' });
+    }
+    await op.run.setBudget({ budget: { counts_in_flight: false, orchestrator: { counted: true, usd: 0, in_flight_usd: 0 }, in_flight_workers: { usd: 10, by_worker: by, partial: [], unpriced: [] } } });
+  } finally { await op.close(); await o.shutdownOwner(); await o.close(); }
+  const c = await openCore({ dataDir: dir, caller: caller('operator'), embed: false });
+  try {
+    const r = await interleavedInProcess({
+      floor: noop,
+      subject: async () => { const t0 = process.hrtime.bigint(); const st = await c.status.get({}); const d = ms(t0); assert.strictEqual(st.workers[0].cost_in_flight_usd, 1); return d; },
+      n: N,
+    });
+    report('status_get_live_streams_in_process', 100, r);
+    assertGate('status_get_live_streams_in_process', 100, r);
+  } finally { await c.close(); }
+});
+
 test('budgets: redacting 64 KB of mixed text adds under 20 ms in process, interleaved', async () => {
   const unit = 'The quick brown fox: see https://example.com/a?b=1 and commit ' + 'a1b2c3d4'.repeat(5)
     + ' plus task-sk-1 key=value, "name": "x" -- ' + 'ey' + 'Jabc not a token\nline two NAME=val\n';
