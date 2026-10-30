@@ -21,6 +21,7 @@ const { openCore } = require('../../src/core/index.cjs');
 const P = require('../../src/run/process.cjs');
 const ID = require('../../src/core/proc-identity.cjs');
 const cmdRun = require('../../src/cli/cmd-run.cjs');
+const { stillRunning } = require('../helpers/dead-pid.cjs');
 const cmdStop = require('../../src/cli/cmd-stop.cjs');
 const cmdPause = require('../../src/cli/cmd-pause.cjs');
 const { closeRunWorkers } = require('../../src/cli/run-close.cjs');
@@ -154,6 +155,7 @@ test('interactive run, claude exits before its session file exists: ended_by say
 test('interactive run: a life-claiming worker is killed by its exact pid before run.end, and its row closed', async (t) => withRun(t, async (dir) => {
   const r = start(dir, { env: { FAKE_EXIT_FILE: `${dir}/quit` } }); // the stub quits when the test says so: the owner's check and bind take longer than any fixed hold
   const w = sleeper();
+  const wBornBy = Date.now(); // a live pid created after this is not w: the host hands a killed pid out again
   let core;
   try {
     assert.ok(await waitUntil(() => r.record(), 15000), 'the stub never started');
@@ -165,7 +167,7 @@ test('interactive run: a life-claiming worker is killed by its exact pid before 
     assert.strictEqual(res.code, 0, res.text);
     const killed = res.json.workers_closed.killed.find((k) => k.worker_id === 'w-int');
     assert.ok(killed && killed.pid === w.pid && killed.gone === true, JSON.stringify(res.json.workers_closed));
-    assert.ok(!P.pidAlive(w.pid), 'the worker pid is still alive');
+    assert.ok(!(await stillRunning(w.pid, wBornBy)), 'the worker pid is still alive');
     assert.match(res.text, /workers closed: 1 killed/);
   } finally { require('../crash.cjs').crash(w); await releaseCore(core); }
 }));
@@ -194,6 +196,7 @@ test('SIGINT and SIGBREAK are recorded, never acted on: the launcher stays, and 
 
 test('SIGHUP: the fast close kills workers by pid, closes the row, and ends with the console-closed cause', async (t) => withRun(t, async (dir) => {
   const w = sleeper();
+  const wBornBy = Date.now();
   let core;
   let r = null;
   // ADR 0048 decision 8 (b): the 3500 ms fast close is a product budget that includes its snapshot, so this test supplies
@@ -215,7 +218,7 @@ test('SIGHUP: the fast close kills workers by pid, closes the row, and ends with
     assert.strictEqual(res.code, 1, 'a fast close is never a clean exit');
     assert.strictEqual(res.json.ended_by, 'console closed (fast close)');
     assert.deepStrictEqual(res.json.orchestrator.interactive.console_events.map((e) => e.signal), ['SIGHUP']);
-    assert.ok(!P.pidAlive(w.pid), 'the worker survived the fast close');
+    assert.ok(!(await stillRunning(w.pid, wBornBy)), 'the worker survived the fast close');
     assert.ok(res.json.workers_closed.killed.some((k) => k.pid === w.pid && k.gone));
     const row = currentRunRow(r.dataDir, r.runId);
     assert.ok(row.ended_at != null && row.exit_reason === 'console closed (fast close)');
@@ -243,12 +246,17 @@ test('closeRunWorkers: with `fast`, the adapter wait is skipped, or cut short wh
 
 // ---------------------------------------------------------------- the gate
 
+// Whether the claude that wrote this record still runs. A bare pid check is not that: Windows hands a killed process's pid to
+// the next process within seconds, so a live pid created after the record was written is another process (the load-only flake
+// "claude outlived a failed gate"). The record's mtime is after claude's birth and before the gate's 400 ms, hence before any kill.
+const claudeOutlived = (dir, rec) => stillRunning(rec.pid, fs.statSync(`${dir}/stub-record.json`).mtimeMs + 100);
+
 test('a failing gate: claude is killed by its pid, the close runs, and ended_by names the check', async (t) => withRun(t, async (dir) => {
   const gate = fakeGate({ debug: { ok: false, failed: 'skills', detail: '2 skills loaded' }, debugMs: 400, debugWhen: () => fs.existsSync(`${dir}/stub-record.json`) });
   const r = start(dir, { env: { FAKE_NEVER_EXIT: '1' }, gate });
   const res = await r.done;
   const rec = r.record();
-  assert.ok(!P.pidAlive(rec.pid), 'claude outlived a failed gate');
+  assert.ok(!(await claudeOutlived(dir, rec)), 'claude outlived a failed gate');
   assert.strictEqual(res.code, 1);
   assert.match(res.json.ended_by, /^surface gate failed \(debug\): skills: 2 skills loaded$/);
   assert.strictEqual(res.json.orchestrator.interactive.gate.debug.ok, false);
@@ -322,7 +330,7 @@ test('SIGHUP fast close: a claude that does not follow is killed and gets the te
     process.emit('SIGHUP');
     const res = await r.done;
     assert.strictEqual(res.code, 1);
-    assert.ok(!P.pidAlive(rec.pid));
+    assert.ok(!(await claudeOutlived(dir, rec)));
     resetOnce(term);
   } finally { P.killPid(rec.pid, 'SIGKILL'); await r.done.catch(() => {}); }
 }));
