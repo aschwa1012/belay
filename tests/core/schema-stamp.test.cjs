@@ -150,7 +150,7 @@ function baseCore(dir) {
   return require(path.join(root, 'src', 'core', 'store.cjs')).Store;
 }
 
-test('a version-1 store written by the base core migrates to version 2, and the base core then refuses it', () => {
+test('a version-1 store written by the base core migrates to the current version, and the base core then refuses it', () => {
   const dir = sandbox();
   try {
     const BaseStore = baseCore(dir);
@@ -163,7 +163,7 @@ test('a version-1 store written by the base core migrates to version 2, and the 
 
     const s = new Store(f, { stamp: true });
     try {
-      assert.strictEqual(s.db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version').value, '2');
+      assert.strictEqual(s.db.prepare('SELECT value FROM meta WHERE key = ?').get('schema_version').value, String(SCHEMA_VERSION));
       const rows = s.db.prepare('SELECT text, title, status, redactions FROM memory_entries ORDER BY text').all().map(r => ({ ...r }));
       assert.deepStrictEqual(rows, [
         { text: 'base row one pidAlive', title: null, status: null, redactions: null },
@@ -177,7 +177,7 @@ test('a version-1 store written by the base core migrates to version 2, and the 
     // The base core, as owner or as a reader, refuses the migrated store before writing anything to it.
     const before = { sha: sha(f), ls: files(path.dirname(f)) };
     for (const opts of [{ stamp: true }, {}]) {
-      assert.throws(() => new BaseStore(f, opts), e => e.code === 'E_SCHEMA_NEWER' && e.detail.store_schema === '2' && e.detail.known_schema === 1);
+      assert.throws(() => new BaseStore(f, opts), e => e.code === 'E_SCHEMA_NEWER' && e.detail.store_schema === String(SCHEMA_VERSION) && e.detail.known_schema === 1);
     }
     assert.deepStrictEqual({ sha: sha(f), ls: files(path.dirname(f)) }, before);
     // This core still opens it, read and owner alike, and the rows are all there.

@@ -12,6 +12,10 @@
 // which a reader cannot tell from a row that was scanned and found clean. A version-1 core must therefore
 // refuse a version-2 store, and the bump is what makes it refuse (E_SCHEMA_NEWER).
 //
+// Version 3 (0.4.0, ADR 0072): the policy step table, the store-wide check record and the step stamps on task, lease and integration rows. A
+// version-2 core would write task, lease and integration rows with no stamp and could not see a step already taken for a trigger, so it must
+// not share a store with a core that runs policy steps.
+//
 // Reading never writes (invariant 6): `checkSchema` only reads and `stampStore` is called only by the
 // owner's own open for write. A read goes through a copy, and the check runs on that copy.
 
@@ -19,7 +23,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { err } = require('./errors.cjs');
 
-const SCHEMA_VERSION = 2;
+const SCHEMA_VERSION = 3;
 const ROOT = path.resolve(__dirname, '..', '..');
 
 function metaGet(db, key) {

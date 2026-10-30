@@ -203,6 +203,11 @@ const METHODS = {
   'permission.list': { roles: ALL, kind: 'read', fn: permission.list },
   'permission.decide': { roles: ['operator', 'orchestrator', 'worker'], kind: 'write', fn: permission.decide },
   'permission.wait': { roles: ['worker'], kind: 'wait', fn: permission.wait },
+
+  // 0.4.0, ADR 0072: the policy step store. claim and finish are the run manager's (harness channel, checked inside); list is a read.
+  'policy.claim': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./policy-steps.cjs', 'claim') },
+  'policy.finish': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./policy-steps.cjs', 'finish') },
+  'policy.list': { roles: ALL, kind: 'read', fn: lazy('./policy-steps.cjs', 'list') },
 };
 
 // The methods that read or write memory rows and are refused when the run's memory is off.

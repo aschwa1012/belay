@@ -141,7 +141,7 @@ test('reads carry written_by in the full, index and list views', async () => {
   assert.ok((plain.rows || plain).some(r => r.id === h.id && r.written_by === 'harness'));
 });
 
-test('an older store gains the column on the owner open, and its rows read written_by null; SCHEMA_VERSION stays 2', () => {
+test('an older store gains the column on the owner open, and its rows read written_by null; SCHEMA_VERSION is 3', () => {
   const d = sandbox();
   try {
     const f = path.join(d, 'memory.db');
@@ -162,6 +162,6 @@ test('an older store gains the column on the owner open, and its rows read writt
       assert.strictEqual(fresh.written_by, 'harness');
       assert.strictEqual(s.retrieve('old-1', false).written_by, null, 'nothing guesses a value for the older row');
     } finally { s.close(); }
-    assert.strictEqual(SCHEMA_VERSION, 2);
+    assert.strictEqual(SCHEMA_VERSION, 3);
   } finally { cleanup(d); }
 });

@@ -89,6 +89,25 @@ CREATE TABLE IF NOT EXISTS integration (
   error TEXT, checks TEXT, passed INTEGER, junctions TEXT, removed_at INTEGER,
   written_at INTEGER NOT NULL, written_by TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_integration_id ON integration(id, seq);
+
+-- ADR 0072 decisions 2 and 3: one row per policy step, keyed by the trigger fact it acts on, so the run's executor and the orchestrator
+-- cannot both take a step for one trigger. The one orchestration table that is updated: a claim is the row, and policy.finish is its single
+-- UPDATE (outcome 'started' to a final one). Reads and writes: policy-steps.cjs.
+CREATE TABLE IF NOT EXISTS policy_step (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, task_id TEXT, step TEXT NOT NULL,
+  trigger_table TEXT NOT NULL, trigger_id TEXT NOT NULL, trigger_seq INTEGER NOT NULL DEFAULT 0, policy_rev INTEGER,
+  outcome TEXT NOT NULL, row_ref TEXT, error TEXT, worker_id TEXT, turn INTEGER, at INTEGER NOT NULL, finished_at INTEGER,
+  UNIQUE(run_id, trigger_table, trigger_id, trigger_seq, step));
+CREATE INDEX IF NOT EXISTS ix_policy_step_run ON policy_step(run_id, seq);
+
+-- The store-wide record of a check command's outcomes on one tree (0.4.0, written by check-flake.cjs in the same write as an evaluation's
+-- result). Keyed by the command, its cwd and the tree it ran on (key_kind 'tree'; 'head' when no tree id was known). A counter row, updated
+-- in place like policy_step; it holds counts and the last outcome and claims no rate.
+CREATE TABLE IF NOT EXISTS check_flake (
+  argv TEXT NOT NULL, cwd TEXT NOT NULL, key_sha TEXT NOT NULL, key_kind TEXT NOT NULL,
+  pass_n INTEGER NOT NULL DEFAULT 0, fail_n INTEGER NOT NULL DEFAULT 0, flips INTEGER NOT NULL DEFAULT 0,
+  last_outcome TEXT, last_concurrent INTEGER, first_at INTEGER, last_at INTEGER,
+  PRIMARY KEY (argv, cwd, key_sha, key_kind));
 `;
 
 // Additive columns so an existing data dir upgrades in place. First (session-3 hardening MS-5): on a
@@ -275,6 +294,19 @@ const MIGRATIONS = [
   'ALTER TABLE worker ADD COLUMN cost_source TEXT',
   // Reported cost of the sessions before the current one: a fresh session's total_cost_usd starts at zero, so the adapter adds this base.
   'ALTER TABLE worker ADD COLUMN cost_base REAL',
+  // 0.4.0 (ADR 0072 decision 3): who took a row's step and why. `acted_by` ('policy' or null), `trigger` (JSON text {table, id, seq} of the
+  // fact the step acted on) and `policy_rev` are written by the core from the harness caller only, never from arguments; all nullable, null on
+  // every row written before them. `policy` is a task's resolved plan (JSON text, nullable), carried forward by every later task row.
+  'ALTER TABLE task ADD COLUMN acted_by TEXT',
+  'ALTER TABLE task ADD COLUMN trigger TEXT',
+  'ALTER TABLE task ADD COLUMN policy_rev INTEGER',
+  'ALTER TABLE task ADD COLUMN policy TEXT',
+  'ALTER TABLE lease ADD COLUMN acted_by TEXT',
+  'ALTER TABLE lease ADD COLUMN trigger TEXT',
+  'ALTER TABLE lease ADD COLUMN policy_rev INTEGER',
+  'ALTER TABLE integration ADD COLUMN acted_by TEXT',
+  'ALTER TABLE integration ADD COLUMN trigger TEXT',
+  'ALTER TABLE integration ADD COLUMN policy_rev INTEGER',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot
