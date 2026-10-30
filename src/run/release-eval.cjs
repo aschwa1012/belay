@@ -13,6 +13,7 @@
 
 const crypto = require('node:crypto');
 const reviewWake = require('./review-wake.cjs');
+const { forecastTask } = require('../core/conflict-forecast.cjs');
 
 const WAKE_TEXT_MAX = 221;
 const PENDING_MAX_MS = 900000; // a watched evaluation that never lands (cancelled, or the owner gone) is forgotten after this, unless its worker is live: a release evaluation may queue for a slot and then run 540 s
@@ -49,11 +50,13 @@ async function workOf(core, row) {
   } catch { return null; }
 }
 
-function summaryOf(row, byId) {
+// `forecasts` (optional): the conflict forecasts enrichWakes made, by `<task id>:<evaluated_at>` (conflict-forecast.cjs).
+function summaryOf(row, byId, forecasts) {
   const r = row.results || {};
   const fr = fixRoundsOf(row, byId);
+  const fc = forecasts && forecasts.get(`${row.id}:${r.evaluated_at}`);
   const review = reviewWake.reviewOf(row); // a review whose verdict check was executable: its facts ride on the wake (review-wake.cjs)
-  return { task_id: row.id, state: row.state, passed: !!r.passed, executable: !!r.executable, checks: ((r.checks) || []).length, failing: failedKinds(row), ...(review ? { review } : {}), ...(r.flaky ? { flaky: true } : {}), ...(r.uncommitted ? { uncommitted: true } : {}), ...(r.queued ? { queued: r.queued } : {}), ...(fr ? { fix_rounds: fr } : {}) };
+  return { task_id: row.id, state: row.state, passed: !!r.passed, executable: !!r.executable, checks: ((r.checks) || []).length, failing: failedKinds(row), ...(review ? { review } : {}), ...(r.flaky ? { flaky: true } : {}), ...(r.uncommitted ? { uncommitted: true } : {}), ...(r.queued ? { queued: r.queued } : {}), ...(fr ? { fix_rounds: fr } : {}), ...(fc ? { forecast: fc } : {}) };
 }
 
 const unevaluated = (t, runId, workerId) => t.run_id === runId && t.state === 'released' && t.handoff && t.handoff.by === workerId && !t.handoff.stood_down
@@ -159,6 +162,9 @@ const cut = (s, max) => {
   return `${Buffer.from(s, 'utf8').subarray(0, max - 3).toString('utf8').replace(/�$/, '')}...`;
 };
 
+// A forecast conflict as a short tail of the clause (the first files, then a count); a clean, unavailable or absent forecast says nothing.
+const conflictText = (f) => (f && Array.isArray(f.files) && f.files.length ? `; forecast: conflicts with the integration branch in ${f.files.slice(0, 3).join(', ')}${f.files.length > 3 ? ` +${f.files.length - 3}` : ''}` : '');
+
 // The evaluation clause, at most `room` bytes: " task T evaluated at release: passed, done." or "...: not done; failing: ...".
 function clause(evs, room) {
   // An evaluation that waited for a slot (max_parallel_evaluations) says so: queued behind `ahead` others, `waited_ms` before it ran.
@@ -167,7 +173,7 @@ function clause(evs, room) {
   function one(e) { return (e.stood_down ? `task ${e.task_id}: the worker stood down with no result (${e.stood_down}); nothing was evaluated`
     : e.error === 'E_BUSY' ? `task ${e.task_id} not evaluated at release: another evaluation of it is running`
     : e.error ? `task ${e.task_id} could not be evaluated at release (${e.error}); call task_evaluate to run it`
-    : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? `${e.flaky ? 'passed on a retry (flaky), done' : 'passed, done'}${e.uncommitted ? '; uncommitted changes: commit before integrate' : ''}` : `not done${e.fix_rounds ? `; fix rounds ${e.fix_rounds.used} of max ${e.fix_rounds.max}${e.fix_rounds.hard == null ? '' : `, hard cap ${e.fix_rounds.hard}`}` : ''}; failing: ${e.failing.join(', ') || 'no executable check'}`}`); }
+    : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? `${e.flaky ? 'passed on a retry (flaky), done' : 'passed, done'}${e.uncommitted ? '; uncommitted changes: commit before integrate' : ''}${conflictText(e.forecast)}` : `not done${e.fix_rounds ? `; fix rounds ${e.fix_rounds.used} of max ${e.fix_rounds.max}${e.fix_rounds.hard == null ? '' : `, hard cap ${e.fix_rounds.hard}`}` : ''}; failing: ${e.failing.join(', ') || 'no executable check'}`}`); }
   if (evs.some((e) => e.review)) {
     const body = reviewWake.render(parts, evs, room - 2);
     if (body) return ` ${body}.`;
@@ -198,7 +204,7 @@ function turnEndText(head, tail, evs, evaluating) {
 // held wake first, so a worker's wakes keep their order. `holdMs` 0 holds nothing. `now` is the clock, for a test to set.
 // `workers` (the poll's worker rows, optional): a watched evaluation whose worker is live is not forgotten by age, because a queued release
 // evaluation waits for its slot without bound (ADR 0061 amendment); it leaves `pending` when it lands, is no longer awaiting evaluation, or its worker is gone.
-async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.now, workers = null } = {}) {
+async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.now, workers = null, forecaster = forecastTask } = {}) {
   const pending = seen.pending || (seen.pending = new Map());
   const held = seen.held || (seen.held = new Map());
   if (!events.some((e) => e.event === 'turn_end') && !pending.size && !held.size) return events;
@@ -207,6 +213,12 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
   if (!tasks) { const flushed = [...held.values()].map((h) => h.ev); held.clear(); return flushed.concat(events); }
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const landed = (t) => t.results && t.results.trigger === 'release' && seen.get(t.id) !== t.results.evaluated_at && (!t.handoff || Number(t.results.evaluated_at) >= Number(t.handoff.at));
+  // A passed evaluation that landed gets one conflict forecast (a warning on the wake; it never gates anything), kept for the later reads of the poll.
+  const forecasts = seen.forecasts || (seen.forecasts = new Map());
+  for (const t of tasks) {
+    const key = t.run_id === runId && t.state === 'done' && landed(t) && `${t.id}:${t.results.evaluated_at}`;
+    if (key && !forecasts.has(key)) { try { const f = await forecaster(t, runId); if (f) forecasts.set(key, f); } catch { /* a forecast is optional */ } }
+  }
   const fails = await releaseFailures(core, runId, seen, pending, held, events, tasks);
   // A failure ends the attempt of its own turn: a hand-back gets a new attempt after every cancel or error, so a failure from an earlier turn
   // (stale, not yet read) is not this attempt's. `turn` is the turn_end turn the attempt belongs to.
@@ -219,7 +231,7 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
   const settle = (h) => {
     h.ids = h.ids.filter((id) => {
       const t = byId.get(id);
-      if (t && landed(t)) { seen.set(id, t.results.evaluated_at); pending.delete(id); h.evs.push(summaryOf(t, byId)); return false; }
+      if (t && landed(t)) { seen.set(id, t.results.evaluated_at); pending.delete(id); h.evs.push(summaryOf(t, byId, forecasts)); return false; }
       const f = t && unevaluated(t, runId, h.ev.worker_id) && failedOf(t, h.ev.turn);
       if (f) { pending.delete(id); const s = failure(f); if (s) h.evs.push(s); return false; }
       if (!t || !unevaluated(t, runId, h.ev.worker_id)) { pending.delete(id); return false; }
@@ -241,7 +253,7 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     for (const t of tasks) {
       if (t.run_id !== runId || !t.handoff || t.handoff.by !== ev.worker_id) continue;
       if (t.handoff.stood_down) { const key = `${t.id}:${t.handoff.at}`; if (!(seen.stood = seen.stood || new Set()).has(key) && t.state === 'released') { seen.stood.add(key); evs.push({ task_id: t.id, stood_down: t.handoff.stood_down }); } continue; } // a stand-down is a fact for the wake, once
-      if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); evs.push(summaryOf(t, byId)); } else if (unevaluated(t, runId, ev.worker_id) && failedOf(t, ev.turn)) { const s = failure(failedOf(t, ev.turn)); if (s) evs.push(s); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: t0, turn: ev.turn }); ing.push(t.id); }
+      if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); evs.push(summaryOf(t, byId, forecasts)); } else if (unevaluated(t, runId, ev.worker_id) && failedOf(t, ev.turn)) { const s = failure(failedOf(t, ev.turn)); if (s) evs.push(s); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: t0, turn: ev.turn }); ing.push(t.id); }
     }
     if (ing.length && holdMs > 0) { held.set(ev.worker_id, { ev, evs, ids: ing, since: t0 }); continue; }
     if (evs.length) ev.evaluated = evs;
@@ -259,7 +271,7 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     if (t && landed(t)) {
       seen.set(id, t.results.evaluated_at); pending.delete(id);
       if (!follow.has(p.worker_id)) follow.set(p.worker_id, []);
-      follow.get(p.worker_id).push(summaryOf(t, byId));
+      follow.get(p.worker_id).push(summaryOf(t, byId, forecasts));
     } else if (t && unevaluated(t, runId, p.worker_id) && failedOf(t, p.turn)) {
       pending.delete(id);
       const s = failure(failedOf(t, p.turn));
