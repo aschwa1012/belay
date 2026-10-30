@@ -1,4 +1,4 @@
-# Orchestrator prompt template <!-- belay-prompt 0.3.3 -->
+# Orchestrator prompt template <!-- belay-prompt 0.4.0 -->
 
 <!-- belay-mode: interactive -->
 

@@ -171,6 +171,9 @@ function refutedReview(d) {
   return checks.some(c => c && c.kind === 'verdict' && c.executable === true && c.passed === false);
 }
 
+// ADR 0076 decision 4: a worker is not shown the plan belay holds for its task (it is data for the run's executor, not for the worker).
+const forRole = (caller, t) => { if (!caller || caller.role !== 'worker') return t; const { policy, policy_rev, ...rest } = t; return rest; };
+
 function view(E, task, liveness, ctx) {
   const t = Date.now();
   const l = rows.currentLeaseForTask(E.store, task.id);
@@ -192,7 +195,7 @@ function view(E, task, liveness, ctx) {
 async function list(E, caller, args) {
   const states = Array.isArray(args.states) && args.states.length ? new Set(args.states) : null;
   const liveness = holds.runLiveness(E.store);
-  const ctx = derived.context(E), tasks = ctx.all.filter(t => !states || states.has(t.state)).map(t => view(E, t, liveness, ctx));
+  const ctx = derived.context(E), tasks = ctx.all.filter(t => !states || states.has(t.state)).map(t => forRole(caller, view(E, t, liveness, ctx)));
   return { tasks };
 }
 
@@ -200,7 +203,7 @@ async function get(E, caller, args) {
   if (!args.task_id) throw err('E_ARGS', 'task.get needs a task_id');
   const t = rows.current(E.store, 'task', args.task_id);
   if (!t) throw err('E_NOT_FOUND', `no task row exists for ${args.task_id}`, { task_id: args.task_id });
-  return view(E, t);
+  return forRole(caller, view(E, t));
 }
 
 async function evaluate(E, caller, args, queued = null) {
@@ -248,6 +251,7 @@ async function evaluate(E, caller, args, queued = null) {
       evaluated_at: Date.now(), executable, passed, checks, ...(args.trigger ? { trigger: args.trigger } : {}), ...(queued ? { queued } : {}), ...J.fields(judged), ...(checks.some(c => c.flaky) ? { flaky: true } : {}), // ADR 0060: what was judged (4, 6); a pass only on a retry is never silent (2)
       ...(checks.length === 0 ? { note: 'the task declares no acceptance criteria, so nothing was executed and nothing is proven' } : {}),
     };
+    require('./check-flake.cjs').record(E.store, checks, judged); // 0.4.0: the store-wide flaky-check record, in this write
     return rows.append(E.store, 'task', {
       ...fresh, results, state: executable && passed ? 'done' : fresh.state,
     }, E.writtenBy(caller), Date.now());

@@ -49,3 +49,9 @@ test('the list is capped and names how many were left out', () => {
   assert.strictEqual(out.length, SP.MAX_PLANS + 1);
   assert.strictEqual(out[out.length - 1], 'plan: 4 more tasks with a plan');
 });
+
+test('only a missing column reads as no plans; a busy or corrupt read is rethrown', () => {
+  const failing = (message) => ({ store: { p: () => ({ all: () => { throw new Error(message); } }) } });
+  assert.deepStrictEqual(SP.plansOf(failing('no such column: t.policy'), 'r'), {});
+  for (const m of ['database is locked', 'database disk image is malformed']) assert.throws(() => SP.plansOf(failing(m), 'r'), new RegExp(m));
+});
