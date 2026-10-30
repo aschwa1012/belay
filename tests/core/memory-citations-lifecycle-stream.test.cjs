@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // The lifecycle stream cite (scrub, archive review) searches the same thing a note review does: the decoded text of the
 // non-belay tool results of a stream, never its JSON structure.
 const test = require('node:test');

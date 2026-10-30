@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // lease-heartbeat.test.cjs — ADR 0026 defect.
 // A worker streams heartbeats through ONE long turn. The keepalive gates on the stored row's
 // last_event_at, which the run manager used to write only at turn start, turn end and exit, so the row

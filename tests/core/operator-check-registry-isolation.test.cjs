@@ -78,7 +78,7 @@ test('the registry of a test-file process that is killed is removed with the run
       `const r = spawnSync(process.execPath, ['--require', ${JSON.stringify(HELPER.split(path.sep).join('/'))}, ${JSON.stringify(child.split(path.sep).join('/'))}], { encoding: 'utf8', env: process.env });`,
       "console.log(r.stdout.trim());",
     ].join('\n'));
-    const env = { ...process.env, TEMP: tmp, TMP: tmp, TMPDIR: tmp };
+    const env = { ...process.env, TEMP: tmp, TMP: tmp, TMPDIR: tmp, BELAY_TEST_TMP_ISOLATE: '0' };
     delete env.BELAY_SPAWN_REGISTRY; delete env.BELAY_TEST_SPAWN_REGISTRY_MADE_BY;
     const r = spawnSync(process.execPath, ['--require', HELPER, runner], { encoding: 'utf8', env });
     assert.strictEqual(r.status, 0, r.stderr);

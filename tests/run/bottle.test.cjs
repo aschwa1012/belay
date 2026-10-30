@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');

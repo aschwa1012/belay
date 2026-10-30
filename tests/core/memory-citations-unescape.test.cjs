@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // A quote copied from the raw JSON-lines stream carries JSON string escapes; the checker compares decoded text.
 const test = require('node:test');
 const assert = require('node:assert');

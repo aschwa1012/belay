@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // knowledge.test.cjs — ADR 0043 decision 1: the knowledge agent's ask. A fake run manager stands in for the
 // worker (spawn, message, wait and the worker record the answer is read from), and a fake core for the memory
 // methods, so the test proves what ask does with them: the lever gate, priming, re-priming on a corpus change, the

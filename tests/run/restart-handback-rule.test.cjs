@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // restart-handback-rule.test.cjs — a fresh session's first text after a restart carries the hand-back rule of the task the worker holds
 // now (its current lease and required fields), rebuilt from the core, and nothing when it holds no unreleased lease or lost it.
 

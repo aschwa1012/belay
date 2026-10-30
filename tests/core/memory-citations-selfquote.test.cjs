@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // A stream cite that the note's own words also hold: accepted when a non-belay tool result prints it (and that result is not an
 // echo of the note), refused when the only places are the note, a belay call, the hand-back echo or the worker's prose.
 const test = require('node:test');

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // spawn-tools-adopt.test.cjs — ADR 0024 amendment 4 (proposed). A narrowed worker's built-in tool list is a column of its worker row. A restart by
 // another adapter (adopt) takes the list from the row and never from the worker's argv.json, which the worker can edit: a deleted, corrupt or
 // widened file cannot widen the worker, and a row with no record for a worker whose argv.json shows a narrowed list fails closed.

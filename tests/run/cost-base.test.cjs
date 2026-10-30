@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // cost-base.test.cjs — Claude Code's total_cost_usd is cumulative per session. A restart that starts a FRESH session (the replace
 // branch) begins at zero, so the row's reported cost carries the earlier sessions' as a base rather than being set below it
 // (ADR 0068, proposed). A resume of the same session keeps the total and so keeps no base.

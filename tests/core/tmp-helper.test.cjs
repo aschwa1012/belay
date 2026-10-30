@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // tests/helpers/tmp.cjs leaves a directory a surviving child still holds, does not stall the exit waiting for
 // it, and scripts/test.cjs's guard names it.
 
@@ -27,7 +28,7 @@ test('tmp helper: a directory held by a surviving child is left for the guard, a
   fs.mkdirSync(tmp);
   let pid = null;
   try {
-    const r = spawnSync(process.execPath, ['--require', HELPER, script], { encoding: 'utf8', env: { ...process.env, TEMP: tmp, TMP: tmp, TMPDIR: tmp } });
+    const r = spawnSync(process.execPath, ['--require', HELPER, script], { encoding: 'utf8', env: { ...process.env, TEMP: tmp, TMP: tmp, TMPDIR: tmp, BELAY_TEST_TMP_ISOLATE: '0' } });
     const doneAt = Date.now();
     const [pidText, mainDoneAt] = r.stdout.trim().split(' ');
     pid = Number(pidText);
@@ -58,5 +59,21 @@ test('guard: probe files in belay-snapshot are counted apart, anything else in i
     assert.strictEqual(snapshotResidue(tmp), 2);
     fs.writeFileSync(path.join(tmp, 'belay-snapshot', 'stray.txt'), '');
     assert.deepStrictEqual(leaked(tmp), ['belay-snapshot/stray.txt']);
+  } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+});
+
+test('a targeted run of a temp-making test file leaves the temp dir it was given empty', () => {
+  const tmp = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-targeted-'));
+  try {
+    const file = path.join(__dirname, '..', 'run', 'bottle.test.cjs');
+    const env = { ...process.env, TEMP: tmp, TMP: tmp, TMPDIR: tmp };
+    delete env.BELAY_TEST_TMP_ISOLATE;
+    delete env.BELAY_SPAWN_REGISTRY;
+    delete env.BELAY_TEST_SPAWN_REGISTRY_MADE_BY;
+    for (const args of [['--test', file], ['--test', '--require', HELPER, file]]) {
+      const r = spawnSync(process.execPath, args, { encoding: 'utf8', env });
+      assert.strictEqual(r.status, 0, r.stdout + r.stderr);
+      assert.deepStrictEqual(fs.readdirSync(tmp), [], `left behind by node ${args.join(' ')}`);
+    }
   } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
 });

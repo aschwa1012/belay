@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // The one test that spends real money: a real Claude Code worker on launch.cjs's default model, launched by the real
 // run manager against the real core, in a sandbox data dir under the OS temp dir — never the
 // repository's own store. It asserts the whole chain the contract promises:

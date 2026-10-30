@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // interactive-wake.test.cjs — ADR 0037 amendment 5: the wake publisher (hold and release, replay, no input),
 // the wake-stream client (heartbeat timeout, clean close), the mod's dedupe across a simulated reload (the
 // plain-ES-module helper src/mod/hooks/wake/core.mjs), the gate admitting belay's own plugin and nothing

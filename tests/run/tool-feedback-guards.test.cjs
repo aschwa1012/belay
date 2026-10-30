@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // tool-feedback-guards.test.cjs — ADR 0058: the guards of the tool-feedback code, each in isolation, so a mutation of any one fails
 // here rather than surviving: the compaction queue's drops, stop_idle_on_done's idleness checks, worker_last_reply's role and cut,
 // the release evaluation's filters and start guard, and a cancel that lands while a command is being spawned.

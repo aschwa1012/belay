@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // interactive-surface.test.cjs — ADR 0037 decision 5. The fixtures are excerpts of the probe's real
 // receipts (C1 passes, C0 is the leaking
 // control). Each check has a mutation of the passing fixture that fails exactly that check.

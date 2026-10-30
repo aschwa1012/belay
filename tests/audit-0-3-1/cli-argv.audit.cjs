@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // Audit 0.3.1, mcp-cli slice: CLI argument handling. Each test states what should hold and FAILS on the code as it stands; see
 // the 0.3.1 mcp-cli audit report. Not globbed by `npm test`. Run alone: node --test tests/audit-0-3-1/cli-argv.audit.cjs
 // Sandboxed: every command gets --data inside an mkdtemp directory; each CLI child is waited for (spawnSync).
