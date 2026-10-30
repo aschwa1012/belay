@@ -139,47 +139,58 @@ function touch(pid, now = Date.now()) {
 // Retire the record of a process a caller has found dead (run.end closing a row whose adapter never wrote its exit). A pid that still
 // answers is left alone. The lifetime closes at the last moment the process was seen alive (the record's stamp, or `seenFloor`, a time a
 // writer recorded such as the row's last event), not now. -> true when a record was retired.
-function retire(pid, now = Date.now(), seenFloor = null) {
+function retire(pid, now = Date.now(), seenFloor = null, { checked = false } = {}) {
   let rec;
   try { rec = readJson(fileOf(pid)); } catch { return false; }
-  if (pidAlive(pid)) return false;
+  if (!checked && pidAlive(pid)) return false; // `checked`: the caller has shown the process under this pid is not the record's
   try { saveTombstone(tombstoneOf(rec, Math.min(Math.max(lastSeen(rec), Number.isFinite(seenFloor) ? seenFloor : 0), now))); } catch { return false; }
   try { fs.unlinkSync(fileOf(pid)); } catch { /* someone else removed it */ }
   return true;
 }
 
-// -> the raw records whose pid answers a pid check; a record whose pid is gone is retired. Throws when the directory, a record or a
-// tombstone cannot be read or written.
-//
-// Given `snap` (a process snapshot) the check is by identity, not by pid alone: the record is alive only when the process under its pid
-// is the one it names (creation time), and never when it began before the current boot. A record found dead is retired at the last
-// moment it was seen alive (a stamp the adapter wrote, see touch), not at the time it is read. A read stamps nothing.
-function live({ snap = null, now = Date.now(), boot = bootMs(now) } = {}) {
+// The records, split into those whose process is alive and those whose is gone — computed, never written. Throws when the directory
+// or a record cannot be read. Given `snap` (a process snapshot) the check is by identity, not by pid alone: a record is alive only when
+// the process under its pid is the one it names (creation time; a record with none, only if the process is no younger than the record),
+// and never when it began before the current boot. Without one, a pid check as before. A dead record carries the tombstone that keeps
+// its lifetime, closed at the last moment it was seen alive (a stamp the harness wrote, see touch), never at the time it is read; a
+// pre-boot record has none (its lifetime ended with the boot).
+function scan({ snap = null, now = Date.now(), boot = bootMs(now) } = {}) {
   let names;
-  try { names = fs.readdirSync(dir()); } catch (e) { if (e && e.code === 'ENOENT') return []; throw e; }
-  const out = [];
+  try { names = fs.readdirSync(dir()); } catch (e) { if (e && e.code === 'ENOENT') return { live: [], dead: [] }; throw e; }
+  const out = { live: [], dead: [] };
   for (const n of names) {
-    if (!/^\d+\.json$/.test(n)) continue; // a temp file being renamed into place, the exited directory, or something else
+    if (!/^[0-9]+[.]json$/.test(n)) continue; // a temp file being renamed into place, the exited directory, or something else
     const file = path.join(dir(), n);
     let rec;
     try { rec = readJson(file); } catch (e) { if (e && e.code === 'ENOENT') continue; throw new Error(`spawn register: ${n} cannot be read (${e.message})`); }
     if (!rec || !Number.isInteger(rec.pid)) throw new Error(`spawn register: ${n} names no pid`);
     const preBoot = !!snap && startOf(rec) + BOOT_SLACK_MS < boot;
     const alive = snap ? !preBoot && sameProcess(rec, snap) : pidAlive(rec.pid);
-    if (!alive) {
-      const seen = Math.min(lastSeen(rec), now);
-      saveTombstone(tombstoneOf(rec, snap ? (preBoot ? Math.min(seen, boot) : seen) : now));
-      try { fs.unlinkSync(file); } catch { /* someone else removed it */ }
-      continue;
-    }
-    out.push(rec);
+    if (alive) out.live.push(rec);
+    else out.dead.push({ rec, file, tomb: preBoot ? null : tombstoneOf(rec, Math.min(lastSeen(rec), now)) });
   }
   return out;
 }
 
-// -> [{ pid, created, kind, data_dir, worker_id }] of the records whose pid answers a pid check.
-function list() {
-  return live().map((rec) => ({ pid: rec.pid, created: Number.isFinite(rec.created) ? rec.created : null, kind: rec.kind || 'worker', data_dir: rec.data_dir || null, worker_id: rec.worker_id || null }));
+// Persist what scan found dead: the tombstone first (unless `tombstones` is false), then the record goes. Writers only. Throws when a
+// tombstone cannot be written, which leaves the record for the next read.
+function settle(dead, { tombstones: keep = true } = {}) {
+  for (const d of dead) {
+    if (keep && d.tomb) saveTombstone(d.tomb);
+    try { fs.unlinkSync(d.file); } catch { /* someone else removed it */ }
+  }
+}
+
+// -> the raw records that are alive. `persist` false is a pure read: nothing is written.
+function live({ persist = true, ...opts } = {}) {
+  const r = scan(opts);
+  if (persist) settle(r.dead);
+  return r.live;
+}
+
+// -> [{ pid, created, kind, data_dir, worker_id }] of the records that are alive (see scan for `snap`).
+function list(opts) {
+  return live(opts).map((rec) => ({ pid: rec.pid, created: Number.isFinite(rec.created) ? rec.created : null, kind: rec.kind || 'worker', data_dir: rec.data_dir || null, worker_id: rec.worker_id || null }));
 }
 
 // -> the tombstones of exited processes (and of the descendants spawn-provenance.cjs has recorded). Throws when one cannot be read.
@@ -188,11 +199,11 @@ function tombstones() {
   try { names = fs.readdirSync(exitedDir()); } catch (e) { if (e && (e.code === 'ENOENT')) return []; throw e; }
   const out = [];
   for (const n of names) {
-    if (!/^\d+-\d+\.json$/.test(n)) continue;
+    if (!/^[0-9]+-[0-9]+[.]json$/.test(n)) continue;
     let t;
     try { t = readJson(path.join(exitedDir(), n)); } catch (e) { if (e && e.code === 'ENOENT') continue; throw new Error(`spawn register: exited/${n} cannot be read (${e.message})`); }
     if (!t || !Number.isInteger(t.pid) || !Number.isFinite(t.from)) throw new Error(`spawn register: exited/${n} names no pid or start`);
-    out.push({ pid: t.pid, created: Number.isFinite(t.created) ? t.created : null, from: t.from, until: Number.isFinite(t.until) ? t.until : null, kind: t.kind || 'worker', via: t.via == null ? null : t.via });
+    out.push({ pid: t.pid, created: Number.isFinite(t.created) ? t.created : null, from: t.from, until: Number.isFinite(t.until) ? t.until : null, kind: t.kind || 'worker', via: t.via == null ? null : t.via, via_from: Number.isFinite(t.via_from) ? t.via_from : null });
   }
   return out;
 }
@@ -203,4 +214,4 @@ function runSpawned(interactive, orchestratorPid) {
   return !interactive && Number.isInteger(orchestratorPid) ? [{ pid: orchestratorPid, created: null, kind: 'orchestrator' }] : [];
 }
 
-module.exports = { register, registerProcess, update, unregister, retire, touch, list, live, startOf, bootMs, BOOT_SLACK_MS, tombstones, saveTombstone, dropTombstone, dir, runSpawned, io };
+module.exports = { register, registerProcess, update, unregister, retire, touch, scan, settle, list, live, tombFile, startOf, bootMs, BOOT_SLACK_MS, tombstones, saveTombstone, dropTombstone, dir, runSpawned, io };

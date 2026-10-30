@@ -91,9 +91,6 @@ function createWriteRow(ctx, flags) {
     }
     if (written && Number.isInteger(written.seq)) w.lastWrittenSeq = written.seq;
     w.state = state;
-    // The adapter holds this child and has just written its row: stamp the register record with the time it was seen alive, so a
-    // record retired later (its adapter died with the run) closes at its real last moment. Best effort; never a read path.
-    if (w.pid != null && !w.settled && state !== 'dead' && state !== 'stopped') { try { require('../core/spawn-register.cjs').touch(w.pid); } catch { /* a stamp is a refinement */ } }
     return written;
   };
 }
