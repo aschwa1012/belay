@@ -177,6 +177,11 @@ function scan({ snap = null, now = Date.now(), boot = bootMs(now) } = {}) {
 function settle(dead, { tombstones: keep = true } = {}) {
   for (const d of dead) {
     if (keep && d.tomb) saveTombstone(d.tomb);
+    // The record is read again just before it goes: one re-registered under the same pid since the scan (a new worker took the number)
+    // is a different record and stays.
+    let now;
+    try { now = readJson(d.file); } catch { continue; } // gone, or unreadable: nothing of this scan's to remove
+    if (!now || now.pid !== d.rec.pid || now.created !== d.rec.created || now.at !== d.rec.at) continue;
     try { fs.unlinkSync(d.file); } catch { /* someone else removed it */ }
   }
 }

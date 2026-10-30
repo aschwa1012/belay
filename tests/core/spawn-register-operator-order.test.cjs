@@ -94,13 +94,30 @@ test('the register read without a snapshot closes a dead record at its last-seen
   });
 });
 
-test('descendant tombstones of a lifetime from before the boot are dropped: the new ones by their recorded start, the old ones by their age at the boot', async () => {
+test('every descendant tombstone without via_from is dropped on the first writing check (all are old-code output); one with it is judged by its lifetime', async () => {
   await withRegistry(async () => {
-    SR.saveTombstone({ pid: 11156, created: BOOT + 48000, from: BOOT + 48000, until: null, kind: 'descendant', via: 'worker pid 118952' }); // legacy: no via_from
+    SR.saveTombstone({ pid: 11156, created: BOOT + 48000, from: BOOT + 48000, until: null, kind: 'descendant', via: 'worker pid 118952' }); // legacy, at the boot
+    SR.saveTombstone({ pid: 11157, created: BOOT + 5 * H, from: BOOT + 5 * H, until: null, kind: 'descendant', via: 'worker pid 118952' }); // legacy, a login hours after the boot
     SR.saveTombstone({ pid: 3000, created: BOOT + 5 * H, from: BOOT + 5 * H, until: null, kind: 'descendant', via: 'worker pid 7', via_from: BOOT - 2 * H });
     SR.saveTombstone({ pid: 3001, created: BOOT + 5 * H, from: BOOT + 5 * H, until: null, kind: 'descendant', via: 'worker pid 8', via_from: BOOT + 4 * H });
-    const shot = snapOf({ 11156: { ppid: 9, created: BOOT + 48000, image: 'explorer.exe' }, 3000: { ppid: 9, created: BOOT + 5 * H, image: 'a.exe' }, 3001: { ppid: 9, created: BOOT + 5 * H, image: 'b.exe' } });
-    assert.deepStrictEqual(Prov.refresh(shot, { now: NOW, boot: BOOT }).alive.map((a) => a.pid), [3001], 'only the post-boot lifetime\'s descendant stays');
+    const shot = snapOf({ 11156: { ppid: 9, created: BOOT + 48000, image: 'explorer.exe' }, 11157: { ppid: 9, created: BOOT + 5 * H, image: 'explorer.exe' }, 3000: { ppid: 9, created: BOOT + 5 * H, image: 'a.exe' }, 3001: { ppid: 9, created: BOOT + 5 * H, image: 'b.exe' } });
+    assert.deepStrictEqual(Prov.refresh(shot, { now: NOW, boot: BOOT, persist: false }).alive.map((a) => a.pid), [3001], 'a read ignores them too');
+    assert.strictEqual(SR.tombstones().length, 4, 'and deletes nothing');
+    assert.deepStrictEqual(Prov.refresh(shot, { now: NOW, boot: BOOT }).alive.map((a) => a.pid), [3001]);
     assert.deepStrictEqual(SR.tombstones().map((t) => t.pid), [3001]);
+  });
+});
+
+test('a headless orchestrator whose run process died is covered up to its last stamp: an orphan made hours into its life is still refused', async () => {
+  await withRegistry(async (dir) => {
+    const s4 = NOW - 4 * H;
+    const pid = deadPid();
+    putRecord(dir, { pid, kind: 'orchestrator', created: null, spawned_at: s4, at: s4 + 300 });
+    const shot = snapOf({ 99001: { ppid: pid, created: s4 + H, image: 'node.exe' } });
+    const chain = [{ pid: 99001, created: s4 + H }];
+    const match = () => OC.spawnedMatch(chain, spawned({ snap: shot, persist: false }).concat(Prov.refresh(shot, { persist: false }).alive));
+    assert.strictEqual(match(), null, 'never stamped: the record closes at its spawn, the case the stamp timer exists for');
+    assert.strictEqual(SR.touch(pid, s4 + 3.5 * H), true, 'the run process timer, 3.5 h in');
+    assert.ok(match(), 'stamped: the orphan made an hour in is a descendant');
   });
 });
