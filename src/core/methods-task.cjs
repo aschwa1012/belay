@@ -189,7 +189,7 @@ function view(E, task, liveness, ctx) {
   const h = holds.holdOf(task, liveness || holds.runLiveness(E.store));
   const { integration, review } = derived.of(task, ctx || derived.context(E)); // beside `state`, derived on every read (task-derived.cjs)
   const stale = derived.handoffStale(task) ? { handoff_stale: true } : {}; // ADR 0061 section 3
-  return { ...task, holds_files: h.holds, holds_reason: h.reason, lease, holder_pid_alive: holderPidAlive, last_checkpoint_id: ck ? ck.id : null, last_checkpoint_at: ck ? ck.written_at : null, integration, review, ...stale };
+  return { ...task, holds_files: h.holds, holds_reason: h.reason, lease, holder_pid_alive: holderPidAlive, last_checkpoint_id: ck ? ck.id : null, last_checkpoint_at: ck ? ck.written_at : null, integration, review, ...stale, ...(PS.byPolicy(E.store, 'task', task.id) ? { made_by_policy: true } : {}) }; // made_by_policy: the row's first version was a policy step's (later writes reset acted_by), so the plan it inherits stays known
 }
 
 async function list(E, caller, args) {

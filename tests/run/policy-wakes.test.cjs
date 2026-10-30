@@ -79,7 +79,7 @@ test('E1 on a done piece of work with no review step, and on a done fix with no 
   assert.deepStrictEqual(kinds(PW.derive(snap([work('W', { policy: { fix: 'builder' } })]))), ['E1:review']);
   assert.deepStrictEqual(PW.derive(snap([work('W', { policy: { fix: 'builder' } }), reviewTask('R', 'W', 'holds', [])])), [], 'a review exists for it');
   const W = work('W', { policy: { ...PLAN, re_review: undefined } });
-  const F = work('F', { repairs: 'W', policy: null });
+  const F = work('F', { repairs: 'W', policy: null, acted_by: 'policy' });
   assert.deepStrictEqual(kinds(PW.derive(snap([W, F]))), ['E1:re_review'], 'only the fix: W has a review step in its plan');
 });
 
@@ -127,7 +127,20 @@ test('E8: a policy step that finished as an exception; lifted once the task has 
   const e = PW.derive(snap([work('W', { written_at: 40 })], { steps: [step, { ...step, seq: 4, step: 'fix', outcome: 'done' }, { ...step, seq: 5, step: 'integrate', outcome: 'skipped' }] }));
   assert.deepStrictEqual(kinds(e), ['E8:re_review']);
   assert.match(PW.wakeOf(e[0]).text, /Step re_review failed: the named refuter is dead\./);
-  assert.deepStrictEqual(PW.derive(snap([work('W', { written_at: 90 })], { steps: [step] })), []);
+  // Sent once whenever it is read; lifted only when the orchestrator acts after the step. The run's own rows (an evaluation, a worktree record,
+  // a dead holder's release, a policy step) are task rows too and lift nothing.
+  const later = (over, more = []) => PW.derive(snap([work('W', { written_at: 90, ...over }), ...more], { steps: [{ ...step, policy_rev: 1 }] }));
+  const lifted = (x) => x.map((e) => [e.exception, !!e.lifted]);
+  assert.deepStrictEqual(lifted(later({})), [['E8', false]]);
+  assert.deepStrictEqual(lifted(later({ written_by: 'orchestrator', state: 'done' })), [['E8', false]], 'a bare orchestrator-stamped row (a worktree record) is not an act');
+  assert.deepStrictEqual(lifted(later({ written_by: 'orchestrator', results: release({ evaluated_at: 70 }) })), [['E8', false]]);
+  assert.deepStrictEqual(lifted(later({ policy_rev: 2 })), [['E8', true]], 'an amend, and it is still sent');
+  assert.deepStrictEqual(lifted(later({ written_by: 'orchestrator', state: 'cancelled' })), [['E8', true]]);
+  assert.deepStrictEqual(lifted(later({ written_by: 'orchestrator', state: 'assigned' })), [['E8', true]]);
+  assert.deepStrictEqual(lifted(later({ written_by: 'orchestrator', state: 'assigned', acted_by: 'policy' })), [['E8', false]]);
+  assert.deepStrictEqual(lifted(later({}, [task('F', { repairs: 'W', written_by: 'orchestrator', written_at: 95 })])).map((x) => x[1]), [true], 'a fix the orchestrator made of it');
+  const T = [work('W', { written_at: 90, policy_rev: 2 })];
+  assert.deepStrictEqual([...PW.haltedIds(PW.derive(snap(T, { steps: [{ ...step, policy_rev: 1 }] })), T)], [], 'a lifted E8 halts nothing');
 });
 
 test('every text names kind, task, trigger and plan field, inside the wake cap, for long ids and long titles', () => {
@@ -159,8 +172,12 @@ test('the watcher sends one wake per exception, never again for it, and a new tr
   const first = await w.poll(seen);
   assert.strictEqual(first.length, 1);
   assert.deepStrictEqual(await w.poll(seen), []);
-  s.tasks = [{ ...W, seq: W.seq + 50 }];
-  assert.strictEqual((await w.poll(seen)).length, 1, 'a failure on a later row of the task is another trigger');
+  s.tasks = [{ ...W, seq: W.seq + 50, written_at: 99 }];
+  assert.deepStrictEqual(await w.poll(seen), [], 'an amend rewrote the row: the same evaluation is the same fact');
+  s.tasks = [{ ...W, seq: W.seq + 60, results: { ...W.results, evaluated_at: 21 } }];
+  const next = await w.poll(seen);
+  assert.strictEqual(next.length, 1, 'a new evaluation that fails is a new fact');
+  assert.notStrictEqual(next[0].seq, first[0].seq);
 });
 
 test('a halt covers the task and its fixes only while the exception is current, and chain scope is the seam for the open question', () => {
@@ -184,7 +201,7 @@ test('exceptionOf names today\'s wakes E4, E9 and E10, and a routine wake nothin
   const e = PW.derive(snap([work('W', { policy: { fix: 'builder' } })]))[0];
   const w = PW.wakeOf(e);
   const rec = wakeRecord(w, w.text, 5, true);
-  assert.deepStrictEqual([rec.exception, rec.task_id, rec.event], ['E1', 'W', 'evaluated']);
+  assert.deepStrictEqual([rec.exception, rec.task_id, rec.event, rec.trigger, rec.key], ['E1', 'W', 'evaluated', w.trigger, `W@20`]);
   const plain = wakeRecord({ event: 'turn_end', worker_id: 'w1', turn: 1, seq: 2 }, 't', 5, false);
   assert.deepStrictEqual([plain.exception, plain.task_id], [null, null]);
 });
@@ -217,9 +234,9 @@ test('the same hand-back with no plan wakes exactly as before; a worker with a t
   assert.strictEqual(out.length, 1);
   assert.strictEqual(out[0].evaluated[0].task_id, 'W');
   assert.ok(!seen.policyArmed && !seen.policyTasks, 'no plan, nothing armed');
-  const mixed = await RE.enrichWakes(coreOf([handed({ policy: PLAN }), task('P', { state: 'open', lease: { holder: 'w1' } })]), RUN, [turnEnd()], new Map());
-  assert.strictEqual(mixed.length, 1, 'a task with no plan is held by the worker: its turn end is not routine');
-  assert.ok(!mixed[0].evaluated, 'but the plan task\'s evaluation is not carried on it');
+  const mixed = await RE.enrichWakes(coreOf([handed({ policy: PLAN }), handed({ id: 'P', seq: 3 })]), RUN, [turnEnd()], new Map());
+  assert.strictEqual(mixed.length, 1, 'a hand-back with no plan is not routine');
+  assert.deepStrictEqual(mixed[0].evaluated.map((e) => e.task_id), ['P'], 'and the plan task is not carried on it');
 });
 
 // The two wake paths.
@@ -245,6 +262,9 @@ test('interactive path: the publisher sends an exception wake once, with the pol
     assert.strictEqual(ws.filter((l) => /exception E1,/.test(l.text)).length, 1, JSON.stringify(ws));
     assert.ok(!ws.some((l) => /finished turn/.test(l.text)), 'the routine turn end is not published');
     assert.ok(B(ws[0].text) <= RE.WAKE_TEXT_MAX);
+    const rc = pub.receipt();
+    assert.deepStrictEqual(rc.map((r) => [r.exception, r.task_id]), [['E1', 'W']], 'the interactive receipt fills wakes[] too');
+    assert.match(rc[0].trigger, /^task:W:/);
   } finally { sock.destroy(); await pub.stop(); }
 });
 
@@ -272,4 +292,27 @@ test('headless path: the run writes the exception wake to the orchestrator once,
     if (saved === undefined) delete process.env.BELAY_CLAUDE_EXE; else process.env.BELAY_CLAUDE_EXE = saved;
     cleanup(root);
   }
+});
+
+test('a plain task that depends on planned work does not take its plan; the review of planned work and a policy step rows do', async () => {
+  const W = work('W');
+  const T = task('T', { depends_on: ['W'], state: 'released', handoff: handoff(), results: release() });
+  const byId = new Map([W, T].map((t) => [t.id, t]));
+  assert.strictEqual(PW.policyOf(T, byId), null);
+  assert.ok(PW.policyOf(reviewTask('R', 'W', 'holds', []), new Map([['W', W]])), 'a review of the work');
+  assert.ok(PW.policyOf(task('R2', { depends_on: ['W'], acted_by: 'policy' }), byId), 'a row a policy step wrote');
+  assert.strictEqual(PW.policyOf(task('F', { repairs: 'W' }), byId), null, 'an orchestrator fix resolves its own plan');
+  assert.ok(PW.policyOf(task('F2', { repairs: 'W', acted_by: 'policy' }), byId));
+  const out = await RE.enrichWakes(coreOf([W, T]), RUN, [turnEnd()], new Map());
+  assert.strictEqual(out.length, 1, 'T finished and the orchestrator learns it');
+  assert.strictEqual(out[0].evaluated[0].task_id, 'T');
+});
+
+test('a turn end with no hand-back is kept under a plan: a worker still holding the lease, or out of turns', async () => {
+  const W = task('W', { policy: PLAN, state: 'assigned', lease: { holder: 'w1' } });
+  const out = await RE.enrichWakes(coreOf([W]), RUN, [turnEnd()], new Map());
+  assert.strictEqual(out.length, 1);
+  assert.strictEqual(out[0].event, 'turn_end');
+  const other = await RE.enrichWakes(coreOf([handed({ policy: PLAN })]), RUN, [turnEnd('w9')], new Map());
+  assert.strictEqual(other.length, 1, 'another worker turn end is not the hand-back one');
 });

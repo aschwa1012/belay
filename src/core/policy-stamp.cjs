@@ -27,10 +27,10 @@ function stepOf(caller) {
   return caller && caller.channel === 'harness' && Number.isInteger(caller.policy_step) ? caller.policy_step : null;
 }
 
-function claimRow(store, caller, seq) {
+function claimRow(store, caller, seq, anyOutcome = false) {
   const c = store.p('SELECT * FROM policy_step WHERE seq = ?').get(seq);
   if (!c || c.run_id !== caller.run_id) throw err('E_ARGS', `policy step ${seq} is not a claim of this run, so nothing is written for it`, { policy_step: seq });
-  if (c.outcome !== 'started') throw err('E_ARGS', `policy step ${seq} is already finished (${c.outcome}); a step acts once, between its claim and its finish`, { policy_step: seq, outcome: c.outcome });
+  if (!anyOutcome && c.outcome !== 'started') throw err('E_ARGS', `policy step ${seq} is already finished (${c.outcome}); a step acts once, between its claim and its finish`, { policy_step: seq, outcome: c.outcome });
   return c;
 }
 
@@ -48,10 +48,13 @@ function overrides(store, table, values) {
   const caller = require('./held-guard.cjs').callerNow();
   const seq = stepOf(caller);
   if (seq === null) return out;
-  const c = claimRow(store, caller, seq);
+  // The claim is checked open when the call starts (openClaim), before any effect. By the time the row is written the effect has happened, and
+  // a row that records it is always written (invariant 5), so a claim finished meanwhile still stamps it.
+  const c = claimRow(store, caller, seq, true);
   out.acted_by = 'policy';
   out.trigger = { table: c.trigger_table, id: c.trigger_id, seq: c.trigger_seq };
-  if (c.policy_rev != null) out.policy_rev = c.policy_rev;
+  // A task's policy_rev is the plan's revision (ADR 0071), carried from the row; the claim's revision is the step's, on lease and integration rows.
+  if (table !== 'task' && c.policy_rev != null) out.policy_rev = c.policy_rev;
   return out;
 }
 

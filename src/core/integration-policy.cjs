@@ -146,4 +146,24 @@ async function standingMerge(E, caller, args, at, view) {
   return PS.duplicate(E, caller, 'integration', row.id, { ...view(row), existing: true });
 }
 
-module.exports = { checkTakeOver, checkArgs, readTasks, targetsOf, policyGuard, standingMerge, MAX_TASKS, MAX_REASON };
+// S4: belay/integrate/<run> is the run's own only if this run made it. A branch of that name with no integration row written since the run
+// (epoch) began is not: a reused run id, or a branch the user made, so a step writes nothing onto it.
+async function assertOwnBranch(E, caller, repo, into, claim) {
+  if (!(await G.branchExists(repo, into))) return;
+  const since = (rows.current(E.store, 'run', caller.run_id) || {}).started_at || 0;
+  const mine = rows.currentAll(E.store, 'integration').some((r) => r.run_id === caller.run_id && r.into_branch === into && G.samePath(r.repo, repo) && E.store.p('SELECT MIN(written_at) AS w FROM integration WHERE id = ?').get(r.id).w >= since);
+  if (!mine) throw err('E_PRECONDITION', `${into} exists and this run has not merged into it; a policy step writes only onto a branch its own run made, so the orchestrator merges first`, { into, policy_step: claim.seq });
+}
+
+// S3: a policy step's merge of tasks the orchestrator has already merged, into any branch (main under the gate included), is the orchestrator's
+// merge standing: the step is superseded by the latest such integration row, and nothing is written. -> the answer, or null.
+function mergedElsewhere(E, caller, args, view, targets) {
+  if (PS.stepOf(caller) === null) return null;
+  const mine = rows.currentAll(E.store, 'integration').filter((r) => r.run_id === caller.run_id && Array.isArray(r.merged) && !PS.byPolicy(E.store, 'integration', r.id));
+  const by = (id) => mine.filter((r) => r.merged.some((m) => m && m.task_id === id && m.by_this_call === true && (!targets || !targets.get(id) || targets.get(id).sha === m.sha))); // the commit merged is the one a merge would make now
+  if (!args.task_ids.every((id) => by(id).length)) return null;
+  const row = args.task_ids.flatMap(by).reduce((x, y) => (y.seq > x.seq ? y : x));
+  return PS.duplicate(E, caller, 'integration', row.id, { ...view(row), existing: true });
+}
+
+module.exports = { checkTakeOver, checkArgs, readTasks, targetsOf, policyGuard, standingMerge, mergedElsewhere, assertOwnBranch, MAX_TASKS, MAX_REASON };
