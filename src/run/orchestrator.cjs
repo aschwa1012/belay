@@ -213,6 +213,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   // end can tell what it answered. `forWorkerId` is null for the prompt itself; `wakeRecord` is the
   // exact object pushed to `state.wakes` for a worker's wake, so a later match can stamp it directly.
   function writeStdinLine(text, forWorkerId, wakeRecord) {
+    if (child.stdin && child.stdin.destroyed || state.stdinError) return false; // the pipe is broken: nothing was written, so nothing is recorded
     try {
       // The uuid is what the substrate's `command_lifecycle` events name this write by (pending-writes.cjs).
       const uuid = crypto.randomUUID();
@@ -247,8 +248,8 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     if (ev.event === 'paused') rec.paused_by = ev.paused_by;
     if (ev.turns_skipped) rec.turns_skipped = ev.turns_skipped;
     if (!ev.unheld && hold.holdWake(rec)) return; // 6f design item 2: held while paused, never suppressed; the budget pause's own wake is the one not held
-    writeStdinLine(text, ev.worker_id, rec);
-    state.wakes.push(rec);
+    if (writeStdinLine(text, ev.worker_id, rec)) state.wakes.push(rec);
+    else state.wakesSuppressed.push({ ...ev, reason: 'stdin was broken when this event was found' });
   }
 
   // 5b: one poll chain for the run's whole life, from the moment the ready check begins until the
