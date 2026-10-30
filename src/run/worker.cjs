@@ -121,6 +121,8 @@ async function adopt({ core, workerId, dataDir }) {
   w.lastWrittenSeq = Number.isInteger(row.seq) ? row.seq : null; // the guard's basis for a later restating write
   if (toolsRefusal) { w.toolsRefusal = toolsRefusal; w.toolsUnknown = true; } // never overwritten (forWorker sets adoptRefusal for other causes): checkLaunch throws the refusal on every launch, and rowOf writes no tools
   if (launchOpts.error) w.lastError = { where: 'adopt', ...launchOpts.error };
+  // A Codex resume loses the reviewer's scratch folder as a writable root unless the record carries it again: the folder exists only for a reviewer, so its existence under the row's run is the marker (the row has no agent type).
+  w.scratchDir = row.substrate === 'codex' && row.run_id ? require('../core/scratch-dir.cjs').scratchDir(dataDir, row.run_id, row.id) : null;
   w.sessionId = row.session_id || null;
   w.pid = Number.isInteger(row.pid) ? row.pid : null;
   PI.adoptFromRow(w, row);

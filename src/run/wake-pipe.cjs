@@ -47,6 +47,7 @@ function startWakePublisher({
   const queue = []; // derived while held
   const stats = { polls: 0, errors: 0, published: 0, held_max: 0, last_error: null };
   let baseline = {};
+  const deadPids = require('./dead-pids.cjs').createDeadPids({ graceMs: DEATH_GRACE_MS, adapterAlive: (pid) => !!pid && require('../core/lock.cjs').pidAlive(pid) });
   const evalSeen = new Map(); // ADR 0058: release evaluations already carried by a wake
   const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId, enabled: !!notes }); // wave 4: a refuted note
   const callWatcher = require('./call-wake.cjs').createCallWatcher({ core, runId }); // a still_running integrate or task_evaluate
@@ -85,6 +86,7 @@ function startWakePublisher({
       stats.polls += 1;
       if (stopped) return;
       if (list) {
+        list = { ...list, workers: deadPids.apply(list.workers || []) }; // a pid seen dead stays dead (dead-pids.cjs)
         const { events, next } = diffWorkers({ prev: baseline, rows: list.workers || [], runId, nowMs: now() - t0, graceMs: DEATH_GRACE_MS, sinceAt: t0 });
         baseline = next;
         const byId = new Map((list.workers || []).map((w) => [w.id, w]));

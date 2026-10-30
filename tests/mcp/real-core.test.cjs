@@ -10,7 +10,6 @@
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
-const { spawn } = require('node:child_process');
 
 const { launch, sandboxDir } = require('./rpc.cjs');
 const { openCore } = require('../../src/core/index.cjs');
@@ -192,10 +191,8 @@ test('a second orchestrator adapter reconciles the previous epoch before its fir
 
   // A worker the previous epoch left mid-launch whose process is gone. `starting` is written rather
   // than `running` because `running` is refused unless the pid is alive at the moment it is written
-  // (api.md §2), and this pid is deliberately dead: a real child, run to completion.
-  const gone = spawn(process.execPath, ['-e', 'process.exit(0)']);
-  const gonePid = gone.pid;
-  await new Promise((r) => gone.on('exit', r));
+  // (api.md §2), and this pid is deliberately dead.
+  const gonePid = require('../helpers/dead-pid.cjs').deadPid(); // an exited child's pid is reused on Windows
   await owner.worker.write({ id: 'wk-gone', substrate: 'claude-code', pid: gonePid, state: 'starting' });
   await owner.shutdownOwner();
   await owner.close();
