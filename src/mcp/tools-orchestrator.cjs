@@ -2,6 +2,7 @@
 // tools-orchestrator.cjs — the orchestrator's own tools (ADR 0010 §2 and its amendments), moved out of tools.cjs (the 500-line rule).
 
 const { S, str, int, bool, DEBUG, strs } = require('./tools-schema.cjs');
+const { POLICY_PROPERTY } = require('./tools-policy.cjs');
 const { WORKER_TYPES } = require('../run/agent-defaults.cjs'); // pure; the agent_type enum
 
 const ORCHESTRATOR = [
@@ -79,6 +80,7 @@ const ORCHESTRATOR = [
       repairs: str('A fix task: the id of the work task it repairs; past max_fix_rounds the answer carries fix_notice'),
       base: str('Diff base'),
       budget_usd: { type: 'number', description: 'USD limit; needs the ledger' },
+      policy: POLICY_PROPERTY,
       tree_of: str('Work in that task\'s worktree (a conflict fix)'),
       worktree: { type: ['boolean', 'string'], description: 'Own tree: true from HEAD, or a base ref' },
       tasks: { type: 'array', items: { type: 'object' }, description: 'Several, each with these fields; all or nothing' },

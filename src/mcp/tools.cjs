@@ -266,7 +266,8 @@ const NO_NULL = { task_evaluate: ['base'] };
 // the core, never something a model says (invariant 3), so the boundary refuses them in either role,
 // by name, before the core sees them. The schema does not list them, which is why the listing does
 // not pay for them either.
-const HARNESS_ONLY = { task_evaluate: ['trigger', 'cancel_key'], memory_store: ['task_id', 'turn', 'source', 'embed', 'body', 'worker_id'], worker_spawn: ['native_memory', 'tools', 'sandbox', 'max_budget_usd'] }; // worker_spawn: native_memory is the eval driver's lever (ADR 0024 amendment 3); tools is the built-in list, which only allowed_tools may narrow (amendment 4); sandbox is a Codex worker's sandbox mode and max_budget_usd a job worker's spend cap, both the harness's. permission_prompt and permit_wait_ms stay open: ADR 0020 decision 1 makes the permission channel optional per spawn, and decision 5 has the orchestrator answer its requests
+const { STAMPS, stampIn } = require('./tools-policy.cjs');
+const HARNESS_ONLY = { task_create: STAMPS, task_assign: STAMPS, fix_from_review: STAMPS, integrate: STAMPS, task_evaluate: ['trigger', 'cancel_key'], memory_store: ['task_id', 'turn', 'source', 'embed', 'body', 'worker_id'], worker_spawn: ['native_memory', 'tools', 'sandbox', 'max_budget_usd'] }; // worker_spawn: native_memory is the eval driver's lever (ADR 0024 amendment 3); tools is the built-in list, which only allowed_tools may narrow (amendment 4); sandbox is a Codex worker's sandbox mode and max_budget_usd a job worker's spend cap, both the harness's. permission_prompt and permit_wait_ms stay open: ADR 0020 decision 1 makes the permission channel optional per spawn, and decision 5 has the orchestrator answer its requests
 // Tools that take exactly the properties their schema names: memory_store's row is written from its arguments, so an
 // unnamed one (an id, a created_at, a vector and its model) would reach the core as if the harness had chosen it.
 const CLOSED = new Set(['memory_store']);
@@ -287,6 +288,10 @@ function validateArgs(name, args, { notes = false, role = 'worker' } = {}) {
   if (typeof a !== 'object' || Array.isArray(a)) bad(`${name} takes an object of arguments`, { tool: name });
   for (const k of HARNESS_ONLY[name] || []) {
     if (Object.prototype.hasOwnProperty.call(a, k)) bad(`${name}: ${k} is a harness field and cannot be set from a tool call`, { tool: name, field: k, reason: 'harness_only' });
+  }
+  if (name === 'task_create') { // a batch item is a task too: its stamps are refused by name as the top level's are
+    const st = stampIn(a);
+    if (st && st.item !== undefined) bad(`task_create: tasks[${st.item}].${st.field} is a harness field and cannot be set from a tool call`, { tool: name, field: st.field, item: st.item, reason: 'harness_only' });
   }
   if (CLOSED.has(name)) {
     const extra = Object.keys(a).find((k) => !Object.prototype.hasOwnProperty.call(schema.properties || {}, k));
@@ -316,14 +321,15 @@ function validateArgs(name, args, { notes = false, role = 'worker' } = {}) {
     if (v === null && (NO_NULL[name] || []).includes(k)) bad(`${name}: ${k} must be ${spec.type}, not null`, { tool: name, field: k, expected: spec.type });
     if (v === undefined || v === null) continue;
     const t = spec.type;
-    const ok = t === 'string' ? typeof v === 'string'
-      : t === 'integer' ? Number.isInteger(v)
-        : t === 'number' ? typeof v === 'number'
-          : t === 'boolean' ? typeof v === 'boolean'
-            : t === 'array' ? Array.isArray(v)
-              : t === 'object' ? (typeof v === 'object' && !Array.isArray(v))
+    const typeOk = (x) => x === 'null' ? v === null : x === 'string' ? typeof v === 'string'
+      : x === 'integer' ? Number.isInteger(v)
+        : x === 'number' ? typeof v === 'number'
+          : x === 'boolean' ? typeof v === 'boolean'
+            : x === 'array' ? Array.isArray(v)
+              : x === 'object' ? (typeof v === 'object' && !Array.isArray(v))
                 : true;
-    if (!ok) bad(`${name}: ${k} must be ${t}`, { tool: name, field: k, expected: t });
+    const ok = Array.isArray(t) ? t.some(typeOk) : typeOk(t); // a type list (task_create worktree, policy) holds when any member does
+    if (!ok) bad(`${name}: ${k} must be ${[].concat(t).join(' or ')}`, { tool: name, field: k, expected: t });
     if (spec.enum && !spec.enum.includes(v)) bad(`${name}: ${k} must be one of ${spec.enum.join(', ')}`, { tool: name, field: k, expected: spec.enum });
   }
   if (name === 'memory_retrieve' && Array.isArray(a.ids)) {
