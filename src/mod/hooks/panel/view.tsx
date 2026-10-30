@@ -13,6 +13,7 @@ import { Table } from './table'
 import { badgeOf } from './memory'
 import { MemoryPane } from './memview'
 import { modelRows } from './warm'
+import { WrapText } from './longtext'
 
 export type { Act, Els }
 
@@ -93,6 +94,7 @@ function Notices({ E, snap, ui, act, cols }: Ctx) {
               <Button key={`notice:${n.key}`} label={clip(n.text, room)} plain dimColor={seen} onPress={() => act.seen(n.key)} />
               {inline ? <Text dimColor>{`  ${n.ids}`}</Text> : null}
             </Box>
+            {fits ? null : <WrapText E={E} text={n.text} k={`ne-${n.key}-`} w={inner} indent={2} dim />}
             {n.ids && !inline && !(fits && named) ? <IdLines E={E} ids={n.ids} cols={inner} /> : null}
             {n.cmd ? <Box paddingLeft={2} flexShrink={0} flexDirection="column">{cmdLines(n.cmd, inner - 2).map((t, i) => <Text key={`c${i}`} dimColor wrap="truncate-end">{clip(t, inner - 2)}</Text>)}</Box> : null}
           </Box>
@@ -234,7 +236,7 @@ function Orchestrator({ E, snap, ui, act, cols }: Ctx) {
           return (
             <Box key={`o${i}`}>
               <Box width={6} flexShrink={0}><Text dimColor>{hhmm(it.e.ts)}</Text></Box>
-              <Box flexGrow={1} flexShrink={1}><Text dimColor={it.kind === 'line'} wrap={it.kind === 'text' ? 'wrap' : 'truncate-end'}>{it.e.text}</Text></Box>
+              <Box flexGrow={1} flexShrink={1}><Text dimColor={it.kind === 'line'} wrap="wrap">{it.e.text}</Text></Box>
             </Box>
           )
         }
@@ -242,7 +244,7 @@ function Orchestrator({ E, snap, ui, act, cols }: Ctx) {
         return (
           <Box key={`o${i}`} flexDirection="column">
             <Button key={`tools:${it.key}`} plain dimColor label={`${open ? '▾' : '·'} ${it.calls.length} tool call${it.calls.length === 1 ? '' : 's'}`} onPress={() => act.group(it.key)} />
-            {open && it.calls.map((c, j) => <Box key={`o${i}-${j}`} paddingLeft={2}><Text dimColor wrap="truncate-end">{c.text}</Text></Box>)}
+            {open && it.calls.map((c, j) => <Box key={`o${i}-${j}`} paddingLeft={2}><Text dimColor wrap="wrap">{c.text}</Text></Box>)}
           </Box>
         )
       })}

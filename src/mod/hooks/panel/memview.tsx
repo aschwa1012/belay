@@ -8,7 +8,8 @@ import { CONFIRM_MS } from './held'
 import {
   actionId, bytesText, CAP_PRESETS, DEPTH_PRESETS, draftOf, embedLine, fetchLine, gb, MEM_TABS, probeLine, profileText, routeFit, runtimeLine, sameDraft, type MemAction,
 } from './memory'
-import { clipCells } from './wrap'
+import { cells, clipCells, wrapHard } from './wrap'
+import { FreeRow } from './longtext'
 import type { Act, Els } from './view'
 
 export type MCtx = { E: Els; state: BelayPanelMenu | null; ui: BelayPanelUi; now: number; cols: number; act: Act }
@@ -20,11 +21,18 @@ function Row({ E, segs, k, w }: { E: Els; segs: Seg[]; k: string; w: number }) {
   return <Box key={k} flexShrink={0}>{fitSegs(segs, Math.max(1, w)).map(s => <Text {...tp(s)}>{s.t}</Text>)}</Box>
 }
 
-// A radio-like pick: its text is clipped to the room, and while its write waits for the second press it says so.
+// A radio-like pick: its text wraps to the room, and while its write waits for the second press it says so.
 function Pick({ E, k, on, text, a, ui, now, cols, act }: { E: Els; k: string; on: boolean; text: string; a: MemAction; ui: BelayPanelUi; now: number; cols: number; act: Act }) {
-  const { Button } = E
+  const { Box, Button } = E
   const waiting = !!ui.memConfirm && ui.memConfirm.id === actionId(a) && now - ui.memConfirm.at <= CONFIRM_MS
-  return <Button key={k} plain dimColor={!on && !waiting} label={clipCells(`  ${waiting ? '(?)' : on ? '(•)' : '( )'} ${text}`, cols)} onPress={press(act, a)} />
+  // The rest of a long text wraps under the pick, dim and indented past its mark, instead of being cut off at the side.
+  const [first = '', ...rest] = cells(text) + 6 <= cols ? [text] : wrapHard(text, Math.max(8, cols - 6))
+  return (
+    <Box key={k} flexDirection="column">
+      <Button key={k} plain dimColor={!on && !waiting} label={clipCells(`  ${waiting ? '(?)' : on ? '(•)' : '( )'} ${first}`, cols)} onPress={press(act, a)} />
+      {rest.map((l, i) => <Row E={E} w={cols} k={`${k}-w${i}`} segs={[{ t: `      ${l}`, dim: true }]} />)}
+    </Box>
+  )
 }
 
 function Gpu({ E, menu, cols, act }: { E: Els; menu: BelayMenu; cols: number; act: Act }) {
@@ -53,7 +61,7 @@ function Profiles(c: MCtx & { menu: BelayMenu }) {
   return (
     <Box flexDirection="column">
       <Gpu E={E} menu={menu} cols={cols} act={act} />
-      {fit.ok === false && <Row E={E} w={cols} k="pw" segs={[{ t: `▲ the saved routing and this profile together need ${gb(fit.needMb)} and ${fit.freeMb === null ? '?' : gb(fit.freeMb)} is free: a run would fall back or refuse (see Routing)`, c: 'warning' }]} />}
+      {fit.ok === false && <FreeRow E={E} w={cols} k="pw" segs={[{ t: `▲ the saved routing and this profile together need ${gb(fit.needMb)} and ${fit.freeMb === null ? '?' : gb(fit.freeMb)} is free: a run would fall back or refuse (see Routing)`, c: 'warning' }]} />}
       <Row E={E} w={cols} k="p1" segs={[{ t: 'When a GPU is available', bold: true }, { t: '  memory.profile', dim: true }]} />
       {menu.profiles.map(p => pick('memory.profile', lv.profile, p.name, profileText(p)))}
       <Row E={E} w={cols} k="p2" segs={[{ t: 'When on CPU only', bold: true }, { t: '  memory.profile_cpu', dim: true }]} />
@@ -103,8 +111,8 @@ function Routing(c: MCtx & { menu: BelayMenu }) {
       <Button key="adv" plain dimColor label={`${adv ? '▾' : '▸'} advanced: ${menu.advancedTypes.length} other agent types`} onPress={() => act.group('mem:adv')} />
       {adv && menu.advancedTypes.map(role)}
       <Row E={E} w={cols} k="rf" segs={fitSegsLine} />
-      {fit.ok === false && <Row E={E} w={cols} k="rx" segs={[{ t: 'does not fit: the routing cannot be saved. Pick smaller models or free GPU memory.', c: 'error' }]} />}
-      {fit.ok === null && <Row E={E} w={cols} k="ru" segs={[{ t: 'not probed: the probe at run start still refuses a set that does not fit', dim: true }]} />}
+      {fit.ok === false && <FreeRow E={E} w={cols} k="rx" segs={[{ t: 'does not fit: the routing cannot be saved. Pick smaller models or free GPU memory.', c: 'error' }]} />}
+      {fit.ok === null && <FreeRow E={E} w={cols} k="ru" segs={[{ t: 'not probed: the probe at run start still refuses a set that does not fit', dim: true }]} />}
       <Button key="route:save" plain dimColor={!changed && fit.ok !== false}
         label={clipCells(fit.ok === false ? '  ✕ cannot save: does not fit' : !changed ? '  no changes to save' : waiting ? '  ▸ press again to save the routing' : '  ▸ save routing', cols)} onPress={press(act, save)} />
     </Box>
@@ -172,13 +180,13 @@ export function MemoryPane(c: MCtx) {
         <Button key="mtab:back" plain dimColor label="‹ back  " onPress={press(act, { kind: 'tab', tab: 'main' })} />
         {MEM_TABS.map(t => <Button key={`mtab:${t}`} plain dimColor={t !== tab} label={`${t === tab ? '▸ ' : '  '}${t} `} onPress={press(act, { kind: 'tab', tab: t })} />)}
       </Box>
-      {waiting && <Row E={E} w={cols} k="mc" segs={[{ t: `? ${waiting.text}: press the same button again to do it; any other press cancels`, c: 'warning' }]} />}
-      {ui.memNote && <Row E={E} w={cols} k="mn" segs={[{ t: ui.memNote, dim: true }]} />}
-      {!menu && <Row E={E} w={cols} k="mu" segs={[{ t: state?.error ? `The Memory menu could not be read: ${state.error}` : 'reading the Memory menu…', dim: !state?.error, c: state?.error ? 'warning' : undefined }]} />}
+      {waiting && <FreeRow E={E} w={cols} k="mc" segs={[{ t: `? ${waiting.text}: press the same button again to do it; any other press cancels`, c: 'warning' }]} />}
+      {ui.memNote && <FreeRow E={E} w={cols} k="mn" segs={[{ t: ui.memNote, dim: true }]} />}
+      {!menu && <FreeRow E={E} w={cols} k="mu" segs={[{ t: state?.error ? `The Memory menu could not be read: ${state.error}` : 'reading the Memory menu…', dim: !state?.error, c: state?.error ? 'warning' : undefined }]} />}
       {menu && tab === 'profiles' && <Profiles {...c} menu={menu} />}
       {menu && tab === 'routing' && <Routing {...c} menu={menu} />}
       {menu && tab === 'models' && <Models {...c} menu={menu} />}
-      <Row E={E} w={cols} k="mf" segs={[{ t: 'writes the config file through belay settings · two presses · /orch toggles', dim: true }]} />
+      <FreeRow E={E} w={cols} k="mf" segs={[{ t: 'writes the config file through belay settings · two presses · /orch toggles', dim: true }]} />
     </Box>
   )
 }
