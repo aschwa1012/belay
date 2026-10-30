@@ -232,6 +232,20 @@ test('through the manager under required: the spawn is refused, the starting row
   });
 });
 
+test('through the manager, a fatal embedder failure keeps its own message: no second "spawn again" instruction is appended and the record stays', async () => {
+  await withManager(failEmbed('required', { code: 'E_MODEL_CHANGED', cause: 'canary' }), async (m, sb) => {
+    await assert.rejects(m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w1', task_id: 't1' }), (e) => {
+      assert.strictEqual(e.code, 'E_PAUSED');
+      assert.strictEqual(e.detail.cause, 'embedder_failure');
+      assert.match(e.message, /Do not spawn again/);
+      assert.doesNotMatch(e.message, /NEW worker id/);
+      assert.doesNotMatch(e.message, /its starting row was written dead/);
+      return true;
+    });
+    assert.strictEqual(m._worker('w1').launchFailed, true, 'the embedder path keeps the worker record, as before');
+  });
+});
+
 test('through the manager: the embedding time is the harness wait, not part of ready_ms', async () => {
   // The stub takes real time and records it itself. total = the whole spawn; ready_ms starts after the embed, so what is left of
   // the total once ready_ms is taken off is at least the embed's own time. Were the embed counted in ready_ms, that remainder would be

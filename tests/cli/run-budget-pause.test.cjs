@@ -73,9 +73,17 @@ test('a budgeted run pauses at 90 percent, wakes the orchestrator once, and resu
     const over = await cli(['resume', runId, '--over-budget'], dataDir);
     assert.strictEqual(over.status, 0, `${over.stdout} / ${over.stderr}`);
     assert.ok(JSON.parse(currentRunRow(dataDir, runId).budget).events.some((e) => e.type === 'override' && e.override === true));
-    await record(core, 100);
-    await new Promise((r) => setTimeout(r, 1500));
-    assert.strictEqual(currentRunRow(dataDir, runId).paused_at, null, 'an overridden limit is no longer enforced');
+    const pauseEvents = () => JSON.parse(currentRunRow(dataDir, runId).budget).events.filter((e) => e.type === 'pause');
+    const pausesBefore = pauseEvents().length;
+    await record(core, 100); // past the run limit, which the override no longer enforces
+    // The guard checks rows in order on one chain, and an overridden run limit writes nothing, so there is nothing to wait on for this
+    // row alone. A later breach that must pause is the ordered marker: a task with its own limit (not covered by the run override), then
+    // a row charged to it past 90 percent. When that pause lands, the check for the $100 row, queued before it, has already run.
+    const limited = await core.task.create({ spec: 'a task with its own limit', budget_usd: 1 });
+    await core.usage.record({ worker_id: 'w1', substrate: 'claude-code', turn: 2, task_id: limited.id, cost_usd: 0.95, cost_basis: 'delta-of-cumulative' });
+    assert.ok(await pausedRow(dataDir, runId), 'the task limit pauses the run, after the $100 row was checked');
+    const added = pauseEvents().slice(pausesBefore);
+    assert.deepStrictEqual(added.map((e) => [e.scope, e.task_id]), [['task', limited.id]], 'the $100 row caused no run-scope pause: the only new pause is the task\'s');
   } finally {
     if (cliProc && cliProc.proc.exitCode === null) { try { await cli(['stop', runId], dataDir); } catch { /* best effort */ } await waitForExit(cliProc.proc, 15000); }
     await releaseCore(core);

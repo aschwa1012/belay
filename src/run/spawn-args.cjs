@@ -64,8 +64,9 @@ function validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, per
   }
 }
 
-// A spawn that failed while writing the worker's files, before any row or process: forget the record and remove the directory this
-// spawn created, so no phantom starting worker is left holding the id. A directory that existed before the spawn is left alone.
+// A spawn that failed before any process: while writing the worker's files (no row yet), or when a pause refused its assignment (the
+// `starting` row is then written dead first). Forget the record and remove the directory this spawn created, so no phantom starting
+// worker is left in the manager. A directory that existed before the spawn is left alone.
 // The record's base-sha lookup (a git child with the worktree as its cwd) is awaited first: forgetting the record would take it off
 // shutdown's drain list, and the run must not end with that child still running.
 async function discardUnstarted(workers, w, dirExisted) {
