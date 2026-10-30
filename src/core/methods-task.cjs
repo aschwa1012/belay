@@ -172,7 +172,7 @@ function refutedReview(d) {
 }
 
 // ADR 0076 decision 4: a worker is not shown the plan belay holds for its task (it is data for the run's executor, not for the worker).
-const forRole = (caller, t) => { if (!caller || caller.role !== 'worker') return t; const { policy, policy_rev, made_by_policy, ...rest } = t; return rest; };
+const forRole = (caller, t) => { if (!caller || caller.role !== 'worker') return t; const { policy, policy_rev, ...rest } = t; return rest; };
 
 function view(E, task, liveness, ctx) {
   const t = Date.now();
@@ -189,21 +189,24 @@ function view(E, task, liveness, ctx) {
   const h = holds.holdOf(task, liveness || holds.runLiveness(E.store));
   const { integration, review } = derived.of(task, ctx || derived.context(E)); // beside `state`, derived on every read (task-derived.cjs)
   const stale = derived.handoffStale(task) ? { handoff_stale: true } : {}; // ADR 0061 section 3
-  return { ...task, holds_files: h.holds, holds_reason: h.reason, lease, holder_pid_alive: holderPidAlive, last_checkpoint_id: ck ? ck.id : null, last_checkpoint_at: ck ? ck.written_at : null, integration, review, ...stale, ...(PS.byPolicy(E.store, 'task', task.id) ? { made_by_policy: true } : {}) }; // made_by_policy: the row's first version was a policy step's (later writes reset acted_by), so the plan it inherits stays known
+  return { ...task, holds_files: h.holds, holds_reason: h.reason, lease, holder_pid_alive: holderPidAlive, last_checkpoint_id: ck ? ck.id : null, last_checkpoint_at: ck ? ck.written_at : null, integration, review, ...stale };
 }
 
 async function list(E, caller, args) {
   const states = Array.isArray(args.states) && args.states.length ? new Set(args.states) : null;
   const liveness = holds.runLiveness(E.store);
   const ctx = derived.context(E), tasks = ctx.all.filter(t => !states || states.has(t.state)).map(t => forRole(caller, view(E, t, liveness, ctx)));
-  return { tasks };
+  if (caller.role === 'worker') return { tasks };
+  const made = PS.policyMadeIds(E.store); // one pass for the list, not a read per row
+  return { tasks: tasks.map(t => ({ ...t, policy_made: made.has(t.id) })) };
 }
 
 async function get(E, caller, args) {
   if (!args.task_id) throw err('E_ARGS', 'task.get needs a task_id');
   const t = rows.current(E.store, 'task', args.task_id);
   if (!t) throw err('E_NOT_FOUND', `no task row exists for ${args.task_id}`, { task_id: args.task_id });
-  return forRole(caller, view(E, t));
+  const v = forRole(caller, view(E, t));
+  return caller.role === 'worker' ? v : { ...v, policy_made: PS.byPolicy(E.store, 'task', t.id) }; // a worker sees no policy (ADR 0071)
 }
 
 async function evaluate(E, caller, args, queued = null) {

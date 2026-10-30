@@ -164,13 +164,13 @@ test('a fix a step wrote stays under its work\'s plan after the worker\'s hand-b
     const byId = new Map(tasks.map((t) => [t.id, t]));
     const row = byId.get(fix);
     assert.strictEqual(row.acted_by, null, 'the hand-back and the evaluation reset the stamp');
-    assert.strictEqual(row.made_by_policy, true, 'the first version was the step\'s');
+    assert.strictEqual(row.policy_made, true, 'the first version was the step\'s');
     assert.deepStrictEqual(PW.policyOf(row, byId), PLAN);
     // the orchestrator's own fix of another refuted review resolves its own plan
     const other = await judged(e, 'h2', 'refuted');
     const mine = await e.orch.task.fixFromReview({ review_id: other.review.id });
     const again = new Map((await e.h.task.list({})).tasks.map((t) => [t.id, t]));
-    assert.strictEqual(again.get(mine.id).made_by_policy, undefined);
+    assert.strictEqual(again.get(mine.id).policy_made, undefined);
     assert.strictEqual(PW.policyOf(again.get(mine.id), again), null);
     assert.ok(review);
   } finally { await e.close(); }
@@ -201,8 +201,8 @@ test('a worker\'s view of a task shows neither the plan nor that a policy step m
     const fix = e.raw('SELECT DISTINCT id FROM task WHERE repairs = ?', work.id)[0].id;
     const w = await e.worker('build-v');
     for (const t of [(await w.task.get({ task_id: fix })), (await w.task.get({ task_id: work.id })), ...(await w.task.list({})).tasks]) {
-      assert.ok(!('made_by_policy' in t) && !('policy' in t) && !('policy_rev' in t), t.id);
+      assert.ok(!('policy_made' in t) && !('policy' in t) && !('policy_rev' in t), t.id);
     }
-    assert.strictEqual((await e.h.task.get({ task_id: fix })).made_by_policy, true, 'the orchestrator sees it');
+    assert.strictEqual((await e.h.task.get({ task_id: fix })).policy_made, true, 'the orchestrator sees it');
   } finally { await e.close(); }
 });
