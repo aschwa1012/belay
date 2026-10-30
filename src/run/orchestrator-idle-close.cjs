@@ -27,7 +27,9 @@ async function idleClose(c) {
     const pre = await preClose.check({ isPaused: hold.isPaused }); if (state.finishing) return true; // once; never closes in the pass that read
     if (pre.wake) writeWake(pre.wake); else if (!pre.ran && state.idle && !hold.isPaused()) { closeThenKillOnDeadline('orchestrator ended a turn with no worker mid-turn; stdin closed'); return true; }
   } else if (pendingIds.length) {
-    recordHold(turnAtCall, busy, awaiting, "worker.list; pid dead, awaiting the detector's row", pendingIds, parked, live);
+    const kept = rows.filter((w) => pendingIds.includes(w.id) && w.pid_dead_seen_at != null); // rows the dead-pid memory is holding dead (dead-pids.cjs)
+    const by = kept.length ? `worker.list; pid dead (seen dead at ${kept.map((w) => `${w.id} ${w.pid_dead_seen_at}`).join(', ')} by ${[...new Set(kept.map((w) => w.pid_dead_by))].join(', ')}, and the number reads alive since: another process may hold it), awaiting the detector's row` : "worker.list; pid dead, awaiting the detector's row";
+    recordHold(turnAtCall, busy, awaiting, by, pendingIds, parked, live);
   } else {
     recordHold(turnAtCall, busy, awaiting, 'worker.list', pendingIds, parked, live);
   }
