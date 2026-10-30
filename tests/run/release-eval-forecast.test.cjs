@@ -96,3 +96,37 @@ test('one forecast per hand-back: later polls do not run it again; at most four 
   await many.poll(Array.from({ length: 7 }, (_, i) => turnEnd(`w${i}`)));
   assert.strictEqual(started, 4);
 });
+
+test('a settled forecast writes exactly one release_forecast event, and a re-poll writes no second', async () => {
+  const recorded = [];
+  const s = { tasks: [released('t1'), released('t2', 'w2')] }; const seen = new Map();
+  const core = { task: { list: async () => ({ tasks: s.tasks }) }, memory: { recordEvent: async (a) => { recorded.push(a); return a; } } };
+  const forecaster = async (t) => (t.id === 't1' ? { files: ['a.js', 'b.js'], against: 'abc', ms: 7 } : { unavailable: 'timed out', against: 'abc', ms: 5000 });
+  const poll = (events) => RE.enrichWakes(core, 'r', events, seen, { holdMs: 0, forecaster });
+  await poll([turnEnd('w1'), turnEnd('w2')]); await settle(); await settle();
+  assert.strictEqual(recorded.length, 2);
+  const [ok, bad] = recorded;
+  assert.deepStrictEqual([ok.kind, ok.ok, ok.code, ok.run_id, ok.worker_id, ok.task_id], ['release_forecast', 1, undefined, 'r', 'w1', 't1']);
+  assert.deepStrictEqual(JSON.parse(ok.message), { task_id: 't1', handoff_at: 10, files: ['a.js', 'b.js'], against: 'abc', ms: 7 });
+  assert.deepStrictEqual([bad.ok, bad.code, bad.task_id], [0, 'E_FORECAST_UNAVAILABLE', 't2']);
+  assert.deepStrictEqual(JSON.parse(bad.message), { task_id: 't2', handoff_at: 10, unavailable: 'timed out', against: 'abc', ms: 5000 });
+  await poll([]); await poll([turnEnd('w1')]); await settle();
+  s.tasks = [done('t1'), done('t2', 'w2')];
+  await poll([]); await poll([]); await settle();
+  assert.strictEqual(recorded.length, 2, 'no second event for the same hand-back');
+});
+
+test('the real ledger accepts a release_forecast event, ok and failed, and lists it by kind', async () => {
+  const { Engine, METHODS } = require('../core/helpers.cjs').core('engine.cjs');
+  const { Store } = require('../core/helpers.cjs').core('store.cjs');
+  const { sandbox, cleanup, callerFor } = require('../core/helpers.cjs');
+  const dir = sandbox(); const store = new Store(`${dir}/memory.db`, { stamp: true });
+  try {
+    const E = new Engine({ dataDir: dir, store, getEmbedder: null, owner: null, establishedBy: 'test' });
+    const call = (m, args) => E.handle(m, { caller: callerFor('orchestrator'), ...args });
+    const a = await call('memory.recordEvent', { kind: 'release_forecast', run_id: 'r', task_id: 't1', worker_id: 'w1', message: '{"clean":true}' });
+    const b = await call('memory.recordEvent', { kind: 'release_forecast', run_id: 'r', task_id: 't2', ok: 0, code: 'E_FORECAST_UNAVAILABLE', message: '{}' });
+    assert.deepStrictEqual([a.kind, a.ok, b.ok, b.code], ['release_forecast', 1, 0, 'E_FORECAST_UNAVAILABLE']);
+    assert.strictEqual((await call('memory.events', { run_id: 'r', kinds: ['release_forecast'] })).events.length, 2);
+  } finally { store.close(); cleanup(dir); }
+});

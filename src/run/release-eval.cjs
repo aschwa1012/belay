@@ -234,7 +234,7 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     if (started.has(key) || (seen.forecastRunning || 0) >= FORECASTS_MAX) return;
     started.add(key); seen.forecastRunning = (seen.forecastRunning || 0) + 1;
     let p; try { p = Promise.resolve(forecaster(t, runId)); } catch { p = Promise.resolve(null); }
-    p.then((fc) => { if (fc) forecasts.set(key, fc); }, () => { /* a forecast is optional */ }).finally(() => { seen.forecastRunning -= 1; });
+    p.then((fc) => { if (fc) { forecasts.set(key, fc); recordForecast(core, runId, t, fc); } }, () => { /* a forecast is optional */ }).finally(() => { seen.forecastRunning -= 1; });
   };
   const fails = await releaseFailures(core, runId, seen, pending, held, events, tasks);
   // A failure ends the attempt of its own turn: a hand-back gets a new attempt after every cancel or error, so a failure from an earlier turn
@@ -302,6 +302,15 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     out.push({ event: 'evaluated', worker_id: `eval:${evs[0].task_id}`, turn: 0, seq, task_id: evs[0].task_id, ...(evs.length > 1 ? { task_ids: evs.map((e) => e.task_id) } : {}), text });
   }
   return out;
+}
+
+// The receipt of a settled forecast: a ledger event (kind release_forecast), once per forecast, whether or not a wake carried it.
+// Best effort, like release_failed: a write that fails is dropped.
+function recordForecast(core, runId, t, fc) {
+  const rec = core && core.memory && core.memory.recordEvent;
+  if (typeof rec !== 'function') return;
+  const body = { task_id: t.id, handoff_at: t.handoff && t.handoff.at, ...(Array.isArray(fc.files) ? { files: fc.files.slice(0, 20) } : {}), ...(fc.clean ? { clean: true } : {}), ...(fc.unavailable ? { unavailable: String(fc.unavailable).slice(0, 150) } : {}), against: fc.against == null ? null : fc.against, ms: fc.ms };
+  Promise.resolve().then(() => rec({ kind: 'release_forecast', run_id: runId, worker_id: t.handoff && t.handoff.by, task_id: t.id, ...(fc.unavailable ? { ok: 0, code: 'E_FORECAST_UNAVAILABLE' } : { ok: 1 }), message: JSON.stringify(body) })).catch(() => {});
 }
 
 // The release_failed events of this run, read only when a hand-back is awaiting its evaluation (nothing is read otherwise).
