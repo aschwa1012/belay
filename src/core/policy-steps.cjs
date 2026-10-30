@@ -76,11 +76,13 @@ function effectOf(E, r) {
 async function claim(E, caller, args) {
   harnessOnly(caller, 'policy.claim');
   const a = args || {};
-  unknownFields(a, ['task_id', 'step', 'trigger', 'policy_rev', 'worker_id', 'turn', 'caller'], 'policy.claim');
+  unknownFields(a, ['task_id', 'step', 'trigger', 'policy_rev', 'worker_id', 'turn', 'claimant_pid', 'claimant_created', 'caller'], 'policy.claim');
   if (typeof a.step !== 'string' || !STEP_RE.test(a.step)) throw err('E_ARGS', 'policy.claim needs a step name (lower-case letters and underscores)', { field: 'step' });
   const t = a.trigger;
   if (!t || typeof t !== 'object' || !isStr(t.table) || !isStr(t.id) || (t.seq !== undefined && !isInt(t.seq))) throw err('E_ARGS', 'policy.claim needs trigger: { table, id, seq? }, the store row that is the fact the step acts on', { field: 'trigger' });
   for (const k of ['task_id', 'worker_id']) if (a[k] !== undefined && a[k] !== null && !isStr(a[k])) throw err('E_ARGS', `policy.claim ${k} must be a non-empty string`, { field: k });
+  if (a.claimant_pid !== undefined && a.claimant_pid !== null && (!isInt(a.claimant_pid) || a.claimant_pid <= 0)) throw err('E_ARGS', 'policy.claim claimant_pid must be a positive integer', { field: 'claimant_pid' });
+  if (a.claimant_created !== undefined && a.claimant_created !== null && (typeof a.claimant_created !== 'string' || !a.claimant_created || a.claimant_created.length > 100)) throw err('E_ARGS', 'policy.claim claimant_created must be a short non-empty string', { field: 'claimant_created' });
   for (const k of ['policy_rev', 'turn']) if (a[k] !== undefined && a[k] !== null && !isInt(a[k])) throw err('E_ARGS', `policy.claim ${k} must be an integer`, { field: k });
   if (!TABLES.includes(t.table)) throw err('E_ARGS', `policy.claim trigger.table must be one of ${TABLES.join(', ')}`, { field: 'trigger' });
   if (VERSIONED.has(t.table) && t.seq === undefined) throw err('E_ARGS', `a trigger on a ${t.table} row needs its seq: the step acts on that version of the row, and a later version is a new trigger`, { field: 'trigger' });
@@ -90,13 +92,13 @@ async function claim(E, caller, args) {
   if (!isStr(run_id)) throw err('E_ARGS', 'policy.claim needs a caller with a run_id', { field: 'run_id' });
   if (hooks.beforeInsert) await hooks.beforeInsert({ run_id, step: a.step, trigger: trig });
   return E.store.tx(() => {
-    const info = E.store.p('INSERT OR IGNORE INTO policy_step(run_id, task_id, step, trigger_table, trigger_id, trigger_seq, policy_rev, outcome, worker_id, turn, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
-      .run(run_id, a.task_id || null, a.step, trig.table, trig.id, trig.seq, a.policy_rev === undefined ? null : a.policy_rev, 'started', a.worker_id || null, a.turn === undefined ? null : a.turn, Date.now());
+    const info = E.store.p('INSERT OR IGNORE INTO policy_step(run_id, task_id, step, trigger_table, trigger_id, trigger_seq, policy_rev, outcome, worker_id, turn, at, claimant_pid, claimant_created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
+      .run(run_id, a.task_id || null, a.step, trig.table, trig.id, trig.seq, a.policy_rev === undefined ? null : a.policy_rev, 'started', a.worker_id || null, a.turn === undefined ? null : a.turn, Date.now(), a.claimant_pid || null, a.claimant_created || null);
     let existing = Number(info.changes) === 0;
     // A step the executor skipped because the run was paused (error E_PAUSED) took nothing, so its claim is reopened for the retake after the resume.
     const there = existing ? byKey(E, run_id, trig, a.step) : null;
     if (there && there.outcome === 'skipped' && /^E_PAUSED/.test(there.error || '')) {
-      E.store.p("UPDATE policy_step SET outcome = 'started', error = NULL, row_ref = NULL, finished_at = NULL, at = ? WHERE seq = ? AND outcome = 'skipped'").run(Date.now(), there.seq);
+      E.store.p("UPDATE policy_step SET outcome = 'started', error = NULL, row_ref = NULL, finished_at = NULL, at = ?, claimant_pid = ?, claimant_created = ? WHERE seq = ? AND outcome = 'skipped'").run(Date.now(), a.claimant_pid || null, a.claimant_created || null, there.seq);
       existing = false;
     }
     const row = existing ? byKey(E, run_id, trig, a.step) : E.store.p('SELECT * FROM policy_step WHERE seq = ?').get(there && !existing ? there.seq : Number(info.lastInsertRowid));

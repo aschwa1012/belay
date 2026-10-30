@@ -311,6 +311,9 @@ const MIGRATIONS = [
   'ALTER TABLE integration ADD COLUMN policy_rev INTEGER',
   // ADR 0071 decision 3: the user's default plan for the run (JSON text of a policy object), stated by the launching process at run.attach; null when none.
   'ALTER TABLE run ADD COLUMN policy_default TEXT',
+  // ADR 0072 (fix round): the adapter that claimed a policy step, as its pid and creation time, so only a claim whose claimant is gone is swept.
+  'ALTER TABLE policy_step ADD COLUMN claimant_pid INTEGER',
+  'ALTER TABLE policy_step ADD COLUMN claimant_created TEXT',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot

@@ -66,7 +66,7 @@ function store({ tasks = [], steps = [], integrations = [], workers = [idle('b1'
     policyAs: (seq) => { open(seq); return Object.freeze(reads(seq)); },
   };
   s.assignFor = (stepCore) => async (a) => stepCore.task.assign(a); // the adapter's assign, over the stamped view
-  s.exec = (extra = {}) => { const e = createPolicyExecutor({ core: s.core, runId: RUN, assignFor: s.assignFor, closeWaitMs: 0, ...extra }); e.arm(); return e; };
+  s.exec = (extra = {}) => { const e = createPolicyExecutor({ core: s.core, runId: RUN, assignFor: s.assignFor, closeWaitMs: 0, identity: { pid: process.pid, created: 't' }, ...extra }); e.arm(); return e; };
   s.writes = () => s.calls.filter((c) => ['task.fixFromReview', 'task.create', 'task.assign', 'integration.merge', 'policy.claim'].includes(c.m));
   s.noneStarted = () => assert.deepStrictEqual(s.rows.filter((r) => r.outcome === 'started'), [], 'no claim is left started');
   return s;

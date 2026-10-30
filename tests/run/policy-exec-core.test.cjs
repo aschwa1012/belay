@@ -33,7 +33,7 @@ async function env() {
     return c;
   };
   // The adapter's task_assign over the stamped view, without the message to a process.
-  e.exec = (extra = {}, c = e.h) => { const x = createPolicyExecutor({ core: c, runId: RUN, assignFor: (stepCore) => async (a) => stepCore.task.assign(a), closeWaitMs: 0, ...extra }); x.arm(); return x; };
+  e.exec = (extra = {}, c = e.h) => { const x = createPolicyExecutor({ core: c, runId: RUN, assignFor: (stepCore) => async (a) => stepCore.task.assign(a), closeWaitMs: 0, identity: { pid: process.pid, created: 'own' }, ...extra }); x.arm(); return x; };
   e.close = async () => {
     for (const c of e.workers.values()) await c.close();
     await op.close();
@@ -266,7 +266,7 @@ test('the sweep names the row a dead step wrote (done), or records the interrupt
     assert.strictEqual(stepsOf(e)[0].outcome, 'started');
     // a claim that wrote nothing
     const bare = (await e.h.policy.claim({ step: 'integrate', trigger: { table: 'task', id: review.id, seq: 1 }, task_id: work.id })).row.seq;
-    await e.exec({ startedAt: Date.now() + 1000 }).tick(); // a later adapter life
+    await e.exec({ identity: { pid: 999999, created: 'later' }, aliveBy: async () => false }).tick(); // a later adapter life; the first one's process is gone
     const rows = stepsOf(e);
     assert.deepStrictEqual([rows[0].outcome, rows[0].row_ref], ['done', `task:${fix}`]);
     const b = rows.find((r) => r.seq === bare);
@@ -276,13 +276,17 @@ test('the sweep names the row a dead step wrote (done), or records the interrupt
   } finally { await e.close(); }
 });
 
-test('a claim made since this adapter started is live and is not swept', async () => {
+test('two executors on one run: a claim whose claimant is alive is not swept by the other; once the claimant is gone it is', async () => {
   const e = await env();
   try {
     const { work, review } = await judged(e, 'l', 'refuted');
-    const x = e.exec(); // its life begins before the claim below
-    const live = (await e.h.policy.claim({ step: 'integrate', trigger: { table: 'task', id: review.id, seq: 1 }, task_id: work.id })).row.seq;
-    await x.tick();
-    assert.strictEqual(e.raw('SELECT outcome FROM policy_step WHERE seq = ?', live)[0].outcome, 'started');
+    // executor A's step is in flight: claimed, not finished
+    const live = (await e.h.policy.claim({ step: 'integrate', trigger: { table: 'task', id: review.id, seq: 1 }, task_id: work.id, claimant_pid: process.pid, claimant_created: 'own' })).row.seq;
+    const outcome = () => e.raw('SELECT outcome FROM policy_step WHERE seq = ?', live)[0].outcome;
+    const alive = async (pid, created) => pid === process.pid && created === 'own';
+    await e.exec({ identity: { pid: 999998, created: 'b' }, aliveBy: alive }).tick(); // executor B, whose first pass sweeps
+    assert.strictEqual(outcome(), 'started', 'a live claimant claim is left alone');
+    await e.exec({ identity: { pid: 999997, created: 'c' }, aliveBy: async () => false }).tick(); // A is gone
+    assert.strictEqual(outcome(), 'exception');
   } finally { await e.close(); }
 });

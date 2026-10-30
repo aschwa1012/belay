@@ -15,6 +15,7 @@
 // made over the stamped core, so a policy assignment sends the worker the same text an orchestrator's does.
 
 const PW = require('./policy-wakes.cjs');
+const PROC = require('./process.cjs');
 const { gatedCore } = require('./gated-core.cjs');
 const STEPS = require('./policy-steps-run.cjs');
 
@@ -85,21 +86,29 @@ function due(snap) {
 // `core`: the harness view of the adapter's core (policy.claim and policy.finish are the harness channel's). `assignFor(stepCore)`: the
 // adapter's task_assign made over a core view. `closing()`: the run manager is closing. `closeWaitMs`: how long close() lets a step in
 // flight finish before every further core call is refused.
-function createPolicyExecutor({ core, runId, assignFor, closing = () => false, closeWaitMs = 2000, log = () => {}, startedAt = Date.now() }) {
+function createPolicyExecutor({ core, runId, assignFor, closing = () => false, closeWaitMs = 2000, log = () => {}, identity = null, aliveBy = null }) {
   const gate = { aborted: false };
   const g = gatedCore(core, gate, 'the policy executor'); // a call begun after the owner's shutdown would elect a stray owner (invariant 2)
   let armed = false; let closed = false; let running = null; let again = false; let swept = false;
+  // The adapter that claims: its pid and creation time (read once, on the first claim). A claim whose claimant is gone by that identity is a dead
+  // life's; one whose claimant is alive, this process's own or another adapter's, is never swept.
+  let own = identity ? Promise.resolve(identity) : null;
+  const ownId = () => own || (own = PROC.createdOf(process.pid).then((r) => ({ pid: process.pid, created: r && r.created != null ? String(r.created) : null }), () => ({ pid: process.pid, created: null })));
+  const alive = aliveBy || (async (pid, created) => { if (created == null) return PROC.pidAlive(pid); const r = await PROC.createdOf(pid).catch(() => null); return !!r && String(r.created) === String(created); });
   const stopped = () => closed || gate.aborted || closing();
 
   const read = async (fn, field, fallback) => { const r = await fn({}); return (r && r[field]) || fallback; };
 
-  // Once per adapter life, at its first pass: a claim older than this life that is still `started` belongs to a life that ended mid-step (a claim made since
-  // is a live one, perhaps another adapter's). Its effect may have landed: the row stamped with the claim's trigger (policy.list's `effect`) is
+  // Once per adapter life, at its first pass: a claim still `started` whose claimant is no longer alive (pid and creation time) belongs to a life that
+  // ended mid-step; a live claimant's claim, ours or another adapter's on the same run, is left alone. A claim with no claimant is a dead one's. Its effect may have landed: the row stamped with the claim's trigger (policy.list's `effect`) is
   // named, else the claim is an interrupted exception. It is never resumed or retried.
   async function sweep(steps) {
     const out = [];
+    const seen = new Map();
+    const live = async (pid, created) => { const k = `${pid}|${created}`; if (!seen.has(k)) { const me = await ownId(); seen.set(k, pid === me.pid && String(created) === String(me.created) ? true : await alive(pid, created)); } return seen.get(k); };
     for (const s of steps) {
-      if (s.run_id !== runId || s.outcome !== 'started' || Number(s.at) >= startedAt) continue;
+      if (s.run_id !== runId || s.outcome !== 'started') continue;
+      if (s.claimant_pid && await live(s.claimant_pid, s.claimant_created)) continue;
       try {
         await g.policy.finish(s.effect
           ? { seq: s.seq, outcome: 'done', row_ref: s.effect }
@@ -125,7 +134,8 @@ function createPolicyExecutor({ core, runId, assignFor, closing = () => false, c
   }
 
   async function take(c, taken) {
-    const { row, existing } = await g.policy.claim({ step: c.step, trigger: c.trigger, task_id: c.task_id, ...(c.policy_rev != null ? { policy_rev: c.policy_rev } : {}), ...(c.worker ? { worker_id: c.worker } : {}) });
+    const me = await ownId();
+    const { row, existing } = await g.policy.claim({ claimant_pid: me.pid, ...(me.created != null ? { claimant_created: String(me.created) } : {}), step: c.step, trigger: c.trigger, task_id: c.task_id, ...(c.policy_rev != null ? { policy_rev: c.policy_rev } : {}), ...(c.worker ? { worker_id: c.worker } : {}) });
     if (existing) return null;
     const stepCore = gatedCore(g.policyAs(row.seq), gate, 'the policy executor');
     let res;
