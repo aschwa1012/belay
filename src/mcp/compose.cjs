@@ -35,6 +35,10 @@ const hasCheck = (a) => !!a && ((Array.isArray(a.commands) && a.commands.length 
 // A worker this adapter launched is the only one it has a channel to: an adopted row's process belongs to another adapter.
 const launchedHere = (r, id) => !!(r && typeof r._worker === 'function' && r._worker(id));
 
+// Lease grants whose task this process has sent to the worker (worker|lease), shared by every compose in the adapter: a repeat assignment of the same worker
+// is not sent twice, and one whose delivery is not on record (a policy step's hand-over that failed) is sent.
+const DELIVERED = new Set();
+
 // `openManager()` opens the run manager when a tool needs one (spawn); `manager()` only reads whether it is open.
 function createCompose({ callCore, manager, openManager, dataDir = null, runId = null, onPolicy = null }) {
   // ADR 0054 amendment 1: a review task's answer carries the reviewer's real scratch folder, made now if the worker has none (a
@@ -52,7 +56,8 @@ function createCompose({ callCore, manager, openManager, dataDir = null, runId =
     const raw = await callCore('task.assign', coreArgs);
     const out = withWarnings(withScratch(raw, coreArgs.worker_id), raw && overlapWarning(raw.overlaps));
     const not = (reason, extra) => ({ ...out, delivered: { sent: false, reason, ...extra } });
-    if (raw && raw.existing === true) return not('the assignment already stands (existing), so nothing was sent again'); // a policy step or an earlier call made it and told the worker (ADR 0072 decision 2)
+    const sentKey = raw && raw.new_lease ? `${coreArgs.worker_id}|${raw.new_lease.id}` : null;
+    if (raw && raw.existing === true && sentKey && DELIVERED.has(sentKey)) return not('the assignment already stands (existing) and the worker was told of it, so nothing was sent again'); // a policy step or an earlier call made it and told the worker (ADR 0072 decision 2); with no record of the delivery it is sent again
     const r = manager();
     const rule = HB.rule(out, await HB.facts((id) => callCore('task.get', { task_id: id }), out)); // the hand-back rule for this task, sent below and kept for the worker
     if (launchedHere(r, coreArgs.worker_id) && typeof r.retask === 'function') r.retask({ worker_id: coreArgs.worker_id, task_id: coreArgs.task_id, spec: out && out.task && out.task.spec, review: out && out.review, rule }); // the worker's current task follows the assignment, delivered or not
@@ -69,6 +74,7 @@ function createCompose({ callCore, manager, openManager, dataDir = null, runId =
     const text = `${head}\n\n${body}${out && out.scratch ? require('../run/review-scratch.cjs').firstLine(out.scratch) : ''}${out && out.review ? require('../run/review-scratch.cjs').treeLine(out.review) : ''}${rule}${tail}`;
     try {
       const m = await r.message({ worker_id: coreArgs.worker_id, text });
+      if (sentKey) DELIVERED.add(sentKey);
       return { ...out, delivered: { ...m, sent: !m.queued, queued: !!m.queued } }; // queued: held for a compaction, written when it ends
     } catch (e) {
       return not(`the task is assigned but the message was not sent: ${e && e.message}`, { error: (e && e.code) || 'E_INTERNAL' });
