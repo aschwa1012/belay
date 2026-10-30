@@ -38,7 +38,7 @@ test('a later worker_wait holds for the hand-back being evaluated and answers wi
     await worker.lease.release({ lease_id: lease.id, reason: 'done', result: { branch: 'b' } });
     fs.writeFileSync(turnGate, 'go'); // the turn ends only now, after the release
 
-    const atEnd = await m.wait({ worker_ids: ['w1'], timeout_ms: 30000 });
+    const atEnd = await m.wait({ worker_ids: ['w1'], timeout_ms: 500 }); // the evaluation is gated: the wait's bound runs out first, and the turn is answered as it stood
     assert.deepStrictEqual([atEnd.event, atEnd.evaluating], ['turn_end', [task.id]], 'the turn\'s own answer comes at once and names the evaluation');
 
     const early = await m.wait({ worker_ids: ['w1'], timeout_ms: 300 }); // the evaluation's command is held by its gate
