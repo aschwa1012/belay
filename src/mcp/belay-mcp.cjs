@@ -206,7 +206,7 @@ function openRunManagerOnce() {
         const adapterCore = await openCoreOnce(); // ADR 0045 decision 5: the pipe acts only on a ticket this adapter redeems with the owner
         const control = createWorkerControl({ dataDir: opts.dataDir, manager: r, redeem: (a) => adapterCore.ticketRedeem(a) });
         await control.listen();
-        runManager = r;
+        runManager = r; if (opts.role === 'orchestrator') require('./policy-wire.cjs').start({ core: adapterCore, manager: r, opts, run: attachedRun(), log: (m) => wlog('!!', m) }); // ADR 0072: the policy executor
         workerControl = control;
         const line = `worker control pipe=${control.pipe} pid=${process.pid}`;
         wlog('##', line);
@@ -251,7 +251,7 @@ async function callCore(dotted, args, channel = null) {
   return fn(args);
 }
 
-const COMPOSE = require('./compose.cjs').createCompose({ callCore, manager: () => runManager, openManager: () => openRunManagerOnce(), dataDir: opts.dataDir, runId: opts.runId });
+const COMPOSE = require('./compose.cjs').createCompose({ callCore, manager: () => runManager, openManager: () => openRunManagerOnce(), dataDir: opts.dataDir, runId: opts.runId, onPolicy: () => require('./policy-wire.cjs').arm() });
 // ADR 0053 decision 6: worker_spawn's cwd defaults to the worktree belay made for task_id, and a different one is refused, so a
 // worker is never pointed past its task's own tree by a typo. Without a recorded worktree the call is as it was.
 async function reviewedWorktree(task) {
