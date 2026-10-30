@@ -19,7 +19,7 @@ const INC = require('./integration-incremental.cjs');
 const ID = require('./proc-identity.cjs');
 const MUG = require('./merge-user-gate.cjs');
 const PS = require('./policy-stamp.cjs');
-const { checkTakeOver, checkArgs, readTasks, policyGuard, standingMerge } = require('./integration-policy.cjs');
+const { checkTakeOver, checkArgs, readTasks, policyGuard, standingMerge, mergedElsewhere, assertOwnBranch } = require('./integration-policy.cjs');
 
 // `not_merged` and `left_out` (each merged branch head past what was judged, ADR 0060 decision 4) are derived from the row, never stored.
 const leftOut = (r) => { const l = (r.merged || []).filter((m) => m && m.left_out).map((m) => ({ task_id: m.task_id, ...m.left_out })); return l.length ? l : null; };
@@ -231,6 +231,7 @@ async function merge(E, caller, args) {
   const fold = await MUG.folder(repo);
   await MUG.refuseVariant(repo, into, fold); // another spelling of an existing branch is that branch, on a host with case-insensitive refs
   const userBranch = await MUG.isUserBranch(E, repo, into, caller.run_id, fold);
+  if (claim) await assertOwnBranch(E, caller, repo, into, claim); // ADR 0067: a branch this run did not make is not a step's to write
   if (claim && userBranch) throw err('E_PRECONDITION', `${into} is a branch the user owns; a policy step merges into belay/integrate/${caller.run_id} only`, { into, policy_step: claim.seq });
   if (userBranch) {
     if (force) throw err('E_PRECONDITION', `force is not accepted for ${into}, a branch the user owns: work that is not done does not go onto it through belay`, { into });
@@ -252,6 +253,8 @@ async function merge(E, caller, args) {
       if (g.response) return g.response;
       return require('./merge-user.cjs').mergeIntoUser(E, caller, args, { repo, into, tasks, targets, place, approver: g.approver, takeOver, fold, view, mergeOne, rerun, abandonStale, extra, until: t0call + ACCEPTANCE_BUDGET_MS });
     }
+    const elsewhere = mergedElsewhere(E, caller, args, view, targets); // the orchestrator already merged these tasks, on any branch
+    if (elsewhere) return elsewhere;
     const abandoned = await abandonStale(E, caller, repo, into, takeOver);
     const tree = await integrationTree(E, repo, into, args, tasks, abandoned);
     const by = E.writtenBy(caller);
@@ -326,6 +329,7 @@ async function merge(E, caller, args) {
     const name = checkName;
     const forced = INC.forcedOf({ by, args, tasks, merged: out.merged, checks: out.checks, carried, name });
     if (forced) out.forced = forced;
+    await PS.pause('merge.beforeRecord', { policy_step: PS.stepOf(caller) }); // fault-injection point (tests only): the merges have happened
     const row = E.store.tx(() => rows.append(E.store, 'integration', out, by, Date.now()));
     E.noteWrite();
     return { ...require('./integration-task-checks.cjs').withTaskChecks(E, view(row)), ...(carried.notCarried.length ? { not_carried: carried.notCarried } : {}) }; // answered, not stored: a task left out is on no row
