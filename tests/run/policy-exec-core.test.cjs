@@ -147,3 +147,48 @@ test('a paused run takes no claim against the real run row, and takes the step o
     assert.deepStrictEqual((await x.tick()).steps.map((s) => s.step), ['fix']);
   } finally { await e.close(); }
 });
+
+const PW = require('../../src/run/policy-wakes.cjs');
+const halted = async (e) => { const tasks = (await e.h.task.list({})).tasks; const steps = (await e.h.policy.list({})).rows; return PW.haltedIds(PW.derive({ runId: RUN, tasks, integrations: [], steps, failures: [] }), tasks); };
+
+test('a fix a step wrote stays under its work\'s plan after the worker\'s hand-back resets its stamp; an orchestrator\'s fix does not', async () => {
+  const e = await env();
+  try {
+    const { work, review, builder } = await judged(e, 'h', 'refuted');
+    await e.exec().tick();
+    const fix = e.raw('SELECT DISTINCT id FROM task WHERE repairs = ?', work.id)[0].id;
+    const w = await e.worker(builder);
+    await w.lease.release({ lease_id: e.raw('SELECT id FROM lease WHERE task_id = ?', fix)[0].id, reason: 'done', result: { branch: 'b', head: 'h2' } });
+    await e.h.task.evaluate({ task_id: fix, worktree: e.dir, trigger: 'release' });
+    const tasks = (await e.h.task.list({})).tasks;
+    const byId = new Map(tasks.map((t) => [t.id, t]));
+    const row = byId.get(fix);
+    assert.strictEqual(row.acted_by, null, 'the hand-back and the evaluation reset the stamp');
+    assert.strictEqual(row.made_by_policy, true, 'the first version was the step\'s');
+    assert.deepStrictEqual(PW.policyOf(row, byId), PLAN);
+    // the orchestrator's own fix of another refuted review resolves its own plan
+    const other = await judged(e, 'h2', 'refuted');
+    const mine = await e.orch.task.fixFromReview({ review_id: other.review.id });
+    const again = new Map((await e.h.task.list({})).tasks.map((t) => [t.id, t]));
+    assert.strictEqual(again.get(mine.id).made_by_policy, undefined);
+    assert.strictEqual(PW.policyOf(again.get(mine.id), again), null);
+    assert.ok(review);
+  } finally { await e.close(); }
+});
+
+test('a step claimed at plan rev 1 that fails halts its task, and an amend to rev 2 lifts the halt', async () => {
+  const e = await env();
+  try {
+    const { work } = await judged(e, 'a', 'refuted');
+    await e.orch.worker.write({ id: 'build-a', substrate: 'claude-code', pid: process.pid, state: 'stopped', session_id: 's-build-a', last_event_at: Date.now(), worktree: e.dir });
+    const x = e.exec();
+    await x.tick();
+    const [s] = stepsOf(e);
+    assert.strictEqual(s.outcome, 'exception');
+    assert.strictEqual(e.raw('SELECT policy_rev FROM policy_step WHERE seq = ?', s.seq)[0].policy_rev, 1, 'claimed at the plan\'s revision');
+    assert.ok((await halted(e)).has(work.id), 'halted');
+    await e.orch.task.create({ id: work.id, amend: true, policy: PLAN });
+    assert.strictEqual(latest(e, 'task', work.id).policy_rev, 2);
+    assert.ok(!(await halted(e)).has(work.id), 'the amend lifts it');
+  } finally { await e.close(); }
+});

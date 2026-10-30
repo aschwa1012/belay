@@ -125,10 +125,7 @@ function createPolicyExecutor({ core, runId, assignFor, closing = () => false, c
   async function pass() {
     const out = { steps: [], swept: [], held: null };
     const steps = await read(g.policy.list, 'rows', []);
-    // The core resets a row's stamp on every later write (a hand-back, an evaluation), so a fix a step made stops reading acted_by 'policy'. The
-    // claim log still names it (row_ref), and policyOf's "a row a policy step wrote" is answered from there.
-    const wrote = new Set(steps.map((r) => (typeof r.row_ref === 'string' && r.row_ref.startsWith('task:') ? r.row_ref.split(':')[1] : null)).filter(Boolean));
-    const tasks = (await read(g.task.list, 'tasks', [])).map((t) => (wrote.has(t.id) && t.acted_by !== 'policy' ? { ...t, acted_by: 'policy' } : t));
+    const tasks = await read(g.task.list, 'tasks', []);
     out.swept = await sweep(steps);
     if (!tasks.some((t) => t.run_id === runId && parse(t.policy))) return out;
     const run = (await g.run.get({})).run;

@@ -30,7 +30,7 @@ const parse = (v) => { if (v && typeof v === 'object') return v; try { const p =
 const isReviewRow = (t) => ((t.results && t.results.checks) || []).some((c) => c && c.kind === 'verdict');
 // Whether `t` takes the plan of `up`, the one task it depends on or repairs: a row a policy step wrote, or the review of planned work. Any other
 // dependent (a plain task that waits on planned work) and a fix the orchestrator made (it resolves its own plan) do not.
-const inherits = (t, up) => t.acted_by === 'policy' || (t.repairs !== up.id && (isReviewRow(t) || !!(up.review && up.review.review_id === t.id)));
+const inherits = (t, up) => t.acted_by === 'policy' || t.made_by_policy === true || (t.repairs !== up.id && (isReviewRow(t) || !!(up.review && up.review.review_id === t.id)));
 // The policy a task acts under: its own, else that of the work it reviews or the work a policy step made it repair.
 function policyOf(task, byId) {
   let t = task;
