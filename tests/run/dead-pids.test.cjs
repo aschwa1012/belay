@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // The run's dead-pid memory (src/run/dead-pids.cjs): what it holds dead, what it forgets, and what it never remembers.
 const test = require('node:test');
 const assert = require('node:assert');

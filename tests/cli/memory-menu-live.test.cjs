@@ -91,7 +91,7 @@ test('a live run that is still pinning counts through the models its recorded le
 test('a paused run holds its pin whatever its pid says, and the refusal says how to clear a stale one', async () => {
   const { proj, data } = project('s3');
   const dir = fakeFetch(process.env.BELAY_MODEL_CACHE, GGUF_MODELS[R4]);
-  const dead = spawnSync(process.execPath, ['-e', '0']).pid;
+  const dead = require('../helpers/dead-pid.cjs').deadPid(); // an exited child's pid is reused on Windows
   const pin = { routing: { run: { embedder: NANO, reranker: R4 }, tiers: {} } };
   runs(data, [{ id: 'r-park', pid: dead, paused: true, pin }]);
   const m = await build(proj, data);

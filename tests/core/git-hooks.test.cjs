@@ -126,7 +126,7 @@ test('a pre-merge-commit hook that edits a file leaves it uncommitted: reported,
   assert.strictEqual(h.judged_tree, h.merged_tree);
   assert.strictEqual(row.state, 'failed');
   assert.strictEqual(row.checks, null, 'no check ran on a tree holding edits that never landed');
-  assert.strictEqual(row.passed, null);
+  assert.strictEqual(row.passed, false, 'a stopped step is not passed');
   assert.strictEqual(row.error.tree_clean, false);
   assert.match(row.error.message, /your pre-merge-commit hook left uncommitted edits/);
   assert.deepStrictEqual(row.merged.map((m) => m.task_id), [a.id], 'nothing more was merged on the dirty tree');
