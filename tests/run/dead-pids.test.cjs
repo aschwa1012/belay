@@ -6,6 +6,14 @@ const { createDeadPids } = require('../../src/run/dead-pids.cjs');
 
 const row = (o) => ({ id: 'w', run_id: 'r', state: 'running', pid: 4242, pid_created: null, seq: 5, pid_alive: true, ...o });
 
+test('a restating row of the same state, with a new seq, keeps a dead pid dead', () => {
+  const m = createDeadPids();
+  m.apply([row({ pid_alive: false })]);
+  for (const seq of [6, 7]) m.apply([row({ seq, pid_alive: false })]);
+  assert.strictEqual(m.apply([row({ seq: 8, pid_alive: true })])[0].pid_alive, false, 'a turn end, a mid-turn refresh or a compaction write is not a new life');
+  assert.strictEqual(m.apply([row({ seq: 9, state: 'stopping', pid_alive: true })])[0].pid_alive, false);
+});
+
 test('a relaunch of the same id with the same pid and no creation time reads alive', () => {
   const m = createDeadPids();
   m.apply([row({ pid_alive: false })]);
@@ -95,10 +103,17 @@ test('a snapshot that stalls, fails or cannot tell leaves the row reading alive,
   assert.strictEqual(unverifiable.apply([orphan()])[0].pid_alive, true);
 });
 
-test('a verdict is for the row seq it was taken at: a changed row is read afresh', async () => {
+test('a verdict belongs to the life it was taken in: a restating row keeps it, a relaunch drops it, a late verdict for a past life is discarded', async () => {
   const { m } = mk();
   m.apply([orphan()]); await m.settled();
-  assert.strictEqual(m.apply([orphan({ seq: 6 })])[0].pid_alive, true);
+  assert.strictEqual(m.apply([orphan({ seq: 6 })])[0].pid_alive, false, 'a restating row of the same life keeps the verdict');
+  assert.strictEqual(m.apply([orphan({ seq: 9, state: 'starting' })])[0].pid_alive, true, 'a relaunch is another life');
+  let release; const gate = new Promise((r) => { release = r; });
+  const late = createDeadPids({ graceMs: 8000, adapterAlive: gone, prepare: async () => { await gate; return { runsAs: () => false }; } });
+  late.apply([orphan()]);
+  late.apply([orphan({ seq: 9, state: 'starting', last_event_age_ms: 100 })]); // the relaunch lands while the first life's snapshot is in flight
+  release(); await late.settled();
+  assert.strictEqual(late.apply([orphan({ seq: 10, state: 'running', last_event_age_ms: 100 })])[0].pid_alive, true);
 });
 
 test('with the real identity check, a live pid whose creation time differs reads dead and its own creation time reads alive', { timeout: 60000 }, async () => {
