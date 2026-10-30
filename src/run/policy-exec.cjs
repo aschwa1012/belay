@@ -85,24 +85,43 @@ function due(snap) {
 // `core`: the harness view of the adapter's core (policy.claim and policy.finish are the harness channel's). `assignFor(stepCore)`: the
 // adapter's task_assign made over a core view. `closing()`: the run manager is closing. `closeWaitMs`: how long close() lets a step in
 // flight finish before every further core call is refused.
-function createPolicyExecutor({ core, runId, assignFor, closing = () => false, closeWaitMs = 2000, log = () => {} }) {
+function createPolicyExecutor({ core, runId, assignFor, closing = () => false, closeWaitMs = 2000, log = () => {}, startedAt = Date.now() }) {
   const gate = { aborted: false };
   const g = gatedCore(core, gate, 'the policy executor'); // a call begun after the owner's shutdown would elect a stray owner (invariant 2)
-  let armed = false; let closed = false; let running = null; let again = false;
+  let armed = false; let closed = false; let running = null; let again = false; let swept = false;
   const stopped = () => closed || gate.aborted || closing();
 
   const read = async (fn, field, fallback) => { const r = await fn({}); return (r && r[field]) || fallback; };
 
+  // Once per adapter life, at its first pass: a claim older than this life that is still `started` belongs to a life that ended mid-step (a claim made since
+  // is a live one, perhaps another adapter's). Its effect may have landed: the row stamped with the claim's trigger (policy.list's `effect`) is
+  // named, else the claim is an interrupted exception. It is never resumed or retried.
   async function sweep(steps) {
     const out = [];
     for (const s of steps) {
-      if (s.run_id !== runId || s.outcome !== 'started') continue;
+      if (s.run_id !== runId || s.outcome !== 'started' || Number(s.at) >= startedAt) continue;
       try {
-        await g.policy.finish({ seq: s.seq, outcome: 'exception', error: `interrupted: the adapter that claimed step ${s.step} on ${s.trigger_table}:${s.trigger_id}:${s.trigger_seq} ended before it finished it; belay does not resume a step, so check what it wrote and act` });
+        await g.policy.finish(s.effect
+          ? { seq: s.seq, outcome: 'done', row_ref: s.effect }
+          : { seq: s.seq, outcome: 'exception', error: `interrupted: the adapter that claimed step ${s.step} on ${s.trigger_table}:${s.trigger_id}:${s.trigger_seq} ended before it finished it and wrote nothing that carries its stamp; belay does not resume a step, so check and act` });
         out.push(s.seq);
       } catch (e) { log(`policy sweep ${s.seq}: ${errText(e)}`); }
     }
     return out;
+  }
+
+  // After the claim and just before the step's first write: the run is not paused or ended, and the step is still due on fresh rows at the plan
+  // revision it was claimed at (the pass's snapshot can be minutes old after an integrate). -> a reason to skip, or null.
+  async function stillDue(c) {
+    const run = (await g.run.get({})).run;
+    if (!run || run.ended_at != null) return 'the run has ended after the step was claimed';
+    if (run.paused_at != null) return 'E_PAUSED: the run was paused after the step was claimed; the claim is reopened and the step retaken after the resume';
+    const tasks = await read(g.task.list, 'tasks', []);
+    const integrations = c.step === 'integrate' ? await read(g.integration.list, 'integrations', []) : [];
+    const same = due({ runId, tasks, integrations }).find((d) => keyOf(d.step, d.trigger) === keyOf(c.step, c.trigger));
+    if (!same) return `the plan or the facts changed after the claim: ${c.step} on ${c.trigger.table}:${c.trigger.id} is no longer due`;
+    if ((same.policy_rev ?? null) !== (c.policy_rev ?? null)) return `the plan moved from rev ${c.policy_rev} to rev ${same.policy_rev} after the claim`;
+    return null;
   }
 
   async function take(c, taken) {
@@ -110,7 +129,11 @@ function createPolicyExecutor({ core, runId, assignFor, closing = () => false, c
     if (existing) return null;
     const stepCore = gatedCore(g.policyAs(row.seq), gate, 'the policy executor');
     let res;
-    try { res = await STEPS.run(c, { core: stepCore, assign: assignFor(stepCore) }); } catch (e) { res = { outcome: 'exception', error: errText(e) }; }
+    try {
+      const why = await stillDue(c);
+      res = why ? { outcome: 'skipped', error: why } : await STEPS.run(c, { core: stepCore, assign: assignFor(stepCore) });
+    } catch (e) { res = { outcome: 'exception', error: errText(e) }; }
+    if (res && res.outcome === 'exception' && !res.row_ref && /^E_PAUSED/.test(res.error || '')) res = { outcome: 'skipped', error: res.error }; // the core refused it for the pause: nothing was written
     if (!res || !res.outcome) res = { outcome: 'exception', error: 'the step returned no outcome' };
     try { await g.policy.finish({ seq: row.seq, ...res }); } catch (e) {
       // A finish the store refused (a row_ref it could not find) is still a step that ended: it is recorded as the failure it is.
@@ -126,14 +149,14 @@ function createPolicyExecutor({ core, runId, assignFor, closing = () => false, c
     const out = { steps: [], swept: [], held: null };
     const steps = await read(g.policy.list, 'rows', []);
     const tasks = await read(g.task.list, 'tasks', []);
-    out.swept = await sweep(steps);
+    if (!swept) { out.swept = await sweep(steps); swept = true; }
     if (!tasks.some((t) => t.run_id === runId && parse(t.policy))) return out;
     const run = (await g.run.get({})).run;
     if (!run || run.ended_at != null) { out.held = 'ended'; return out; }
     if (run.paused_at != null) { out.held = 'paused'; return out; }
     const integrations = await read(g.integration.list, 'integrations', []);
     const halted = PW.haltedIds(PW.derive({ runId, tasks, integrations, steps, failures: [] }), tasks);
-    const claimed = new Set(steps.map((s) => keyOf(s.step, { table: s.trigger_table, id: s.trigger_id, seq: Number(s.trigger_seq) || 0 })));
+    const claimed = new Set(steps.filter((s) => !(s.outcome === 'skipped' && /^E_PAUSED/.test(s.error || ''))).map((s) => keyOf(s.step, { table: s.trigger_table, id: s.trigger_id, seq: Number(s.trigger_seq) || 0 })));
     for (const c of due({ runId, tasks, integrations })) {
       if (stopped()) break;
       if (halted.has(c.task_id) || claimed.has(keyOf(c.step, c.trigger))) continue;

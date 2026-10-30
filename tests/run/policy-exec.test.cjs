@@ -131,7 +131,7 @@ test('re_review: a review of the fix that already exists is the orchestrator\'s,
   const s = store({ tasks: [W, review('R', 'W'), F] });
   const list = s.core.task.list;
   let n = 0;
-  s.core.task.list = async (a) => { const r = await list(a); n += 1; if (n === 1) return r; return { tasks: [...r.tasks, mine] }; };
+  s.core.task.list = async (a) => { const r = await list(a); n += 1; if (n <= 2) return r; return { tasks: [...r.tasks, mine] }; };
   const reads = s.core.policyAs;
   s.core.policyAs = (seq) => { const v = reads(seq); return Object.freeze({ ...v, task: { ...v.task, list: s.core.task.list } }); };
   const out = await s.exec().tick();
