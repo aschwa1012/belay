@@ -459,7 +459,7 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
     },
   };
   return {
-    ended_by: endedBy, holds: [], polls: 0, wakes: [], wakes_suppressed: [], wakes_expired: [], wakes_held: [], pauses: [],
+    ended_by: endedBy, holds: [], polls: 0, wakes: wakePub ? wakePub.receipt() : [], wakes_suppressed: [], wakes_expired: [], wakes_held: [], pauses: [],
     interactive_clean: clean, primary_cause: primary ? endedBy : null, orchestrator: block,
   };
 }
