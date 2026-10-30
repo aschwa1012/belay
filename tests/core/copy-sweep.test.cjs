@@ -54,9 +54,23 @@ test('the sweep examines at most 20 entries', () => {
     const dead = deadPid();
     const ps = [];
     for (let i = 0; i < 30; i++) ps.push(entry(root, `${dead}-${String(i).padStart(6, 'a')}`, 5 * MIN));
-    const r = sweep(root);
+    const r = sweep(root, { budgetMs: Infinity }); // the count under test, not the clock
     assert.equal(r.examined, 20);
     assert.equal(ps.filter(p => !fs.existsSync(p)).length, 20);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('the sweep stops when its time budget is spent (injected clock)', () => {
+  const root = mkroot();
+  try {
+    const dead = deadPid();
+    const ps = [];
+    for (let i = 0; i < 10; i++) ps.push(entry(root, `${dead}-${String(i).padStart(6, 'a')}`, 5 * MIN));
+    let t = 0;
+    const clock = () => { const v = t; t += 30; return v; }; // 30 ms per look: start 0, then 30 (kept going), 60 (over 40)
+    const r = sweep(root, { clock, budgetMs: 40 });
+    assert.equal(r.examined, 1);
+    assert.equal(ps.filter(p => !fs.existsSync(p)).length, 1);
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 

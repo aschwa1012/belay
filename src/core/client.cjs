@@ -15,6 +15,10 @@ const net = require('node:net');
 const { err } = require('./errors.cjs');
 const { pipeName, readOwnerLock, pidAlive, holderReused } = require('./lock.cjs');
 const { WRITE_METHODS, METHODS } = require('./engine.cjs'); // the method table only; nothing here opens a store
+// Roles engine dispatch refuses once their run has ended (audit D42); the run process (operator) is not bound. A worker Core already
+// never elects (index.cjs), so for a worker this is defense in depth for a Client built with elect: true; the rule follows from an
+// ended run refusing every write from a process launched for it.
+const LAUNCHED_FOR_RUN = new Set(['orchestrator', 'worker']);
 
 const VERIFY_OPERATOR_MS = 20000; // the operator check reads two tables of the host (netstat, a process snapshot); each has its own bound of 10 s
 const MAX_LINE_BYTES = 1024 * 1024; // the longest request line an owner reads (owner.cjs); a longer one is refused here, unsent
@@ -125,14 +129,14 @@ class Client {
   }
 
   _notMadeOwner(ended) {
-    return err('E_SHUTDOWN', `run ${ended.id} has already ended; this orchestrator-role process was not made the store owner`, { run_id: ended.id, ended_at: ended.ended_at, data_dir: this.dataDir });
+    return err('E_SHUTDOWN', `run ${ended.id} has already ended; this ${this.opts.caller.role}-role process was not made the store owner`, { run_id: ended.id, ended_at: ended.ended_at, data_dir: this.dataDir });
   }
 
   // The same question as _endedRun, asked of a throwaway copy of the store (invariant 6: a read copies, it never opens the live
   // file), so nothing is started to ask it. A store that does not exist, or a copy that cannot be read (E_BUSY included: a writer that never settles fails open here), answers "not ended".
   async _endedRunBeforeStart() {
     const caller = this.opts.caller;
-    if (!caller || caller.role !== 'orchestrator' || !caller.run_id) return null;
+    if (!caller || !LAUNCHED_FOR_RUN.has(caller.role) || !caller.run_id) return null;
     if (!fs.existsSync(path.join(this.dataDir, 'memory.db'))) return null;
     try {
       const { withCopy } = require('./copy-read.cjs');
@@ -147,7 +151,7 @@ class Client {
 
   _endedRun(owner) {
     const caller = this.opts.caller;
-    if (!caller || caller.role !== 'orchestrator' || !caller.run_id) return null;
+    if (!caller || !LAUNCHED_FOR_RUN.has(caller.role) || !caller.run_id) return null;
     try {
       const row = require('./rows.cjs').current(owner.store, 'run', caller.run_id);
       return row && row.ended_at != null ? { id: caller.run_id, ended_at: row.ended_at } : null;
