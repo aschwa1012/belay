@@ -328,3 +328,21 @@ test('run.end retires the spawn register record of a worker it closes over a dea
     assert.ok(fs.existsSync(path.join(reg.dir, `${live.pid}.json`)), 'a record whose pid still answers is left');
   } finally { await live.kill(); await teardown(ctx); reg.remove(); }
 });
+
+// The same class as the register: a pid that answers is not the worker unless it is the process the row recorded.
+test('run.end closes a row whose pid is held by another process (a different creation time), and leaves one that runs as recorded', async () => {
+  const reg = require('./helpers.cjs').ownSpawnRegistry();
+  const ctx = await setup();
+  try {
+    const { orch } = ctx;
+    const mine = await require('../../src/core/proc-identity.cjs').createdOf(process.pid, { kind: 'test' });
+    assert.ok(mine && Number.isFinite(mine.created), 'this process\'s creation time is readable');
+    const t = Date.now() - 60000;
+    // this process stands for the pid another process now holds; the row recorded a process created long before it
+    await orch.worker.write({ id: 'w-reused', substrate: 'claude-code', pid: process.pid, pid_created: mine.created - 3600000, state: 'starting', worktree: makePlainDir(), started_at: t });
+    await orch.worker.write({ id: 'w-same', substrate: 'claude-code', pid: process.pid, pid_created: mine.created, state: 'starting', worktree: makePlainDir(), started_at: t });
+    const ended = await orch.run.end({ exit_reason: 'test end' });
+    assert.deepStrictEqual(ended.workers_marked_dead.map((m) => m.worker_id), ['w-reused'], 'only the row whose recorded process is not the one under the pid');
+    assert.strictEqual((await orch.worker.get({ worker_id: 'w-same' })).state, 'starting');
+  } finally { await teardown(ctx); reg.remove(); }
+});
