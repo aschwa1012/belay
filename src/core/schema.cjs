@@ -108,6 +108,8 @@ CREATE TABLE IF NOT EXISTS check_flake (
   pass_n INTEGER NOT NULL DEFAULT 0, fail_n INTEGER NOT NULL DEFAULT 0, flips INTEGER NOT NULL DEFAULT 0,
   last_outcome TEXT, last_concurrent INTEGER, first_at INTEGER, last_at INTEGER,
   PRIMARY KEY (argv, cwd, key_sha, key_kind));
+-- The flipped keys, newest first, are what status reads; this keeps that read off the whole table.
+CREATE INDEX IF NOT EXISTS ix_check_flake_flipped ON check_flake(last_at) WHERE flips > 0;
 `;
 
 // Additive columns so an existing data dir upgrades in place. First (session-3 hardening MS-5): on a
