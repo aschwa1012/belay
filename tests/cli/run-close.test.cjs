@@ -14,7 +14,7 @@ const { spawn, spawnSync } = require('node:child_process');
 
 const H = require('./stop-helpers.cjs');
 const P = require('../../src/run/process.cjs');
-const { deadPid } = require('../helpers/dead-pid.cjs');
+const { deadPid, stillRunning } = require('../helpers/dead-pid.cjs');
 
 const { ROOT, sleep, sandbox, cleanup, waitUntil, waitForFileLine, waitForExit, makeSpec, runCli, receiptOf, connectOrchestratorCore, readStoreCopy, releaseCore, currentRunRow } = H;
 const FAKE_CLAUDE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
@@ -198,6 +198,7 @@ test('run close: a worker pid still alive when the run ends is killed by its exa
   try {
     core = await connectOrchestratorCore(dataDir, runId);
     worker = sleeper(120000);
+    const workerBornBy = Date.now(); // a live pid created after this is not the worker: the host hands a killed pid out again
     bystander = sleeper(120000); // a live process of the test's own: nothing may touch it
     // A running worker with no turn owed does not hold the idle close (orchestrator.cjs), so the run ends
     // around it with its pid alive.
@@ -207,7 +208,7 @@ test('run close: a worker pid still alive when the run ends is killed by its exa
     assert.ok(exited, `belay run did not exit; stderr: ${run.stderr.slice(-1500)}`);
     const receipt = receiptOf(run, exited.code);
     assert.strictEqual(exited.code, 0, `exit ${exited.code}; ended_by: ${receipt.ended_by}`);
-    assert.ok(!P.pidAlive(worker.pid), 'the surviving worker pid is still alive after the run');
+    assert.ok(!(await stillRunning(worker.pid, workerBornBy)), 'the surviving worker pid is still alive after the run');
     assert.ok(P.pidAlive(bystander.pid), 'a process the run never owned was killed');
     const wc = receipt.workers_closed;
     assert.strictEqual(wc.killed.length, 1);
