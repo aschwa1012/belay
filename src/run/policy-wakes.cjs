@@ -12,8 +12,10 @@
 // then the facts and a closing `Halted.` (no policy step on the task until the orchestrator acts or amends), the whole cut to the wake cap; E2 and E7 carry the finding titles review-wake.cjs already builds (ADR 0063).
 // A wake derived here is data, never an instruction, and no exception is resolved by belay (decision 4): this module only reads.
 // Halt (decision 3): an active E1 to E8 halts the task and its fixes; `haltedIds` says which, for the executor (haltScope is the seam
-// for ADR 0073 Q1, per task or per chain). An exception is active while its trigger is the task's newest row, so any later row the
-// orchestrator writes on it, an amend included, lifts the halt.
+// for ADR 0073 Q1, per task or per chain). E1, E2, E3, E5, E6 and E7 are active while the condition they name holds in the rows, so an
+// orchestrator's act that clears it (a new task row, an amend included) lifts the halt; E8 lifts only on an amend, a cancel, a re-assign or a
+// fix or review the orchestrator made of the task, after the step. A wake is keyed on the FACT (the evaluation, the review, the step), never on the trigger row's current seq, so an amend
+// that rewrites the row does not send it again. The canonical table of trigger, task, key and lift is in api.md (Policy exception wakes).
 
 const reviewWake = require('./review-wake.cjs');
 
@@ -25,14 +27,18 @@ const HALT_SCOPE = 'task';
 const bytes = (s) => Buffer.byteLength(s, 'utf8');
 const parse = (v) => { if (v && typeof v === 'object') return v; try { const p = typeof v === 'string' ? JSON.parse(v) : null; return p && typeof p === 'object' ? p : null; } catch { return null; } };
 
-// The policy a task acts under: its own, else that of the work it repairs, else that of the one task it depends on (a review of the work).
+const isReviewRow = (t) => ((t.results && t.results.checks) || []).some((c) => c && c.kind === 'verdict');
+// Whether `t` takes the plan of `up`, the one task it depends on or repairs: a row a policy step wrote, or the review of planned work. Any other
+// dependent (a plain task that waits on planned work) and a fix the orchestrator made (it resolves its own plan) do not.
+const inherits = (t, up) => t.acted_by === 'policy' || (t.repairs !== up.id && (isReviewRow(t) || !!(up.review && up.review.review_id === t.id)));
+// The policy a task acts under: its own, else that of the work it reviews or the work a policy step made it repair.
 function policyOf(task, byId) {
   let t = task;
   for (let n = 0; t && n < 100; n++) {
     const p = parse(t.policy);
     if (p) return p;
-    const up = t.repairs || (Array.isArray(t.depends_on) && t.depends_on.length === 1 ? t.depends_on[0] : null);
-    t = up && byId ? byId.get(up) : null;
+    const up = byId ? byId.get(t.repairs || (Array.isArray(t.depends_on) && t.depends_on.length === 1 ? t.depends_on[0] : null)) : null;
+    t = up && inherits(t, up) ? up : null;
   }
   return null;
 }
@@ -49,7 +55,6 @@ function exceptionOf(ev) {
   }
 }
 
-const isReviewRow = (t) => ((t.results && t.results.checks) || []).some((c) => c && c.kind === 'verdict');
 const failing = (r) => ((r && r.checks) || []).filter((c) => c && c.passed === false);
 const beside = (c) => (Array.isArray(c.concurrent) ? c.concurrent.length : 0);
 const checkName = (c) => (c.kind === 'command' ? `command ${Array.isArray(c.argv) ? c.argv.slice(0, 3).join(' ') : '?'}${c.exit_code != null ? ` exit ${c.exit_code}` : ''}` : c.kind || '?');
@@ -64,7 +69,10 @@ function derive(snap) {
   const byId = new Map((snap.tasks || []).map((t) => [t.id, t]));
   const dependents = new Set(); for (const t of tasks) for (const d of Array.isArray(t.depends_on) ? t.depends_on : []) dependents.add(d);
   const out = [];
-  const add = (exception, task, trigger, field, detail, seq) => out.push({ exception, task_id: task.id, trigger, field: field || 'none', seq: seq == null ? trigger.seq : seq, uid: `${exception}:${task.id}:${trigger.table}:${trigger.id}:${trigger.seq}${seq == null ? '' : `:${seq}`}`, detail: detail || {} });
+  // `fact`: { key, seq } names the fact the wake is about (an evaluation, a review's verdict, a step), so the wake is one per fact and is not sent
+  // again when the trigger row is rewritten. `trigger` is the row at derivation; `seq` (the fact's number) makes the interactive wake id stable.
+  const add = (exception, task, trigger, field, detail, fact, extra = {}) => out.push({ exception, task_id: task.id, trigger, field: field || 'none', seq: fact.seq, uid: `${exception}:${field || 'none'}:${fact.key}`, detail: detail || {}, ...extra });
+  const evOf = (t) => ({ key: `${t.id}@${t.results.evaluated_at}`, seq: Number(t.results.evaluated_at) || 0 });
   const tref = (t) => ({ table: 'task', id: t.id, seq: Number(t.seq) || 0 });
   const fails = snap.failures || [];
 
@@ -77,17 +85,17 @@ function derive(snap) {
     // E5 / E6: the hand-back's evaluation.
     if (own && x.state === 'released' && !cleanRefutation(r) && !r.passed) {
       const ran = failing(r).filter((c) => beside(c) > 0);
-      if (ran.length) add('E6', root, tref(x), null, { concurrent: ran.map((c) => ({ name: checkName(c), n: beside(c) })), task: x.id });
-      else add('E5', root, tref(x), null, { executable: r.executable !== false, failing: failing(r).map(checkName), task: x.id });
-    } else if (own && x.state === 'done' && r.flaky) add('E6', root, tref(x), null, { flaky: true, task: x.id });
+      if (ran.length) add('E6', root, tref(x), null, { concurrent: ran.map((c) => ({ name: checkName(c), n: beside(c) })), task: x.id }, evOf(x));
+      else add('E5', root, tref(x), null, { executable: r.executable !== false, failing: failing(r).map(checkName), task: x.id }, evOf(x));
+    } else if (own && x.state === 'done' && r.flaky) add('E6', root, tref(x), null, { flaky: true, task: x.id }, evOf(x));
     // E5: a release evaluation that ended without a result (a queue refusal, an error): the ledger's release_failed events.
     if (x.state === 'released' && x.handoff) {
-      for (const f of fails) if (f.task_id === x.id && f.code !== 'E_CANCELLED' && Number(f.written_at) >= Number(x.handoff.at)) add('E5', root, tref(x), null, { executable: true, failing: [], error: f.code, task: x.id }, Number(f.seq) || 0);
+      for (const f of fails) if (f.task_id === x.id && f.code !== 'E_CANCELLED' && Number(f.written_at) >= Number(x.handoff.at)) add('E5', root, tref(x), null, { executable: true, failing: [], error: f.code, task: x.id }, { key: `${x.id}!${f.id}`, seq: Number(f.seq) || 0 });
     }
     // E1, work done with no review step in the plan; a fix done with no re_review.
     if (own && x.state === 'done' && !isReviewRow(x) && !dependents.has(x.id)) {
-      if (!x.repairs && !P.review) add('E1', root, tref(x), 'review', { task: x.id });
-      if (x.repairs && !P.re_review) add('E1', root, tref(x), 're_review', { task: x.id });
+      if (!x.repairs && !P.review) add('E1', root, tref(x), 'review', { task: x.id }, evOf(x));
+      if (x.repairs && !P.re_review) add('E1', root, tref(x), 're_review', { task: x.id }, evOf(x));
     }
     // The review's verdict, on the work it judges (task.review is derived on the work and its fixes).
     const rv = x.review;
@@ -97,13 +105,14 @@ function derive(snap) {
       const facts = reviewWake.reviewOf(R);
       if (!facts) continue;
       const titles = facts.blocking.titles.concat(facts.should_fix.titles);
+      const fact = evOf(R); // the review's verdict, by its evaluation
       if (rv.state === 'refuted') {
-        if (!P.fix) add('E1', x, tref(R), 'fix', { review: R.id, titles });
-        else if (rv.rounds_left === 0) add('E2', x, tref(R), 'fix', { review: R.id, titles, used: rv.fix_rounds_used, max: rv.max_fix_rounds });
+        if (!P.fix) add('E1', x, tref(R), 'fix', { review: R.id, titles }, fact);
+        else if (rv.rounds_left === 0) add('E2', x, tref(R), 'fix', { review: R.id, titles, used: rv.fix_rounds_used, max: rv.max_fix_rounds }, fact);
       } else if (facts.should_fix.n > 0 && (!P.follow_up || P.follow_up === 'wake') && !(rv.follow_ups && rv.follow_ups.length) && !(x.integration && x.integration.state === 'merged')) {
-        add('E7', x, tref(R), P.follow_up ? 'follow_up' : 'none', { review: R.id, n: facts.should_fix.n, titles: facts.should_fix.titles });
+        add('E7', x, tref(R), P.follow_up ? 'follow_up' : 'none', { review: R.id, n: facts.should_fix.n, titles: facts.should_fix.titles }, fact);
       }
-      if (rv.state === 'holds' && !P.integrate && x.state === 'done' && !(x.integration && x.integration.state === 'merged')) add('E1', x, tref(R), 'integrate', { review: R.id });
+      if (rv.state === 'holds' && !P.integrate && x.state === 'done' && !(x.integration && x.integration.state === 'merged')) add('E1', x, tref(R), 'integrate', { review: R.id }, fact);
     }
   }
 
@@ -115,19 +124,28 @@ function derive(snap) {
     if (ints.some((o) => o.id !== i.id && Number(o.seq) > Number(i.seq) && (Array.isArray(o.task_ids) ? o.task_ids : []).some((t) => ids.includes(t)))) continue;
     const tid = (i.conflict && i.conflict.task_id) || ids[0];
     const t = byId.get(tid) || { id: tid };
-    add('E3', byId.get(tid) ? rootOf(t, byId) : t, { table: 'integration', id: i.id, seq: Number(i.seq) || 0 }, 'integrate', { files: i.conflict && Array.isArray(i.conflict.files) ? i.conflict.files.length : null, task: tid });
+    add('E3', byId.get(tid) ? rootOf(t, byId) : t, { table: 'integration', id: i.id, seq: Number(i.seq) || 0 }, 'integrate', { files: i.conflict && Array.isArray(i.conflict.files) ? i.conflict.files.length : null, task: tid }, { key: i.id, seq: Number(i.seq) || 0 });
   }
 
-  // E8 (and E2 when the fix was refused for the cap): a policy step finished `exception`. Lifted once the task has a row newer than the step.
+  // E8 (and E2 when the fix was refused for the cap): a policy step finished `exception`. Sent once, whenever it is read; it halts the task until a
+  // task row the orchestrator wrote after the step (`lifted` says so), so the wake does not depend on how soon the orchestrator acts.
   for (const s of snap.steps || []) {
     if (s.run_id !== runId || s.outcome !== 'exception' || !s.task_id) continue;
     const t = byId.get(s.task_id);
-    if (!t || Number(t.written_at) > Number(s.finished_at || s.at)) continue;
-    const root = rootOf(t, byId);
     const trigger = { table: s.trigger_table, id: s.trigger_id, seq: Number(s.trigger_seq) || 0 };
     const cap = /E_FIX_ROUNDS|fix_notice/.test(String(s.error || ''));
-    if (cap && s.step === 'fix') add('E2', root, trigger, 'fix', { step: s.step, error: s.error }); // the trigger is the refuted review, so it is the one derived above
-    else add('E8', root, trigger, s.step, { step: s.step, error: s.error }, Number(s.seq));
+    const R = cap && s.trigger_table === 'task' ? byId.get(s.trigger_id) : null; // the refused fix's trigger is the refuted review, and the wake is filed under the work it judged
+    const judged = R && Array.isArray(R.depends_on) && R.depends_on.length === 1 ? byId.get(R.depends_on[0]) : null;
+    const root = judged ? rootOf(judged, byId) : t ? rootOf(t, byId) : { id: s.task_id };
+    // The orchestrator acted on the failed step: it amended the plan (policy_rev moved), cancelled or re-assigned the task, or made a fix or review of it.
+    // A task row alone is not an act: the run's own evaluation, a worktree record, a dead holder's release and a policy step all write task rows too.
+    const end = Number(s.finished_at || s.at);
+    const byOrch = (o) => o && o.acted_by !== 'policy' && o.written_by === 'orchestrator' && Number(o.written_at) > end;
+    const orchestratorRow = !!t && (t.policy_rev != null && s.policy_rev != null && Number(t.policy_rev) !== Number(s.policy_rev)
+      || (byOrch(t) && (t.state === 'cancelled' || t.state === 'assigned'))
+      || tasks.some((o) => byOrch(o) && o.id !== root.id && (o.repairs === root.id || (Array.isArray(o.depends_on) && o.depends_on.includes(root.id)))));
+    if (cap && s.step === 'fix') add('E2', root, trigger, 'fix', { step: s.step, error: s.error }, R && R.results ? evOf(R) : { key: `step${s.seq}`, seq: Number(s.seq) }, { lifted: !!orchestratorRow });
+    else add('E8', root, trigger, s.step, { step: s.step, error: s.error }, { key: `step${s.seq}`, seq: Number(s.seq) }, { lifted: !!orchestratorRow });
   }
   return out.filter((e, i) => out.findIndex((o) => o.uid === e.uid) === i); // one exception per trigger: the rows' E2 and a refused fix's E2 are one
 }
@@ -145,7 +163,7 @@ function haltScope(taskId, tasks, mode = HALT_SCOPE) {
 // The task ids the executor takes no step on: the scope of every active E1 to E8.
 function haltedIds(exceptions, tasks, mode = HALT_SCOPE) {
   const out = new Set();
-  for (const e of exceptions) if (HALTING.has(e.exception)) for (const id of haltScope(e.task_id, tasks, mode)) out.add(id);
+  for (const e of exceptions) if (HALTING.has(e.exception) && !e.lifted) for (const id of haltScope(e.task_id, tasks, mode)) out.add(id);
   return out;
 }
 
@@ -174,7 +192,7 @@ function textOf(e) {
 }
 const clean = (s) => String(s || 'no reason').replace(/[\x00-\x1f\x7f]+/g, ' ').slice(0, 80);
 
-const wakeOf = (e) => ({ event: 'evaluated', worker_id: `policy:${e.exception}:${e.task_id}`, turn: 0, seq: e.seq, task_id: e.task_id, exception: e.exception, trigger: `${e.trigger.table}:${e.trigger.id}:${e.trigger.seq}`, field: e.field, text: textOf(e) });
+const wakeOf = (e) => ({ event: 'evaluated', worker_id: `policy:${e.exception}:${e.field}:${e.task_id}`, turn: 0, seq: e.seq, task_id: e.task_id, exception: e.exception, trigger: `${e.trigger.table}:${e.trigger.id}:${e.trigger.seq}`, field: e.field, text: textOf(e) });
 
 // The watcher both wake paths hold. `seen` is the release-eval map the caller already carries: enrichWakes sets `seen.policyTasks` (the
 // task rows it read this poll) and `seen.policyArmed` once it sees a task under a plan, so a run with no plan reads nothing more.

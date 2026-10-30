@@ -240,15 +240,15 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
   for (const ev of events) {
     if (held.has(ev.worker_id)) release(ev.worker_id);
     if (ev.event !== 'turn_end') { out.push(ev); continue; }
-    const evs = []; const ing = []; const mine = [];
+    const evs = []; const ing = []; let sawPolicy = false;
     for (const t of tasks) {
-      if (t.run_id === runId && (t.lease ? t.lease.holder === ev.worker_id : t.handoff && t.handoff.by === ev.worker_id)) mine.push(t);
       if (t.run_id !== runId || !t.handoff || t.handoff.by !== ev.worker_id) continue;
       if (t.handoff.stood_down) { const key = `${t.id}:${t.handoff.at}`; if (!(seen.stood = seen.stood || new Set()).has(key) && t.state === 'released') { seen.stood.add(key); evs.push({ task_id: t.id, stood_down: t.handoff.stood_down }); } continue; } // a stand-down is a fact for the wake, once
       const pol = polOf(t);
+      if (pol && (landed(t) || unevaluated(t, runId, ev.worker_id))) sawPolicy = true;
       if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); if (!pol) evs.push(summaryOf(t, byId)); } else if (unevaluated(t, runId, ev.worker_id) && failedOf(t, ev.turn)) { const s = failure(failedOf(t, ev.turn)); if (s && !pol) evs.push(s); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: t0, turn: ev.turn }); if (!pol) ing.push(t.id); }
     }
-    if (!evs.length && !ing.length && mine.length && mine.every(polOf)) continue; // a turn end that needs no decision, under a plan, is not a wake
+    if (sawPolicy && !evs.length && !ing.length) continue; // the turn end of a hand-back of a task under a plan is routine; a turn end with no hand-back is not, and wakes as before
     if (ing.length && holdMs > 0) { held.set(ev.worker_id, { ev, evs, ids: ing, since: t0 }); continue; }
     if (evs.length) ev.evaluated = evs;
     if (ing.length) ev.evaluating = ing;
