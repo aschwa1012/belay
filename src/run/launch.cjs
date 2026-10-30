@@ -267,7 +267,7 @@ function codexLaunchArgv(opts) {
 // ADR 0008 §6: `exec resume` is a strict subset of `exec`. No -C and no -s; the working directory is
 // supplied through the spawn's own cwd option. Passing either exits 2 at the parse layer in ~76 ms.
 function codexResumeArgv(opts) {
-  const { threadId, adapterArgs, prompt, model = null } = opts;
+  const { threadId, adapterArgs, prompt, model = null, scratchDir = null } = opts;
   const argv = [
     'exec',
     'resume',
@@ -276,6 +276,9 @@ function codexResumeArgv(opts) {
     '--skip-git-repo-check',
     ...codexMcpArgs(adapterArgs),
   ];
+  // `exec resume` takes no --add-dir, but accepts the same root as a config override. A TOML array of basic strings: JSON.stringify
+  // escapes quotes and backslashes, and the path is forward-slashed first, so a space or a quote in it cannot end the string.
+  if (scratchDir) argv.push('-c', `sandbox_workspace_write.writable_roots=${JSON.stringify([fwd(scratchDir)])}`);
   if (model) argv.push('-m', model);
   argv.push('--', prompt);
   return argv;

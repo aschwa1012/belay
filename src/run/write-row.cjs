@@ -117,6 +117,9 @@ function restatePidCreated(w, ctx, force = false) {
   const launches = w.launches;
   w.queue = w.queue.then(() => {
     if (w.launches !== launches || (!force && w.lastRowHadPidCreated)) return null;
+    // A process that is gone before its exit was processed is not restated as it was: the settle writes its terminal row, and a
+    // `starting` restatement here would open a new life for the run's dead-pid memory (dead-pids.cjs) while the number may be reused.
+    if (!w.settled && w.pid != null && !P.pidAlive(w.pid)) return null;
     return ctx.writeRow(w, w.settledState || w.state, { guard: true, refresh: true });
   }).catch((e) => {
     w.lastError = { where: 'worker.write/pid-created', code: e && e.code, message: e && e.message };
