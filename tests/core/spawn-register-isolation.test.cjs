@@ -36,7 +36,7 @@ test('a process started with the helper and no register variable writes nothing 
     ].join('\n'));
     const tmp = path.join(scratch, 'tmp');
     fs.mkdirSync(tmp);
-    const env = { ...process.env, TEMP: tmp, TMP: tmp, TMPDIR: tmp };
+    const env = { ...process.env, TEMP: tmp, TMP: tmp, TMPDIR: tmp, BELAY_TEST_TMP_ISOLATE: '0' };
     delete env.BELAY_SPAWN_REGISTRY;
     const r = spawnSync(process.execPath, ['--require', HELPER, script], { encoding: 'utf8', env });
     assert.strictEqual(r.status, 0, r.stderr);
