@@ -44,23 +44,19 @@ function covers(w, pid, e) {
   return e.ppid === w.pid && e.created >= (w.created == null ? w.from : w.created) && (w.until == null || e.created <= w.until + SLACK_MS);
 }
 
-// Descendant tombstones the old code wrote carry no `via_from`, so the start of the lifetime they were taken from is unknown. The
-// processes a boot starts (explorer among them) were once recorded as descendants of a worker from before it; such a tombstone is
-// dropped when the process it names was created within this long after the boot.
-const LEGACY_BOOT_WINDOW_MS = 15 * 60000;
-
 // A lifetime that began before the current boot ended with it, and whatever began at the boot is not its child.
 function beforeBoot(t, boot) {
   if (t.via == null) return t.from + SR.BOOT_SLACK_MS < boot;
   if (t.via_from != null) return t.via_from + SR.BOOT_SLACK_MS < boot;
-  return (t.created == null ? t.from : t.created) <= boot + LEGACY_BOOT_WINDOW_MS;
+  return true; // a descendant tombstone with no via_from is old-code output (operator ruling 2026-10-30): the processes a boot starts were recorded under a worker from before it
 }
 
 // -> { alive: [{ pid, created, kind }] } the recorded descendants whose process is alive. The decision is computed from the register's
 // files and `snap` and nothing else; with `persist` false (a read command's operator check) nothing is written, and the same files give
 // the same answer next time. With it (a writer's check) the retired records, the new descendants and the dropped lifetimes are saved.
-function refresh(snap, { now = Date.now(), boot = SR.bootMs(now), persist = true } = {}) {
+function refresh(snap, { now = Date.now(), boot = SR.bootMs(now), persist = true, afterScan = null } = {}) {
   const scan = SR.scan({ snap, now, boot }); // first: the records whose process is gone have lifetimes, read below with the tombstones
+  if (afterScan) afterScan(); // test seam: the interleaving between the scan and the settle
   const known = new Map();
   for (const t of SR.tombstones()) known.set(keyOf(t), t);
   for (const d of scan.dead) if (d.tomb) known.set(keyOf(d.tomb), d.tomb);
