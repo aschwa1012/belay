@@ -29,6 +29,8 @@ const TRANSIENT = new Set(['EPERM', 'EBUSY', 'EACCES']);
 const RETRIES = 12; // attempts after the first; the waits double from 5 ms to a cap of 80 ms, about 0.7 s in all
 const backoff = (i) => Math.min(5 * 2 ** i, 80);
 let tmpSeq = 0;
+const SEEN_REFRESH_MS = 30000; // a live record is stamped with the time it was last seen alive at most this often
+const BOOT_SLACK_MS = 5000; // the boot time is derived from the uptime, so a record counts as older than the boot only by more than this
 const UNKNOWN_START_SLACK_MS = 2000; // a record with no creation time and no spawn time: it was made this long after the process started, at most
 
 // Write `text` to `target` so a reader sees the old file or the whole new one. The temp name is unique per call (process, counter,
@@ -63,10 +65,11 @@ function readJson(file) {
 }
 
 // -> the record written. `created` is the process's creation time when known (it usually is not yet at spawn; `update` fills it).
-function register({ pid, kind, dataDir = null, workerId = null, created = null, spawnedAt = null }) {
+function register({ pid, kind, dataDir = null, workerId = null, created = null, spawnedAt = null, seenAt = null }) {
   if (!Number.isInteger(pid) || pid <= 0) throw new Error(`spawn register: not a pid: ${pid}`);
   fs.mkdirSync(dir(), { recursive: true });
   const rec = { pid, created: Number.isFinite(created) ? created : null, kind: kind || 'worker', data_dir: dataDir, worker_id: workerId, spawned_at: Number.isFinite(spawnedAt) ? spawnedAt : null, by_pid: process.pid, at: Date.now() };
+  if (Number.isFinite(seenAt)) rec.seen_at = seenAt;
   writeAtomic(fileOf(pid), JSON.stringify(rec));
   return rec;
 }
@@ -82,7 +85,7 @@ function update(pid, created) {
   let rec;
   try { rec = readJson(fileOf(pid)); } catch { return false; }
   if (rec.created === created) return true;
-  register({ pid, kind: rec.kind, dataDir: rec.data_dir, workerId: rec.worker_id, created, spawnedAt: rec.spawned_at });
+  register({ pid, kind: rec.kind, dataDir: rec.data_dir, workerId: rec.worker_id, created, spawnedAt: rec.spawned_at, seenAt: rec.seen_at });
   return true;
 }
 
@@ -99,6 +102,22 @@ function dropTombstone(t) { try { fs.unlinkSync(tombFile(t)); } catch { /* alrea
 // Turn a record into its tombstone: { pid, created, from, until, kind, via }. `until` null means the process may still be alive.
 const tombstoneOf = (rec, until) => ({ pid: rec.pid, created: Number.isFinite(rec.created) ? rec.created : null, from: startOf(rec), until, kind: rec.kind || 'worker', via: null });
 
+// The machine's boot time (ms since the epoch), derived from the uptime. A process cannot outlive a boot, so a record older than it names
+// a process that is gone, whatever answers to its pid now.
+const bootMs = (now = Date.now()) => now - Math.round(os.uptime() * 1000);
+
+// The last moment the harness knew the record's process was alive: a stamp the adapter holding it wrote, else the record's own time.
+const lastSeen = (rec) => Number.isFinite(rec.seen_at) ? rec.seen_at : (Number(rec.at) || startOf(rec));
+
+// Is the record's process the one running under its pid in `snap`? A recorded creation time must match the snapshot's; a record without
+// one is the process only if it was created no later than the record was written (a reused pid is younger).
+function sameProcess(rec, snap) {
+  const e = snap.get(rec.pid);
+  if (!e) return false;
+  if (Number.isFinite(rec.created)) return e.created == null || e.created === rec.created;
+  return e.created == null || e.created <= (Number(rec.at) || Date.now()) + UNKNOWN_START_SLACK_MS;
+}
+
 // Retire a record whose process has exited. The tombstone is written first: when it cannot be, the record stays, so the next read
 // retires it again (and throws, which the operator check turns into a refusal) rather than forgetting the process.
 function unregister(pid) {
@@ -108,9 +127,34 @@ function unregister(pid) {
   try { fs.unlinkSync(fileOf(pid)); } catch { /* someone else removed it */ }
 }
 
+// Stamp the record with the time its process was seen alive. Called only by the adapter that holds the child, from the row writes it
+// already makes (a writer), never from a read: reading the register stamps nothing. At most every SEEN_REFRESH_MS.
+function touch(pid, now = Date.now()) {
+  let rec;
+  try { rec = readJson(fileOf(pid)); } catch { return false; }
+  if (now - lastSeen(rec) <= SEEN_REFRESH_MS) return false;
+  try { writeAtomic(fileOf(pid), JSON.stringify({ ...rec, seen_at: now })); return true; } catch { return false; }
+}
+
+// Retire the record of a process a caller has found dead (run.end closing a row whose adapter never wrote its exit). A pid that still
+// answers is left alone. The lifetime closes at the last moment the process was seen alive (the record's stamp, or `seenFloor`, a time a
+// writer recorded such as the row's last event), not now. -> true when a record was retired.
+function retire(pid, now = Date.now(), seenFloor = null) {
+  let rec;
+  try { rec = readJson(fileOf(pid)); } catch { return false; }
+  if (pidAlive(pid)) return false;
+  try { saveTombstone(tombstoneOf(rec, Math.min(Math.max(lastSeen(rec), Number.isFinite(seenFloor) ? seenFloor : 0), now))); } catch { return false; }
+  try { fs.unlinkSync(fileOf(pid)); } catch { /* someone else removed it */ }
+  return true;
+}
+
 // -> the raw records whose pid answers a pid check; a record whose pid is gone is retired. Throws when the directory, a record or a
 // tombstone cannot be read or written.
-function live() {
+//
+// Given `snap` (a process snapshot) the check is by identity, not by pid alone: the record is alive only when the process under its pid
+// is the one it names (creation time), and never when it began before the current boot. A record found dead is retired at the last
+// moment it was seen alive (a stamp the adapter wrote, see touch), not at the time it is read. A read stamps nothing.
+function live({ snap = null, now = Date.now(), boot = bootMs(now) } = {}) {
   let names;
   try { names = fs.readdirSync(dir()); } catch (e) { if (e && e.code === 'ENOENT') return []; throw e; }
   const out = [];
@@ -120,7 +164,14 @@ function live() {
     let rec;
     try { rec = readJson(file); } catch (e) { if (e && e.code === 'ENOENT') continue; throw new Error(`spawn register: ${n} cannot be read (${e.message})`); }
     if (!rec || !Number.isInteger(rec.pid)) throw new Error(`spawn register: ${n} names no pid`);
-    if (!pidAlive(rec.pid)) { saveTombstone(tombstoneOf(rec, Date.now())); try { fs.unlinkSync(file); } catch { /* someone else removed it */ } continue; }
+    const preBoot = !!snap && startOf(rec) + BOOT_SLACK_MS < boot;
+    const alive = snap ? !preBoot && sameProcess(rec, snap) : pidAlive(rec.pid);
+    if (!alive) {
+      const seen = Math.min(lastSeen(rec), now);
+      saveTombstone(tombstoneOf(rec, snap ? (preBoot ? Math.min(seen, boot) : seen) : now));
+      try { fs.unlinkSync(file); } catch { /* someone else removed it */ }
+      continue;
+    }
     out.push(rec);
   }
   return out;
@@ -152,4 +203,4 @@ function runSpawned(interactive, orchestratorPid) {
   return !interactive && Number.isInteger(orchestratorPid) ? [{ pid: orchestratorPid, created: null, kind: 'orchestrator' }] : [];
 }
 
-module.exports = { register, registerProcess, update, unregister, list, live, startOf, tombstones, saveTombstone, dropTombstone, dir, runSpawned, io };
+module.exports = { register, registerProcess, update, unregister, retire, touch, list, live, startOf, bootMs, BOOT_SLACK_MS, tombstones, saveTombstone, dropTombstone, dir, runSpawned, io };
