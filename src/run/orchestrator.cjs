@@ -232,16 +232,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       return;
     }
     const text = wakeText(ev);
-    const rec = {
-      at_ms: Date.now() - t0, worker_id: ev.worker_id, event: ev.event, turn: ev.turn,
-      bytes: Buffer.byteLength(text, 'utf8'), orchestrator_idle_at_write: state.idle,
-      established_by: ev.event === 'note_refuted' || ev.event === 'scrub_alarm' ? `${ev.event} receipt seq ${ev.seq}` : ev.event === 'budget_pause' ? 'the budget guard' : ev.event === 'evaluated' ? `task ${ev.task_id} results at ${ev.seq}` : ev.event === 'pre_close' ? 'task.worktreeSweep dry run' : `worker.list row seq ${ev.seq} for the run`,
-    };
-    if (ev.event === 'death') {
-      rec.exit_code = ev.exit_code; rec.exit_signal = ev.exit_signal; rec.death_established_by = ev.death_established_by;
-    }
-    if (ev.event === 'paused') rec.paused_by = ev.paused_by;
-    if (ev.turns_skipped) rec.turns_skipped = ev.turns_skipped;
+    const rec = require('./wake-record.cjs').wakeRecord(ev, text, Date.now() - t0, state.idle);
     if (!ev.unheld && hold.holdWake(rec)) return; // 6f design item 2: held while paused, never suppressed; the budget pause's own wake is the one not held
     writeStdinLine(text, ev.worker_id, rec);
     state.wakes.push(rec);
