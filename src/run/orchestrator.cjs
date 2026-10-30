@@ -118,7 +118,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   let pollHandle = null;
   let pollInFlight = false; // 5a-2: at most one store read at a time, guard not a queue
   let pollByTurnEnd = false; // whether the read in flight was started by a turn end
-  const deadPids = require('./dead-pids.cjs').createDeadPids();
+  const deadPids = require('./dead-pids.cjs').createDeadPids({ graceMs: DEATH_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid) });
   const holdRecorder = createHoldRecorder(); // wake.cjs (design item 9): moved out of this file
   const leftovers = require('./orchestrator-leftovers.cjs').createLeftovers({ child, P, state, core, runId }); // ADR 0054 amendment 2
   const preClose = require('./pre-close-wake.cjs').createPreCloseNotice({ core, runId }); // ADR 0065 amendment 1
