@@ -14,7 +14,7 @@ function plansOf(E, runId) {
   try {
     list = E.store.p(`SELECT t.id, t.policy, t.policy_rev FROM task t JOIN (SELECT id, MAX(seq) AS m FROM task WHERE run_id = ? GROUP BY id) x ON t.seq = x.m
                       WHERE t.policy IS NOT NULL ORDER BY t.seq`).all(runId);
-  } catch { return {}; } // a store from before the column
+  } catch (e) { if (/no such column/i.test(String(e && e.message))) return {}; throw e; } // only a store from before the column reads as no plans; a busy or corrupt read is not "none"
   if (!list.length) return {};
   const plans = list.slice(0, MAX_PLANS).map((r) => ({ task_id: r.id, policy_rev: r.policy_rev, plan: PP.tag(rows.parseRow('task', { policy: r.policy }).policy) }));
   return { plans, ...(list.length > MAX_PLANS ? { plans_more: list.length - MAX_PLANS } : {}) };
