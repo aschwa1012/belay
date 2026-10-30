@@ -49,12 +49,10 @@ async function endUnregistered(child, error) {
 // The record carries the last moment its process was seen alive, so a record retired after its harness died closes there and not when
 // it is read. The harness holds the child handle: while the handle says the child has not exited, a timer stamps the record every
 // SEEN_STAMP_MS, whether or not the worker writes a row (a long tool call writes none). A writer; never a read path.
-const SEEN_STAMP_MS = 30000;
-function stampWhileAlive(child, { every = SEEN_STAMP_MS, touch = (pid) => SR.touch(pid), setTimer = setInterval, clearTimer = clearInterval } = {}) {
-  const timer = setTimer(() => { if (!exitedYet(child)) { try { touch(child.pid); } catch { /* a stamp is a refinement */ } } }, every);
-  if (timer && typeof timer.unref === 'function') timer.unref();
-  child.once('exit', () => clearTimer(timer));
-  return timer;
+function stampWhileAlive(child, opts = {}) {
+  const s = require('./seen-stamp.cjs').stampWhile(() => !exitedYet(child), child.pid, opts);
+  child.once('exit', s.stop);
+  return s.timer;
 }
 
 function registerSpawn(w, child, dataDir, kind = 'worker') {
