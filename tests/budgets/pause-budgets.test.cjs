@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // pause-budgets.test.cjs — build step 6e, item 9, the shape
 // of tests/budgets/permission-budgets.test.cjs. `pause x` and `resume x` against a data dir that does
 // not exist and a dead store, each under 500 ms above the host's own spawn floor, interleaved.

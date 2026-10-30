@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // knowledge-turns.test.cjs — ADR 0043 decision 1: the knowledge agent across turns, processes and sessions. The
 // fake run manager here behaves like the real one where ask depends on it: a message starts a turn
 // (`turnEnded: false`), the answer exists only once that turn ends, and `wait` answers at once for a turn that has

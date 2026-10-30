@@ -14,6 +14,19 @@ const path = require('node:path');
 // The suite's own CLI children must act as the operator, so the marker does not pass into them. A test of the guard sets it itself.
 delete process.env.BELAY_WORKER_ID;
 
+// A process whose temp dir is not already a scratch dir of the tests (the suite's `belay-suite-tmp-*`, or one this helper made for
+// an earlier process of the same run: `belay-test-tmp-*`) points TEMP/TMP/TMPDIR at a fresh scratch dir of its own and removes it
+// when it exits. A targeted `node --test --require tests/helpers/tmp.cjs file` therefore never writes into the real temp dir. Child
+// processes and nested runs inherit the variables, see a scratch name, and make no second one. Under scripts/test.cjs, which sets
+// TEMP itself, nothing changes. BELAY_TEST_TMP_ISOLATE=0 turns the redirect off (a test of this helper that must watch a given temp dir).
+let ownScratch = null;
+if (process.env.BELAY_TEST_TMP_ISOLATE !== '0' && !/^belay-(suite|test)-tmp-/.test(path.basename(os.tmpdir()))) {
+  try {
+    ownScratch = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-test-tmp-'));
+    process.env.TEMP = process.env.TMP = process.env.TMPDIR = ownScratch;
+  } catch { ownScratch = null; /* the real temp dir stays in use */ }
+}
+
 const KEY = Symbol.for('belay.tests.tmp');
 if (!globalThis[KEY]) {
   const made = new Set();
@@ -74,6 +87,7 @@ if (!globalThis[KEY]) {
     return left;
   }
   process.on('exit', () => { try { cleanup(0); } catch { /* exiting */ } });
+  if (ownScratch) process.on('exit', () => { try { fs.rmSync(ownScratch, { recursive: true, force: true }); } catch { /* held by a surviving child */ } });
   globalThis[KEY] = { cleanup, made };
 }
 module.exports = globalThis[KEY];

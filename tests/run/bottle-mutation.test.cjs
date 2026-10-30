@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // bottle-mutation.test.cjs — claims of bottle.cjs that a mutation run showed no other test pins down: the
 // default budget to the byte, the exact shape of a failed result, a missing redactor, the pinned last assistant
 // message, the order of a sent record that arrives out of order, the clip of a long target and the tolerance

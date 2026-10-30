@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // wait under MCP_TOOL_TIMEOUT — ADR 0029 decision 5. A wait longer than the client's tool timeout fails at
 // the client, so the adapter caps it at that timeout less 10,000 ms (at least 1,000 ms) and the answer
 // names the cap. The upper bounds on waited_ms only separate the capped wait from the uncapped (600,000 ms) or margin-less one; a

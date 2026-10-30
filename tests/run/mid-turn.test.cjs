@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // mid-turn.test.cjs — build step 5b, Done item 2. A real
 // RunManager against tests/run/fake-core.cjs, with tests/run/fakes/fake-claude.cjs as the worker,
 // exactly as tests/run/wait.test.cjs drives it. Every assertion is about the row the fake core

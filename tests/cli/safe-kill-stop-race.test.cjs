@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1';
 // safe-kill-stop-race.test.cjs — ADR 0039 review: a `belay stop` worker phase in flight when the console closes. The
 // stop and the run's worker close (now started early, inside the loop) run in one process; the kill lock makes the

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // Audit 0.3.1, mcp-cli slice. Each test states what should hold and FAILS on the code as it stands; see
 // the 0.3.1 mcp-cli audit report. Not globbed by `npm test` (scripts/test.cjs PHASE1_GLOBS). Run alone:
 //   node --test tests/audit-0-3-1/mcp-cli-authority.audit.cjs

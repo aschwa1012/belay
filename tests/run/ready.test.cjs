@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // The ready gate: what has to be true before a worker row is ever written `running`.
 //
 // Three separate claims, one per contract §5 clause, each with its own way of failing:
