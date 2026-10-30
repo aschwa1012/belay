@@ -1,5 +1,194 @@
 # Changelog
 
+## 0.3.3
+
+Spending limits, merges into your own branches with your approval, and a
+tighter boundary around workers: a smaller environment and, for Claude
+Code workers, no pushes and no writes to the drive's /tmp. Many fixes to
+waits, wakes, stops and process checks found in trial runs and a review of
+the code. New limits are off or ask first by default.
+
+Upgrade warning (from 0.3.2)
+- workers and the orchestrator now get an allowlisted environment instead
+  of everything in your shell. Credentials and billing variables
+  (GH_TOKEN, ANTHROPIC_API_KEY, OPENAI_API_KEY, ANTHROPIC_BASE_URL and the
+  like) are no longer passed; the Claude Code sign-in token
+  (CLAUDE_CODE_OAUTH_TOKEN) is kept on purpose. Name extra variables in
+  BELAY_ENV_ALLOW (comma-separated, for example JAVA_HOME,VIRTUAL_ENV);
+  credential and billing names there are refused, and so is every launch
+  while the list names one. A launch whose Claude Code session is not
+  signed in through your subscription is refused
+- workers no longer get the SSH agent socket (SSH_AUTH_SOCK); the
+  orchestrator keeps it
+- a Codex worker that signed in through OPENAI_API_KEY no longer can, and
+  BELAY_ENV_ALLOW cannot pass it; sign Codex in with codex login
+- a Claude Code worker's shell command that pushes (git push, and gh
+  commands that write to GitHub) is refused, and so is its write to the
+  drive's /tmp (C:\tmp), which a native program reads as the drive root
+  rather than the session's temp folder. Codex workers are not covered
+- a merge into one of your own branches (any branch that is not belay's)
+  asks for approval by default (merge_into, below), and a run no longer
+  merges another run's work unless its spec sets cross_run_merge
+- copy the orchestrator prompt template again, or use brief_file; the
+  templates now carry <!-- belay-prompt 0.3.3 -->
+- the orchestrator's tool listing is larger (up to 20 KB): its tools
+  describe budgets, follow-ups and user-branch merges
+- belay status exits 1 for a run id that names no run, and workers,
+  tasks, diff and usage refuse an unknown run id
+- a committed data_dir that points outside the repository is refused;
+  belay config, init and doctor say so
+- scripts may need a change: --fix is refused by every command but belay
+  doctor, and the worktree verbs refuse an option they do not take
+
+Added
+- budget_usd for a run (in the spec, or run.budget_usd in the config),
+  off by default: when spend reaches it, belay pauses the run and wakes
+  the orchestrator, and status shows the budget beside the spend. Tasks
+  can carry a budget too. A turn still running is shown as a labelled
+  estimate, and budget_counts_in_flight counts it against the budget.
+  Codex workers' cost is treated as unknown, not free
+- merge_into in the run spec ("ask" by default, or "allowed"): integrate
+  can merge into a branch of yours on a detached head, and moves it only
+  after approval and passing checks. A headless run is approved through
+  belay pending, approve and deny; an interactive run records that you
+  approved in chat. Conflicts stop and leave the tree clean; belay never
+  forces or pushes
+- cross_run_merge in the run spec (off): without it, integrate refuses
+  work another run made, and the refusal names each task and why
+- task_create can make a task's worktree in the same call and take a
+  batch of tasks; a batch is all or nothing and removes any tree it made
+  when a row is refused
+- follow-ups: a held review can spawn a follow-up task for its should-fix
+  findings, with its own tree, capped by max_follow_ups (default 1); it
+  is not a fix round and never gates the work it follows
+- review wakes carry the verdict, the counts and the finding titles, and
+  reviewers are asked for a severity and a title per finding
+- belay worktree prune: removes the task trees of runs whose run process
+  is gone, as a preview unless --yes; it lists the refs that keep a
+  removed tree's head (refs/belay/kept/), --yes --drop-pins drops those
+  one of your branches already reaches, and --run limits it to one run
+- every worker is told the tools it has, and what narrowed them when
+  that is known
+- the run receipt records which belay build wrote each run epoch and the
+  run process's own build, and a check's environment is recorded with it
+- notices list retrieval failures (search stages that failed, a corrupt
+  model file, a stop cut off at run end) and say when the search log was
+  off; receipts show the retrieval tier a run used, and each embedder
+  re-load at a resume
+- Codex workers: a prompt too long for the command line is sent on stdin,
+  and belay sets only what it must on a launch (execpolicy rules off, the
+  belay server required, effort only when the spawn names one, a fixed
+  list of features off) and leaves your model, provider and sandbox to
+  your Codex config; the receipt records what it left
+
+Changed
+- a fix chain's rounds are counted on the original work, and refusals,
+  fix_from_review and every wake name that work
+- a task branch is treated as belay's only when a judged commit is on it
+- an integrate step that stopped is never reported as passed
+- memory search shows notes held for review after the ranked hits, and
+  says when a page or the index budget cut them
+- belay memory search applies the same default scope as workers' search
+  and says which scope it used; turn records are left out of heavy
+  reranking only where the default search cannot reach them
+- a spec, config or memory import file saved with a UTF-8 byte order mark
+  is read; belay settings keeps the config text as it was on disk
+- belay embedder fetch and delete accept the names the Memory menu shows;
+  embedder errors name the GPU model table
+- the panel's profile toast names the key it wrote and whether a live
+  run keeps its own profile; its download entry says what to run
+- an operator-check refusal carries its reason to the command that was
+  refused, and belay usage says why it is empty when the run's ledger was
+  off
+- an orchestrator lists and decides only its own run's permission
+  requests, and another run's tasks, workers and trees are refused
+- a reviewer's instructions are copied from a commit no worker wrote
+- an orchestrator's memory writes reach only its own run's namespace and
+  its project; a run with no project cannot write project notes or
+  summaries
+- belay status and diff run no repository program (fsmonitor, filters,
+  external diff)
+- belay memory stats refuses a run id, which it never used
+
+Fixed
+- a worker whose pid was seen dead is not revived by a reused pid, the
+  run close tells a reused pid from a survivor by creation time, and a
+  worker ended by the orchestrator's tree kill is attributed correctly
+- belay stop no longer reports a worker killed when the kill was refused
+  or left the process alive
+- a broken orchestrator stdin pipe no longer crashes the run process, and
+  a wake whose write failed is not marked delivered
+- a pause that lands between a spawn and its launch discards the unstarted
+  worker; spawn and restart are refused in a paused run
+- the budget guard stays armed across a pause from another cause and
+  re-checks when a resume settles; a lost usage write is not counted twice
+- a write that meets a stopping store owner waits for the next owner, and
+  pipe names follow the data directory's real path
+- a dead embedder child is reported as an embedder failure on every later
+  call, so on_embedder_failure applies
+- the spawn register is judged by creation time and boot, and check
+  commands and git calls in a worker's tree are recorded in it, so they
+  cannot act as the operator
+- a resumed or adopted Codex reviewer keeps its scratch folder writable
+- stdio pipes of a finished worker are released, so a descendant that
+  inherited them cannot hold the run open
+- pipe and socket lines are decoded as UTF-8 across chunk boundaries
+- a permission request left pending by a cancel expires
+- belay wake-stream and embedder delete find the store as other commands
+  do
+- a hard reset during a run no longer locks every belay control command
+  out: spawn-register writes are flushed to disk before they are swapped
+  in, and an unreadable register file is judged by its pid and when it
+  was written (moved to corrupt/ by the next operator write once its
+  process is gone, still refusing while it may be alive); belay doctor
+  names it
+- a store owner no longer stalls as the machine-wide spawn register
+  grows: its operator check reads each closed entry once instead of on
+  every check, and the owner prunes closed entries (and entries a reboot
+  left open), so a check no longer holds it past the ping that proves it
+  is alive
+
+Measured
+- a settings check of 30 rows drove every retrieval setting, and the new
+  run settings, through belay run with a stand-in for Claude Code; the
+  defects it found were fixed before this release
+- the acceptance rows on real Claude Code (worker launch and stop, run
+  close, pause and resume, the worker guards, and a reranking smoke run)
+  all passed on this line before its final fixes, and were not run again
+  after them
+- not measured: the new limits in a long parallel run
+
+Known limits
+- a headless orchestrator works in one long turn, so budget_usd counts
+  its cost only when that turn ends, normally at run end (or as an
+  estimate with budget_counts_in_flight); belay usage never shows it, and
+  an interactive orchestrator's cost is not counted
+- budget_usd is an estimate: Claude Code reports a worker's cost at the
+  end of a turn, so a long turn can overrun it
+- the push and /tmp guards match command text: a command built at run
+  time, or a script written and then run, can escape them. They are
+  Claude Code hooks, so a Codex worker has neither
+- Codex workers still load $CODEX_HOME/AGENTS.md, and Codex adds a trust
+  entry for each worktree to your config.toml
+- from Git Bash, belay's control commands (stop, pause, approve and the
+  like) can be refused by the operator check, because Git Bash starts them
+  through a helper whose parent Windows cannot see; run them from
+  PowerShell or cmd (the error now says so). 0.3.2 behaves the same
+- avoid the left arrow key in an interactive orchestrator session: it can
+  open Claude Code's session switcher, and wakes belay sends while the
+  session is switched away can be marked delivered without reaching the
+  orchestrator
+- the panel starts a short belay process for each of its reads, about 20
+  to 35 a minute while a session is open, and still copies the store
+  about 25 times a minute after the run has ended; on Windows each launch
+  leaves kernel file objects behind, so a long open session adds to
+  kernel memory. End the Claude Code session once its run is over to
+  stop it
+- if the process that refreshes a spawn record is killed while the
+  spawned process keeps running, that process's later children can pass
+  the operator check once 60 s have gone by (as in 0.3.2)
+- Windows only
+
 ## 0.3.2
 
 Retrieval profiles: memory search can rerank its candidates with a cross-encoder
