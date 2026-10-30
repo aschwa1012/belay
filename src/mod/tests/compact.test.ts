@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect } from 'claude-code/testing'
+import { test } from './support'
 import { T0, RUN, boot, later, openPane, pane, leaves } from './support'
 
 // The compact awaiting list: one line per note (up to 5), a press opens one note at a time, and only the open note has the settle buttons.

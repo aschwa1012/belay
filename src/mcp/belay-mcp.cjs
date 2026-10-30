@@ -27,7 +27,7 @@ const { withDataNotice } = require('./data-notice.cjs'); // invariant 8: a resul
 const { parseArgv, die } = require('./argv.cjs'); // identity from argv only; moved out to keep this file short
 
 const SERVER_NAME = 'belay';
-const SERVER_VERSION = '0.3.0';
+const SERVER_VERSION = '0.3.1';
 const DEFAULT_PROTOCOL = '2025-06-18';
 
 const opts = parseArgv(process.argv.slice(2));
@@ -104,7 +104,8 @@ let BIND_KEY = null;
 function openCoreOnce() {
   if (!corePromise) {
     corePromise = Promise.resolve()
-      .then(() => coreModule().openCore({ dataDir: opts.dataDir, caller: CALLER, embed: opts.embed, ...(BIND_KEY ? { key: BIND_KEY } : {}) }))
+      // An orchestrator adapter that elects the owner keeps it for the session, so its owner is long-lived (ADR 0053 amendment 2).
+      .then(() => coreModule().openCore({ dataDir: opts.dataDir, caller: CALLER, embed: opts.embed, ...(BIND_KEY ? { key: BIND_KEY } : {}), ...(CALLER.role === 'orchestrator' ? { ownerOpts: { longLived: true } } : {}) }))
       .then((c) => { core = c; return c; })
       .catch((e) => { corePromise = null; throw e; });
   }
@@ -114,10 +115,17 @@ function openCoreOnce() {
 // build step 6d, ADR 0020 decision 1: only when launched with --permit; otherwise 'permit' is refused.
 const permit = opts.permit ? createPermit({ openCore: openCoreOnce, caller: CALLER, waitMs: opts.permitWaitMs, log: wlog }) : null;
 
-const ownCreatedNow = opts.role !== 'worker' ? require('../core/proc-identity.cjs').ownCreatedProbe(process.pid) : async () => null; // ADR 0039
+// ADR 0039: this adapter's own creation time, for run.attach. The process snapshot it reads is started when the client says it is
+// initialized (an MCP client sends that before any tool call), never at load: an adapter asked only initialize and tools/list
+// (`belay mcp status --deep`) starts no process.
+let ownCreatedProbe = null;
+const ownCreatedNow = () => {
+  if (!ownCreatedProbe) ownCreatedProbe = opts.role !== 'worker' ? require('../core/proc-identity.cjs').ownCreatedProbe(process.pid) : async () => null;
+  return ownCreatedProbe;
+};
 function attachOnce(c) {
   if (!attachPromise) {
-    attachPromise = ownCreatedNow().then((adapter_pid_created) => c.run.attach({ adapter_pid: process.pid, adapter_pid_created, orchestrator_pid: process.ppid }))
+    attachPromise = ownCreatedNow()().then((adapter_pid_created) => c.run.attach({ adapter_pid: process.pid, adapter_pid_created, orchestrator_pid: process.ppid }))
       .then((att) => {
         // Invariant 5 applied to the adapter's own calls: attach can declare workers dead, and a
         // reattach that did so silently would be a state change nobody can see. Recorded on both
@@ -190,12 +198,13 @@ function openRunManagerOnce() {
         // BELAY_FAKE_PATHS, honoured only when set, merges over it so a test can point the run
         // manager at a fake substrate binary without touching the environment the workers inherit.
         agentDefaults: opts.agentDefaults || null, // the config's agents block, resolved by belay run
-        compactAtTokens: opts.compactAt, worktree: opts.worktree || null, // ADR 0007 decision 3; ADR 0043 decision 1
+        compactAtTokens: opts.compactAt, worktree: opts.worktree || null, stopIdleOnDone: !!opts.stopIdleOnDone, permissionPrompt: !!opts.permissionPrompt, // ADR 0007 decision 3; ADR 0043 decision 1; ADR 0058
         memoryLevers: attachedRun() ? require('../run/memory-levers.cjs').leversOfRow(attachedRun()) : null,
         paths: { mcpBinary: __filename.split(path.sep).join('/'), ...FAKE_PATHS },
       }))
       .then(async (r) => {
-        const control = createWorkerControl({ dataDir: opts.dataDir, manager: r });
+        const adapterCore = await openCoreOnce(); // ADR 0045 decision 5: the pipe acts only on a ticket this adapter redeems with the owner
+        const control = createWorkerControl({ dataDir: opts.dataDir, manager: r, redeem: (a) => adapterCore.ticketRedeem(a) });
         await control.listen();
         runManager = r;
         workerControl = control;
@@ -235,11 +244,50 @@ const fail = (code, message, detail) => {
   return e;
 };
 
-async function callCore(dotted, args) {
+async function callCore(dotted, args, channel = null) {
   const c = await settleEpoch(await openCoreOnce());
-  const fn = resolveCoreMethod(c, dotted);
+  const fn = resolveCoreMethod(channel && typeof c.keepalive === 'function' ? c.keepalive() : c, dotted); // channel: the keep-alive's own (ADR 0054 amendment 1)
   if (!fn) throw fail('E_INTERNAL', `the core exposes no method ${dotted}`, { method: dotted });
   return fn(args);
+}
+
+const COMPOSE = require('./compose.cjs').createCompose({ callCore, manager: () => runManager, openManager: () => openRunManagerOnce(), dataDir: opts.dataDir, runId: opts.runId });
+// ADR 0053 decision 6: worker_spawn's cwd defaults to the worktree belay made for task_id, and a different one is refused, so a
+// worker is never pointed past its task's own tree by a typo. Without a recorded worktree the call is as it was.
+async function reviewedWorktree(task) {
+  const paths = new Set(), removed = [], foreign = [];
+  const norm = (p) => { const x = String(p).replace(/\\/g, '/').replace(/\/+$/, ''); return process.platform === 'win32' ? x.toLowerCase() : x; };
+  const run = ((await callCore('run.get', {})) || {}).run;
+  const project = norm((run && run.project_dir) || '');
+  for (const id of Array.isArray(task.depends_on) ? task.depends_on : []) {
+    const w = ((await callCore('task.get', { task_id: id })) || {}).worktree;
+    if (!w || !w.path) continue;
+    if (w.removed_at) { removed.push(id); continue; }
+    if (project && w.repo && norm(w.repo) !== project && !project.startsWith(`${norm(w.repo)}/`)) { foreign.push(id); continue; } // task.create tree_of's rule: only this run's repository
+    paths.add(w.path);
+  }
+  if (paths.size === 1) return { path: [...paths][0] };
+  if (foreign.length && !paths.size) return { code: 'E_ROLE', error: `the tree of task ${foreign.join(', ')} is not in this run's repository; another repository is the operator's to name` };
+  if (paths.size) return { error: `the tasks under review are in ${paths.size} trees, so no one tree is the reviewed one` };
+  if (removed.length) return { error: `the tree of task ${removed.join(', ')} under review was removed, so there is no tree to start the reviewer in` };
+  return { error: `review task ${task.id} reviews no task that has a belay worktree` };
+}
+async function spawnWorktree(args) {
+  const a = args || {};
+  const task = a.task_id ? (await callCore('task.get', { task_id: a.task_id })) || {} : {};
+  const rec = task.worktree;
+  const own = rec && rec.path && !rec.removed_at ? rec.path : null;
+  if (a.worktree === undefined || a.worktree === null) {
+    // A review task has no tree of its own: the reviewer starts in the tree of the task under review (the prompt says belay resolves it).
+    const reviewed = !own && task.acceptance && task.acceptance.verdict === true ? await reviewedWorktree(task) : null;
+    if (reviewed && reviewed.path) return { ...a, worktree: reviewed.path };
+    if (reviewed) throw fail(reviewed.code || 'E_ARGS', `worker_spawn: ${reviewed.error}${reviewed.code ? '' : '; pass worktree: the tree the review judges'}`, { tool: 'worker_spawn', missing: 'worktree', task_id: a.task_id });
+    if (!own) throw fail('E_ARGS', `worker_spawn needs worktree: ${a.task_id ? `task ${a.task_id} has no belay worktree (task_worktree makes one)` : 'no task_id names one'}`, { tool: 'worker_spawn', missing: 'worktree' });
+    return { ...a, worktree: own };
+  }
+  const same = (x, y) => { const f = (p) => String(p).replace(/\\/g, '/').replace(/\/+$/, ''); return process.platform === 'win32' ? f(x).toLowerCase() === f(y).toLowerCase() : f(x) === f(y); };
+  if (own && !same(a.worktree, own)) throw fail('E_ARGS', `worker_spawn: task ${a.task_id} has its own worktree ${own}; omit worktree or pass that one`, { tool: 'worker_spawn', field: 'worktree', task_worktree: own });
+  return a;
 }
 
 async function callTool(name, args) {
@@ -255,8 +303,19 @@ async function callTool(name, args) {
     throw fail('E_ROLE', `${name} is not available in ${opts.role} role; it belongs to ${roleOf(name)}`, { tool: name, role: opts.role });
   }
   validateArgs(name, args, { notes: notesOn, role: opts.role });
+  // ADR 0057 decision 1: a model's search answers the compact view unless it asks for debug or index; the Core API's default stays full.
+  if (name === 'memory_search' && args && typeof args === 'object' && args.view === undefined) args = { ...args, view: 'compact' };
+  // ADR 0053: one tool, two core methods; `action` is the tool's, never the core's.
+  if (name === 'task_worktree') {
+    const { action, ...rest } = args || {};
+    const row = await callCore(action === 'remove' ? 'task.worktreeRemove' : 'task.worktreeCreate', rest);
+    // The task's own base is null until this call; the reply names the base the tree was made from, not the stale null beside it.
+    if (action !== 'remove' && row && row.base == null && row.worktree && row.worktree.base_sha) return { ...row, base: row.worktree.base_sha };
+    return row;
+  }
+  if (name === 'worker_spawn') args = await spawnWorktree(args);
   if (route.via === 'core') {
-    const row = withDataNotice(route.method, await callCore(route.method, args));
+    const row = require('./store-reply.cjs').explain(route.method, withDataNotice(route.method, await callCore(route.method, args)));
     // The one place the adapter adds to a row, and it is additive: every field of the core's
     // status.get row (api.md §4) passes through untouched. run.attach happens inside the adapter, so
     // its result reaches no tool of its own, and a reattach that declared workers dead would
@@ -267,10 +326,12 @@ async function callTool(name, args) {
     }
     return row;
   }
+  if (route.via === 'compose') return COMPOSE[route.method](args); // ADR 0058: a core write and the follow-up the prompt asked for
   if (route.via === 'briefing') {
     const [line, doc] = await Promise.all([callCore('continuity.resumeLine', args), callCore('continuity.resumeDoc', args)]);
     return { line, doc };
   }
+  if (route.via === 'git') { const G = require('./git-read.cjs'); return G.gitRead(args, { runWorktree: opts.worktree || null, taskWorktree: G.taskWorktreeVia(callCore) }); }
   if (route.via === 'run') {
     const r = await openRunManagerOnce();
     if (typeof r[route.method] !== 'function') throw fail('E_INTERNAL', `the run manager exposes no method ${route.method}`, { method: route.method });
@@ -283,42 +344,7 @@ async function callTool(name, args) {
 
 // ---------------------------------------------------------------- result envelope (ADR 0010 §6)
 
-const text = (v) => ({ type: 'text', text: JSON.stringify(v) });
-
-function okResult(row) {
-  // Every row passes through unchanged. MCP requires structuredContent to be an object; the contract
-  // returns an object from every method, so the guard below should never fire.
-  const structured = (row !== null && typeof row === 'object' && !Array.isArray(row)) ? row : { result: row };
-  return { content: [text(structured)], structuredContent: structured, isError: false };
-}
-
-// api.md §6. A code from this set passes through unchanged; anything else (a MODULE_NOT_FOUND, a
-// TypeError) becomes E_INTERNAL, because the orchestrator is entitled to a code it can act on and the
-// contract names the whole vocabulary. The set is the core's own, not a copy of it: a hand-kept copy
-// here silently downgraded E_DEPENDENCY_OPEN to E_INTERNAL the day the core gained it, and A4 was the
-// thing that caught it. `errors.cjs` imports nothing, so this costs the read path nothing (api.md §4).
-const { CODES } = require('../core/errors.cjs');
-
-function errResult(e) {
-  const original = e && e.code;
-  const code = CODES.has(original) ? original : 'E_INTERNAL';
-  const body = { error: code, message: e && e.message ? e.message : String(e) };
-  const mapped = code === 'E_INTERNAL' && original && original !== 'E_INTERNAL';
-  if (mapped) {
-    // The original code is the only thing that says what actually went wrong, so it survives every
-    // branch: with no detail, with an object detail whose own fields are kept beside it, and with a
-    // scalar or array detail, which is nested under `detail` because it has no fields to merge into.
-    // `underlying_code` is written last so a detail carrying that name cannot displace the truth.
-    const d = e && e.detail;
-    const carried = d !== undefined && d !== null && typeof d === 'object' && !Array.isArray(d)
-      ? d
-      : (d !== undefined ? { detail: d } : {});
-    body.detail = { ...carried, underlying_code: original };
-  } else if (e && e.detail !== undefined) {
-    body.detail = e.detail;
-  }
-  return { content: [text(body)], structuredContent: body, isError: true };
-}
+const { okResult, errResult } = require('./envelope.cjs');
 
 // ---------------------------------------------------------------- request loop
 
@@ -343,11 +369,12 @@ async function handle(msg) {
     await permit.cancel(requestId);
     return undefined;
   }
+  if (method === 'notifications/initialized') { ownCreatedNow(); return undefined; }
   if (typeof method === 'string' && method.startsWith('notifications/')) return undefined;
   if (method === 'ping') return send({ jsonrpc: '2.0', id, result: {} });
   if (method === 'tools/list') {
     const knowledge = await knowledgeListed(); // the one read of the run row; the notes lever comes from it
-    const list = toolsFor(opts.role, { knowledge, workerId: opts.workerId, notes: opts.role === 'worker' ? opts.notes : knowledgeListed.notes(), queries: knowledgeListed.queries() }).concat(opts.permit ? [PERMIT_TOOL] : []);
+    const list = toolsFor(opts.role, { knowledge, workerId: opts.workerId, notes: opts.role === 'worker' ? opts.notes : knowledgeListed.notes(), queries: knowledgeListed.queries(), permissions: !!opts.permissionPrompt }).concat(opts.permit ? [PERMIT_TOOL] : []);
     return send({ jsonrpc: '2.0', id, result: { tools: list } });
   }
   if (method === 'tools/call') {
@@ -362,7 +389,7 @@ async function handle(msg) {
       return send({ jsonrpc: '2.0', id, result });
     }
     try {
-      const row = await callTool(name, args);
+      const row = await require('./call-budget.cjs').withinBudget(name, args, (async () => opts.role === 'orchestrator' && require('./views.cjs').isViewed(name) ? await require('./views.cjs').viewed(name, args, (a) => callTool(name, a)) : (opts.role === 'worker' && name === 'lease_release' ? require('./views.cjs').leaseRelease(await callTool(name, args), args) : await callTool(name, args)))(), process.env, opts.role === 'orchestrator' ? require('./call-hooks.cjs').callHooks(callCore) : null); // ADR 0058 amendment 3: compact unless view debug; a worker's lease_release answer is compact too // call-budget.cjs: integrate and task_evaluate answer before the client's tool timeout
       return send({ jsonrpc: '2.0', id, result: okResult(row) });
     } catch (e) {
       return send({ jsonrpc: '2.0', id, result: errResult(e) });
@@ -374,7 +401,7 @@ async function handle(msg) {
 
 // BELAY_KEEPALIVE_TICK_MS (a positive integer) overrides the 60 s tick of the lease keepalive; a test hook (ADR 0026).
 const keepalive = opts.role !== 'worker' ? null : require('./lease-keepalive.cjs').createKeepalive({
-  call: callCore, workerId: opts.workerId, log: wlog, tickMs: Number(process.env.BELAY_KEEPALIVE_TICK_MS) });
+  call: (m, a) => callCore(m, a, 'keepalive'), workerId: opts.workerId, log: wlog, tickMs: Number(process.env.BELAY_KEEPALIVE_TICK_MS) });
 let buf = '';
 wlog('##', `start role=${opts.role} run=${opts.runId} worker=${opts.workerId || '-'} data=${opts.dataDir}`);
 

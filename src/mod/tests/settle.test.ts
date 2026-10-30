@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect } from 'claude-code/testing'
+import { test } from './support'
 import { T0, RUN, NOTE_ID, FULL_RUNFILE, START, boot, cmd, later, pane, openPane, words, leaves, band } from './support'
 
 // The settle flow inside the pane (the interactive orchestrator has no AskUserQuestion, so there is no dialog): a settle button of the open
@@ -299,7 +300,7 @@ describe('the held line keeps what the operator must act on', () => {
       const wd = await boot($, on, { notices: waiting })
       await openPane($, wd)
       const { text } = await pane($, 'terminal', cols)
-      expect(text).toMatch(/MEMORY {2}1 held · 1 awaits you(?!\.|…)/) // the whole clause, in the heading, whole at every width
+      expect(text).toMatch(/NOTES {2}1 held · 1 awaits you(?!\.|…)/) // the whole clause, in the heading, whole at every width
     })
   }
 })

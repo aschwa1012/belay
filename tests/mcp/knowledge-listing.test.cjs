@@ -48,7 +48,7 @@ test('lever off: the orchestrator listing is byte-identical to the listing witho
     assert.strictEqual(JSON.stringify(r.list), baseline, `levers ${levers}`);
     assert.ok(!r.list.some((t) => t.name === 'knowledge_ask'));
   }
-  assert.strictEqual(bytes(tools.toolsFor('orchestrator')), 9900, 'the off listing is the 9,900 bytes the budget was last measured at (9,829 before the paired write/search contract)');
+  assert.strictEqual(bytes(tools.toolsFor('orchestrator')), 13841, 'the off listing is the 13,841 bytes last measured (13,784 before the fix_notice wording, 13,803 before task_list stopped naming rev, 13,431 before integrate checks, 13,213 before the queued-evaluation wording, 13,018 before the spec reaches the worker and the integrate view, 14,530 before the wording audit removed the permission tools and the refusal clauses, 14,410 before the integrate force argument, 14,236 before the task_create amend and tree_of, 14,185 before the task_create base, 13,982 before the lean replies, 13,921 before ADR 0060 judged heads, 13,827 before ADR 0060 retries_on_fail, 13,728 before the integration state, 13,360 before the compact task views, 13,321 before the ADR 0059 task_create text, 11,076 before ADR 0054\'s git_read, 11,049 before the ADR 0057 search texts, 9,900 before ADR 0053\'s worktree tools, 9,829 before the paired write/search contract)');
 });
 
 test('lever on: knowledge_ask is listed, last, and the listing is under the orchestrator budget', async () => {

@@ -25,8 +25,8 @@ const { callWorkerAdapter, pauseBoundMs, resumeBoundMs } = require('./adapter-pi
 const { closeRunWorkers, workersClosedBlock, finalizeCut } = require('./run-close.cjs');
 const { warmEmbedder, createEmbedderGuard } = require('../run/embedder-guard.cjs');
 const { RESUME_WARM_MS } = require('./embedder-bounds.cjs');
-const { attachMemory, memoryText, substituteLevers, countReviewRounds } = require('./run-levers.cjs');
-
+const { liveRunRow, liveRunMessage } = require('./run-live-guard.cjs');
+const { attachMemory, memoryText, substituteLevers, stripMarkers, countReviewRounds } = require('./run-levers.cjs');
 const fwd = (p) => String(p).split('\\').join('/');
 
 // BELAY_FAKE_CORE (test-only): same confinement as src/mcp/belay-mcp.cjs's own use of it — resolved
@@ -81,43 +81,17 @@ function renderText(receipt) {
   else if (pl && pl.unchanged === false) lines.push(`plugin copy changed after spawn: ${(pl.changed_files || []).join(', ') || 'unreadable'}`); // ADR 0037 amendment 5 decision 4
   if (receipt.levers) {
     const rr = receipt.review_rounds === null ? `unknown (${receipt.review_rounds_reason})` : receipt.review_rounds;
-    lines.push(`levers: max_fix_rounds ${receipt.levers.max_fix_rounds}, fix_cutoff ${receipt.levers.fix_cutoff}, on_embedder_failure ${receipt.levers.on_embedder_failure}${memoryText(receipt.levers)}; review_rounds: ${rr}`);
+    lines.push(`levers: max_fix_rounds ${receipt.levers.max_fix_rounds}${receipt.levers.fix_hard_cap === undefined ? '' : `, fix_hard_cap ${receipt.levers.fix_hard_cap === null ? 'none' : `${receipt.levers.fix_hard_cap} (${receipt.levers.fix_hard_cap_source})`}`}, fix_cutoff ${receipt.levers.fix_cutoff}, on_embedder_failure ${receipt.levers.on_embedder_failure}${receipt.levers.max_parallel_evaluations ? `, max_parallel_evaluations ${receipt.levers.max_parallel_evaluations}` : ''}${memoryText(receipt.levers)}; review_rounds: ${rr}`);
   }
-  lines.push(...RI.embedderLines(receipt));
+  lines.push(...RI.embedderLines(receipt), ...require('../run/review-scratch.cjs').lines(receipt), ...require('./run-trees.cjs').lines(receipt), ...require('./run-checks.cjs').lines(receipt)); // ADR 0054 amendment 1: what the close removed
   if (receipt.receipt_path) lines.push(`receipt: ${receipt.receipt_path}`);
   lines.push('');
   return lines.join('\n');
 }
 
-// ADR 0034 decision 1. The one test-only skip: BELAY_TEST_SKIP_EMBEDDER_WARMUP=1, honoured only together with
-// BELAY_TEST_MODE=1. BELAY_CLAUDE_EXE is a production override and never skips it.
-function warmupSkipped() {
-  if (process.env.BELAY_TEST_MODE === '1' && process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP === '1') return 'BELAY_TEST_SKIP_EMBEDDER_WARMUP is set under BELAY_TEST_MODE';
-  return null;
-}
+const { warmupSkipped, parseEffort } = require('./run-args.cjs'); // the warm-up test skip and the --effort flag
 
 const { emptyOrchestratorBlock } = RI; // moved whole to run-interactive.cjs for this file's line budget
-
-// ADR 0028 decision 5: `--effort <level>` (or `--effort=<level>`) is the one flag this command takes
-// beyond the dispatcher's own; what is left is the positional spec path.
-function parseEffort(argv) {
-  const rest = [];
-  let effort = null;
-  for (let i = 0; i < argv.length; i += 1) {
-    const a = argv[i];
-    if (a === '--effort' || a.startsWith('--effort=')) {
-      const v = a === '--effort' ? argv[i + 1] : a.slice('--effort='.length);
-      if (a === '--effort') i += 1;
-      if (v === undefined || !L.EFFORT_LEVELS.includes(v)) {
-        return { error: `--effort must be one of ${L.EFFORT_LEVELS.join(', ')}; got ${v === undefined ? 'nothing' : JSON.stringify(v)}` };
-      }
-      effort = v;
-      continue;
-    }
-    rest.push(a);
-  }
-  return { rest, effort };
-}
 
 async function run(ctx) {
   const eff = parseEffort(ctx.argv);
@@ -132,15 +106,20 @@ async function run(ctx) {
   if (parsed.error) return usageError(parsed.error);
   eff.effort = parsed.effort; // --effort, else the config's agents.orchestrator.effort; parsed.agentSettings names which
   const mode = fl.interactive ? 'interactive' : parsed.mode; // ADR 0037 decision 1: the flag wins over the spec key
+  const BR = require('./run-brief.cjs');
+  if (parsed.briefText !== null) { // brief_file: belay's own template for this mode, the brief appended after the lever substitution
+    const t = BR.shippedTemplate(mode);
+    parsed.promptFile = t.file; parsed.promptText = t.text;
+  }
   const modeRefusal = RI.refusal(mode, parsed);
   if (modeRefusal) return usageError(modeRefusal);
   // ADR 0031: the counts say what the orchestrator was actually told; the receipt never claims a cap it was not.
   // An interactive run has no timeout (refused above), so its prompt is told none (L3).
-  parsed.promptWarnings = require('./run-prompt-check.cjs').checkPrompt({ promptText: parsed.promptText, promptFile: parsed.promptFile, mode, levers: parsed.levers, timeoutMs: parsed.timeout_ms }); // a stale copy of the template: a warning, never a refusal
+  parsed.promptWarnings = parsed.briefText !== null ? [] : require('./run-prompt-check.cjs').checkPrompt({ promptText: parsed.promptText, promptFile: parsed.promptFile, mode, levers: parsed.levers, timeoutMs: parsed.timeout_ms }); // a stale copy of the template: a warning, never a refusal
   const sub = mode === 'interactive'
     ? substituteLevers(parsed.promptText, parsed.levers, 0, { mode: 'interactive' })
     : substituteLevers(parsed.promptText, parsed.levers, parsed.timeout_ms);
-  parsed.promptText = sub.text;
+  parsed.promptText = parsed.briefText !== null ? BR.appendBrief(stripMarkers(sub.text), parsed.briefText) : stripMarkers(sub.text); // the header markers were read above; the orchestrator is not shown them
   parsed.levers.substituted = sub.substituted;
   const ce = mode === 'interactive' ? makeConsole() : null; // decision 6: the close can see a SIGHUP that arrives during it
   require('../run/exe-discovery.cjs').exportConfigured(found, C.effective); // config claude_exe/codex_exe reach every child
@@ -184,6 +163,7 @@ async function run(ctx) {
       // headless orchestrator is a model with Bash, so a process that descends from it is not the operator; the interactive one is
       // the human's own session (its plugin runs the CLI), so it is not listed. Where the peer cannot be examined the owner stays claimed.
       mode: require('../core/operator-check.cjs').SUPPORTED ? 'bound' : 'claimed',
+      longLived: true, // it serves the whole run, so it may start the snapshot probe a merge's owner_boot reads (ADR 0053 amendment 2)
       spawnedProcesses: () => require('../core/spawn-register.cjs').runSpawned(!!ce, hookBox.pid),
       controls: {
         'run.stop': (params) => stopControl.handle(params),
@@ -275,7 +255,13 @@ async function run(ctx) {
     const receipt = refusal(endedBy, became.pid, became.established_by);
     return { code: 1, text: renderText(receipt), json: receipt };
   }
-
+  const liveRun = await liveRunRow(core);
+  if (liveRun) { // see run-live-guard.cjs
+    const sd = await core.shutdownOwner().catch((e) => ({ error: (e && e.message) || String(e) }));
+    const receipt = refusal(liveRunMessage(parsed.runId, liveRun), process.pid, 'run.get showed an unended run with a live adapter');
+    Object.assign(receipt.store, { shutdown: sd });
+    return { code: 1, text: renderText(receipt), json: receipt };
+  }
   // ADR 0034 decision 1: the model is loaded and its canary passed before the orchestrator or any worker exists,
   // so a run never starts on a host that cannot do what its memory tools promise. Nothing has been written.
   const skipped = warmupSkipped();
@@ -304,7 +290,8 @@ async function run(ctx) {
     try {
       clearRunStart(orchestratorDir); // before this launch's attach: no marker of an earlier life of this run id survives
       RID.watchOrchestrator(pid); // ADR 0039: run-identity.cjs; the attach never waits on a snapshot
-      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
+      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, fix_hard_cap: parsed.levers.fix_hard_cap, fix_hard_cap_source: parsed.levers.fix_hard_cap_source, max_parallel_evaluations: parsed.levers.max_parallel_evaluations === undefined ? null : parsed.levers.max_parallel_evaluations, project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
+      for (const w of attachRow.warnings || []) process.stderr.write("belay run: warning: " + w + String.fromCharCode(10));
       return { ok: true, attach: attachRow };
     } catch (e) {
       return { ok: false, error: (e && e.message) || String(e) };
@@ -326,8 +313,9 @@ async function run(ctx) {
   let shutdown = null, reviewWait = null;
   let stopReceipt = null;
   let closed = null;
-  let memoryEnd = null;
+  let memoryEnd = null, treesClosed = null, taskChecks = null;
   let closeStages = null;
+  let leftovers = null; // ADR 0054 amendment 2: what the orchestrator's shell left running, and what was done about it
   let reviewRounds = { value: null, reason: 'the run was never attached, so no tasks were read' };
   // ADR 0039 follow-up: one worker close (ADR 0029); a fast close runs it inside the loop, before the gate collect.
   const fastClose = RI.fastOf(ce);
@@ -341,7 +329,7 @@ async function run(ctx) {
           model: parsed.model, allowedTools: parsed.allowedTools, effort: eff.effort, agentDefaults: parsed.agentDefaults,
           startupTimeoutMs: parsed.startup_timeout_ms, timeoutMs: parsed.timeout_ms,
           mcpToolTimeoutMs: parsed.mcp_tool_timeout_ms, pollMs: parsed.poll_ms,
-          closeGraceMs: parsed.close_grace_ms, compactAtTokens: parsed.levers.compact_at_tokens, // ADR 0007 decision 3
+          closeGraceMs: parsed.close_grace_ms, compactAtTokens: parsed.levers.compact_at_tokens, stopIdleOnDone: !!parsed.levers.stop_idle_on_done, permissionPrompt: !!parsed.levers.permission_prompt, // ADR 0007 decision 3; ADR 0058; ADR 0020
           interactiveSurfaceMs: parsed.interactive_surface_ms, fullscreen: parsed.fullscreen,
           knowledgeAgent: !!(parsed.levers.memory_levers && parsed.levers.memory_levers.knowledge_agent),
           notes: !!(parsed.levers.memory_levers && parsed.levers.memory_levers.notes), // wave 4: the refuted-note wake reads receipts only for a notes run
@@ -383,6 +371,11 @@ async function run(ctx) {
           failClose(closed.still_alive.map((w) => `worker ${w.worker_id} pid ${w.pid} is still alive after its kill${w.manual ? ` (${w.manual})` : ''}`).join(', '));
         }
       } catch (e) { failClose((e && e.message) || String(e)); }
+      // ADR 0054 amendment 2: only now, with the adapter waited for and the workers closed, is what the orchestrator's shell left running ended.
+      if (partial && typeof partial.endLeftovers === 'function') {
+        try { leftovers = await partial.endLeftovers(); if (leftovers.refused.length) failClose(`could not end ${leftovers.refused.map((r) => r.pid).join(', ')} left by the orchestrator's shell: ${leftovers.refused[0].detail}`); }
+        catch (e) { failClose(`the orchestrator's shell leftovers: ${(e && e.message) || e}`); }
+      }
       RI.applyConsole(partial, ce); // a SIGHUP during the close
       // Ctrl-C (SIGINT, SIGBREAK on Windows) during the stages is a console close: no stage spawns, a running child is killed by its exact pid.
       let interrupted = false;
@@ -401,7 +394,7 @@ async function run(ctx) {
         else if (!crashedBy) crashedBy = `belay run crashed while ending the run: ${x.msg}`;
       }
       // The adapter has closed and run.end has settled the rows; this process still owns the store.
-      memoryEnd = await memoryRunEnd({ core, runId: parsed.runId, levers: parsed.levers, ce, late: (m) => { postFailure = chain(postFailure, 'fast close', m); } });
+      memoryEnd = await memoryRunEnd({ core, runId: parsed.runId, levers: parsed.levers, ce, late: (m) => { postFailure = chain(postFailure, 'fast close', m); } }); treesClosed = await require('./run-trees.cjs').closeTrees({ core, runId: parsed.runId, endedRow, closed, ce, late, deps: process.env.BELAY_TEST_MODE === '1' ? ctx.treesDeps : undefined }); taskChecks = await require('./run-checks.cjs').collect({ core, runId: parsed.runId, startedAt: gotRun && gotRun.run ? gotRun.run.started_at : null }); // ADR 0065: the clean task trees, before the review wait; ADR 0069: each task's checks
     }
   } finally {
     // shutdownOwner() on every path this far, because becomeOwner's owner: true still stands.
@@ -431,7 +424,7 @@ async function run(ctx) {
     : (endedRow ? { epoch: endedRow.epoch, ended_at: endedRow.ended_at, exit_reason: endedRow.exit_reason } : null);
   const storeBlock = {
     owner_pid: process.pid,
-    attach: attachRow ? { epoch: attachRow.epoch, reattached: attachRow.reattached } : null,
+    attach: attachRow ? { epoch: attachRow.epoch, reattached: attachRow.reattached, ...(attachRow.warnings ? { warnings: attachRow.warnings } : {}) } : null,
     ended: endedBlock,
     ...(reviewWait ? { review_wait: reviewWait } : {}),
     shutdown,
@@ -467,13 +460,13 @@ async function run(ctx) {
     run_id: parsed.runId, mode, data_dir: dataDir, spec_path: specPath, orchestrator_dir: orchestratorDir,
     orchestrator: { ...orchestratorBlock, ...(await RID.orchestratorFacts()) }, store: storeBlock, orch_effort_requested: eff.effort, agent_settings: parsed.agentSettings, // ADR 0028 (SF3); ADR 0039 pid_created
     ended_by: endedBy, holds, polls, wakes, wakes_suppressed: wakesSuppressed, wakes_expired: wakesExpired,
-    wakes_held: wakesHeld, pauses,
+    wakes_held: wakesHeld, pauses, ...(leftovers && (leftovers.found.length || leftovers.not_taken) ? { orchestrator_leftovers: leftovers } : {}),
     stop: stopReceipt, ms: Date.now() - t0, receipt_path: null,
     levers: parsed.levers, prompt_warnings: parsed.promptWarnings, on_embedder_failure_final: guard.mode(), memory_off: guard.memoryOff(), embedder: warm, embedder_failures: guard.events(), ...(embedBounds && embedBounds.length ? { embedder_bounds: embedBounds } : {}),
     review_rounds: reviewRounds.value, review_rounds_reason: reviewRounds.reason,
     workers_closed: closed ? workersClosedBlock(closed, endedRow ? (endedRow.workers_marked_dead || []) : null) : null,
     ...(closeStages ? { close_stages: closeStages } : {}), // only with notes on
-    ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), // only with a run-end memory lever on
+    ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), ...(treesClosed ? { worktrees_closed: treesClosed } : {}), ...(taskChecks || {}), ...require('../run/review-scratch.cjs').closeRun(dataDir, parsed.runId, parsed.levers), // the run-end memory jobs; the reviewers' scratch removed (ADR 0054 amendment 1)
   };
   try {
     fs.writeFileSync(receiptPath, `${JSON.stringify({ ...receipt, receipt_path: receiptPath }, null, 2)}\n`);

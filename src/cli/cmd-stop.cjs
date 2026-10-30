@@ -66,6 +66,7 @@ async function run(ctx) {
     return usageError(`belay stop needs exactly one argument, a run id; got ${ctx.argv.length}`);
   }
   const runId = ctx.argv[0];
+  if (typeof runId === 'string' && runId.startsWith('-')) return usageError(`unknown option ${runId}`);
 
   const found = C.discover(ctx.cwd);
   const dataDir = C.dataDirOf(found, ctx);

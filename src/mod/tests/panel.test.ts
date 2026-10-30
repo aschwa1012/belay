@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect } from 'claude-code/testing'
+import { test } from './support'
 import { TASK4, T0, RUN, iso, AGENTS, FOOTER, EVENTS, NOTICES, TRANSCRIPT, DEFAULTS, SETTINGS, FULL_RUNFILE, world, START, BAND_PROPS, PANE_PROPS, PRES, cmd, colours, words, boot, later, band, pane, openPane, READ_VERBS, type World } from './support'
 
 describe('activation and reading', () => {
@@ -373,15 +374,20 @@ describe('the agents shape of a8c466d', () => {
     expect((await band($)).text).toMatch(/● (running|paused|dead) 40m/)
   })
 
-  test('the tasks line has a bar and done/total; fix rounds show the limit only, never a used count', async ($, on) => {
+  test('the tasks line has a bar and done/total; fix rounds show the notice threshold (and a hard cap only when set), never a used count', async ($, on) => {
     const wd = await boot($, on)
     await openPane($, wd)
     const first = await pane($)
     let t = first.text
     await first.ui.unmount()
     expect(t).toMatch(/tasks ▰+▱+ 1\/3/)
-    expect(t).toContain('fix rounds max 2')
+    expect(t).toContain('fix rounds notice at 2')
+    expect(t).not.toContain('hard cap')
     expect(t).not.toContain('used')
+    wd.w.hardCap = 4
+    await later(wd, 4000)
+    t = (await pane($)).text
+    expect(t).toContain('hard cap 4')
     wd.w.maxFix = null
     await later(wd, 4000)
     t = (await pane($)).text

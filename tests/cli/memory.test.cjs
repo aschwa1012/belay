@@ -262,7 +262,7 @@ test('memory usage errors exit 2 and name the problem; the core is never opened'
 });
 
 test('memory search: the warning is the first line of the text and the first key of the json; exit 0 when a mode ran, 1 when none did', async () => {
-  const warning = 'semantic search did not run (E_NO_EMBEDDER); these are keyword matches only; no match here does not mean no such memory';
+  const warning = 'semantic search did not run (E_NO_EMBEDDER); these are keyword matches only; no match here does not mean no such entry';
   const answer = {
     warning, results: [{ id: 'm1', score: 0.0328, near_duplicate: false, status: 'unverified', title: 'pid check', namespace: 'run/run-z', worker_id: 'w1', task_id: 't1', type: 'note', created_at: 5 }],
     scanned: 3, model: null, dim: null, modes_run: ['keyword'], modes_failed: [{ mode: 'semantic', code: 'E_NO_EMBEDDER', message: 'no embedder' }], absence_established: false,
@@ -287,6 +287,21 @@ test('memory search: the warning is the first line of the text and the first key
   assert.strictEqual(re.code, 0);
   assert.match(re.text, /^\(no results\)\n/);
   assert.match(re.text, /absence_established: true/);
+});
+
+// ADR 0057 decision 5: a semantic search over rows of which none has a vector ran no mode, so the CLI exits 1 and names E_NO_VECTORS.
+test('memory search: a semantic search over rows with no vectors exits 1 naming E_NO_VECTORS; the hybrid one exits 0 with keyword matches', async () => {
+  const failed = { mode: 'semantic', code: 'E_NO_VECTORS', message: 'none of the 2 in-scope rows has a vector' };
+  const warning = 'semantic search did not run (E_NO_VECTORS); nothing was searched; no match here does not mean no such entry';
+  const sem = { warning, results: [], modes_run: [], modes_failed: [failed], absence_established: false };
+  const r = await runMem(['search', 'pid', '--mode', 'semantic'], fakeCore({ search: async () => sem }));
+  assert.strictEqual(r.code, 1, 'no mode ran');
+  assert.strictEqual(r.text.split('\n')[0], warning);
+  assert.match(r.text, /failed: semantic E_NO_VECTORS/);
+  const hy = { ...sem, warning: 'semantic search did not run (E_NO_VECTORS); these are keyword matches only; no match here does not mean no such entry', modes_run: ['keyword'] };
+  const rh = await runMem(['search', 'pid', '--mode', 'hybrid'], fakeCore({ search: async () => hy }));
+  assert.strictEqual(rh.code, 0, 'the keyword half ran');
+  assert.match(rh.text, /SEMANTIC SEARCH DID NOT RUN/);
 });
 
 test('memory search: a core refusal exits 1 naming the code; E_NO_EMBEDDER keeps its reason line', async () => {

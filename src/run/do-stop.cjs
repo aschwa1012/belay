@@ -6,6 +6,9 @@
 const P = require('./process.cjs');
 const PI = require('./pid-identity.cjs'); // ADR 0039
 const W = require('./worker.cjs');
+const BG = require('./background.cjs');
+
+const BG_STOP_MS = 3000; // the most a graceful stop spends asking Claude Code to stop its open background tasks before it closes stdin
 
 const now = () => Date.now();
 
@@ -16,27 +19,39 @@ function createDoStop({ ctx, writeRow }) {
     const pid = w.pid;
     w.stopRequested = true;
     w.stopCalls = (w.stopCalls || 0) + 1; // launchBound compares this across its bind await: a launch a stop overtook is abandoned
-    // Already gone, or a parked worker's dead-by-construction pid, never re-checked (fix round #2, :351).
-    if (!pid || treatPidAsDead || !P.pidAlive(pid)) {
+    // Already gone, or a parked worker's dead-by-construction pid, never re-checked (fix round #2, :351). A record with no process
+    // by construction (a settled death, an adopted terminal row) is gone whatever its pid number answers now: that pid may be reused.
+    if (!pid || treatPidAsDead || PI.noProcess(w) || !P.pidAlive(pid)) {
+      const stateBefore = w.state;
       W.settleHeld(w, ctx, 'pid-check-on-stop'); await w.queue; // a death the poll still holds settles now
       const state = W.terminalState(w);
       // Fix round: `paused` dropped here. 6e-5: `skipRowWrite` (a stale record) writes nothing over it.
       if (!skipRowWrite && !['stopped', 'dead', 'idle'].includes(w.state)) await writeRow(w, state);
-      return { worker_id, pid, exit_code: w.exitCode, exit_signal: w.exitSignal, ms_to_exit: 0, graceful: false, killed: false, session_id: w.sessionId, stale: skipRowWrite || undefined };
+      return { worker_id, pid, exit_code: w.exitCode, exit_signal: w.exitSignal, ms_to_exit: 0, graceful: false, killed: false, session_id: w.sessionId, stale: skipRowWrite || undefined,
+        // B9: nothing was stopped, because the process was already gone (a parked worker has no process by design, so it is not this).
+        ...(treatPidAsDead ? {} : { already_exited: true, state_before: stateBefore, note: `worker ${worker_id} had already exited${!pid ? ' (it has no process)' : P.pidAlive(pid) ? ` (its process ended; pid ${pid} now belongs to another process)` : ` (pid ${pid} is not running)`}; nothing was stopped` }) };
     }
     // Fix round (6f-2): pause.cjs's own step 1b already wrote this row `stopping` — never repeated here.
     if (w.state !== 'stopping') await writeRow(w, 'stopping');
     let graceful = false;
-    let killed = false; let refused = null; let notKilled = null;
+    let bgStops = []; let gracefulTimedOutMs = null; let blockedBy = null;
+    let killed = false; let refused = null; let notKilled = null; let tree = null; // tree: this stop's own kill, never an earlier life's (w.treeKill)
     // Closing stdin needs a stdin: an adopted worker's pipes belong to the adapter that spawned it,
     // so there is nothing to close and the kill is the only channel left.
     if (mode === 'graceful' && w.substrate === 'claude-code' && w.child) {
-      graceful = (await P.gracefulStop(w.child, timeout_ms)).graceful;
+      // A worker that holds a background task (a hung shell) may not exit on stdin close, so those tasks are stopped first, as a park does.
+      // The whole graceful phase stays within timeout_ms: the background stop comes out of it, and the wait for the exit gets what is left.
+      const tb = now();
+      bgStops = await BG.stopTasks(w, { boundMs: Math.min(BG_STOP_MS, Math.floor(timeout_ms / 2)) }).catch(() => []);
+      const bgMs = now() - tb;
+      const g = await P.gracefulStop(w.child, Math.max(1, timeout_ms - bgMs));
+      graceful = g.graceful; if (!graceful) gracefulTimedOutMs = bgMs + g.ms; // the total spent
     }
     if (!graceful) {
+      if (gracefulTimedOutMs != null) blockedBy = BG.runningTasks(w).map((t) => ({ task_id: t.task_id, description: t.description })); // what still held the worker open when the wait ran out
       // The subtree first, then the exact pid as the backstop that produces the exit event (ADR 0011 §2).
       const kr = await PI.killWorker(w); // ADR 0039: `killed` is what the kill did, never what was attempted
-      w.treeKill = kr.tree; refused = kr.refused; notKilled = kr.descendants_not_killed; killed = !refused;
+      tree = kr.tree; w.treeKill = tree; refused = kr.refused; notKilled = kr.descendants_not_killed; killed = !refused;
       if (w.child) await W.waitExit(w, Math.max(2000, Math.min(timeout_ms, 10000)));
       else await P.waitPidGone(pid, { timeoutMs: Math.max(2000, Math.min(timeout_ms, 10000)) });
     }
@@ -49,8 +64,10 @@ function createDoStop({ ctx, writeRow }) {
     if (!w.child && !maybeLive && w.state !== W.terminalState(w)) await writeRow(w, W.terminalState(w));
     return {
       worker_id, pid, exit_code: w.exitCode, exit_signal: w.exitSignal,
-      ms_to_exit: (w.exitedAt || now()) - t0, graceful, killed, session_id: w.sessionId,
-      tree_kill: w.treeKill || null, ...(refused ? { refused: refused.refused, kind: refused.kind, detail: refused.detail } : {}), ...(notKilled ? { descendants_not_killed: notKilled } : {}),
+      ms_to_exit: Math.max(0, (w.exitedAt || now()) - t0), graceful, killed, session_id: w.sessionId, // 0 when the exit came before the stop (an adopted row's old exited_at)
+      ...(bgStops.length ? { background_tasks_stopped: bgStops.map((s) => ({ task_id: s.task_id, description: s.description, status_after: s.status_after })) } : {}),
+      ...(gracefulTimedOutMs != null ? { graceful_timed_out_ms: gracefulTimedOutMs, ...(blockedBy && blockedBy.length ? { blocked_by: blockedBy } : {}) } : {}),
+      tree_kill: tree || null, ...(tree && tree.killed_processes ? { killed_processes: tree.killed_processes } : {}), ...(refused ? { refused: refused.refused, kind: refused.kind, detail: refused.detail } : {}), ...(notKilled ? { descendants_not_killed: notKilled } : {}),
     };
   };
 }

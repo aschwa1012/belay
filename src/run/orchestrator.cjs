@@ -80,7 +80,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   const bind = await require('./bind-launch.cjs').bindOrchestrator(core, runId); // ADR 0045 decision 2: the owner is this process's own, so the bind is in process
   const written = L.writeOrchestratorFiles({
     dir: orchestratorDir, runId, dataDir, mcpPath, settingsPath: L.userSettingsPath(), cwd: worktree, // ADR 0024
-    compactAt: compactAtTokens, knowledgeAgent: !!spec.knowledgeAgent, agentDefaults: spec.agentDefaults || null, bind, // ADR 0007 decision 3; ADR 0043 decision 1
+    compactAt: compactAtTokens, agentDefaults: spec.agentDefaults || null, bind, stopIdleOnDone: !!spec.stopIdleOnDone, permissionPrompt: !!spec.permissionPrompt, killGuard: true, // ADR 0007 decision 3; ADR 0058; ADR 0024 amendment 7
   });
   fs.writeFileSync(path.join(written.dir, 'prompt.txt'), promptText);
 
@@ -99,7 +99,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   const child = P.spawnWorker({ exe: command, args: fullArgs, cwd: worktree, env, stdin: 'pipe' });
 
   const state = {
-    sessionId: null, turns: 0, externallyTriggeredTurns: 0,
+    sessionId: null, turns: 0, skippedTurn: null, externallyTriggeredTurns: 0,
     readyVerified: false, readyGateStarted: false, readyMs: null, idle: false, laterInits: 0, surface: null, instructions: I.instructionsFields(instructions),
     holds: [], polls: 0, endedBy: null, finishing: false, boundStarted: false,
     killedAfterClose: false, exitCode: null, exitSignal: null,
@@ -115,13 +115,15 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   const stderrFd = fs.openSync(path.join(written.dir, 'stderr.txt'), 'a');
   const parser = createParser('claude-code');
   const usage = createUsage();
-
   let pollHandle = null;
   let pollInFlight = false; // 5a-2: at most one store read at a time, guard not a queue
+  let pollByTurnEnd = false; // whether the read in flight was started by a turn end
   const holdRecorder = createHoldRecorder(); // wake.cjs (design item 9): moved out of this file
+  const leftovers = require('./orchestrator-leftovers.cjs').createLeftovers({ child, P, state, core, runId }); // ADR 0054 amendment 2
+  const preClose = require('./pre-close-wake.cjs').createPreCloseNotice({ core, runId }); // ADR 0065 amendment 1
+  const callWatcher = require('./call-wake.cjs').createCallWatcher({ core, runId });
   const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId, enabled: !!spec.notes }); // wave 4: a refuted note wakes the orchestrator (notes runs only)
-  let readyTimer = null;
-  let sigintHandler = null;
+  let readyTimer = null, sigintHandler = null;
 
   // A15 fix round: forwards writeStdinLine's 3rd arg (the wake record) — dropping it left a held
   // wake resume() redelivers permanently unanswered/unexpired (a15 drive 2026-09-25T22-35-24Z).
@@ -167,6 +169,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       state.finishing = true;
       state.endedBy = reason;
     }
+    await leftovers.capture(); // its shell's descendants, before the close orphans them
     try { if (child.stdin && !child.stdin.destroyed) child.stdin.end(); } catch { /* already gone */ }
     if (state.boundStarted) return;
     state.boundStarted = true;
@@ -231,7 +234,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     const rec = {
       at_ms: Date.now() - t0, worker_id: ev.worker_id, event: ev.event, turn: ev.turn,
       bytes: Buffer.byteLength(text, 'utf8'), orchestrator_idle_at_write: state.idle,
-      established_by: ev.event === 'note_refuted' || ev.event === 'scrub_alarm' ? `${ev.event} receipt seq ${ev.seq}` : `worker.list row seq ${ev.seq} for the run`,
+      established_by: ev.event === 'note_refuted' || ev.event === 'scrub_alarm' ? `${ev.event} receipt seq ${ev.seq}` : ev.event === 'evaluated' ? `task ${ev.task_id} results at ${ev.seq}` : ev.event === 'pre_close' ? 'task.worktreeSweep dry run' : `worker.list row seq ${ev.seq} for the run`,
     };
     if (ev.event === 'death') {
       rec.exit_code = ev.exit_code; rec.exit_signal = ev.exit_signal; rec.death_established_by = ev.death_established_by;
@@ -257,16 +260,21 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   // the snapshot): no worker of this run mid-turn (the store's own `mid_turn` column, every turn, not
   // only the first), no wake still unanswered, and (5b-4) no non-terminal row whose pid just died
   // still inside its detector grace.
-  async function pollOnce() {
+  async function pollOnce(byTurnEnd = false) {
     if (state.finishing || pollInFlight) return;
     pollInFlight = true;
-    const turnAtCall = state.turns;
+    pollByTurnEnd = byTurnEnd;
+    const turnAtStart = state.turns;
     let list = null;
     let failReason = null;
     try { list = await core.worker.list({}); }
     catch (e) { failReason = (e && (e.code || e.message)) || String(e); }
     state.polls += 1;
     pollInFlight = false;
+    // A turn end whose poll was skipped because a read the ready event or the timer started was in flight is the turn a hold from
+    // this read names, not the turn the read started at (stale). A later turn end in the same chunk as the end that started this read is neither.
+    const turnAtCall = state.skippedTurn == null ? turnAtStart : state.skippedTurn;
+    state.skippedTurn = null;
     if (state.finishing) return; // the run ended while this read was in flight
 
     if (failReason !== null) {
@@ -279,38 +287,13 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     const nowMs = Date.now() - t0;
     const { events, next, pending_deaths } = diffWorkers({
       prev: state.baseline, rows, runId, nowMs, graceMs: DEATH_GRACE_MS,
-      orphanGraceMs: ORPHAN_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid),
+      orphanGraceMs: ORPHAN_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid), sinceAt: t0,
     });
     state.baseline = next;
-    for (const ev of events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))).concat(await noteWatcher.poll())) writeWake(ev);
+    for (const ev of (await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), state.evalSeen || (state.evalSeen = new Map()), { holdMs: require('./release-eval.cjs').holdMs(), workers: rows })).concat(await noteWatcher.poll(), await callWatcher.poll())) writeWake(ev); // ADR 0058 amendment 4: a turn_end carries its release evaluation
     if (state.finishing) return; // a wake's own write may have found the child already gone
 
-    if (state.idle) {
-      const busy = rows.filter((w) => w.run_id === runId && isMidTurn(w)).map((w) => w.id);
-      const awaiting = awaitingWakeIds(); // also prunes state.pendingWrites of anything past its expiry
-      const pendingIds = pending_deaths.map((p) => p.worker_id);
-      // 6f design item 1: a `paused` row holds the close exactly as a mid-turn worker does.
-      const parked = rows.filter((w) => w.run_id === runId && w.state === 'paused').map((w) => w.id);
-      // 6f-2 design item 1 (blocking, orchestrator.cjs:308): a worker mid-park holds the close too. Its
-      // row reads `stopping` with a live pid — not mid-turn (`busy`), not yet `paused` (`parked`), and
-      // not a pending death (the pid is alive) — the one gap review 2 found. An ordinary idle `running`
-      // or `starting` worker (pid alive, no turn owed) is deliberately NOT held here: the idle-close rule
-      // ends the run regardless of a live, merely-idle worker process, by design.
-      const live = rows.filter((w) => w.run_id === runId && w.state === 'stopping' && w.pid_alive === true).map((w) => w.id);
-      // 6f design item 5: the resume line carries no worker id, so awaitingWakeIds() alone never named
-      // it; an idle orchestrator right after resume could otherwise close under that very write before
-      // the resumed turn starts. Any write still unanswered, worker-tagged or not, holds the close.
-      if (hold.isPaused()) { // 6f design item 2: never closed by the idle rule while paused
-        recordHold(turnAtCall, busy, awaiting, 'run paused', pendingIds, parked, live);
-      } else if (busy.length === 0 && state.pendingWrites.length === 0 && pendingIds.length === 0 && parked.length === 0 && live.length === 0) {
-        closeThenKillOnDeadline('orchestrator ended a turn with no worker mid-turn; stdin closed');
-        return;
-      } else if (pendingIds.length) {
-        recordHold(turnAtCall, busy, awaiting, "worker.list; pid dead, awaiting the detector's row", pendingIds, parked, live);
-      } else {
-        recordHold(turnAtCall, busy, awaiting, 'worker.list', pendingIds, parked, live);
-      }
-    }
+    if (state.idle && await require('./orchestrator-idle-close.cjs').idleClose({ state, rows, runId, pending_deaths, turnAtCall, hold, awaitingWakeIds, callWatcher, recordHold, preClose, writeWake, closeThenKillOnDeadline })) return;
     pollHandle = setTimeout(pollOnce, pollMs);
   }
 
@@ -341,7 +324,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       // the Claude Code orchestrator: verifyReady's own `.then`/`.catch` are gone (nothing else used
       // them), and a turn ending before this line can no longer race it, because there is nothing left
       // to race — the whole check has already run by the time `pollOnce` is reached.
-      const gate = verifyClaudeReady({ substrate: 'claude-code' }, ev);
+      const gate = verifyClaudeReady({ substrate: 'claude-code', tools: S.ORCHESTRATOR_TOOLS }, ev); // ADR 0054: held to its list
       if (!gate.ok) {
         abortForReadyFailure(`the orchestrator's ready check failed (ADR 0001 §8): ${gate.reason}`);
         return;
@@ -376,7 +359,8 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       // idle period, not to the whole run (ADR 0015's evidence table counts a hold at each turn end).
       holdRecorder.reset();
       if (pollHandle) { clearTimeout(pollHandle); pollHandle = null; }
-      pollOnce();
+      if (pollInFlight && !pollByTurnEnd && state.skippedTurn == null) state.skippedTurn = state.turns;
+      pollOnce(true);
       return;
     }
     // A write the substrate reports completed, or (ADR 0023 decision 8) cancelled by an interrupt.
@@ -411,11 +395,14 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       try { fs.closeSync(streamFd); } catch { /* already closed */ }
       try { fs.closeSync(stderrFd); } catch { /* already closed */ }
       expireStalePendingWrites();
-      resolve({
+      const out = {
         orchestrator: orchestratorBlock(), ended_by: state.endedBy, holds: state.holds, polls: state.polls,
         wakes: state.wakes, wakes_suppressed: state.wakesSuppressed, wakes_expired: state.wakesExpired,
         wakes_held: hold.wakesHeld, pauses: hold.pauses, // 6f design item 2
-      });
+      };
+      // ADR 0054 amendment 2: the caller ends what the shell left running once the run's own close is done (not part of the receipt).
+      Object.defineProperty(out, 'endLeftovers', { value: () => leftovers.end() });
+      resolve(out);
     }
 
     // 5a-2: a spawn failure (the exe missing, a stale BELAY_CLAUDE_EXE) used to crash the whole

@@ -10,7 +10,7 @@ const path = require('node:path');
 const T = require('./note-review-text.cjs');
 const { shownHash } = require('../core/note-shown.cjs');
 
-const ENDED = new Set(['released', 'done']);
+const ENDED = new Set(['released', 'done', 'cancelled']); // cancelled: ADR 0058, task.cancel
 const isJob = (id) => require('./job-prefixes.cjs').isJobId(String(id)); // any of belay's read-only jobs: no preface, no contract
 const codeOf = (e) => (e && typeof e.code === 'string' && e.code.startsWith('E_') ? e.code : 'E_INTERNAL');
 const fwd = (p) => String(p).replace(/\\/g, '/');
@@ -27,7 +27,7 @@ function stateOf(ctx) {
 // nothing more (a write begun after the owner's shutdown would elect a stray one, invariant 2). A refusal is E_TIMEOUT, as in
 // memory-jobs call().
 function gated(J) {
-  return require('./gated-core.cjs').gatedCore(J.core, J.gate, 'the run-end memory jobs');
+  return require('./gated-core.cjs').gatedCore(J.core, J.gate, 'the run-end note jobs');
 }
 
 async function receipt(core, fields) {
@@ -143,4 +143,4 @@ async function reviewSweep({ core, runId, levers, gate = null }) {
   return { swept: true, tasks: tasks.length };
 }
 
-module.exports = { reviewTail, onTaskEnded, applyHandback, sweep, reviewSweep, drainVerdicts, isJob };
+module.exports = { reviewTail, onTaskEnded, applyHandback, sweep, reviewSweep, drainVerdicts, isJob, ENDED };

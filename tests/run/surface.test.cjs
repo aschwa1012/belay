@@ -11,6 +11,7 @@ const path = require('node:path');
 
 const S = require('../../src/run/surface.cjs');
 const L = require('../../src/run/launch.cjs');
+const KG = require('../../src/run/kill-guard.cjs');
 const { createParser } = require('../../src/run/parsers.cjs');
 
 const S0_STREAM = path.join(__dirname, 'fixtures', 'surface-baseline-init.jsonl');
@@ -68,12 +69,12 @@ test('launch: both argv builders carry --tools and the one token --setting-sourc
   const orch = L.orchestratorLaunchArgv({ mcpJsonPath: 'm', settingsPath: 's' });
   const toolsAt4 = orch.indexOf('--tools');
   assert.ok(toolsAt4 >= 0);
-  assert.deepStrictEqual(orch.slice(toolsAt4, toolsAt4 + 3), ['--tools', 'Read,Edit,Write,Glob,Grep,Bash', '--setting-sources=']);
+  assert.deepStrictEqual(orch.slice(toolsAt4, toolsAt4 + 3), ['--tools', 'Read,Glob,Grep,Edit,Write,Bash', '--setting-sources='], 'ADR 0054 amendment 2: the orchestrator has the six');
 
   const orchResumed = L.orchestratorLaunchArgv({ mcpJsonPath: 'm', settingsPath: 's', resumeSessionId: 'sess-2' });
   const toolsAt5 = orchResumed.indexOf('--tools');
   assert.ok(toolsAt5 >= 0, 'an orchestrator resume must carry --tools too');
-  assert.deepStrictEqual(orchResumed.slice(toolsAt5, toolsAt5 + 3), ['--tools', 'Read,Edit,Write,Glob,Grep,Bash', '--setting-sources=']);
+  assert.deepStrictEqual(orchResumed.slice(toolsAt5, toolsAt5 + 3), ['--tools', 'Read,Glob,Grep,Edit,Write,Bash', '--setting-sources=']);
   assert.deepStrictEqual(orchResumed.slice(-2), ['--resume', 'sess-2']);
   for (const a of [fresh, resumed, withPrompt, orch, orchResumed]) assert.ok(!a.includes('--setting-sources'), 'no bare --setting-sources token');
 });
@@ -217,7 +218,14 @@ test('launch: writeWorkerFiles writes the excludes for its cwd and still disable
   // No cwd: exactly today's object, unchanged.
   const r2 = L.writeWorkerFiles({ dir: path.join(dir, 'workers', 'w2'), workerId: 'w2', runId: 'run-1', dataDir: dir, settingsPath: userSettings });
   const settings2 = JSON.parse(fs.readFileSync(r2.settingsPath, 'utf8'));
-  assert.deepStrictEqual(settings2, { enabledPlugins: { 'example-plugin@example': false } });
+  assert.deepStrictEqual(settings2, { enabledPlugins: { 'example-plugin@example': false }, hooks: KG.hooksBlock() }); // plus the kill guard
 
   fs.rmSync(dir, { recursive: true, force: true });
+});
+
+test('ADR 0054 amendment 2: the orchestrator list is the workers\' six, and the headless orchestrator is launched with its kill guard', () => {
+  assert.deepStrictEqual([...S.ORCHESTRATOR_TOOLS].sort(), [...S.CLAUDE_TOOLS].sort());
+  assert.ok(S.ORCHESTRATOR_TOOLS.includes('Bash'));
+  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../../src/run/orchestrator.cjs'), 'utf8');
+  assert.match(src, /killGuard: true/, 'RunOrchestrator writes the headless orchestrator\'s settings with the kill-by-name hook');
 });

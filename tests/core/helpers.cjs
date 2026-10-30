@@ -28,15 +28,25 @@ function cleanup(dir) {
   catch (e) { process.emitWarning(`sandbox left behind at ${dir}: ${e.code || e.message}`); }
 }
 
+// A process root older than any spawn-register lifetime a concurrent test could have recorded (2020-01-01). An operator-check fixture that
+// invents a shell as the root of its fake chain gives it this creation time, so a fake orchestrator registered by anyone cannot cover it.
+const OLD_ROOT_CREATED = Date.UTC(2020, 0, 1);
+
+// The spawn register this test file alone uses, made now and removed when the process exits; the variable is restored on removal.
+// tests/helpers/tmp.cjs already gives each test-file process its own, so this is the explicit form for a file whose fixture depends on it.
+function ownSpawnRegistry() {
+  const keep = process.env.BELAY_SPAWN_REGISTRY;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-spawned-file-'));
+  process.env.BELAY_SPAWN_REGISTRY = dir;
+  const remove = () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* the tmp helper retries at exit */ } if (keep === undefined) delete process.env.BELAY_SPAWN_REGISTRY; else process.env.BELAY_SPAWN_REGISTRY = keep; };
+  process.once('exit', remove);
+  return { dir, remove };
+}
+
 const callerFor = (role, extra = {}) => ({ role, run_id: 'test-run', pid: process.pid, ...extra });
 
-// A pid that is certainly dead: a child that has already exited. Never a made-up number, because pids
-// are recycled and a guess can be alive.
-function deadPid() {
-  const { spawnSync } = require('node:child_process');
-  const r = spawnSync(process.execPath, ['-e', 'process.exit(0)'], { windowsHide: true });
-  return r.pid;
-}
+// A pid no process holds and none will be handed (tests/helpers/dead-pid.cjs). Not the pid of an exited child: Windows reuses those within seconds.
+const { deadPid } = require('../helpers/dead-pid.cjs');
 
 function listDataDir(dir) {
   try { return fs.readdirSync(dir).sort(); } catch { return []; }
@@ -157,4 +167,4 @@ function capturingCall(call, orch, harness) {
   };
 }
 
-module.exports = { captureBrief, capturingCall, optInModel, ROOT, CORE, FIXTURES, core, sandbox, cleanup, callerFor, deadPid, listDataDir, sleep, startOwnerProcess, trackOwnerChild, stopOwnerProcesses, runFixture };
+module.exports = { OLD_ROOT_CREATED, ownSpawnRegistry, captureBrief, capturingCall, optInModel, ROOT, CORE, FIXTURES, core, sandbox, cleanup, callerFor, deadPid, listDataDir, sleep, startOwnerProcess, trackOwnerChild, stopOwnerProcesses, runFixture };

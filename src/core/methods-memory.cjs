@@ -70,7 +70,7 @@ const CALLER_FIELDS = ['text', 'namespace', 'type', 'tags', 'provenance', 'super
 const NOTE_FIELDS = ['kind', 'when', 'basis', 'evidence', 'applies_to', 'subjects'];
 const NOTE_REFUSED = ['text', 'type', 'tags', 'ttl_seconds', 'supersedes', 'provenance', 'body', 'embed'];
 const HARNESS_STORE_FIELDS = ['id', 'created_at', 'embedding', 'embedding_model', 'embedding_revision', 'dim'];
-const NOTE_BODY_KEYS = ['model', 'state', 'seen_in', 'seen_total', 'matches', 'reported_wrong', 'resolved', 'superseded_by'];
+const NOTE_BODY_KEYS = ['model', 'state', 'seen_in', 'seen_total', 'matches', 'reported_wrong', 'resolved', 'superseded_by', 'evidence_checked'];
 const TAGS_MAX = 32, TAG_MAX = 200, PROVENANCE_MAX = 512;
 // A worker's own rows in one run namespace: a model in a loop cannot fill the store.
 const WORKER_ROWS_MAX = 2000;
@@ -158,9 +158,11 @@ function scrub(on, args) {
 // A project row or a verified one is the orchestrator's or the operator's to replace (ADR 0040 §2, worker scope).
 function checkOwnRow(E, caller, id, verb) {
   if (caller.role !== 'worker') return;
-  const r = E.store.p('SELECT id, namespace, worker_id, status, source FROM memory_entries WHERE id = ?').get(id);
+  const r = E.store.p('SELECT id, namespace, worker_id, status, source, written_by FROM memory_entries WHERE id = ?').get(id);
   if (!r) return; // absent: the store's own check names it (E_SUPERSEDES), and a delete reports deleted false
-  const own = r.worker_id === caller.worker_id && r.namespace === `run/${caller.run_id}` && (r.status || 'unverified') === 'unverified' && (r.source || 'model') === 'model';
+  // A row about this worker that belay wrote (its turn row names it as worker_id) is not the worker's: the writer must be it
+  // too (ADR 0044 decision 6). A row from before the writer column (null) keeps the rule as it was.
+  const own = r.worker_id === caller.worker_id && (r.written_by == null || r.written_by === E.memoryWriter(caller)) && r.namespace === `run/${caller.run_id}` && (r.status || 'unverified') === 'unverified' && (r.source || 'model') === 'model';
   if (!own) throw err('E_ROLE', `a worker may ${verb} only its own unverified rows in its own run namespace; row ${id} is not one`, { id, role: caller.role });
 }
 
@@ -176,7 +178,7 @@ function noteModeOf(E, caller, namespace) {
 // in the per-project order the hand-back uses. Returns the note item as written (invariant 5).
 async function storeNote(E, caller, args, namespace, lv) {
   for (const k of NOTE_REFUSED.concat(HARNESS_FIELDS, HARNESS_STORE_FIELDS)) {
-    if (args[k] !== undefined) throw err('E_NOTE_SHAPE', `memory.store: ${k} is not a field of a note. A write to ${namespace} is a note here: pass kind, title, when, basis, evidence (with basis observed), and optionally applies_to and subjects`, { field: k, namespace });
+    if (args[k] !== undefined) throw err('E_NOTE_SHAPE', `memory.store: ${k} is not a field of a note. A write to ${namespace} is a note here: pass kind, title, when, basis, evidence (with basis observed), and optionally applies_to and subjects${k === 'supersedes' ? `. A note replaces another through review, not by naming it (ADR 0047): write the new note, and if it matches the old one it waits in pending to be resolved as supersedes${caller.role === 'orchestrator' ? '; or report the old one with memory_report replaced_by' : ' with memory_note_resolve'}` : ''}`, { field: k, namespace });
   }
   const worker = caller.role === 'worker';
   const task = worker ? derivedTask(E, caller) : null;
@@ -192,7 +194,10 @@ async function storeNote(E, caller, args, namespace, lv) {
       return NW.commitNotes(E, caller, { project, notes: prepared }, { task_id: task })[0];
     });
     E.noteWrite();
-    return { ...item, project, written_by: E.memoryWriter(caller), ...(item.state === 'pending' && worker ? { next: 'resolve it with memory_note_resolve: new, repeats <id>, or supersedes <id> with evidence' } : {}) };
+    // A pending note matched a note of the project at the match threshold (`matches` names each with its similarity): it may be a duplicate.
+    const next = item.state !== 'pending' ? null : worker ? 'resolve it with memory_note_resolve: new, repeats <id>, or supersedes <id> with evidence'
+      : 'it may duplicate the matches named here; it waits in pending for the run-close scrubber, or report the older note with memory_report replaced_by';
+    return { ...item, project, written_by: E.memoryWriter(caller), ...(next ? { next } : {}) };
   });
 }
 
@@ -219,7 +224,8 @@ async function store(E, caller, args) {
   }
   if (args.supersedes != null) checkOwnRow(E, caller, args.supersedes, 'supersede');
   if (caller.role === 'worker') {
-    const n = E.store.p('SELECT COUNT(*) AS n FROM memory_entries WHERE namespace = ? AND worker_id = ?').get(namespace, caller.worker_id).n;
+    // The worker's own rows: the harness's turn rows about it are not its writes and do not count toward its quota.
+    const n = E.store.p('SELECT COUNT(*) AS n FROM memory_entries WHERE namespace = ? AND worker_id = ? AND (written_by IS NULL OR written_by = ?)').get(namespace, caller.worker_id, E.memoryWriter(caller)).n;
     if (n >= WORKER_ROWS_MAX) throw bad(`this worker already holds ${n} rows in ${namespace}, the most one worker may write`, 'text', { reason: 'quota', max: WORKER_ROWS_MAX });
   }
   // A project namespace outlives the run and every later run reads it, so a write into it is always scrubbed,
@@ -232,16 +238,31 @@ async function store(E, caller, args) {
   if (s.body !== null && Buffer.byteLength(JSON.stringify(s.body)) > BODY_MAX) throw bad(`body is over ${BODY_MAX} bytes once serialised`, 'body', { max: BODY_MAX });
   const { embed, task_id, turn, source, worker_id: harnessWorker, title: _title, body: _body, text: _text, ...rest } = args;
   const worker = caller.role === 'worker';
+  // A harness turn row about a worker, with no task named: the task of the lease that worker held at the turn's end (its
+  // created_at), read from the lease rows, never from the worker. The run manager writes turn rows as the orchestrator.
+  const turnTask = !worker && harnessWorker && args.type === 'turn' && task_id === undefined
+    ? rows.leaseTaskAt(E.store, harnessWorker, caller.run_id, args.created_at ?? Date.now()) : undefined;
   const base = {
     ...rest, tags: s.tags, provenance: s.provenance, namespace, worker_id: (!worker && harnessWorker) || E.writtenBy(caller), text: s.text, title, body: s.body, redactions: s.redactions, written_by: E.memoryWriter(caller),
-    run_id: caller.run_id, task_id: worker ? derivedTask(E, caller) : (task_id ?? null), turn: worker ? null : (turn ?? null),
+    run_id: caller.run_id, task_id: worker ? derivedTask(E, caller) : (task_id ?? turnTask ?? null), turn: worker ? null : (turn ?? null),
     source: source || (caller.role === 'operator' ? 'operator' : 'model'),
   };
   const a = embed === false ? base : await withEmbedding(E, base, 'embedding', 'text', caller);
   E.assertRunOpen(caller, 'memory.store'); // the embedding was awaited above; run.end may have committed meanwhile (audit D42)
   const row = E.store.store(a);
   E.noteWrite();
-  return row;
+  return withLasting(E, caller, namespace, row);
+}
+
+// ADR 0057 decision 8 (C8): the default namespace is the run's scratch. A model's write there, in a run with a project whose rows are not promoted
+// (project_writes off), is told so in the answer, with the way to keep a lesson; every other write answers the row alone, as before.
+function withLasting(E, caller, namespace, row) {
+  if (!caller || (caller.role !== 'worker' && caller.role !== 'orchestrator') || caller.channel === 'harness') return row;
+  if (namespace !== `run/${caller.run_id}` || !projectOf(E, caller)) return row;
+  const lv = leversOf(E, caller);
+  if (lv && lv.project_writes === true) return row;
+  const keep = lv && lv.notes === true ? '; to keep a lesson for later runs, write it to namespace project as a note (kind, title, when, basis)' : '';
+  return { ...row, lasting: false, note: `${namespace} is this run's scratch and later runs do not read it${keep}` };
 }
 
 // The notes lifecycle's namespaces belong to the harness: only its own writes put a row there (memory.store refuses

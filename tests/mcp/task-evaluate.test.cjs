@@ -99,15 +99,19 @@ test('lease_release: a worker\'s result over MCP lands as handoff, and the orche
   const rel = await w.call('lease_release', { lease_id: lease.id, result });
   assert.strictEqual(rel.isError, false, JSON.stringify(rel.structuredContent));
   assert.strictEqual(rel.structuredContent.state, 'released');
-  assert.deepStrictEqual(rel.structuredContent.handoff.result, result);
-  assert.strictEqual(rel.structuredContent.handoff.by, 'wk-lr');
+  // The worker's own answer is compact: it does not echo the hand-back it just sent (wording audit); the orchestrator reads it below.
+  assert.deepStrictEqual(rel.structuredContent, { id: task.id, state: 'released', lease_id: lease.id });
 
   const a = real({ role: 'orchestrator', run: 'run-lr', data });
   t.after(async () => { await a.close(); a.kill(); });
   await a.initialize();
-  const listed = (await a.call('task_list', {})).structuredContent.tasks.find((x) => x.id === task.id);
-  assert.deepStrictEqual(listed.handoff.result, result);
-  assert.strictEqual(listed.handoff.lease_id, lease.id);
+  // ADR 0058 amendment 3: a listing names the hand-back's fields; task_ids answers that task with the hand-back whole.
+  const summary = (await a.call('task_list', {})).structuredContent.tasks.find((x) => x.id === task.id);
+  assert.deepStrictEqual([summary.handoff.by, summary.handoff.fields, summary.handoff.result], ['wk-lr', Object.keys(result), undefined]);
+  const listed = (await a.call('task_list', { task_ids: [task.id] })).structuredContent.tasks;
+  assert.deepStrictEqual(listed.map((x) => x.id), [task.id], 'task_ids narrows the listing to that task');
+  assert.deepStrictEqual(listed[0].handoff.result, result);
+  assert.strictEqual(listed[0].handoff.lease_id, lease.id);
 });
 
 test('task_evaluate: not listed for a worker, and a worker call is refused', async (t) => {

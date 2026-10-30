@@ -8,27 +8,31 @@ const crypto = require('node:crypto');
 const COLUMNS = {
   run: ['id', 'epoch', 'orchestrator_pid', 'adapter_pid', 'started_at', 'ended_at', 'exit_reason',
     'orch_model', 'orch_input_tokens', 'orch_output_tokens', 'orch_cache_read_tokens', 'orch_cache_creation_tokens',
-    'orch_cost_usd', 'orch_turns', 'orch_effort_requested', 'max_fix_rounds', 'adapter_pid_created'],
+    'orch_cost_usd', 'orch_turns', 'orch_effort_requested', 'max_fix_rounds', 'fix_hard_cap', 'fix_hard_cap_source', 'adapter_pid_created', 'max_parallel_evaluations'],
   worker: ['id', 'run_id', 'substrate', 'pid', 'session_id', 'adapter_pid', 'argv_hash', 'state',
     'worktree', 'task_id', 'started_at', 'exited_at', 'exit_code', 'exit_signal', 'turns',
     'input_tokens', 'output_tokens', 'cost_usd', 'last_event_at', 'mid_turn', 'death_established_by',
     'permission_mode_requested', 'permission_mode_effective', 'claude_code_version',
     'paused_at', 'paused_by', 'park_turns',
     'model', 'cache_read_tokens', 'cache_creation_tokens', 'tool_calls', 'base_sha', 'head_sha',
-    'effort_requested', 'head_error', 'base_error', 'pid_created', 'pid_created_error', 'pid_image', 'memory_queries', 'native_memory', 'native_memory_auth', 'tools'],
-  task: ['id', 'run_id', 'spec', 'acceptance', 'files_owned', 'state', 'results', 'depends_on', 'handoff', 'repairs'],
+    'effort_requested', 'head_error', 'base_error', 'pid_created', 'pid_created_error', 'pid_image', 'memory_queries', 'native_memory', 'native_memory_auth', 'tools', 'max_budget_usd', 'model_requested', 'leases_released', 'cost_estimate', 'cost_source', 'cost_base'],
+  task: ['id', 'run_id', 'spec', 'acceptance', 'files_owned', 'state', 'results', 'depends_on', 'handoff', 'repairs', 'worktree', 'answers', 'base', 'amended'],
   lease: ['id', 'task_id', 'run_id', 'holder', 'holder_role', 'granted_at', 'expires_at',
-    'released_at', 'supersedes', 'ttl_ms'],
+    'released_at', 'supersedes', 'ttl_ms', 'released_reason', 'tree'],
   checkpoint: ['id', 'task_id', 'worker_id', 'run_id', 'turn', 'files_touched', 'tool_digest',
     'stated', 'source'],
   permission: ['id', 'run_id', 'worker_id', 'adapter_pid', 'tool', 'input', 'input_truncated',
     'input_sha256', 'state', 'verdict_by', 'reason', 'requested_at', 'decided_at'],
+  // ADR 0053 decision 5.
+  integration: ['id', 'run_id', 'repo', 'into_branch', 'worktree', 'created_worktree', 'base_sha', 'head_sha', 'state',
+    'task_ids', 'merged', 'conflict', 'error', 'checks', 'passed', 'junctions', 'removed_at', 'owner_pid', 'owner_boot', 'forced'],
 };
 
 // Text in SQLite, parsed objects on the wire (api.md §1).
 const JSON_COLUMNS = {
-  run: [], worker: ['memory_queries', 'tools'], lease: [],
-  task: ['acceptance', 'files_owned', 'results', 'depends_on', 'handoff'],
+  run: [], worker: ['memory_queries', 'tools', 'leases_released', 'cost_estimate'], lease: ['tree'],
+  task: ['acceptance', 'files_owned', 'results', 'depends_on', 'handoff', 'worktree', 'answers', 'amended'],
+  integration: ['task_ids', 'merged', 'conflict', 'error', 'checks', 'junctions', 'forced'],
   checkpoint: ['files_touched', 'tool_digest', 'stated'],
   // build step 6d: `input` stays a string on the wire, never parsed here. A truncated JSON text
   // (input_truncated: 1) does not parse as JSON at all, and an operator reading `pending` needs to
@@ -98,6 +102,36 @@ function leasesHeldBy(store, workerId, at = Date.now()) {
   return store.p(sql).all(workerId, at).map(r => parseRow('lease', r));
 }
 
+// The task each worker is on now, derived on the read side from the leases (the worker row's task_id is set at spawn only, so a
+// reused worker would show its first task). One pass over each task's current lease row: a worker's newest lease that is unreleased
+// and unexpired wins, else its newest lease by seq, released or expired; a worker with none is absent and the caller falls back to
+// the row's task_id. `workerId` limits the scan to one holder.
+function workerTasks(store, workerId = null, at = Date.now()) {
+  const sql = `SELECT l.holder, l.task_id, l.released_at, l.expires_at FROM lease l JOIN (SELECT task_id, MAX(seq) AS m FROM lease GROUP BY task_id) x ON l.seq = x.m
+               WHERE l.holder_role = 'worker' AND l.holder ${workerId == null ? 'IS NOT NULL' : '= ?'} ORDER BY l.seq`;
+  const live = new Map(), newest = new Map();
+  for (const r of workerId == null ? store.p(sql).all() : store.p(sql).all(workerId)) {
+    newest.set(r.holder, r.task_id);
+    if (r.released_at == null && (r.expires_at == null || r.expires_at >= at)) live.set(r.holder, r.task_id);
+  }
+  return new Map([...newest, ...live]);
+}
+
+// The task a worker was working on at `at`: the task of its newest lease (in role worker, in this run) granted at or before
+// `at`, released or not, since a worker usually releases its lease inside the turn it finishes. null if it held none, and
+// null when it holds two or more unreleased leases granted by then, as a worker's own memory row's task is (methods-memory.cjs
+// derivedTask): which of them the turn was about is not known.
+function leaseTaskAt(store, workerId, runId, at) {
+  const run = runId == null ? null : runId;
+  const live = `SELECT COUNT(*) AS n FROM lease l JOIN (SELECT id, MAX(seq) AS m FROM lease GROUP BY id) x ON l.seq = x.m
+                WHERE l.holder = ? AND l.holder_role = 'worker' AND l.run_id IS ? AND l.granted_at <= ? AND l.released_at IS NULL`;
+  if (store.p(live).get(workerId, run, at).n > 1) return null;
+  const sql = `SELECT task_id FROM lease WHERE holder = ? AND holder_role = 'worker' AND run_id IS ? AND granted_at <= ?
+               ORDER BY granted_at DESC, seq DESC LIMIT 1`;
+  const r = store.p(sql).get(workerId, run, at);
+  return r ? r.task_id : null;
+}
+
 function lastCheckpoint(store, taskId, source) {
   const sql = source
     ? 'SELECT * FROM checkpoint WHERE task_id = ? AND source = ? ORDER BY seq DESC LIMIT 1'
@@ -110,5 +144,5 @@ const newId = () => crypto.randomUUID();
 
 module.exports = {
   COLUMNS, JSON_COLUMNS, bind, parseRow, append, current, currentAll, history,
-  currentLeaseForTask, leasesHeldBy, lastCheckpoint, newId,
+  currentLeaseForTask, workerTasks, leasesHeldBy, leaseTaskAt, lastCheckpoint, newId,
 };

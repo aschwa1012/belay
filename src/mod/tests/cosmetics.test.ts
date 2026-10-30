@@ -1,4 +1,5 @@
-import { describe, expect, test } from 'claude-code/testing'
+import { describe, expect } from 'claude-code/testing'
+import { test } from './support'
 import { boot, band, pane, openPane, leaves, words, RUN, T0 } from './support'
 
 // Cosmetic rules the operator saw in the GUI: a compact memory notice that wraps cleanly, a visible name cut, an interactive
@@ -10,7 +11,7 @@ describe('compact memory notice', () => {
       await openPane($, wd)
       const { ui } = await pane($, 'terminal', cols)
       const rows = leaves(await ui.drawn())
-      expect(rows.join(' ')).toContain('Memory is off for this project')
+      expect(rows.join(' ').replace(/[ ]+/g, ' ')).toContain('Notes are on, but no project is set, so this run keeps no notes')
       expect(rows.join(' ').replace(/[ ]+/g, ' ')).toContain('belay settings memory.notes false')
       for (const r of rows) if (!r.startsWith('Spawned rev-1')) expect([...r].length, r).toBeLessThanOrEqual(cols)
     })

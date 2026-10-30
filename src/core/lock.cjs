@@ -175,20 +175,31 @@ function takeOver(dir, meta, seen, body) {
   return 'lost';
 }
 
+// Tokens of the locks owners in THIS process are serving under. A lock naming this process's own pid is otherwise taken for one
+// it left behind (a stop that never released it) and taken over in place; one whose token is here is live, and is held.
+const SERVING = new Set();
+const serving = { add: (t) => { if (t) SERVING.add(t); }, delete: (t) => SERVING.delete(t) };
+
 const mtime = p => { try { return fs.statSync(p).mtimeMs; } catch (e) { if (e.code === 'ENOENT') return 0; throw e; } };
 
 // Returns { won: true, lockDir } or { won: false, holder }. `opts.onStale(seen)` is a test seam, called
 // after a racer has judged a lock stale and before it acts, where a slow racer loses the CPU.
+// `opts.staleToken`: the token of a lock whose live pid the caller has shown to be another process (holderReused below), so
+// that lock is stale although its pid answers a pid check. The takeover still claims by that token and re-reads owner.json, so a
+// newer lock is never touched on the strength of it.
 function acquireLock(dataDir, info, opts = {}) {
   const attempts = opts.attempts || 10;
   const dir = lockPath(dataDir), meta = metaPath(dataDir);
   fs.mkdirSync(dataDir, { recursive: true });
-  const body = () => JSON.stringify({ pid: process.pid, ...info, token: rid(), acquired_at: Date.now() });
+  let token = null;
+  const body = () => JSON.stringify({ pid: process.pid, ...info, token: (token = rid()), acquired_at: Date.now() });
   for (let attempt = 0; attempt < attempts; attempt++) {
-    if (publishDir(dir, { 'owner.json': body() })) return { won: true, lockDir: dir };
+    if (publishDir(dir, { 'owner.json': body() })) return { won: true, lockDir: dir, token };
     const seen = readMeta(meta);
     if (seen.state === 'unknown') { sleepSync(20); continue; }
-    if (seen.state === 'ok' && seen.meta.pid !== process.pid && pidAlive(seen.meta.pid)) return { won: false, holder: seen.meta };
+    const reused = opts.staleToken && seen.state === 'ok' && seen.meta.token === opts.staleToken;
+    if (seen.state === 'ok' && seen.meta.pid !== process.pid && !reused && pidAlive(seen.meta.pid)) return { won: false, holder: seen.meta };
+    if (seen.state === 'ok' && seen.meta.pid === process.pid && SERVING.has(seen.meta.token)) return { won: false, holder: seen.meta }; // an owner in this process serves it
     if (seen.state !== 'ok') {
       if (!fs.existsSync(dir)) continue; // released in between; publish again
       // Not written by this module, which publishes a lock whole. Younger than a second, it may still
@@ -200,7 +211,7 @@ function acquireLock(dataDir, info, opts = {}) {
     if (opts.onStale) opts.onStale(seen);
     let outcome = 'lost';
     try { outcome = takeOver(dir, meta, seen, body); } catch { /* the lock moved under us; re-read it */ }
-    if (outcome === 'won') return { won: true, lockDir: dir };
+    if (outcome === 'won') return { won: true, lockDir: dir, token };
     sleepSync(50);
   }
   return { won: false, holder: readOwnerLock(dataDir) };
@@ -244,12 +255,34 @@ function markListening(lockDir, at = Date.now(), extra = {}) {
   return true;
 }
 
-// Only the process named in the lock may release it, so a takeover cannot be undone by its victim.
-function releaseLock(lockDir) {
+// A dead owner's lock outlives it when the owner was ended without its handlers (a Windows terminate), and Windows hands its pid
+// to the next process soon after; a bare pid check then reads the lock as held for as long as that process lives. Whether the
+// process at the pid is the one that took the lock is answered by its creation time in a process snapshot (ADR 0039's identity):
+// equal to the `created` the lock recorded, or, where the lock recorded none, no later than its `acquired_at` (a process born
+// after the lock was taken did not take it). -> { reused: true|false, why } or { reused: null, why } when the snapshot cannot say.
+function holderReused(holder, snap) {
+  if (!holder || !Number.isFinite(holder.pid)) return { reused: null, why: 'the lock names no pid' };
+  if (!snap) return { reused: null, why: 'process snapshot unreadable' };
+  const e = snap.get(holder.pid);
+  if (!e) return { reused: null, why: `pid ${holder.pid} is not in the process snapshot (it may have just exited)` };
+  if (e.created == null) return { reused: null, why: `creation time of pid ${holder.pid} cannot be read` };
+  if (Number.isFinite(holder.created)) {
+    return e.created === holder.created ? { reused: false, why: `pid ${holder.pid} was created at ${e.created}, as the lock recorded` }
+      : { reused: true, why: `pid ${holder.pid} was created at ${e.created}, the lock recorded ${holder.created}` };
+  }
+  if (!Number.isFinite(holder.acquired_at)) return { reused: null, why: 'the lock records neither a creation time nor acquired_at' };
+  return e.created > holder.acquired_at ? { reused: true, why: `pid ${holder.pid} was created at ${e.created}, after the lock was acquired at ${holder.acquired_at}` }
+    : { reused: false, why: `pid ${holder.pid} was created at ${e.created}, before the lock was acquired` };
+}
+
+// Only the process named in the lock may release it, so a takeover cannot be undone by its victim. With `token`, only the lock
+// published under that token: another owner of this same process may hold the lock now.
+function releaseLock(lockDir, token = null) {
   const m = readSettled(path.join(lockDir, 'owner.json'));
   if (m.state === 'ok' && m.meta.pid !== process.pid) return false;
+  if (token && m.state === 'ok' && m.meta.token !== token) return false;
   // no metadata: it is ours to clean or already gone
   return removeDir(lockDir);
 }
 
-module.exports = { pipeName, adapterPipeName, bindPipeName, pidAlive, resolveDataDir, acquireLock, releaseLock, markListening, readOwnerLock, lockPath, metaPath };
+module.exports = { pipeName, adapterPipeName, bindPipeName, pidAlive, resolveDataDir, acquireLock, releaseLock, markListening, readOwnerLock, holderReused, serving, lockPath, metaPath };

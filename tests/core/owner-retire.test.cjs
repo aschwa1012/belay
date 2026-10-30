@@ -272,3 +272,19 @@ test('after a deferred release the Core never elects another owner: a later writ
     assert.ok(!fs.existsSync(lockOf(dir)), 'and no stray owner was elected for it');
   } finally { await finish(dir, rc, y); }
 });
+
+test('after a deferred release the releasing Core does not pin the retiring owner: a write is refused and a read keeps no connection (audit 0.3.1 P2)', async (tcx) => {
+  const { dir, rc } = await elected();
+  const y = await inProcessClient(dir, process.pid);
+  tcx.after(() => Promise.resolve().then(() => y.close()));
+  try {
+    const r = await rc.releaseOwner();
+    assert.strictEqual(r.stopped, 'deferred');
+    await assert.rejects(rc.run.attach({ adapter_pid: process.pid }), (e) => e.code === 'E_SHUTDOWN' && e.detail.retiring === true, 'a write would dial the retiring owner from this live process');
+    assert.ok(Array.isArray((await rc.worker.list({})).workers), 'a read is still answered');
+    assert.strictEqual(rc.client, null, 'and its connection is not kept');
+    await y.close(); // the last other client leaves: nothing from rc holds the owner
+    await within(retire.idle(), 15000, 'the retired owner to stop');
+    assert.ok(!fs.existsSync(lockOf(dir)));
+  } finally { await finish(dir, rc, y); }
+});

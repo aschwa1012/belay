@@ -14,6 +14,7 @@ const { setup } = require('../core/lifecycle-env.cjs');
 const { cleanup, callerFor } = require('../core/helpers.cjs');
 const { Store } = require('../../src/core/store.cjs');
 const { Engine } = require('../../src/core/engine.cjs');
+const { withCopy } = require('../../src/core/copy-read.cjs');
 const { run } = require('../../src/cli/cmd-memory.cjs');
 const { ROOT, CLI } = require('./stop-helpers.cjs');
 
@@ -36,7 +37,11 @@ async function asEngine(T, fn) {
   try { return await fn(new Engine({ dataDir: T.dir, store: s, getEmbedder: null, owner: null, establishedBy: 'test' }), s); } finally { s.close(); }
 }
 const plantClaim = (T, a) => asEngine(T, (E) => E.handle('memory.reviewClaim', { caller: callerFor('operator', { run_id: RUN }), project: 'lc', image: 'node.exe', job: 'archreview-old', ...a }));
-const claims = (T) => asEngine(T, (E, s) => s.p("SELECT id, ok, code, worker_id, message FROM memory_event WHERE kind = 'review_claim' ORDER BY seq").all().map((r) => ({ ...r, m: JSON.parse(r.message) })));
+// A read: through a copy of the store, as every belay read is (a writable open of the live store would write beside the review under test).
+const claims = (T) => withCopy(T.dir, async (dbPath) => {
+  const s = new Store(dbPath);
+  try { return s.p("SELECT id, ok, code, worker_id, message FROM memory_event WHERE kind = 'review_claim' ORDER BY seq").all().map((r) => ({ ...r, m: JSON.parse(r.message) })); } finally { s.close(); }
+});
 function fakeManager({ answer = JSON.stringify({ verdicts: [] }), hold = false } = {}) {
   const m = { spawned: [], stopped: [], stopModes: [], waits: 0 };
   m.spawn = async (a) => { m.spawned.push(a); m.rec = { lastAssistantText: answer, costUsd: 0.01, pid: 424242 }; return {}; };
@@ -218,14 +223,17 @@ test('the built CLI: --start launches a real detached review that outlives the l
     const env = { ...process.env, BELAY_TEST_MODE: '1', BELAY_CLAUDE_EXE: FAKE, BELAY_TEST_SKIP_EMBEDDER_WARMUP: '1' };
     const r = spawnSync(process.execPath, [CLI, 'memory', 'review', '--project', 'lc', '--run', RUN, '--worktree', T.repo, '--start', '--data', T.dir, '--json'], { cwd: ROOT, windowsHide: true, encoding: 'utf8', env, timeout: 120000 });
     const j = JSON.parse(r.stdout || r.stderr);
-    assert.strictEqual(r.status, 0, r.stderr + r.stdout);
-    assert.ok(j.started === true || j.ended, JSON.stringify(j));
+    // The fake executable is fast enough that the review can end before the launcher looks: then the launch
+    // reports it ended at once, with the review's own failure, and exits 1.
+    if (j.ended) assert.deepStrictEqual([r.status, j.ended.ok, j.ended.code], [1, false, 'E_ARGS'], r.stderr + r.stdout);
+    else assert.deepStrictEqual([r.status, j.started], [0, true], r.stderr + r.stdout);
     assert.notStrictEqual(j.pid, process.pid);
     // The launcher is gone; the detached CLI releases the claim when its review ends. Wait for that real event.
     const t0 = Date.now();
     let release = null;
     while (!release && Date.now() - t0 < 100000) {
-      release = (await claims(T)).find((e) => e.m.phase === 'release');
+      // A copy over a store that keeps changing ends E_BUSY after its retry budget: that read is simply taken again on the next poll.
+      try { release = (await claims(T)).find((e) => e.m.phase === 'release'); } catch (e) { if (e.code !== 'E_BUSY') throw e; }
       if (!release) await new Promise((res) => setTimeout(res, 200));
     }
     assert.ok(release, 'the detached review released its claim');

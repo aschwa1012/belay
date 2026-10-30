@@ -27,7 +27,9 @@ test('a spawn refuses an id a row already has (any case, any run) or a directory
   try {
     await core.run.attach({ adapter_pid: process.pid });
     m = createRunManager({ core, dataDir: data, runId, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
-    await core.worker.write({ id: 'w1', state: 'dead', substrate: 'claude-code', run_id: 'some-other-run' });
+    // another run's row, written by that run's own orchestrator (an orchestrator writes its own run's rows only)
+    const other = await openCore({ dataDir: data, caller: { role: 'orchestrator', run_id: 'some-other-run', pid: process.pid }, embed: false });
+    try { await other.worker.write({ id: 'w1', state: 'dead', substrate: 'claude-code', run_id: 'some-other-run' }); } finally { await other.close(); }
     const before = (await core.worker.list({})).workers.length;
     for (const id of ['w1', 'W1']) {
       await assert.rejects(m.spawn({ substrate: 'claude-code', worktree, prompt: 'go', worker_id: id }), (e) => e.code === 'E_ARGS' && e.detail.existing_id === 'w1' && e.detail.existing_run_id === 'some-other-run' && /taken/.test(e.message), id);
@@ -96,7 +98,8 @@ test('this run\'s own stopped or dead worker of the exact id may be spawned agai
     await core.run.attach({ adapter_pid: process.pid });
     m = createRunManager({ core, dataDir: data, runId, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
     await core.worker.write({ id: 'mine', state: 'dead', substrate: 'claude-code' }); // this run's, no live process
-    await core.worker.write({ id: 'theirs', state: 'dead', substrate: 'claude-code', run_id: 'another-run' });
+    const another = await openCore({ dataDir: data, caller: { role: 'orchestrator', run_id: 'another-run', pid: process.pid }, embed: false }); // its own run's orchestrator writes it
+    try { await another.worker.write({ id: 'theirs', state: 'dead', substrate: 'claude-code', run_id: 'another-run' }); } finally { await another.close(); }
     const refused = (id, re) => assert.rejects(m.spawn({ substrate: 'claude-code', worktree, prompt: 'go', worker_id: id }), (e) => e.code === 'E_ARGS' && re.test(e.message), id);
     await refused('theirs', /taken/);
     await refused('Mine', /taken/);

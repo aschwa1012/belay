@@ -8,6 +8,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { PROCESS_LINE } = require('../../src/run/task-body.cjs');
 
 const shim = require('./redact-shim.cjs');
 shim.install();
@@ -156,7 +157,7 @@ test('manager, lever on: the task, then a message, each on the turn it starts, w
     await m._waitTurn('w1', 8000);
     const got = rows(sb.sent('w1'));
     assert.deepStrictEqual(got.map((r) => [r.seq, r.turn, r.kind]), [[1, 1, 'task'], [2, 2, 'message']]);
-    assert.strictEqual(got[0].text, 'build the thing');
+    assert.strictEqual(got[0].text, 'build the thing' + PROCESS_LINE);
     assert.ok(got[1].text.startsWith('note: [REDACTED:'));
     assert.ok(!JSON.stringify(got).includes(shim.SECRET));
   });
@@ -171,12 +172,28 @@ test('the harness /compact is recorded as kind compact, and the bottle shows it 
     fs.appendFileSync(w.streamPath, RESULT);
     const row = SL.record(w, ctx, 'compact', '/compact keep the plan');
     assert.deepStrictEqual([row.kind, row.turn], ['compact', 2]);
-    // compaction.cjs's own write goes through the same record with the same kind.
-    const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'run', 'compaction.cjs'), 'utf8');
-    assert.match(src, /record\(w, ctx, 'compact', text\)/);
     const { buildBottle } = require('../../src/run/bottle.cjs');
     const b = buildBottle({ streamPath: path.join(__dirname, 'fixtures', 'claude-stream.jsonl'), sentPath: SL.sentPath(w), redact: (t) => ({ text: t, redactions: [] }) });
     assert.ok(b.text.includes('user (generated, compact): /compact keep the plan'));
     assert.ok(!b.text.includes('user: /compact'));
+  } finally { cleanup(dir); }
+});
+
+test('the harness compaction\'s own /compact write is recorded in the sent log as kind compact', async () => {
+  const CP = require('../../src/run/compaction.cjs');
+  const dir = tmp();
+  try {
+    // A worker between turns over the lever, with a stand-in child; compaction sends its /compact through the same record.
+    const stdin = [];
+    const w = { ...worker(dir), substrate: 'claude-code', child: { stdin: { destroyed: false, write: (l) => stdin.push(l) } }, settled: false, stopRequested: false, parkRequested: null, paused: null, turnEnded: true, parser: { noteStdinWrite: () => 1 } };
+    const ctx = ctxOn({ compactAt: 10, core: null });
+    SL.record(w, ctx, 'task', 'the spec');
+    const turnStarted = (wk, c, send) => { const sent = send(); wk.turnEnded = false; return Promise.resolve({ sent }); };
+    await CP.afterTurn(w, { kind: 'turn_end', context_tokens: 50, is_error: false }, ctx, turnStarted);
+    assert.strictEqual(stdin.length, 1, 'the compaction wrote its /compact');
+    const got = rows(SL.sentPath(w));
+    const last = got[got.length - 1];
+    assert.strictEqual(last.kind, 'compact');
+    assert.ok(last.text.startsWith('/compact '), last.text);
   } finally { cleanup(dir); }
 });

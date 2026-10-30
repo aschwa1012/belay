@@ -98,7 +98,7 @@ test('a review notice shows a short id once, the verdict and the reviewer', () =
 
 test('parseMemoryNotice and buildSnapshot: the no-project notice rides the settings read, survives a failed read and goes when belay stops reporting it', async () => {
   const F = await loadPanelModule('fetch');
-  const notice = { title: 'Memory is off for this project', why: 'Notes are per project.', fix: 'Add "memory": { "project": "<name>" } to belay.config.json.', config_line: '"memory": { "project": "<name>" }', short: 'set one: belay settings memory.project <name>' };
+  const notice = { title: 'Notes are on, but no project is set, so this run keeps no notes', why: 'Notes are per project.', fix: 'Add "memory": { "project": "<name>" } to belay.config.json.', config_line: '"memory": { "project": "<name>" }', short: 'set one: belay settings memory.project <name>' };
   assert.deepStrictEqual(M.parseMemoryNotice({ memory_notice: notice }), { title: notice.title, why: notice.why, fix: notice.fix, configLine: notice.config_line, short: notice.short });
   for (const j of [null, {}, { memory_notice: null }, { memory_notice: { title: 'x' } }, { memory_notice: 'x' }]) assert.strictEqual(M.parseMemoryNotice(j), null, JSON.stringify(j));
   const parts = (settings, prev) => ({ watch: { runId: null, dataDir: null, cli: null, fixed: false }, prev, now: 1, agents: { json: { agents: [] } }, notices: null, transcript: null, settings });
@@ -108,7 +108,7 @@ test('parseMemoryNotice and buildSnapshot: the no-project notice rides the setti
   assert.strictEqual(F.buildSnapshot(parts({ json: { memory_notice: null, settings: [] } }, on)).memoryNotice, null, 'a project set clears it');
   assert.strictEqual(F.buildSnapshot(parts(null, null)).memoryNotice, null);
   // A run the agents read names answers for itself: its own notice, or none, whatever the config says now.
-  const runNotice = { ...notice, title: 'Memory notes are off: redaction is disabled' };
+  const runNotice = { ...notice, title: 'Notes are off: redaction is disabled' };
   const live = (memory_notice) => ({ ...parts({ json: { memory_notice: notice, settings: [] } }, null), agents: { json: { agents: [], run_id: 'r1', memory_notice } } });
   assert.strictEqual(F.buildSnapshot(live(null)).memoryNotice, null, 'the run has none (notes on, explicitly off, or memory null): the config notice is dropped');
   assert.strictEqual(F.buildSnapshot(live(runNotice)).memoryNotice.title, runNotice.title, 'its own notice, not the config notice');
@@ -131,7 +131,7 @@ test('parseMemoryNotice and buildSnapshot: the no-project notice rides the setti
   assert.strictEqual(F.buildSnapshot(failedAgents(on, cfg)).memoryNotice.title, notice.title, 'no run selected: the config notice');
   // the band's warning line and the plain surfaces' line are built here, so a removed or reworded line fails
   const p = M.parseMemoryNotice({ memory_notice: notice });
-  assert.strictEqual(M.memoryTitleSegs(p).map((s) => s.t).join(''), '▲ Memory is off for this project');
+  assert.strictEqual(M.memoryTitleSegs(p).map((s) => s.t).join(''), '▲ Notes are on, but no project is set, so this run keeps no notes');
   assert.strictEqual(p.short, 'set one: belay settings memory.project <name>');
   assert.deepStrictEqual(M.memoryFallbackSegs(p), [{ t: `▲ ${notice.title}. ${p.short}`, c: 'warning' }]);
 });
@@ -179,7 +179,7 @@ test('settleLine: stdout receipt, stderr pretty error, and an unknown outcome fo
 test('reasonProblem: over 160 characters, or exactly a global option, is refused; anything else is not', () => {
   assert.strictEqual(M.reasonProblem('x'.repeat(160)), null);
   assert.match(M.reasonProblem('x'.repeat(161)), /161 characters; at most 160/);
-  for (const f of ['--json', '--fix', '--data', '--help', '-h']) assert.match(M.reasonProblem(f), /cannot be exactly/);
+  for (const f of ['--json', '--fix', '--data', '--help', '-h', '--']) assert.match(M.reasonProblem(f), /cannot be exactly/);
   for (const ok of ['--json x', '-x', '--reason', 'json', '-h!']) assert.strictEqual(M.reasonProblem(ok), null, ok);
 });
 
@@ -237,4 +237,17 @@ test('a dead review worker is not live; a dead coder is', () => {
   assert.strictEqual(M.isLive({ id: 'coder-1', state: 'dead' }), true);
   assert.strictEqual(M.isLive({ id: 'archreview-r-1-abc', state: 'running' }), true);
   assert.strictEqual(M.isLive({ id: 'coder-1', state: 'done' }), false);
+});
+
+test('normAgents: the fix-round notice threshold and the hard cap are read apart, and an unset hard cap is null', () => {
+  const a = M.normAgents({ max_fix_rounds: 2, fix_hard_cap: null, agents: [] });
+  assert.strictEqual(a.maxFixRounds, 2);
+  assert.strictEqual(a.fixHardCap, null);
+  assert.strictEqual(M.normAgents({ max_fix_rounds: 2, fix_hard_cap: 5, agents: [] }).fixHardCap, 5);
+});
+
+test('normAgents: the hard cap source is read beside the cap', () => {
+  const a = M.normAgents({ max_fix_rounds: 2, fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', agents: [] });
+  assert.deepStrictEqual([a.fixHardCap, a.fixHardCapSource], [5, 'default, no run timeout']);
+  assert.strictEqual(M.normAgents({ agents: [] }).fixHardCapSource, null);
 });

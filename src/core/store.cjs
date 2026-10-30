@@ -17,6 +17,11 @@ const { migrateOwner, ftsReady } = require('./memory-schema.cjs');
 const { deriveTitle, validId } = require('./memory-rows.cjs');
 
 const now = () => Date.now();
+const sleepSync = ms => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* no SAB */ } };
+// SQLITE_READONLY is 8; its extended codes keep 8 in the low byte.
+const isReadonly = e => !!e && typeof e.errcode === 'number' && (e.errcode & 0xff) === 8;
+const READONLY_WAITS = [25, 50, 100, 200, 300, 325];
+const READONLY_TOTAL_MS = READONLY_WAITS.reduce((a, b) => a + b, 0);
 const hashText = t => crypto.createHash('sha256').update(String(t).trim()).digest('hex');
 
 function toUnitF32(arr, dim) {
@@ -38,13 +43,37 @@ class Store {
     this.dbPath = dbPath;
     this.opts = { synchronous: 'NORMAL', busyTimeoutMs: 5000, ...opts };
     fs.mkdirSync(path.dirname(dbPath), { recursive: true });
+    // When another process holds the file open without write sharing (on Windows, a copy made with
+    // CopyFileW), SQLite opens it read-only without saying so and the owner's first write fails
+    // "attempt to write a readonly database". The owner's open is retried for about a second, then
+    // refused naming the file, never served read-only. A read's throwaway copy is not retried.
+    const waits = this.opts.stamp ? READONLY_WAITS : [];
+    for (let i = 0; ; i++) {
+      try { this._open(); break; }
+      catch (e) {
+        if (!isReadonly(e) || !waits.length) throw e;
+        if (i >= waits.length) {
+          throw err('E_BUSY', `the store ${dbPath} opened read-only for ${READONLY_TOTAL_MS} ms: another process holds the file (or a sidecar) open without write sharing`, { db: dbPath, reason: 'readonly', attempts: i + 1, waited_ms: READONLY_TOTAL_MS, cause: e.message });
+        }
+        sleepSync(waits[i]);
+      }
+    }
+    this._stmts = new Map();
+    // The engine installs `guard(op, id, detail)` (held-guard.cjs): every method below that changes a note's visibility or status calls it inside its
+    // own transaction, before its write. A store used without an engine has none.
+    this.guard = null;
+    this.cache = new Map(); // namespace -> { rows: [{id, vec, ttl_at}], superseded: Set<id> }
+  }
+
+  _open() {
+    const dbPath = this.dbPath;
     this.db = new DatabaseSync(dbPath);
-    this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=${this.opts.synchronous}; PRAGMA busy_timeout=${this.opts.busyTimeoutMs}; PRAGMA temp_store=MEMORY;`);
     // G3: refuse a newer schema before ensureSchema can write anything to it. Only the owner passes
     // `stamp: true`; a read opens a throwaway copy and never stamps. The owner checks, migrates and stamps
     // in one transaction, so no crash can leave a migrated store still carrying the old version, which an
     // older core would then open and write into as if the layout were its own.
     try {
+      this.db.exec(`PRAGMA journal_mode=WAL; PRAGMA synchronous=${this.opts.synchronous}; PRAGMA busy_timeout=${this.opts.busyTimeoutMs}; PRAGMA temp_store=MEMORY;`);
       if (this.opts.stamp) {
         this.db.exec('BEGIN IMMEDIATE');
         try {
@@ -59,11 +88,6 @@ class Store {
         ensureSchema(this.db);
       }
     } catch (e) { try { this.db.close(); } catch { /* already closed */ } throw e; }
-    this._stmts = new Map();
-    // The engine installs `guard(op, id, detail)` (held-guard.cjs): every method below that changes a note's visibility or status calls it inside its
-    // own transaction, before its write. A store used without an engine has none.
-    this.guard = null;
-    this.cache = new Map(); // namespace -> { rows: [{id, vec, ttl_at}], superseded: Set<id> }
   }
 
   p(sql) {
@@ -80,6 +104,7 @@ class Store {
       // A write inside the transaction already put its row in the vector cache; the rollback took it out of the
       // table, so the cache is dropped and reloads from the table on the next search (no phantom hit).
       this.cache.clear();
+      this.heldMemo = null; // the held-note filter's read (memory-withhold.cjs) may have seen the rolled-back writes
       throw e;
     }
   }
@@ -157,7 +182,10 @@ class Store {
       const c = this.cache.get(ns);
       if (c) {
         const i = c.rows.findIndex(r => r.id === id);
-        const row = { id, vec, ttl_at: ttl };
+        // An update with no vector keeps the one the row has (COALESCE above), so the cache keeps it too (audit 0.3.1 C2).
+        let cvec = vec;
+        if (!cvec && dup) { const r = this.p('SELECT embedding FROM memory_entries WHERE id = ?').get(id); if (r && r.embedding) cvec = new Float32Array(r.embedding.buffer, r.embedding.byteOffset, r.embedding.byteLength / 4); }
+        const row = { id, vec: cvec, ttl_at: ttl };
         if (i >= 0) c.rows[i] = row; else c.rows.push(row);
         if (a.supersedes) c.superseded.add(a.supersedes);
       }

@@ -24,10 +24,8 @@ const FAKE_CODEX = `${ROOT}/tests/run/fakes/fake-codex.cjs`;
 const USER_SETTINGS = `${ROOT}/tests/run/fixtures/user-settings.json`;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-function deadPid() {
-  const r = spawnSync(process.execPath, ['-e', 'process.exit(0)'], { windowsHide: true });
-  return r.pid;
-}
+// A pid no process holds and none will be handed; an exited child's pid is reused within seconds (tests/helpers/dead-pid.cjs).
+const { deadPid } = require('../helpers/dead-pid.cjs');
 
 function cliAsync(args, dataDir, extraEnv) {
   return new Promise((resolve) => {
@@ -68,7 +66,7 @@ async function setupOwnerAndManager(dataDir, runId, exe = FAKE_CLAUDE) {
   const core = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
   await core.run.attach({ adapter_pid: process.pid });
   const m = createRunManager({ core, dataDir, runId, paths: { claudeExe: exe, codexExe: FAKE_CODEX, userSettings: USER_SETTINGS } });
-  const control = createWorkerControl({ dataDir, manager: m });
+  const control = createWorkerControl({ redeem: null, dataDir, manager: m });
   await control.listen();
   return { core, m, control };
 }
@@ -281,8 +279,8 @@ test('pause and resume: each rung refuses naming the fact, creates nothing and e
 
     const dead = deadPid();
     const coreDead = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: 'run-dead-adapter', pid: process.pid } });
-    try { await coreDead.run.attach({ adapter_pid: dead }); } finally { await coreDead.close(); }
-    await core.worker.write({ id: 'w-deadadapter', substrate: 'claude-code', pid: null, state: 'idle', run_id: 'run-dead-adapter', turns: 0, started_at: Date.now() });
+    // the row is written by its own run's orchestrator: an orchestrator writes its own run's rows only
+    try { await coreDead.run.attach({ adapter_pid: dead }); await coreDead.worker.write({ id: 'w-deadadapter', substrate: 'claude-code', pid: null, state: 'idle', run_id: 'run-dead-adapter', turns: 0, started_at: Date.now() }); } finally { await coreDead.close(); }
     before = listRecursive(dataDir);
     nodesBefore = await ownChildCount();
     for (const v of verbs) {

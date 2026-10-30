@@ -96,6 +96,26 @@ test('help lists every command with its mode, and exits 0', () => {
   }
 });
 
+test('a command with --help prints that command\'s usage only, and creates no file', () => {
+  const dir = projectSandbox();
+  try {
+    const before = listFiles(dir);
+    for (const args of [['stop', '--help'], ['--help', 'stop'], ['stop', '-h']]) {
+      const r = cli(args, { cwd: dir });
+      assert.strictEqual(r.code, 0, `${JSON.stringify(args)}: ${r.stderr}`);
+      assert.match(r.stdout, /^usage: belay stop /);
+      assert.match(r.stdout, /stop a live run/);
+      assert.doesNotMatch(r.stdout, /commands \(mode/, 'not the global usage');
+    }
+    const mem = cli(['memory', '--help'], { cwd: dir });
+    assert.strictEqual(mem.code, 0);
+    assert.match(mem.stdout, /^usage: belay memory \[arguments\] \[options\]/);
+    assert.match(mem.stdout, /a verb in the line above may elect or write/, 'a command with verbs says its mode is the command\'s own');
+    assert.doesNotMatch(cli(['config', '--help'], { cwd: dir }).stdout, /a verb in the line above/);
+    assert.deepStrictEqual(listFiles(dir), before, 'command help created a file');
+  } finally { cleanup(dir); }
+});
+
 test('an unknown command is a usage error: exit 2, names it, prints usage', () => {
   const r = cli(['nosuchcommand']);
   assert.strictEqual(r.code, 2, 'usage errors exit 2');
@@ -135,14 +155,13 @@ test('the help path creates no file and starts no process (invariant 2)', () => 
 //   node belay.cjs nosuchcommand 107 ms median, 9 samples
 //   node --version                64 ms median, 9 samples
 
-test('budget: producing the usage text costs belay effectively nothing, in process', () => {
-  const t0 = process.hrtime.bigint();
+test('producing the usage text returns a non-empty static string', () => {
   const { usage } = require(CLI);
   const text = usage();
-  const ms = Number(process.hrtime.bigint() - t0) / 1e6;
   assert.ok(text.length > 0, 'usage produced text');
-  assert.ok(ms < 50, `requiring the dispatcher and producing usage took ${ms.toFixed(1)} ms; it is a static string`);
+  assert.strictEqual(usage(), text, 'usage is a static string');
 });
+// Its 50 ms cost (require of the dispatcher plus the call, in a fresh process) is gated in tests/budgets/core-budgets.test.cjs.
 
 test('no CLI path loads the embedder module (13.5 s cold, 664 ms warm)', () => {
   // Requiring the dispatcher must not reach src/core at all, let alone the embedder. This mirrors

@@ -110,7 +110,9 @@ async function runKill(core, workerId) {
   const t0 = Date.now();
   const aliveBeforeSignal = pidAlive(w.pid); // before the kill: the identity check itself takes about a second
   // ADR 0039: the row's pid_created is the identity; a pid held by a different process is refused, not killed.
-  const kp = await P.killProcess(P.rowTarget(w)).catch((e) => ({ tree: { ok: false, terminated: 0, ms: 0, error: e && e.message }, pidKill: { signalled: false, error: 'EIDENTITY' }, identity: null, refused: { refused: 'identity', detail: e && e.message } }));
+  // The kill lock, as at every other kill site (ADR 0039 review): one kill per CLI process today, so it orders nothing yet, but a
+  // second kill site in this process can never interleave with this one.
+  const kp = await P.withKillLock(() => P.killProcess(P.rowTarget(w))).catch((e) => ({ tree: { ok: false, terminated: 0, ms: 0, error: e && e.message }, pidKill: { signalled: false, error: 'EIDENTITY' }, identity: null, refused: { refused: 'identity', detail: e && e.message } }));
   const { tree, pidKill } = kp;
   const goneAfterKill = await P.waitPidGone(w.pid, { timeoutMs: KILL_WAIT_MS });
   const ms_to_dead = goneAfterKill === null ? null : Date.now() - t0;
@@ -241,7 +243,7 @@ function parseStopRestartArgs(sub, rest) {
 function renderStopText(receipt) {
   if (!receipt.stopped) return `belay worker stop: ${receipt.reason}\n`;
   const exitVal = receipt.exit_code != null ? receipt.exit_code : receipt.exit_signal;
-  const how = receipt.killed ? 'killed' : (receipt.graceful ? 'graceful' : 'already gone');
+  const how = receipt.killed ? 'killed' : (receipt.graceful ? 'graceful' : (receipt.already_exited ? 'already exited, nothing stopped' : 'already gone'));
   return `worker ${receipt.worker_id} pid ${receipt.pid}: stopped, exit ${exitVal} after ${receipt.ms_to_exit} ms, ${how}; session ${receipt.session_id || 'none'} (${receipt.established_by})\n`;
 }
 
@@ -305,6 +307,12 @@ async function runKillOrRm(ctx, sub, workerId) {
     };
     return { code: 1, text: renderRmText(receipt), json: receipt };
   }
+  // rm elects an owner to write, and an election in a data dir with no store creates one; with no store there is no row to forget.
+  if (sub === 'rm' && !fs.existsSync(path.join(dataDir, 'memory.db'))) {
+    const message = `no store at ${dataDir}/memory.db, so no worker row exists for ${workerId}; nothing was written`;
+    const receipt = { worker_id: workerId, forgotten: false, reason: message, error: { code: 'E_NOT_FOUND', message } };
+    return { code: 1, text: renderRmText(receipt), json: receipt };
+  }
 
   const core = await openCore({ dataDir, caller: { role: 'operator', run_id: 'cli', pid: process.pid } });
   try {
@@ -342,4 +350,4 @@ async function run(ctx) {
   return runStopOrRestart(ctx, sub, parsed);
 }
 
-module.exports = { run };
+module.exports = { run, renderStopText };

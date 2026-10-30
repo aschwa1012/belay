@@ -36,7 +36,8 @@ test('a dead system is a valid answer, and every rung names what established it'
   } finally { cleanup(dir); }
 });
 
-test('status.get stays inside its 100 ms budget with no owner alive, and creates no file', async (tcx) => {
+// The 100 ms budget is gated in tests/budgets/core-budgets.test.cjs (the quiet phase); this test keeps the read-never-writes fact.
+test('status.get with no owner alive creates no file', async (tcx) => {
   const dir = sandbox();
   try {
     // Give it a real store and rows, so the measured path is the copy-then-read one, not an empty dir.
@@ -52,11 +53,7 @@ test('status.get stays inside its 100 ms budget with no owner alive, and creates
     const before = listDataDir(dir);
     const c = await openCore({ dataDir: dir, caller: callerFor('operator'), embed: false });
     tcx.after(() => Promise.resolve().then(() => c.close()));
-    const times = [];
-    for (let i = 0; i < 5; i++) { const t0 = process.hrtime.bigint(); await c.status.get({}); times.push(Number(process.hrtime.bigint() - t0) / 1e6); }
-    times.sort((a, b) => a - b);
-    const median = times[2];
-    assert.ok(median < 100, `status.get median was ${median.toFixed(1)} ms, over the 100 ms budget (all: ${times.map(t => t.toFixed(1)).join(', ')})`);
+    for (let i = 0; i < 5; i++) await c.status.get({});
     assert.deepStrictEqual(listDataDir(dir), before, 'five status calls created nothing in the data dir');
     await c.close();
   } finally { cleanup(dir); }

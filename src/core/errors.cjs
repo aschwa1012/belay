@@ -9,7 +9,7 @@ const CODES = new Set([
   'E_DEPENDENCY_CYCLE', 'E_TASK_DONE', 'E_NO_READY', 'E_SUBSTRATE',
   'E_NO_OWNER', 'E_OWNER_LOST', 'E_LOCKED', 'E_NO_EMBEDDER', 'E_TOO_LONG', 'E_MODEL',
   'E_MODEL_ABSENT', 'E_MODEL_CHANGED', 'E_DIM', 'E_VEC', 'E_SUPERSEDES',
-  'E_NAMESPACE_TOO_LARGE', 'E_TIMEOUT', 'E_INTERNAL', 'E_PAUSED', 'E_BUSY', 'E_FIX_ROUNDS', 'E_SCHEMA_NEWER',
+  'E_NAMESPACE_TOO_LARGE', 'E_TIMEOUT', 'E_INTERNAL', 'E_PAUSED', 'E_BUSY', 'E_FIX_ROUNDS', 'E_RUN_LIVE', 'E_SCHEMA_NEWER',
   'E_EMBEDDER_TIMEOUT', 'E_EMBED_BOUND', 'E_SEMANTIC_REQUIRED', 'E_INDEX_BOUND', 'E_SHUTDOWN',
   // ADR 0040 to 0043 (memory architecture)
   'E_NO_INDEX', 'E_QUERY_SHORT', 'E_RECEIPT', 'E_SUMMARISER_ABSENT', 'E_SUMMARY_EMPTY', 'E_SUMMARY_MALFORMED',
@@ -22,6 +22,11 @@ const CODES = new Set([
   'E_HELD',
   // ADR 0045: a write with no bound identity on an owner that serves only bound callers, and a bind that cannot be opened or claimed
   'E_UNBOUND', 'E_BIND',
+  // ADR 0058: a review task assigned to a worker that held a lease on the work under review
+  'E_SELF_REVIEW',
+  // ADR 0053: a git step of a worktree or integration call that failed; ADR 0054: a git read belay ran for the orchestrator
+  // that found no git, failed or timed out. detail names the argv, exit code and stderr
+  'E_GIT',
 ]);
 
 class CoreError extends Error {

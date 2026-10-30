@@ -22,66 +22,9 @@ const unresponsive = require('./unresponsive.cjs');
 const { withSemanticFailure, onSemanticFailure } = require('./memory-search.cjs');
 const { notifyEmbedderFailure, adviseEmbedderFailure } = require('./methods-memory.cjs');
 
-const ELECTION_PING_TIMEOUT_MS = 300; // 5a-3: becomeOwner()'s refusal ping
-const READ_TIMEOUT_MS = 300;       // api.md §1: the bounded round trip before falling back to a copy
-const EMBEDDING_READ_TIMEOUT_MS = 100000; // a call that needs a vector: the first pays a cold load (a load is waited on, never bounded by a fixed 90 s); inside the 120 s MCP tool timeout
-const WRITE_TIMEOUT_MS = 30000;
-const REPING_BEFORE_LOST_MS = 2000; // E2: a live pid that missed the first ping gets one longer chance (a fork on its loop stalls it 80-365 ms)
-const PING_BEFORE_VECTOR_MS = 300; // MF3-1: the liveness ping a vector call sends before waiting its long bound
-const EVALUATE_TIMEOUT_MS = 600000; // task.evaluate runs the acceptance commands inside the owner
-
-// 5a-3 fix round (blocking): owner.json is rewritten non-atomically at the moment a loser's connect
-// can succeed, so one un-retried read can return null while the owner is live; a few immediate
-// re-reads ride out that sub-ms window at no cost to the common case, where the first read succeeds.
-function rereadOwnerPid(dataDir, attempts = 5) {
-  for (let i = 0; i < attempts; i++) { const lock = readOwnerLock(dataDir); if (lock && Number.isFinite(lock.pid)) return lock.pid; }
-  return null;
-}
-
-// 5c-2 design item 3: the same ride-out, but for `control`'s missing-vs-unreadable distinction, which
-// needs the lock object itself (not just a pid) once the directory is confirmed present.
-function rereadOwnerLock(dataDir, attempts = 5) {
-  for (let i = 0; i < attempts; i++) { const lock = readOwnerLock(dataDir); if (lock) return lock; }
-  return null;
-}
-
-// ADR 0040 §2, routing: a keyword search needs no vector, and a supplied vector needs no embedder, so both take
-// the ordinary bound and may fall back to the copy. Semantic and hybrid with no vector wait on the owner's embedder.
-function readTimeoutFor(method, params) {
-  if (method !== 'memory.search' || params.mode === 'keyword') return READ_TIMEOUT_MS;
-  if (params.query_embedding || params.query_embedding_b64) return READ_TIMEOUT_MS;
-  return EMBEDDING_READ_TIMEOUT_MS;
-}
-
-// memory.warm({ wait }) may be given a longer limit for a cold cache (timeout_ms, at most 600,000 ms).
-const warmLimit = params => Math.min(Number.isInteger(params.timeout_ms) && params.timeout_ms > 0 ? params.timeout_ms : EMBEDDING_READ_TIMEOUT_MS, 600000);
-
-// The limit a vector call has, whether it goes over the pipe or runs in this process; 0 for any other call.
-function vectorLimit(method, params) {
-  if (method === 'memory.warm') return params.wait ? warmLimit(params) : 0;
-  const t = method === 'memory.search' ? readTimeoutFor(method, params) : method === 'memory.store' || method === 'lease.release' || method === 'memory.embedQuery' || method === 'memory.embedNote' ? writeTimeoutFor(method, params) : 0;
-  return t === EMBEDDING_READ_TIMEOUT_MS ? t : 0;
-}
-
-function writeTimeoutFor(method, params) {
-  if (method === 'task.evaluate') return EVALUATE_TIMEOUT_MS;
-  if (method === 'memory.embedQuery') return EMBEDDING_READ_TIMEOUT_MS; // one embed of the query, bounded like a search's
-  if (method === 'memory.embedNote') return EMBEDDING_READ_TIMEOUT_MS; // one note's embed and its comparison
-  if (method === 'memory.store' && params.embed !== false && !params.embedding && !params.embedding_b64) return EMBEDDING_READ_TIMEOUT_MS; // embed: false needs no vector (ADR 0040)
-  // ADR 0047: a hand-back carrying notes embeds each one, so it has the vector limit; one without notes does not.
-  if (method === 'lease.release' && Array.isArray(params.notes) && params.notes.length) return EMBEDDING_READ_TIMEOUT_MS;
-  if (method === 'memory.warm' && params.wait) return warmLimit(params) + 5000; // the engine's own limit, plus the round trip
-  // build step 6d: permission.wait's own deadline is the caller's timeout_ms plus a 5,000 ms margin
-  // for the round trip itself, so the client never times out before the engine's own bound would.
-  if (method === 'permission.wait') return (params.timeout_ms || 25000) + 5000;
-  return WRITE_TIMEOUT_MS;
-}
-
-// ADR 0033: the only writes Core re-runs after an owner was lost with the call already sent.
-// memory.store converges by dedup inside BEGIN IMMEDIATE (ADR 0002 C4); permission.wait writes nothing.
-// A method joins only through a decision record that shows it converges.
-const RERUN_SAFE_AFTER_SEND = new Set(['memory.store', 'permission.wait']);
-const MIN_RERUN_LEFT_MS = 1000; // a memory.store re-run needs at least this much of its first limit left, or it is not re-run
+const {
+  ELECTION_PING_TIMEOUT_MS, READ_TIMEOUT_MS, EMBEDDING_READ_TIMEOUT_MS, WRITE_TIMEOUT_MS, REPING_BEFORE_LOST_MS, PING_BEFORE_VECTOR_MS, EVALUATE_TIMEOUT_MS, rereadOwnerPid, rereadOwnerLock, readTimeoutFor, warmLimit, vectorLimit, writeTimeoutFor, RERUN_SAFE_AFTER_SEND, MIN_RERUN_LEFT_MS,
+} = require('./call-limits.cjs');
 
 class Core {
   constructor(opts) {
@@ -109,23 +52,9 @@ class Core {
   // the frozen caller with `channel: 'harness'`, so the core records its memory rows as `harness`. Only code that holds
   // this Core object can ask for it: a tool call reaches `core[group][name]` and nothing else, and the caller is
   // set here from the process's own identity, replacing any `caller` the arguments carried.
-  harness() {
-    if (this._harness) return this._harness;
-    if (this.caller.role === 'worker') throw err('E_ROLE', 'a worker has no harness channel', { role: this.caller.role });
-    const caller = Object.freeze({ ...this.caller, channel: 'harness' });
-    const view = { caller, get owner() { return self.owner; } };
-    const self = this;
-    for (const m of METHOD_NAMES) {
-      const [group, name] = m.split('.');
-      if (!view[group]) view[group] = {};
-      view[group][name] = args => self._invoke(m, args, caller);
-    }
-    for (const k of Object.getOwnPropertyNames(Core.prototype)) {
-      if (k !== 'constructor' && !k.startsWith('_') && k !== 'harness' && k !== 'handle' && typeof self[k] === 'function') view[k] = self[k].bind(self);
-    }
-    view.handle = (method, args) => self._invoke(method, args, caller);
-    return (this._harness = Object.freeze(view));
-  }
+  harness() { if (this.caller.role === 'worker') throw err('E_ROLE', 'a worker has no harness channel', { role: this.caller.role }); return this._harness || (this._harness = require('./core-views.cjs').harnessView(this, METHOD_NAMES, Core.prototype)); }
+  // ADR 0054 amendment 1: the worker adapter's lease keep-alive view (core-views.cjs): its three calls only, told from the model's.
+  keepalive() { if (this.caller.role !== 'worker') throw err('E_ROLE', 'only a worker adapter has the keepalive channel', { role: this.caller.role }); return this._keepalive || (this._keepalive = require('./core-views.cjs').keepaliveView(this)); }
 
   async _invoke(method, args, caller = this.caller) {
     const spec = METHODS[method];
@@ -268,13 +197,19 @@ class Core {
     const timeoutMs = Math.max(this.readTimeoutMs, readTimeoutFor(method, params));
     await this._pingBeforeVector(method, params);
     if (this.client && this.client.connected) {
-      try { const value = await this.client.call(method, params, { timeoutMs }); unresponsive.clearPipe(pipeName(this.dataDir)); return { ok: true, value }; }
+      // A read that timed out while another call was outstanding on this client kept it (_dropUnlessBusy); until that backoff
+      // passes, reads go straight to the copy, as they would with no client.
+      const kept = this._readBackoff && readTimeoutFor(method, params) !== EMBEDDING_READ_TIMEOUT_MS ? unresponsive.get(this._readBackoff.pipe, this._readBackoff.owner_pid) : null;
+      if (kept) return { ok: false, unresponsive: kept };
+      try { const value = await this.client.call(method, params, { timeoutMs }); this._readBackoff = null; unresponsive.clearPipe(pipeName(this.dataDir)); return { ok: true, value }; }
       catch (e) {
         if (!isTransport(e)) throw e; // a refusal the owner computed is an answer, not a transport fault
-        await this._dropClient();
+        const keep = await this._dropUnlessBusy(e);
         const alive = this._aliveTimeout(method, params, e, timeoutMs);
         if (alive) throw alive;
-        return { ok: false, unresponsive: this._markIfTimeout(e, timeoutMs, undefined, 'answer') };
+        const m = this._markIfTimeout(e, timeoutMs, undefined, 'answer');
+        if (keep) this._readBackoff = m;
+        return { ok: false, unresponsive: m };
       }
     }
     // No dial at all unless a lock names a pid that is alive: this is what keeps status.get inside its
@@ -293,14 +228,27 @@ class Core {
     const c = new Client(this.dataDir, { caller: this.caller, key: this.key, elect: false, connectRetries: 1, dialTimeoutMs: timeoutMs, callTimeoutMs: timeoutMs });
     try { await c.connect(); } catch (e) { return { ok: false, unresponsive: this._markIfTimeout(e, timeoutMs, lock, 'dial') }; }
     this.client = c;
-    try { const value = await c.call(method, params, { timeoutMs }); unresponsive.clearPipe(pipeName(this.dataDir)); return { ok: true, value }; }
+    // A read answered by the owner this Core released does not keep its connection (P2, as for a write in _ensureWriterOnce).
+    try { const value = await c.call(method, params, { timeoutMs }); unresponsive.clearPipe(pipeName(this.dataDir)); if (this._retiringOwner() && this.client === c && !c.pending.size) await this._dropClient(); return { ok: true, value }; }
     catch (e) {
       if (!isTransport(e)) throw e;
-      await this._dropClient();
+      const keep = await this._dropUnlessBusy(e);
       const alive = this._aliveTimeout(method, params, e, timeoutMs);
       if (alive) throw alive;
-      return { ok: false, unresponsive: this._markIfTimeout(e, timeoutMs, lock, 'answer') };
+      const m = this._markIfTimeout(e, timeoutMs, lock, 'answer');
+      if (keep) this._readBackoff = m;
+      return { ok: false, unresponsive: m };
     }
+  }
+
+  // C5: a read that missed its bound says nothing about the other calls on the same connection. The client has already
+  // dropped the timed-out call, so while another call (a write) is outstanding the connection is kept and that call gets its
+  // own answer; closing it would fail the write E_OWNER_LOST although the owner commits it. A transport fault, or a timeout
+  // with nothing else outstanding, closes it as before. True when the client was kept.
+  async _dropUnlessBusy(e) {
+    if (e && e.code === 'E_TIMEOUT' && this.client && this.client.connected && this.client.pending.size > 0) return true;
+    await this._dropClient();
+    return false;
   }
 
   // One dial or answer timeout on a read backs the owner off for UNRESPONSIVE_BACKOFF_MS (unresponsive.cjs).
@@ -355,7 +303,19 @@ class Core {
     }
   }
 
-  async _ensureWriter(method = null) {
+  // One election at a time per Core (audit 0.3.1 C1): two concurrent first writes each built a client and elected, and the second
+  // owner, refused the pipe, released the first one's lock. A caller that arrives while one is in flight waits for it and then
+  // looks again, so it finds the owner or client that call made (or, if it failed, makes its own attempt).
+  _ensureWriter(method = null, opts = {}) {
+    if (this._ensuring) return this._ensuring.then(() => this._ensureWriter(method, opts), () => this._ensureWriter(method, opts));
+    const p = this._ensureWriterOnce(method, opts);
+    this._ensuring = p;
+    const clear = () => { if (this._ensuring === p) this._ensuring = null; };
+    p.then(clear, clear);
+    return p;
+  }
+
+  async _ensureWriterOnce(method, { noElect = false } = {}) {
     if (this.owner && !this.owner.stopped) return;
     if (this.owner) this.owner = null;
     if (this.client && this.client.connected) return;
@@ -363,7 +323,10 @@ class Core {
     // ADR 0051: once this Core has shut its owner down it never elects another by itself. A write that gets here after that is a
     // path that missed its close gate, and it fails naming the call instead of creating a stray owner. It may still dial an owner
     // somebody else holds, and becomeOwner() is the explicit way to elect again.
-    const elect = this.caller.role !== 'worker' && !this.shutDown && !this.key; // a bound adapter never elects (ADR 0045 decision 2)
+    // Audit 0.3.1 P2: the owner this Core released is still serving its other clients. A write dialled to it from here would be
+    // a connection of this live process, which the owner counts as attached, so it would never stop while this Core lives.
+    if (this._retiringOwner()) throw err('E_SHUTDOWN', `${method || 'a write'} was refused: this process released the store owner, which is serving its last clients before it stops, and a write from here would keep it serving`, { method, data_dir: this.dataDir, retiring: true });
+    const elect = !noElect && this.caller.role !== 'worker' && !this.shutDown && !this.key; // a bound adapter never elects (ADR 0045 decision 2)
     const c = new Client(this.dataDir, {
       caller: this.caller,
       key: this.key,
@@ -380,7 +343,13 @@ class Core {
     if (c.owner) this.owner = c.owner;
   }
 
+  _retiringOwner() {
+    if (this._retiring && this._retiring.stopped) this._retiring = null;
+    return !!this._retiring;
+  }
+
   async _dropClient() {
+    this._readBackoff = null;
     if (this.client) { const c = this.client; this.client = null; await c.close(); }
   }
 
@@ -390,7 +359,7 @@ class Core {
   // calls this instead of letting the first ordinary write elect on its behalf.
   async becomeOwner() {
     if (this.caller.role === 'worker') throw err('E_ROLE', 'a worker never elects the store owner', { role: this.caller.role });
-    this.shutDown = false; // an explicit election
+    this.shutDown = false; this._retiring = null; // an explicit election
     await this._ensureWriter('becomeOwner');
     if (this.isOwner()) return { owner: true, pid: process.pid, established_by: 'won the lock' };
     // 5a-3: a bare connect succeeds on Windows even against a wedged owner, so ownerInfo() alone is
@@ -456,9 +425,32 @@ class Core {
   async bindOpen(identity, { noExpiry = false } = {}) { return this._bind('bind.open', { identity, ...(noExpiry ? { no_expiry: true } : {}) }); }
   async bindStatus(bindId) { return this._bind('bind.status', { bind_id: bindId }); }
   async bindRevoke(bindId) { return this._bind('bind.revoke', { bind_id: bindId }); }
+  // ADR 0045 decision 5: a control-pipe ticket. issue: the operator, before it dials a worker adapter's pipe; redeem: the adapter.
+  async ticketIssue(args) { return this._ticket('ticket.issue', args); }
+  async ticketRedeem(args) { return this._ticket('ticket.redeem', args); }
+  // issue never elects: it is asked before dialling a live run's adapter, and with no live owner there is no run to ask for (control
+  // refuses E_NO_OWNER naming the missing fact). redeem comes from the adapter, whose bound Core never elects either.
+  async _ticket(method, params) {
+    if (method === 'ticket.issue' && !this.isOwner()) return this.control(method, params, { timeoutMs: 10000 });
+    if (!this.owner || this.owner.stopped) await this._ensureWriter(method);
+    return this.isOwner() ? this.owner.ticketCall(method, params, this.caller) : this._callRedial(method, params);
+  }
   async _bind(method, params) {
     if (!this.owner || this.owner.stopped) await this._ensureWriter(method);
-    return this.isOwner() ? this.owner.bindCall(method, params, { role: 'operator', run_id: this.caller.run_id }) : this.client.call(method, { ...params, caller: this.caller }, { timeoutMs: 10000 });
+    return this.isOwner() ? this.owner.bindCall(method, params, { role: 'operator', run_id: this.caller.run_id }) : this._callRedial(method, params);
+  }
+  // A bind or ticket call over the pipe. The socket can drop between _ensureWriter's look and the send, while the operator check is
+  // asked for: that is E_OWNER_LOST with sent:false, and the call is dialled once more, as _write does (ADR 0033). The re-dial never
+  // elects, so a store whose owner is gone fails naming that rather than gaining a stray owner (ADR 0051). A sent call is not re-run.
+  async _callRedial(method, params) {
+    const call = () => this.client.call(method, { ...params, caller: this.caller }, { timeoutMs: 10000 });
+    try { return await call(); }
+    catch (e) {
+      if (!e || e.code !== 'E_OWNER_LOST' || !(e.detail && e.detail.sent === false)) throw e;
+      await this._dropClient();
+      await this._ensureWriter(method, { noElect: true });
+      return call();
+    }
   }
 
   // ADR 0051: a command that is done with the owner it elected, and is not the run that owns the store. With no other
@@ -470,7 +462,7 @@ class Core {
     const o = this.owner;
     const r = await o.retire();
     // A deferral is a release all the same: the owner is retiring, so a later write here must not elect another one.
-    if (r.deferred) { this.owner = null; this.shutDown = true; await this._dropClient(); return { ...r, stopped: 'deferred' }; }
+    if (r.deferred) { this.owner = null; this.shutDown = true; this._retiring = o; await this._dropClient(); return { ...r, stopped: 'deferred' }; }
     this.owner = null; this.shutDown = true; // stopped now: like shutdownOwner(), a later write here must not elect another
     await this._dropClient();
     return { ...r, stopped: 'in-process' };

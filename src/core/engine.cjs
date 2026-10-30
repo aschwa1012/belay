@@ -158,6 +158,22 @@ const METHODS = {
   'task.list': { roles: ALL, kind: 'read', fn: task.list },
   'task.get': { roles: ALL, kind: 'read', fn: task.get },
   'task.evaluate': { roles: ORCH, kind: 'write', fn: task.evaluate },
+  // ADR 0058 decision 3: the fix task a refuted review calls for, its repairs and depends_on inferred; written by task.create.
+  'task.fixFromReview': { roles: ORCH, kind: 'write', fn: lazy('./methods-task-fix.cjs', 'fixFromReview') },
+  // ADR 0058 decision 7: give up on a task; its lease is released and its files are no longer held.
+  'task.cancel': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-task-cancel.cjs', 'cancel') },
+  // ADR 0058: cancel a release evaluation in flight in the owner, by its key; a write so that it runs where the commands run.
+  'task.evaluateCancel': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./evaluate-cancel.cjs', 'evaluateCancel') },
+  // ADR 0053: a worktree and branch per task, made and removed by belay, and the explicit merge-and-evaluate step.
+  'task.worktreeCreate': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-worktree.cjs', 'worktreeCreate') },
+  'task.worktreeRemove': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-worktree.cjs', 'worktreeRemove') },
+  // ADR 0065: the run's close removes the task trees it can prove finished; the operator's only, with no MCP tool.
+  'task.worktreeSweep': { roles: ['operator'], kind: 'write', fn: lazy('./methods-worktree-sweep.cjs', 'sweep') },
+  'task.worktreeSweepCancel': { roles: ['operator'], kind: 'write', fn: lazy('./methods-worktree-sweep.cjs', 'cancel') },
+  'integration.merge': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-integration.cjs', 'merge') },
+  'integration.remove': { roles: ['operator'], kind: 'write', fn: lazy('./methods-integration.cjs', 'remove') },
+  'integration.list': { roles: ALL, kind: 'read', fn: lazy('./methods-integration.cjs', 'list') },
+  'integration.get': { roles: ALL, kind: 'read', fn: lazy('./methods-integration.cjs', 'get') },
 
   'lease.renew': { roles: ['worker'], kind: 'write', fn: task.renew },
   'lease.release': { roles: ['worker', 'operator'], kind: 'write', fn: task.release },
@@ -196,9 +212,11 @@ function validateCaller(caller) {
   if (caller.role === 'worker' && (typeof caller.worker_id !== 'string' || !caller.worker_id)) {
     throw err('E_ARGS', 'a worker-role caller must carry the worker_id it was launched with, because a worker cannot name itself');
   }
-  if (caller.channel !== undefined && caller.channel !== 'tool' && caller.channel !== 'harness') {
-    throw err('E_ARGS', `caller.channel must be tool or harness, and this call carried ${JSON.stringify(caller.channel)}`);
+  if (caller.channel !== undefined && caller.channel !== 'tool' && caller.channel !== 'harness' && caller.channel !== 'keepalive') {
+    throw err('E_ARGS', `caller.channel must be tool, harness or keepalive, and this call carried ${JSON.stringify(caller.channel)}`);
   }
+  // ADR 0054 amendment 1: the worker adapter's lease keep-alive (lease-keepalive.cjs), a timer of belay's, not the model.
+  if (caller.channel === 'keepalive' && caller.role !== 'worker') throw err('E_ARGS', 'the keepalive channel belongs to a worker adapter (its lease keep-alive)', { role: caller.role });
   if (caller.channel === 'harness' && caller.role !== 'orchestrator' && caller.role !== 'operator') {
     throw err('E_ARGS', 'the harness channel belongs to belay run: the run manager (the orchestrator adapter) and the run-end jobs (the run process)', { role: caller.role });
   }
@@ -217,6 +235,11 @@ class Engine {
   constructor({ dataDir, store, getEmbedder = null, owner = null, establishedBy = 'copy', embedderFailure = null, memoryOffFn = null }) {
     this.dataDir = dataDir;
     this.store = store;
+    // ADR 0054 amendment 1: when this engine last served each worker, in memory only (no store write per call), and when it
+    // started: a review grant's snapshot is late if its worker called the core between the grant and the attach, and its
+    // time is unknown if the grant came before this engine did.
+    this.startedAt = Date.now();
+    this.workerCalls = new Map();
     // A provider, not a loaded model: the embedding library is reached only by a call that needs a
     // vector, and an engine reading a copy of the store has no way to get one at all.
     this._getEmbedder = getEmbedder;
@@ -330,6 +353,13 @@ class Engine {
     if (!spec) throw err('E_ARGS', `${method} is not a Core API method`, { method });
     const p = params || {};
     const caller = validateCaller(p.caller);
+    // Stamped at the start and again at the finish, so a call that spans a grant counts; the adapter's keep-alive is not the model.
+    const stamp = caller.role === 'worker' && caller.worker_id && caller.channel !== 'keepalive' ? () => this.workerCalls.set(caller.worker_id, Date.now()) : null;
+    if (stamp) stamp();
+    try { return await this._dispatch(method, spec, caller, p); } finally { if (stamp) stamp(); }
+  }
+
+  async _dispatch(method, spec, caller, p) {
     if (!spec.roles.includes(caller.role) && !(spec.harnessGuard && spec.harnessGuard(this, caller, p))) {
       throw err('E_ROLE', `${method} is available to ${spec.roles.join(', ')} and this call came from role ${caller.role}`, { method, role: caller.role, allowed: spec.roles });
     }
@@ -338,7 +368,7 @@ class Engine {
     if (method.startsWith('memory.')) require('./memory-reach.cjs').normalizeArgs(args); // one spelling per namespace before any routing or reach check
     if (spec.kind === 'write' && !ENDED_RUN_EXEMPT.has(method)) this.assertRunOpen(caller, method);
     const off = this.memoryOff(method);
-    if (off === 'refuse') throw err('E_LEVER_OFF', `${method}: memory is off for this run (on_embedder_failure off, after an embedder failure), so nothing is read or written through it`, { lever: 'on_embedder_failure' });
+    if (off === 'refuse') throw err('E_LEVER_OFF', `${method}: notes are off for this run (on_embedder_failure off, after an embedder failure), so nothing is read or written through them`, { lever: 'on_embedder_failure' });
     if (off === 'empty') return { text: '', bytes: 0, row_ids: [], dropped: 0, over_budget: false, sha256: require('node:crypto').createHash('sha256').update('', 'utf8').digest('hex'), considered: 0, excluded_already_injected: 0, memory_off: true };
     // A write method runs inside its caller's context (held-guard.cjs), which follows it across its awaits and reaches no other call.
     if (spec.kind === 'write') return require('./held-guard.cjs').runAs(caller, () => spec.fn(this, caller, args));

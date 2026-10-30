@@ -80,6 +80,15 @@ CREATE TABLE IF NOT EXISTS usage (
   written_at INTEGER NOT NULL, written_by TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_usage_id ON usage(id, seq);
 CREATE INDEX IF NOT EXISTS ix_usage_run ON usage(run_id, seq);
+
+-- ADR 0053 decision 5: one row per state of an integration (merging, then conflict, failed or evaluated). Append-only like the
+-- tables above; the JSON columns are text in SQLite and parsed on the wire.
+CREATE TABLE IF NOT EXISTS integration (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, id TEXT NOT NULL, run_id TEXT, repo TEXT, into_branch TEXT, worktree TEXT,
+  created_worktree INTEGER, base_sha TEXT, head_sha TEXT, state TEXT NOT NULL, task_ids TEXT, merged TEXT, conflict TEXT,
+  error TEXT, checks TEXT, passed INTEGER, junctions TEXT, removed_at INTEGER,
+  written_at INTEGER NOT NULL, written_by TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS ix_integration_id ON integration(id, seq);
 `;
 
 // Additive columns so an existing data dir upgrades in place. First (session-3 hardening MS-5): on a
@@ -151,6 +160,12 @@ const MIGRATIONS = [
   // ADR 0031 decision 6 (build 12 wave 2): the run's `max_fix_rounds` lever, written by `run.attach`, and the
   // task a fix task repairs, written by `task.create`, so core can refuse a fix task past the cap.
   'ALTER TABLE run ADD COLUMN max_fix_rounds INTEGER',
+  // The run's `fix_hard_cap` (null: none): the one case a fix task is refused. `max_fix_rounds` is only a notice threshold.
+  'ALTER TABLE run ADD COLUMN fix_hard_cap INTEGER',
+  // Where the effective hard cap came from ('run spec' or 'default, no run timeout'); null with no cap.
+  'ALTER TABLE run ADD COLUMN fix_hard_cap_source TEXT',
+  // The run lever max_parallel_evaluations (null: unlimited): at most this many task evaluations run at once in the owner.
+  'ALTER TABLE run ADD COLUMN max_parallel_evaluations INTEGER',
   'ALTER TABLE task ADD COLUMN repairs TEXT',
   // Why a worker row has no base_sha when every base lookup attempt failed (null otherwise); mirrors head_error.
   'ALTER TABLE worker ADD COLUMN base_error TEXT',
@@ -205,6 +220,38 @@ const MIGRATIONS = [
   // restart, resume, park or adopt in another process, never the worker's argv.json, which the worker can edit. Null for Codex and for a row
   // written before the column.
   'ALTER TABLE worker ADD COLUMN tools TEXT',
+  // The cost cap (`--max-budget-usd`) and the model a worker was spawned with, beside `tools` and for the same reason: a relaunch in
+  // another process reads them here, never from argv.json, which the worker can edit. Null when not asked and on a row written before.
+  'ALTER TABLE worker ADD COLUMN max_budget_usd REAL',
+  'ALTER TABLE worker ADD COLUMN model_requested TEXT',
+  // ADR 0053 decision 1: the worktree and branch belay made for the task, from a recorded base (JSON text, nullable), carried forward
+  // by every later task row; task.evaluate judges from its base_sha.
+  'ALTER TABLE task ADD COLUMN worktree TEXT',
+  // ADR 0060 decision 5: the review ids a fix task answers (JSON text, nullable), written by task.fixFromReview.
+  'ALTER TABLE task ADD COLUMN answers TEXT',
+  // try-2 gap 3: the diff base the task's files_within_owned is judged from when task.evaluate names none (a release evaluation).
+  'ALTER TABLE task ADD COLUMN base TEXT',
+  // ADR 0061 section 1: the acceptances (and specs) an amend replaced, oldest first (JSON text, nullable), carried by every later row.
+  'ALTER TABLE task ADD COLUMN amended TEXT',
+  // ADR 0053 amendment 2: the process that runs an integration (its pid and start time), so a row a crash left `merging` reads stale.
+  'ALTER TABLE integration ADD COLUMN owner_pid INTEGER',
+  'ALTER TABLE integration ADD COLUMN owner_boot INTEGER',
+  // ADR 0061, forced merge: who forced a merge of tasks not done, when, why, and what it forced (JSON text, nullable).
+  'ALTER TABLE integration ADD COLUMN forced TEXT',
+  // ADR 0054 amendment 1: a review lease's snapshot of the reviewer's tree at grant (JSON text, nullable), carried by every
+  // later row of the lease; lease.release compares it with the tree at the hand-back.
+  'ALTER TABLE lease ADD COLUMN tree TEXT',
+  // ADR 0026 amendment 1 (proposed): `holder_dead` on the released row of a lease belay released because its holder died; null otherwise.
+  // The worker's first dead row names the leases that death released (JSON array of { lease_id, task_id }), for the death wake.
+  'ALTER TABLE lease ADD COLUMN released_reason TEXT',
+  'ALTER TABLE worker ADD COLUMN leases_released TEXT',
+  // ADR 0068 (proposed): a stopped or dead row whose life ended with no `result` event carries what its stream's last turn cost,
+  // priced from the per-message usage (JSON text), and `cost_source` names it; both null when the row's figures were all reported.
+  // The estimate has its own columns: cost_usd and the token columns stay what Claude Code reported.
+  'ALTER TABLE worker ADD COLUMN cost_estimate TEXT',
+  'ALTER TABLE worker ADD COLUMN cost_source TEXT',
+  // Reported cost of the sessions before the current one: a fresh session's total_cost_usd starts at zero, so the adapter adds this base.
+  'ALTER TABLE worker ADD COLUMN cost_base REAL',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot
@@ -220,7 +267,7 @@ const MEMORY_INDEXES = [
 // so every existing ordinal comparison (there are none today) would see it as the terminal-most state.
 // build step 6e: 'paused' is inserted after 'idle' (ADR 0023 decision 1); the list still ends 'forgotten'.
 const WORKER_STATES = ['starting', 'running', 'idle', 'paused', 'stopping', 'stopped', 'dead', 'forgotten'];
-const TASK_STATES = ['open', 'assigned', 'released', 'done'];
+const TASK_STATES = ['open', 'assigned', 'released', 'done', 'cancelled']; // cancelled: ADR 0058, task.cancel
 const SUBSTRATES = ['claude-code', 'codex'];
 const ROLES = ['orchestrator', 'worker', 'operator'];
 // build step 6d, ADR 0020 decision 2: the four states a permission row's `state` column takes.

@@ -147,7 +147,7 @@ function killTreeRaw(target, opts = {}) {
     if (!handle && target.created == null) return fail(`no recorded creation time for pid ${pid}: a tree is never killed without one`);
     if (handle && !IS_WINDOWS && !opts.snapshot) {
       const k = sendKill(-pid, 'SIGKILL', opts.kill);
-      return done({ method: 'process-group', ok: k.signalled, terminated: k.signalled ? 1 : 0, killed: k.signalled ? [pid] : [], output: k.error || '', identity: { via: 'handle' } });
+      return done({ method: 'process-group', ok: k.signalled, terminated: k.signalled ? 1 : 0, killed: k.signalled ? [pid] : [], killed_processes: k.signalled ? [{ pid, image: null }] : [], output: k.error || '', identity: { via: 'handle' } });
     }
     return withSnapshot(opts, (snap, m) => {
       const sm = { snapshot_ms: m.snapshot_ms };
@@ -166,7 +166,8 @@ function killTreeRaw(target, opts = {}) {
       for (const d of tree.leavesFirst) one(d.pid);
       if (handle && !ID.handleLive(target)) errors.push(`${pid}:exited meanwhile`); else one(pid);
       const ok = errors.length === 0;
-      return done({ ok, terminated: killed.length, killed, skipped: tree.skipped, identity, ...sm, signalled_at: signalledAt, output: [treeNote, ...errors].filter(Boolean).join('; ').slice(0, 400), ...(treeNote ? { tree_refused: treeNote } : {}) });
+      const processes = killed.map((p) => ({ pid: p, image: snap && snap.get(p) ? snap.get(p).image : null })); // named from the snapshot taken before the kill
+      return done({ ok, terminated: killed.length, killed, killed_processes: processes, skipped: tree.skipped, identity, ...sm, signalled_at: signalledAt, output: [treeNote, ...errors].filter(Boolean).join('; ').slice(0, 400), ...(treeNote ? { tree_refused: treeNote } : {}) });
     });
   })();
 }
@@ -218,10 +219,14 @@ async function killProcessRaw(target, opts) {
 
 // The verified descendants of a pid as kill targets, from one snapshot: [{ pid, created, image }], leaves
 // first; [] when the snapshot is unreadable. For a caller that must kill them after something else ends the
-// parent (pause.cjs): the identity is taken before, and checked again by killMany after.
+// parent (pause.cjs): the identity is taken before, and checked again by killMany after. `expectCreated`: the root's
+// creation time; a root the snapshot shows with any other (the pid now belongs to another process) has no descendants of ours.
 async function descendantTargets(pid, opts = {}) {
   const { snap } = await acquire(opts);
-  return snap ? ID.descendantsOf(assertPid(pid), snap).leavesFirst : [];
+  if (!snap) return [];
+  const root = snap.get(assertPid(pid));
+  if (opts.expectCreated != null && !(root && root.created === opts.expectCreated)) return [];
+  return ID.descendantsOf(pid, snap).leavesFirst;
 }
 
 // Kill each target ({ pid, created, image }) that still has its identity, from one snapshot, in the order

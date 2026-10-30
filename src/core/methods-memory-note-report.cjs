@@ -1,5 +1,5 @@
 'use strict';
-// methods-memory-note-report.cjs — memory.noteReport: the operator's (and, on the operator's word, the orchestrator's) report that a note is wrong
+// methods-memory-note-report.cjs — memory.noteReport: the operator's (and the orchestrator's, on the operator's word or on its own evidence) report that a note is wrong
 // (ADR 0047 amendment of 2026-10-21). It is a worker's `reported_wrong` entry made by another hand: the report is marked on the note and the note is held
 // for the archive review by `holdReported`, the one function a worker's release uses, in ONE transaction, with the same ground (`reported`), the same
 // harness channel for the hold row and the same one-report-per-reporter rule (a repeat replaces that reporter's report).
@@ -70,7 +70,7 @@ async function reportNote(E, caller, by, args, cites) {
   const { report, held } = out;
   const proof = held.skipped
     ? { state: 'not_held', reason: held.skipped }
-    : { state: held.already_held ? 'already_held' : 'held', hold: { row: held.row, kind: held.kind, rev: held.rev, ...(held.merged ? { merged: held.merged } : {}), ...(held.reclassified ? { reclassified: true } : {}) } };
+    : { state: held.already_held ? 'already_held' : held.state === 'queued' ? 'queued' : 'held', hold: { row: held.row, kind: held.kind, rev: held.rev, ...(held.merged ? { merged: held.merged } : {}), ...(held.reclassified ? { reclassified: true } : {}) } };
   return {
     id: args.note_id, project, reported_by: by, ...proof, withheld: out.withheld, withheld_why: out.withheld_why, ...(out.breaker ? { breaker: out.breaker } : {}),
     report: { by: report.by, seq: report.seq, at: report.at, why: report.why, replaced_by: report.replaced_by },

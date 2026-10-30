@@ -13,6 +13,7 @@ const { search } = require('./memory-search.cjs');
 const { hashText } = require('./store.cjs');
 const { storedCosine } = require('./memory-facts.cjs');
 const WH = require('./memory-withhold.cjs');
+const EC = require('./evaluate-cite.cjs');
 
 
 const SEEN_MAX = 20; // body.seen_in is bounded; body.seen_total keeps the full count
@@ -54,10 +55,14 @@ async function findMatches(E, caller, project, emb, lv, template = NT.TEMPLATE_N
     filter: { types: ['note'], statuses: ['unverified', 'verified'] },
   });
   const ids = out.results.map(r => r.id);
+  // A match the writer is withheld from is named by id and verdict only: the writer learns its text is close to a note under review, never its claim.
+  const hidden = WH.withheldAmong(E, caller, out.results);
   const tpl = new Map(ids.length ? E.store.p(`SELECT id, COALESCE(text_template, 'v1') AS t FROM memory_entries WHERE id IN (${ids.map(() => '?').join(', ')})`).all(...ids).map(r => [r.id, r.t]) : []);
   return out.results
     .filter(r => typeof r.score === 'number' && r.score >= lv.notes_match_threshold && tpl.get(r.id) === template)
-    .map(r => ({ id: r.id, title: r.title, kind: r.body && r.body.kind, basis: r.body && r.body.basis, similarity: round3(r.score), template, embedding_model: emb.embedding_model, dim: emb.dim }))
+    .map(r => (hidden.has(r.id)
+      ? { id: r.id, verdict: 'held_for_review', similarity: round3(r.score), template, embedding_model: emb.embedding_model, dim: emb.dim }
+      : { id: r.id, title: r.title, kind: r.body && r.body.kind, basis: r.body && r.body.basis, similarity: round3(r.score), template, embedding_model: emb.embedding_model, dim: emb.dim }))
     .sort((a, b) => b.similarity - a.similarity || (a.id < b.id ? -1 : 1)).slice(0, lv.notes_match_n);
 }
 
@@ -67,8 +72,8 @@ async function findMatches(E, caller, project, emb, lv, template = NT.TEMPLATE_N
 // dimension and text template), against the same threshold. A lookup, not a ranking: bounded, and it writes nothing.
 const PRIOR_MAX = 2000;
 function priorVerdicts(E, project, emb, lv, template = NT.TEMPLATE_NEW, caller = null) {
-  // A note held on a report is withheld from the writer, so a restated claim would find no match and be stored live beside the hold: it is
-  // compared here too and the new note waits in pending (the writer resolves it as new, knowing that).
+  // A held note is withheld from the writer, so a restated claim would find no match and be stored live beside the hold: it is compared here
+  // too and the new note waits in pending (the writer resolves it as new, knowing that). It is named by id only: its title is the claim.
   const heldIds = caller && WH.withholds(E, caller) ? WH.noteIds(E, ['e.namespace = ?'], [projectNs(project)]) : [];
   const q = { embedding: Buffer.from(Float32Array.from(emb.embedding).buffer), dim: emb.dim, embedding_model: emb.embedding_model, text_template: template };
   const rows = E.store.p(`SELECT id, namespace, title, status, status_receipt, embedding, embedding_model, dim, text_template, body FROM memory_entries
@@ -78,7 +83,7 @@ function priorVerdicts(E, project, emb, lv, template = NT.TEMPLATE_NEW, caller =
     const cos = storedCosine(q, r);
     if (cos === null || cos < lv.notes_match_threshold) continue;
     const a = bodyOf(r).archived || {};
-    if (heldIds.includes(r.id)) { out.push({ id: r.id, title: r.title, verdict: 'held_for_review', similarity: round3(cos), receipt: null }); continue; }
+    if (heldIds.includes(r.id)) { out.push({ id: r.id, verdict: 'held_for_review', similarity: round3(cos), receipt: null }); continue; }
     out.push(r.status === 'refuted'
       ? { id: r.id, title: r.title, verdict: 'refuted', similarity: round3(cos), receipt: r.status_receipt || null }
       : { id: r.id, title: r.title, verdict: 'archived_wrong', similarity: round3(cos), ground: a.ground || null, reason: typeof a.reason === 'string' ? a.reason.slice(0, 300) : null, at: a.at || null });
@@ -136,13 +141,15 @@ async function prepareNotes(E, caller, notes, { project, lv, worker }) {
   let embedFailed = null;
   for (const [i, n] of notes.entries()) {
     // Project rows are always scrubbed (ADR 0040 section 3); a title made longer by redaction is refused like any long one.
-    const ap = NP.merge(n, diff, worker && worker.worktree);
+    const ap = NP.merge(n, diff, worker && worker.worktree, caller.role); // the writer's own paths carry its role (B10)
     const s = M.scrub(true, { text: NT.keywordText({ ...n, applies_to: ap.applies_to }), title: n.title, body: { when: n.when, evidence: n.evidence, applies_to: ap.applies_to, applies_to_from: ap.applies_to_from, task_files: ap.task_files, task_files_from: 'diff', task_files_truncated: ap.task_files_truncated, ...(ap.ambiguous.length ? { applies_to_ambiguous: ap.ambiguous } : {}), subjects: n.subjects } });
     const checked = NT.checkNote({ ...n, title: s.title, when: s.body.when }, i);
+    // ADR 0057 decision 7: an evidence entry that cites a task_evaluate result is checked against it now; one that fails refuses the write.
+    const evidenceChecked = EC.checkNoteEvidence(E, caller, n.evidence, i);
     const title = checked.title;
     const embedTxt = NT.embedText({ title, when: checked.when }, NT.TEMPLATE_NEW); // what the vector is made from; the keyword text is s.text
     // Only what the worker wrote counts toward the limit; belay's derived fields (applies_to from the diff, task_files) are bounded by bytes in note-paths.cjs.
-    const written = { when: s.body.when, evidence: s.body.evidence, applies_to: s.body.applies_to.filter((_, k) => s.body.applies_to_from[k] === 'worker'), subjects: s.body.subjects };
+    const written = { when: s.body.when, evidence: s.body.evidence, applies_to: s.body.applies_to.filter((_, k) => s.body.applies_to_from[k] === caller.role), subjects: s.body.subjects };
     if (size(written) > NOTE_BODY_MAX) throw err('E_NOTE_SHAPE', `notes[${i}]: the when, evidence, applies_to and subjects you wrote come to ${size(written)} bytes and the limit is ${NOTE_BODY_MAX}`, { index: i, max: NOTE_BODY_MAX });
     let emb = null;
     if (!embedFailed) {
@@ -153,7 +160,7 @@ async function prepareNotes(E, caller, notes, { project, lv, worker }) {
     }
     const matches = emb ? await findMatches(E, caller, project, emb, lv) : [];
     const prior = emb ? priorVerdicts(E, project, emb, lv, NT.TEMPLATE_NEW, caller) : [];
-    prepared.push({ index: i, kind: n.kind, basis: n.basis, title, text: s.text, body: s.body, redactions: s.redactions, emb: emb || {}, template: NT.TEMPLATE_NEW, applies: { ...ap.counts, ...(diff && diff.error ? { diff_error: diff.error } : {}) }, unembedded: embedFailed, matches, prior, model });
+    prepared.push({ index: i, evidenceChecked, kind: n.kind, basis: n.basis, title, text: s.text, body: s.body, redactions: s.redactions, emb: emb || {}, template: NT.TEMPLATE_NEW, applies: { ...ap.counts, ...(diff && diff.error ? { diff_error: diff.error } : {}) }, unembedded: embedFailed, matches, prior, model });
   }
 
   return prepared;
@@ -182,6 +189,7 @@ function commitNotes(E, caller, prep, { task_id }) {
     }
     const body = {
       kind: p.kind, basis: p.basis, when: p.body.when, evidence: p.body.evidence, applies_to: p.body.applies_to, applies_to_from: p.body.applies_to_from, task_files: p.body.task_files, task_files_from: p.body.task_files_from, task_files_truncated: p.body.task_files_truncated, ...(p.body.applies_to_ambiguous ? { applies_to_ambiguous: p.body.applies_to_ambiguous } : {}), subjects: p.body.subjects,
+      ...(p.evidenceChecked && p.evidenceChecked.length ? { evidence_checked: p.evidenceChecked } : {}),
       model: p.model, state: pending ? 'pending' : 'live', seen_in: [], seen_total: 0, reported_wrong: [],
       ...(p.matches.length ? { matches: p.matches } : {}),
       ...(p.prior.length ? { prior_verdicts: p.prior } : {}),
@@ -191,7 +199,7 @@ function commitNotes(E, caller, prep, { task_id }) {
       embedding: p.emb.embedding, embedding_model: p.emb.embedding_model, embedding_revision: p.emb.embedding_revision, dim: p.emb.dim, text_template: p.template,
       run_id: caller.run_id, task_id, source: 'model', written_by: by,
     });
-    return { index: p.index, id: row.id, action: row.action, state: pending ? 'pending' : 'stored', namespace: ns, title: p.title, applies_to: p.applies, ...(pending ? { matches: p.matches } : {}), ...(p.prior.length ? { prior_verdicts: p.prior, held_back: p.prior.some((x) => x.verdict === 'held_for_review') ? 'this text is close to a note that is held for review after a report that it is wrong (see prior_verdicts, verdict held_for_review); the note waits in pending until you resolve it as new, knowing that' : 'this text is close to a claim already judged wrong (see prior_verdicts); the note waits in pending until you resolve it as new, knowing that' } : {}), ...(p.unembedded ? { embedded: false, embedder_failure: p.unembedded, note: 'stored without a vector (on_embedder_failure keyword): found by keyword search, and not compared with the other notes of the project' } : {}) };
+    return { index: p.index, id: row.id, action: row.action, state: pending ? 'pending' : 'stored', namespace: ns, title: p.title, applies_to: p.applies, ...(pending ? { matches: p.matches } : {}), ...(p.prior.length ? { prior_verdicts: p.prior, held_back: p.prior.some((x) => x.verdict === 'held_for_review') ? 'this text is close to a note that is held for review, disputed as wrong, superseded or a duplicate, and withheld from workers (see prior_verdicts, verdict held_for_review); the note waits in pending until you resolve it as new, knowing that' : 'this text is close to a claim already judged wrong (see prior_verdicts); the note waits in pending until you resolve it as new, knowing that' } : {}), ...(p.unembedded ? { embedded: false, embedder_failure: p.unembedded, note: 'stored without a vector (on_embedder_failure keyword): found by keyword search, and not compared with the other notes of the project' } : {}) };
   });
   return items;
 }

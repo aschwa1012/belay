@@ -21,7 +21,8 @@ const { pipeName, acquireLock, releaseLock, resolveDataDir } = lockApi;
 
 const RETIRE_POLL_MS = 500; // a retired owner re-checks its clients' pids this often
 const UNIDENTIFIED_GRACE_MS = 5000; // a connection that has sent nothing counts as attached for this long
-const MAX_LINE_BYTES = 1024 * 1024; // a peer that never sends a newline must not grow this buffer forever
+const { MAX_LINE_BYTES } = require('./client.cjs'); // a peer that never sends a newline must not grow this buffer forever
+const { StringDecoder } = require('node:string_decoder');
 
 function floatsFromB64(b64) {
   const buf = Buffer.from(b64, 'base64');
@@ -50,6 +51,7 @@ class Owner {
     // unless opts.operatorCheck vouches for the connection. A keyed request is bound in either mode: its caller is the bind's.
     this.mode = this.opts.mode === 'bound' ? 'bound' : 'claimed';
     this.binds = new BindRegistry(this.dataDir, { ttlMs: this.opts.bindTtlMs });
+    this.tickets = require('./tickets.cjs').createTickets({ ttlMs: this.opts.ticketTtlMs }); // ADR 0045 decision 5: control-pipe tickets, memory only
     this.startedAt = Date.now();
     // ADR 0045 decision 4: a `bound` owner vouches for an operator by the operator's process (operator-check.cjs), unless the caller
     // brought its own check. Where the peer cannot be examined (not Windows) it has no check and fails closed.
@@ -65,6 +67,7 @@ class Owner {
     // the engine. `inFlightControls` tracks each call plus its flushed reply so `stop()` can wait.
     this.controls = opts.controls || {};
     this.inFlightControls = new Set();
+    this.inFlightCalls = new Set(); // engine calls served over the pipe, each with its reply write, so stop() can let them answer
   }
 
   // The lock is published before the pipe exists, and it has to be: a stale-lock takeover needs a pid to
@@ -73,12 +76,16 @@ class Owner {
   // moments a client that read the lock would otherwise dial a pipe that is not there — on Windows a
   // connect to a missing pipe fails fast, but nothing in the lock said why, and the caller could not
   // tell a starting owner from a wedged one. Now it can, and it falls back to a copy or waits instead.
-  async start() {
-    const lock = acquireLock(this.dataDir, { pipe: this.pipe, listening: false, mode: this.mode });
+  // `staleToken`: a lock the caller showed is held by a reused pid (client.cjs), taken over although its pid is alive. The lock
+  // records this process's creation time when the caller knows it (opts.created), so a later check is exact.
+  async start({ staleToken = null } = {}) {
+    const created = Number.isFinite(this.opts.created) ? { created: this.opts.created } : {};
+    const lock = acquireLock(this.dataDir, { pipe: this.pipe, listening: false, mode: this.mode, ...created }, staleToken ? { staleToken } : {});
     if (!lock.won) {
       throw err('E_LOCKED', `the owner lock at ${this.dataDir} is held by pid ${lock.holder && lock.holder.pid}, which is alive`, { holder: lock.holder || null });
     }
-    this.lockDir = lock.lockDir;
+    this.lockDir = lock.lockDir; this.lockToken = lock.token;
+    lockApi.serving.add(lock.token); // a second election in this process now sees the lock as held (audit 0.3.1 C1)
     try {
       this.store = new Store(path.join(this.dataDir, 'memory.db'), { synchronous: this.opts.synchronous, stamp: true });
       this.store.heartbeat(process.pid, this.pipe, this.startedAt);
@@ -277,15 +284,23 @@ class Owner {
   _conn(c) {
     this.conns.add(c);
     c.belayOpenedAt = Date.now();
-    let buf = '';
+    let buf = '', over = false;
+    const dec = new StringDecoder('utf8');
     c.on('data', d => {
-      buf += d.toString('utf8');
-      if (buf.length > MAX_LINE_BYTES) { buf = ''; c.destroy(); return; }
+      if (over) return;
+      buf += dec.write(d);
       let i;
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i);
         buf = buf.slice(i + 1);
         if (line.trim()) this._dispatch(c, line);
+      }
+      // Only the unfinished line counts, in bytes: complete lines that arrive in one large chunk are served (audit 0.3.1 P7).
+      // One past the limit is answered before the connection closes, so the peer reads why instead of a lost owner.
+      if (Buffer.byteLength(buf) > MAX_LINE_BYTES) {
+        over = true; buf = '';
+        const why = { id: null, error: { code: 'E_TOO_LONG', message: `a request line is limited to ${MAX_LINE_BYTES} bytes and this one passed it without a newline; it was not parsed or run, and the connection is closed`, detail: { limit_bytes: MAX_LINE_BYTES } } };
+        c.end(JSON.stringify(why) + '\n', () => c.destroy());
       }
     });
     const gone = () => { this.conns.delete(c); if (this._retireCheck) this._retireCheck(); };
@@ -321,6 +336,8 @@ class Owner {
 
   // ADR 0045 decision 2: open, read or revoke a bind (owner-admit.cjs).
   bindCall(method, params, caller) { return require('./owner-admit.cjs').bindCall(this, method, params, caller); }
+  // ADR 0045 decision 5: issue or redeem a control-pipe ticket (tickets.cjs). `caller` is the admitted identity.
+  ticketCall(method, params, caller) { return method === 'ticket.issue' ? this.tickets.issue(caller, params) : this.tickets.redeem(caller, params); }
 
   _serve(c, req) {
     // What the retirement check needs about this client; liveness is then a pid check, never the client's word (ADR 0051).
@@ -360,11 +377,19 @@ class Owner {
       return;
     }
     // ADR 0045 decision 2: the bind verbs are the owner's own, never the engine's (api.md §1).
-    if (req.method === 'bind.open' || req.method === 'bind.status' || req.method === 'bind.revoke') {
+    if (req.method === 'bind.open' || req.method === 'bind.status' || req.method === 'bind.revoke' || req.method === 'ticket.issue' || req.method === 'ticket.redeem') {
       const params = req.params || {};
-      Promise.resolve().then(() => this.bindCall(req.method, params, params.caller)).then(
+      const { caller, ...rest } = params;
+      // Like an engine call: once the owner is stopping a bind or ticket call is not run (sent: false, so the client re-dials), and
+      // one served before that is in inFlightCalls, so stop() lets its reply be written before it destroys the connection.
+      if (this.stopped) {
+        return this._refuse(c, req, { code: 'E_OWNER_LOST', message: `the store owner is stopping, so ${req.method} was not run; the client re-runs it against the next owner`, detail: { method: req.method, sent: false, owner_stopping: true } });
+      }
+      const call = Promise.resolve().then(() => (req.method.startsWith('ticket.') ? this.ticketCall(req.method, rest, caller) : this.bindCall(req.method, params, params.caller))).then(
         (result) => { if (!c.destroyed) c.write(JSON.stringify({ id: req.id, result }) + '\n'); },
         (e) => this._refuse(c, req, { code: e.code || 'E_INTERNAL', message: e.message, detail: e.detail }));
+      this.inFlightCalls.add(call);
+      call.finally(() => this.inFlightCalls.delete(call));
       return;
     }
     // build step 6f, ADR 0023 amendment 3 decision 4: run.pause and run.resume join run.stop as the
@@ -376,7 +401,12 @@ class Owner {
       return;
     }
 
-    Promise.resolve()
+    // Once the owner is stopping, a new call is not run: it could commit after stop() took its list of calls to answer and have its
+    // reply destroyed. E_OWNER_LOST with sent: false is the answer a client already re-runs on the next owner (ADR 0033).
+    if (this.stopped) {
+      return this._refuse(c, req, { code: 'E_OWNER_LOST', message: `the store owner is stopping, so ${req.method} was not run; the client re-runs it against the next owner`, detail: { method: req.method, sent: false, owner_stopping: true } });
+    }
+    const call = Promise.resolve()
       .then(() => this.engine.handle(req.method, decodeWire(req.params || {})))
       .then(result => { if (!c.destroyed) c.write(JSON.stringify({ id: req.id, result }) + '\n'); })
       .catch(e => {
@@ -384,47 +414,12 @@ class Owner {
         if (c.destroyed) return;
         c.write(JSON.stringify({ id: req.id, error: { code: e.code || 'E_INTERNAL', message: e.message, detail: e.detail } }) + '\n');
       });
+    this.inFlightCalls.add(call);
+    call.finally(() => this.inFlightCalls.delete(call));
   }
 
-  // 5c: `run.stop` ahead of the engine, after `ping` and `shutdown` — operator only (the shape
-  // `shutdown` refuses on), then E_NOT_FOUND if no control is registered, else the control is called
-  // and its flushed reply tracked in `inFlightControls` so `stop()` can await it.
-  // build step 6f, ADR 0023 amendment 3 decision 4: generalised from `_dispatchRunStop` to serve
-  // `run.pause` and `run.resume` too — same gate, same E_NOT_FOUND wording naming the method actually
-  // called, same `controls` map keyed by method name.
-  //
-  // 5c-2 design item 2: a refusal's own write is tracked in `inFlightControls` exactly as the
-  // dispatched path is (round-1 finding: an E_ROLE or E_NOT_FOUND refusal racing an owner shutdown was
-  // dropped rather than flushed, because `fail` started the write but never added it to the set).
-  _dispatchRunControl(method, c, req) {
-    const write = (payload) => new Promise((resolve) => { if (c.destroyed) resolve(); else c.write(payload, resolve); });
-    const fail = (code, message, detail) => {
-      this.counters.errors++;
-      const p = write(JSON.stringify({ id: req.id, error: { code, message, detail } }) + '\n');
-      this.inFlightControls.add(p);
-      p.then(() => this.inFlightControls.delete(p));
-      return p;
-    };
-    const role = req.params && req.params.caller && req.params.caller.role;
-    if (role !== 'operator') {
-      return fail('E_ROLE', `${method} is available to operator and this call came from role ${JSON.stringify(role === undefined ? null : role)}`,
-        { method, role: role === undefined ? null : role, allowed: ['operator'] });
-    }
-    const control = this.controls[method];
-    if (typeof control !== 'function') {
-      return fail('E_NOT_FOUND', `this owner (pid ${process.pid}) registers no ${method} control: it is not a belay run process`,
-        { method, controls: Object.keys(this.controls) });
-    }
-    const dispatched = Promise.resolve()
-      .then(() => control(decodeWire(req.params)))
-      .then((result) => write(JSON.stringify({ id: req.id, result }) + '\n'))
-      .catch((e) => {
-        this.counters.errors++;
-        return write(JSON.stringify({ id: req.id, error: { code: e.code || 'E_INTERNAL', message: e.message, detail: e.detail } }) + '\n');
-      });
-    this.inFlightControls.add(dispatched);
-    dispatched.then(() => this.inFlightControls.delete(dispatched));
-  }
+  // Run controls (5c, 6f): the dispatch lives in owner-controls.cjs, which adds each reply to inFlightControls.
+  _dispatchRunControl(method, c, req) { return require('./owner-controls.cjs').dispatchRunControl(this, method, c, req); }
 
   // Fix round for 6f (diff-scope): a private-method compatibility shim. `tests/core/control.test.cjs`
   // is not owned by this build step and calls `_dispatchRunStop` by name to drive the race it tests; the
@@ -458,6 +453,9 @@ class Owner {
     // before the timers are cleared and the connections destroyed, so every registered waiter resolves
     // (a settle marker, never a verdict) before the socket it would have answered over is torn down.
     try { if (this.engine) this.engine.settleWaiters(); } catch (e) { record(e); }
+    // A call already being served answers before its connection is destroyed (a committed write must not read as a lost owner);
+    // bounded at 5,000 ms like the controls above.
+    if (this.inFlightCalls.size) await new Promise((resolve) => { const timer = setTimeout(resolve, 5000); Promise.allSettled([...this.inFlightCalls]).then(() => { clearTimeout(timer); resolve(); }); });
     try { this.binds.close(); } catch (e) { record(e); } // ADR 0045: an owner takes its keys with it
     try { for (const t of this.timers || []) clearInterval(t); } catch (e) { record(e); }
     // MF1: the embedder child process ends with the owner, even mid-load or mid-embed: `close` over IPC,
@@ -474,7 +472,7 @@ class Owner {
       catch (e) { record(e); resolve(); }
     });
     try { if (this.store) this.store.close(); } catch (e) { record(e); }
-    try { if (this.lockDir) releaseLock(this.lockDir); } catch (e) { record(e); }
+    try { if (this.lockDir) { lockApi.serving.delete(this.lockToken); releaseLock(this.lockDir, this.lockToken); } } catch (e) { record(e); }
     if (firstError) throw firstError;
     return { pid: process.pid, pipe: this.pipe, already: false };
   }

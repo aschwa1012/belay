@@ -4,14 +4,22 @@
 // Everything ADR 0024 adds lives here: the positive tool list, the settings-source restriction, the
 // ancestor instruction-file excludes, the hygiene settings block, and the gate that reads a
 // system/init and refuses one whose surface differs. Pure: no process, no fs, no network. Invariant 9
-// (CLAUDE.md): no read path may import anything beyond node:path, node:os (the home directory, for checkNativeMemory) and node:crypto.
+// (CLAUDE.md): no read path may import anything beyond node:path, node:os (the home directory, for checkNativeMemory), node:crypto
+// and tool-policy.cjs (which requires nothing).
 
 const path = require('node:path');
 const os = require('node:os');
 const crypto = require('node:crypto');
+const TP = require('./tool-policy.cjs'); // pure, requires nothing: the tools a list may name (ADR 0054)
 
 // ADR 0024 decisions 1 and 2: one positive list, every role, every launch (fresh or resume).
 const CLAUDE_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash'];
+// ADR 0054 amendment 2 (proposed; the operator, 2026-10-27): the orchestrator has the workers' six, Bash included. belay
+// enhances an authoritative orchestrator and does not restrict it: the prompt says to prefer belay's tools, and nothing
+// refuses the shell (a headless orchestrator's kill-by-name is refused by the PreToolUse hook, and its CLI calls are never
+// the operator: ADR 0045 decision 4). Headless launches are held to the list by checkSurface; interactive ones pass it and
+// record it as requested (ADR 0037 decision 5: the built-in list cannot be read there).
+const ORCHESTRATOR_TOOLS = ['Read', 'Glob', 'Grep', 'Edit', 'Write', 'Bash'];
 // ADR 0024 decision 3 as replaced by amendment 1: no settings file is read except belay's own
 // `--settings`. ONE argv token, exactly the form the settings-sources probe measured; the two-token form
 // with an empty value was never measured. The worktree's CLAUDE.md arrives by instructions.cjs instead.
@@ -108,32 +116,14 @@ const sameDir = (a, b) => {
   return typeof a === 'string' && typeof b === 'string' && a !== '' && n(a) === n(b);
 };
 
-// ADR 0024 decisions 1 and 3: a launch may narrow the built-in list (the knowledge agent reads only), never widen it.
-// Returns null for the full list, or the narrowed list; anything else is refused before any file or row exists.
+// ADR 0024 decisions 1 and 3: a launch may narrow the built-in list (the knowledge agent reads only), never widen it past
+// the six; ADR 0054 decision 4 admits WebFetch and WebSearch beside them, for an agent type whose list names them.
+// Returns null for exactly the six, or the list; anything else is refused before any file or row exists.
 function narrowTools(tools) {
   if (tools == null) return null;
-  const ok = Array.isArray(tools) && tools.length > 0 && new Set(tools).size === tools.length && tools.every((t) => CLAUDE_TOOLS.includes(t));
-  if (!ok) throw Object.assign(new Error(`tools must be a non-empty subset of ${CLAUDE_TOOLS.join(', ')} with no repeats`), { code: 'E_ARGS', detail: { tools } });
-  return tools.length === CLAUDE_TOOLS.length ? null : [...tools];
-}
-
-// worker_spawn's `allowed_tools` (a permission pre-approval, `--allowedTools`) also decides the tool surface: its built-in names
-// become the worker's `--tools` list; `mcp__*` names stay pre-approval only. Returns { tools } (narrowTools' answer: null for all six,
-// else the narrowed list). Refused E_ARGS, before anything is written: a name that is neither a built-in nor `mcp__*` (web tools
-// are not available to workers in this release), a list with no built-in at all (the empty `--tools ""` surface has no live receipt), repeats.
-function toolsFromAllowed(allowed) {
-  if (!Array.isArray(allowed) || allowed.some((t) => typeof t !== 'string')) {
-    throw Object.assign(new Error('allowed_tools must be an array of strings'), { code: 'E_ARGS', detail: { allowed_tools: allowed } });
-  }
-  const foreign = allowed.filter((t) => !CLAUDE_TOOLS.includes(t) && !t.startsWith('mcp__'));
-  if (foreign.length) {
-    throw Object.assign(new Error(`allowed_tools names ${foreign.join(', ')}, which a worker cannot have: web tools are not available to workers in this release; allowed built-ins are ${CLAUDE_TOOLS.join(', ')}, plus mcp__* names`), { code: 'E_ARGS', detail: { allowed_tools: allowed, refused: foreign } });
-  }
-  const builtins = CLAUDE_TOOLS.filter((t) => allowed.includes(t)); // canonical order, repeats collapse
-  if (builtins.length === 0) {
-    throw Object.assign(new Error(`allowed_tools names no built-in tool (${CLAUDE_TOOLS.join(', ')}); a worker with no built-ins is not supported, so name at least one`), { code: 'E_ARGS', detail: { allowed_tools: allowed } });
-  }
-  return { tools: narrowTools(builtins) };
+  const ok = Array.isArray(tools) && tools.length > 0 && new Set(tools).size === tools.length && tools.every((t) => TP.POLICY_TOOLS.includes(t));
+  if (!ok) throw Object.assign(new Error(`tools must be a non-empty subset of ${TP.POLICY_TOOLS.join(', ')} with no repeats`), { code: 'E_ARGS', detail: { tools } });
+  return tools.length === CLAUDE_TOOLS.length && CLAUDE_TOOLS.every((t) => tools.includes(t)) ? null : [...tools];
 }
 
 // ADR 0024 decision 6: the ready event reports the surface the worker actually got; a wrong surface
@@ -242,4 +232,4 @@ function surfaceFields(evidence) {
   return { tools_hash: tools_hash ?? null, builtins: builtins ?? null, belay_tools: belay_tools ?? null, plugins: plugins ?? null };
 }
 
-module.exports = { checkNativeMemory, claudeConfigDirs, under, sameDir, CLAUDE_TOOLS, narrowTools, toolsFromAllowed, SETTING_SOURCES_ARG, ancestorExcludes, hygieneSettings, checkSurface, surfaceFields };
+module.exports = { checkNativeMemory, claudeConfigDirs, under, sameDir, CLAUDE_TOOLS, ORCHESTRATOR_TOOLS, narrowTools, SETTING_SOURCES_ARG, ancestorExcludes, hygieneSettings, checkSurface, surfaceFields };

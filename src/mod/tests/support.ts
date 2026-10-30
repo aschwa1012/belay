@@ -1,4 +1,8 @@
-import { mock } from 'claude-code/testing'
+import { mock, test as kitTest } from 'claude-code/testing'
+// The plugin runner stops a test after 5000 ms of real time, and a test's body does real work (a render per fake-clock step), so a loaded
+// host reaches that default. Every test here gets this bound instead: a hang guard, far above a quiet run's slowest (about 1.3 s), never an assertion.
+export const TEST_TIMEOUT_MS = 30_000
+export const test = (name: string, body: ($: any, on: any) => unknown) => kitTest(name, { timeoutMs: TEST_TIMEOUT_MS } as any, body as any)
 export const T0 = 1_000_000_000_000
 export const RUN = 'r-7f3a'
 export const iso = (ms: number) => new Date(ms).toISOString()
@@ -49,7 +53,7 @@ export const TRANSCRIPT = {
 }
 
 export const DEFAULTS: Record<string, string> = { pane: 'docked', marks: 'shapes', cache: 'both', context: 'both', band: 'two-lines', task: 'kind' }
-export const NOTICE = { code: 'memory_project_unset', title: 'Memory is off for this project', why: 'Memory notes are on by default, but they are kept per project and belay never guesses a project name, so with none set nothing is saved or recalled.', short: 'set one: belay settings memory.project <name> · or turn notes off: belay settings memory.notes false', fix: 'Add "memory": { "project": "<name>" } to belay.config.json (or to the run spec), or run: belay settings memory.project <name>. A name is lowercase letters, digits, dot, underscore or dash (^[a-z0-9][a-z0-9._-]{0,63}$). To turn notes off and silence this: belay settings memory.notes false.', config_line: '"memory": { "project": "<name>" }', name_rule: '^[a-z0-9][a-z0-9._-]{0,63}$' }
+export const NOTICE = { code: 'memory_project_unset', title: 'Notes are on, but no project is set, so this run keeps no notes', why: 'Notes are on by default, but they are kept per project (memory.project) and belay never guesses a project name, so with none set nothing is saved or recalled.', short: 'set one: belay settings memory.project <name> · or turn notes off: belay settings memory.notes false', fix: 'Add "memory": { "project": "<name>" } to belay.config.json (or to the run spec), or run: belay settings memory.project <name>. A name is lowercase letters, digits, dot, underscore or dash (^[a-z0-9][a-z0-9._-]{0,63}$). To turn notes off and silence this: belay settings memory.notes false.', config_line: '"memory": { "project": "<name>" }', name_rule: '^[a-z0-9][a-z0-9._-]{0,63}$' }
 export const SETTINGS = (mod: Record<string, string> = {}, memoryNotice: unknown = null) => ({
   found: true, path: 'C:/x/belay.config.json', parse_error: null, memory_notice: memoryNotice,
   settings: Object.keys(DEFAULTS).map(k => ({ key: `mod.${k}`, value: mod[k] ?? DEFAULTS[k], source: 'default', allowed: [] })),
@@ -59,7 +63,7 @@ export type World = {
   file?: boolean; runFile?: unknown; repoCli?: boolean; watchId?: string
   mode?: string | null; mod?: Record<string, string>; notices?: unknown
   failAgents?: boolean; transcriptFail?: boolean; orchDisplay?: string; noDisplay?: boolean; noRun?: boolean
-  extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; launcher?: { exitCode: number; stdout: string; stderr: string }; longNotices?: boolean; noPlace?: boolean; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number; memoryNotice?: boolean; orchNoCost?: boolean; orchBasis?: string; deadReview?: boolean; deadCoder?: boolean; orchTokensOnly?: boolean; orchCost?: number; awaitingFail?: boolean; awaitingHang?: boolean; agentIds?: string[]; footer?: unknown
+  extra?: string[]; paused?: number; ended?: number; maxFix?: number | null; hardCap?: number | null; rejectAfter?: { verb: string; ms: number; msg: string }; startedAgo?: number; honorTail?: boolean; toolsOnly?: boolean; nullTs?: boolean; manyTexts?: boolean; longTranscript?: boolean; runId?: string; launcher?: { exitCode: number; stdout: string; stderr: string }; longNotices?: boolean; noPlace?: boolean; coder2Left?: number; coder1Title?: string; hang?: string | null; slow?: number; memoryNotice?: boolean; orchNoCost?: boolean; orchBasis?: string; deadReview?: boolean; deadCoder?: boolean; orchTokensOnly?: boolean; orchCost?: number; awaitingFail?: boolean; awaitingHang?: boolean; agentIds?: string[]; footer?: unknown
   /** Answers the dialogs give, in order (the reason, then the confirm); an empty queue dismisses. */
   awaitingList?: unknown
   settleReject?: string
@@ -89,7 +93,7 @@ export function world(on: any, w: World) {
   const stat = { active: 0, maxActive: 0 }
   const settled: string[][] = [] // every `memory held settle` the panel runs: only the settle buttons may run one
   const asked: string[] = [] // every dialog question
-  // The real session has no AskUserQuestion (the interactive orchestrator is launched with --tools Read,Edit,Write,Glob,Grep,Bash): an ask is
+  // The real session has no AskUserQuestion (the interactive orchestrator is launched with --tools Read,Glob,Grep,Edit,Write): an ask is
   // recorded and rejected as it is there, so a panel that asks a dialog cannot do its work in these tests.
   on('tool.call', { tool: 'AskUserQuestion' }, ($: any, e: any) => {
     asked.push(String(e.questions?.[0]?.question ?? ''))
@@ -162,7 +166,7 @@ export function world(on: any, w: World) {
     const body: Record<string, unknown> = {
       agents: {
         run_id: w.noRun ? null : (w.runId ?? RUN), mode: 'mode' in w ? w.mode : 'headless', mode_source: 'test', started_at_ms: T0 - (w.startedAgo ?? 42 * 60000), paused_at_ms: w.paused ?? null, ended_at_ms: w.ended ?? null,
-        tasks: { done: 1, total: 3 }, max_fix_rounds: 'maxFix' in w ? w.maxFix : 2, memory_notice: w.memoryNotice ? NOTICE : null, agents: w.noRun ? [] : [...agents, ...extra, ...named, ...dead], footer: 'footer' in w ? w.footer : FOOTER,
+        tasks: { done: 1, total: 3 }, max_fix_rounds: 'maxFix' in w ? w.maxFix : 2, fix_hard_cap: 'hardCap' in w ? w.hardCap : null, memory_notice: w.memoryNotice ? NOTICE : null, agents: w.noRun ? [] : [...agents, ...extra, ...named, ...dead], footer: 'footer' in w ? w.footer : FOOTER,
       },
       notices: w.notices ?? (w.longNotices ? LONG_NOTICES : NOTICES),
       transcript: w.nullTs ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.map(x => ({ ...x, ts: null })) } : w.manyTexts ? { run_id: RUN, entries: MANY } : w.toolsOnly ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.filter(x => x.kind !== 'text') } : w.longTranscript ? { run_id: RUN, entries: LONG_ENTRIES.slice(-Number(e.argv[e.argv.indexOf('--tail') + 1])) } : w.honorTail ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.slice(-Number(e.argv[e.argv.indexOf('--tail') + 1])) } : TRANSCRIPT,
@@ -216,8 +220,15 @@ export async function band($: any, surface = 'terminal', cols = 110) {
   const ui = await $.ui.mount({ plugin: 'belay', surface, component: 'AbovePrompt', props: { ...BAND_PROPS, bodyColumns: cols }, viewport: { columns: 110, rows: 40 } })
   return { ui, text: words(await ui.drawn()) }
 }
+// The kit refuses a second mount of requestId 'belay' while one is up. A test that reads the pane again after a later tick (or whose earlier
+// assertion threw before its own unmount) would leave its mount behind, so the previous mount of this session is unmounted before a new one.
+const mounted = new WeakMap<object, any>()
 export async function pane($: any, surface = 'terminal', cols = 200, isFocused = false) {
+  const prev = mounted.get($)
+  mounted.delete($)
+  if (prev) { try { await prev.unmount() } catch { /* the test unmounted it already */ } }
   const ui = await $.ui.mount({ plugin: 'belay', surface, component: 'Pane', requestId: 'belay', props: { ...PANE_PROPS, isFocused, bodyColumns: cols }, viewport: { columns: 70, rows: 40 } })
+  mounted.set($, ui)
   return { ui, text: words(await ui.drawn()) }
 }
 export async function openPane($: any, wd: any) {

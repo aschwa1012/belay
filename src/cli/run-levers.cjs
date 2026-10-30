@@ -11,6 +11,8 @@ const MN = require('../core/memory-notice.cjs'); // pure; the shared wording of 
 
 const FIX_CUTOFFS = ['orchestrator', 'cap-only'];
 const DEFAULT_MAX_FIX_ROUNDS = 2;
+const DEFAULT_FIX_HARD_CAP = 5; // ADR 0031 amendment 3: the safety net of a run with no time bound; a run with a timeout is notice-only
+const HARD_CAP_DEFAULT_SOURCE = 'default, no run timeout';
 const DEFAULT_FIX_CUTOFF = 'orchestrator';
 const EM = require('../core/embedder-mode.cjs');
 const DEFAULT_ON_EMBEDDER_FAILURE = EM.DEFAULT_MODE; // ADR 0034 decision 2, amendment 1
@@ -18,16 +20,18 @@ const MEMORY_RULES_FILE = path.join(__dirname, '..', 'run', 'prompts', 'memory-r
 // The one sentence that asks the orchestrator for `memory_queries`. Its only reader is the first-message index
 // (memory-preface.cjs), so it is told to the orchestrator only when that lever is on; off, the placeholder is ''
 // and the prompt asks for nothing the run never reads.
-const MEMORY_REPORT_LINE = ' To dispute a note, use `mcp__belay__memory_report` (it holds the note for the archive review).';
+const MEMORY_REPORT_LINE = ' If a note is wrong, out of date or contradicted by the evaluation of a task or the code, report it with `mcp__belay__memory_report` and say why (it holds the note for the archive review); you need not wait for the operator.';
+// The Rules of thumb line for a run with the permission channel on (run lever permission_prompt); '' otherwise.
+const PERMISSION_LINE = '- Answer permission requests (`mcp__belay__permission_list`, `mcp__belay__permission_decide`) only when the request is inside the plan.\n';
 // ADR 0047 amendment (2026-10-22), decision 7: in a notes run the orchestrator's memory bullet says four things, and a run outcome is a summary. The
 // template keeps the text a run without notes always had, between {{memory_use}} ... {{/memory_use}} (and {{memory_outcome}} ... {{/memory_outcome}}); a run
 // with notes replaces the span, a run without drops only the markers, so its prompt is byte for byte what it was.
 const MEMORY_USE_NOTES = [
-  "- Use belay's memory yourself.",
+  "- Use belay's notes yourself.",
   '  - Search before you plan: before you create any task, call `mcp__belay__memory_search` with a `query` on the brief\'s subject and no namespace (it searches the',
   "    project's notes) and use what it returns in your plan and prompts (empty on a first run is normal).",
-  '  - Store a lesson a later run would trip on as a note: `mcp__belay__memory_store` with `namespace: "project"` and `kind`, `title`, `when`, `basis` (and `evidence`',
-  '    when you observed it).',
+  '  - Store a note only for what the code and the markdown of the project cannot tell the next run and it would trip on: `mcp__belay__memory_store` with `namespace: "project"`',
+  '    and `kind`, `title`, `when`, `basis` (and `evidence` when you observed it). Nothing is the normal answer.',
   '  - Record your decisions and the outcome with `namespace: "summary"` (a `title` and `text`); they are found on demand with `mcp__belay__memory_summaries`.',
   '  - Never tell a worker to write memory with `memory_store`: what it learns that is worth keeping goes in the `notes` of its `lease_release`.',
 ].join('\n');
@@ -40,19 +44,19 @@ const MEMORY_QUERIES_LINE = ' Also give 1 to 3 `memory_queries`: task lines (eac
 // `mode` is 'headless' (the default, byte-identical to before) or 'interactive' (ADR 0037 decision 4: the run
 // does not end, so stop-and-surface is stop, store, tell the operator, then wait).
 function cutoffRule(fixCutoff, timeoutMs, mode = 'headless') {
-  if (fixCutoff === 'cap-only') return 'Do not stop fix rounds before the cap.';
+  if (fixCutoff === 'cap-only') return 'Do not stop fix rounds before the fix-round limit.';
   const timeCond = timeoutMs > 0
     ? `; the run's time bound (${timeoutMs} ms from its start) is near, judged from the waited_ms your worker_wait answers report`
     : '';
   const interactive = mode === 'interactive';
   const surface = interactive
-    ? '(stop, store the outcome in memory, tell the operator the open blocking findings, then wait for them)'
+    ? '(stop, record the outcome, tell the operator the open blocking findings, then wait for them)'
     : '(end the run and name the open blocking findings for the human)';
-  return `You may stop fix rounds before the cap, only towards stop-and-surface ${surface}, `
+  return `You may stop fix rounds before the fix-round limit, only towards stop-and-surface ${surface}, `
     + 'and only when one of these holds: the same blocking finding '
     + 'survived a fix round; a fix round introduced a new regression; the fix needs files outside the task\'s '
     + `owned set${timeCond}. Name the condition and its evidence when you ${interactive ? 'stop' : 'close'}. Never `
-    + 'extend past the cap and never report a refuted step as passing or mark it done.'
+    + 'report a refuted step as passing or mark it done.'
     + (timeoutMs > 0 ? '' : ' The run has no time bound.');
 }
 
@@ -108,7 +112,7 @@ function evalKeys(spec) {
   return { fold: Object.keys(fold).length ? fold : null };
 }
 
-// Returns { max_fix_rounds, fix_cutoff, on_embedder_failure[, compact_at_tokens] } or { error }. `compact_at_tokens` (ADR 0007 decision 3,
+// Returns { max_fix_rounds, fix_cutoff, on_embedder_failure, fix_hard_cap, fix_hard_cap_source[, compact_at_tokens] } or { error }. `compact_at_tokens` (ADR 0007 decision 3,
 // null by default) is present only when set, so a run without it has the receipt it always had.
 function parseLevers(spec, opts = {}) {
   let maxFixRounds = DEFAULT_MAX_FIX_ROUNDS;
@@ -119,6 +123,16 @@ function parseLevers(spec, opts = {}) {
     }
     maxFixRounds = v;
   }
+  // ADR 0031 amendment 3: the user's fix_hard_cap wins (null says no cap); unset, a run with no time bound (timeout_ms 0, the default) gets
+  // DEFAULT_FIX_HARD_CAP and a run with a timeout gets none. The source is recorded beside the cap.
+  // The time bound is run-spec.cjs's parsed number when it is given (a numeric string counts), else the raw key, 0 when absent.
+  const timeoutMs = opts.timeoutMs !== undefined ? opts.timeoutMs : (spec.timeout_ms === undefined ? 0 : Number(spec.timeout_ms));
+  let fixHardCap = null, fixHardCapSource = null;
+  if (spec.fix_hard_cap !== undefined) {
+    const v = spec.fix_hard_cap;
+    if (v !== null && (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0)) return { error: 'fix_hard_cap must be a non-negative integer, or null for no cap' };
+    fixHardCap = v; fixHardCapSource = 'run spec';
+  } else if (!(timeoutMs > 0)) { fixHardCap = DEFAULT_FIX_HARD_CAP; fixHardCapSource = HARD_CAP_DEFAULT_SOURCE; }
   let fixCutoff = DEFAULT_FIX_CUTOFF;
   if (spec.fix_cutoff !== undefined) {
     if (!FIX_CUTOFFS.includes(spec.fix_cutoff)) {
@@ -140,9 +154,25 @@ function parseLevers(spec, opts = {}) {
     onEmbedderFailure = EM.normalize(opts.config.memory.on_embedder_failure) || DEFAULT_ON_EMBEDDER_FAILURE; // a bad config value is refused by parseMemoryBlock below
   }
   const out = { max_fix_rounds: maxFixRounds, fix_cutoff: fixCutoff, on_embedder_failure: onEmbedderFailure };
+  out.fix_hard_cap = fixHardCap; out.fix_hard_cap_source = fixHardCapSource; // null: no cap
   const ca = CP.parseCompactAt(spec.compact_at_tokens);
   if (ca.error) return { error: ca.error };
   if (ca.value !== null) out.compact_at_tokens = ca.value;
+  // ADR 0058 decision 8: off by default, and absent from the levers (and the receipt) unless the spec turns it on.
+  if (spec.stop_idle_on_done !== undefined && typeof spec.stop_idle_on_done !== 'boolean') return { error: 'stop_idle_on_done must be true or false' };
+  if (spec.stop_idle_on_done === true) out.stop_idle_on_done = true;
+  // The most task evaluations (release-time, called, and integration re-runs) the store owner runs at once; absent unless set, so a run without it has the receipt it always had.
+  if (spec.max_parallel_evaluations !== undefined) {
+    const v = spec.max_parallel_evaluations;
+    if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 1) return { error: 'max_parallel_evaluations must be a positive integer' };
+    out.max_parallel_evaluations = v;
+  }
+  // ADR 0020 decision 1 as amended: the permission tools are listed to the orchestrator, and their prompt line given, only for a run that turns the channel on.
+  if (spec.permission_prompt !== undefined && typeof spec.permission_prompt !== 'boolean') return { error: 'permission_prompt must be true or false' };
+  if (spec.permission_prompt === true) out.permission_prompt = true;
+  // ADR 0054 amendment 1: the run close deletes the reviewers' scratch folders; this opt-in keeps them. Absent unless on.
+  if (spec.keep_review_scratch !== undefined && typeof spec.keep_review_scratch !== 'boolean') return { error: 'keep_review_scratch must be true or false' };
+  if (spec.keep_review_scratch === true) out.keep_review_scratch = true;
   // ADR 0041 decision 1: the memory block. Present on the result only when it differs from the defaults, so a
   // run without it has the levers, the receipt and the run row it always had.
   // The config's `memory` block is the project default under the spec's own (opts.config = { path, memory }).
@@ -210,6 +240,16 @@ function matchEol(text, prompt) {
 // A prompt without a placeholder passes through unchanged.
 // Returns { text, substituted: { max_fix_rounds, fix_cutoff_rule } }, the replacement counts.
 // `opts.mode` is 'headless' (default) or 'interactive'; it selects the wording of the cutoff rule only.
+// The template's header markers are for belay, not the model: `<!-- belay-prompt X.Y.Z -->` (run-prompt-check.cjs) and `<!-- belay-mode: ... -->`
+// (run-interactive.cjs) are read from the template or the operator's copy before this runs. The shipped title line that carries the first
+// is dropped whole; a copy's own title keeps its words and loses only the comment. Applied to the rendered prompt, never to the file.
+function stripMarkers(text) {
+  return String(text)
+    .replace(/^# Orchestrator prompt template[ \t]*<!--\s*belay-prompt\s+[\d.]+\s*-->[ \t]*\r?\n(\r?\n)?/, '')
+    .replace(/[ \t]*<!--\s*belay-prompt\s+[\d.]+\s*-->/, '')
+    .replace(/^[ \t]*<!--\s*belay-mode:[^>]*-->[ \t]*\r?\n(\r?\n)?/m, '');
+}
+
 function substituteLevers(text, levers, timeoutMs = 0, opts = {}) {
   const rule = cutoffRule(levers.fix_cutoff, timeoutMs, (opts && opts.mode) || 'headless');
   const a = String(text).split('{{max_fix_rounds}}');
@@ -236,7 +276,9 @@ function substituteLevers(text, levers, timeoutMs = 0, opts = {}) {
   const r = spanned.split('{{memory_report_line}}');
   const q = r.join(notesOn ? MEMORY_REPORT_LINE : '').split('{{memory_queries_line}}');
   const queriesOn = !!(levers.memory_levers && levers.memory_levers.first_message_index);
-  const c = q.join(queriesOn ? MEMORY_QUERIES_LINE : '').split('{{memory_rules}}');
+  const permOn = levers.permission_prompt === true;
+  const pl = q.join(queriesOn ? MEMORY_QUERIES_LINE : '').split('{{permission_line}}');
+  const c = pl.join(permOn ? PERMISSION_LINE : '').split('{{memory_rules}}');
   let rules = '';
   if (on) {
     rules = matchEol(String(levers.rules_text).replace(TRAILING_EOL, ''), withRule);
@@ -245,6 +287,7 @@ function substituteLevers(text, levers, timeoutMs = 0, opts = {}) {
   const substituted = { max_fix_rounds: a.length - 1, fix_cutoff_rule: b.length - 1 };
   if (on) substituted.memory_rules = c.length - 1;
   if (queriesOn) substituted.memory_queries_line = q.length - 1;
+  if (permOn) substituted.permission_line = pl.length - 1;
   if (notesOn) {
     substituted.memory_report_line = r.length - 1;
     if (spans.memory_use) substituted.memory_use = spans.memory_use;
@@ -271,4 +314,4 @@ async function countReviewRounds(core, runId) {
   }
 }
 
-module.exports = { MEMORY_REPORT_LINE, MEMORY_QUERIES_LINE, MEMORY_USE_NOTES, MEMORY_OUTCOME_NOTES, MEMORY_VERIFY_RULE, mergeMemory, parseLevers, attachMemory, memoryText, substituteLevers, countReviewRounds, cutoffRule, FIX_CUTOFFS };
+module.exports = { stripMarkers, MEMORY_REPORT_LINE, MEMORY_QUERIES_LINE, MEMORY_USE_NOTES, MEMORY_OUTCOME_NOTES, MEMORY_VERIFY_RULE, mergeMemory, parseLevers, attachMemory, memoryText, substituteLevers, countReviewRounds, cutoffRule, FIX_CUTOFFS };

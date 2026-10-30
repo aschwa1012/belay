@@ -53,9 +53,13 @@ async function proposals(core, parsed, ctx, found) {
   const args = { root: rootOf(ctx, found) };
   if (parsed.opts.project) args.project = parsed.opts.project;
   if (parsed.opts.all) args.all = true;
-  const res = await core.memory.proposals(args);
-  // Reports of "wrong" with no verdict applied (a review or job may have run and left the report out): listed for the operator.
-  try { if (core.memory && typeof core.memory.held === 'function') res.unjudged_reports = (await core.memory.held({ ...(args.project ? { project: args.project } : {}), reports: true })).unjudged_reports || []; } catch { /* the list is extra; the proposals stand */ }
+  const batch = typeof core.readBatch === 'function' ? (fn) => core.readBatch(fn) : (fn) => fn(); // one store copy for both reads
+  const res = await batch(async () => {
+    const r = await core.memory.proposals(args);
+    // Reports of "wrong" with no verdict applied (a review or job may have run and left the report out): listed for the operator.
+    try { if (core.memory && typeof core.memory.held === 'function') r.unjudged_reports = (await core.memory.held({ ...(args.project ? { project: args.project } : {}), reports: true })).unjudged_reports || []; } catch { /* the list is extra; the proposals stand */ }
+    return r;
+  });
   return { code: 0, text: renderProposals(res), json: res };
 }
 
@@ -100,8 +104,8 @@ async function held(core, parsed) {
     return { code: 0, text: `${res.action} ${res.id}: ${res.outcome}${extra}  receipt: ${res.receipt}\n  ${changed.join('\n  ')}\n`, json: res };
   }
   const res = await core.memory.held({ list: true, ...(o.project ? { project: o.project } : {}), ...(o.awaiting ? { awaiting: true } : {}) });
-  const lines = res.entries.map((e) => `${e.note_id}  ${e.kind}/${e.ground || 'none'}  rev ${e.rev}  ${e.reports} report${e.reports === 1 ? '' : 's'}${e.self_report ? ' (self)' : ''}  held ${e.runs_waited} run${e.runs_waited === 1 ? '' : 's'}${e.awaiting_operator ? `  AWAITS YOU: ${one(e.undecided && e.undecided.reason)}` : ''}  [${e.project}]  ${one(e.title)}`);
-  const head = `${res.total} held, ${res.awaiting_operator || 0} awaiting the operator${res.truncated ? ' (first 200 listed)' : ''}`;
+  const lines = res.entries.map((e) => `${e.note_id}  ${e.state || 'held'}  ${e.kind}/${e.ground || 'none'}  rev ${e.rev}  ${e.reports} report${e.reports === 1 ? '' : 's'}${e.self_report ? ' (self)' : ''}  held ${e.runs_waited} run${e.runs_waited === 1 ? '' : 's'}${e.awaiting_operator ? `  AWAITS YOU: ${one(e.undecided && e.undecided.reason)}` : ''}  [${e.project}]  ${one(e.title)}`);
+  const head = `${res.total - (res.queued || 0)} held${res.queued ? `, ${res.queued} queued` : ''}, ${res.awaiting_operator || 0} awaiting the operator${res.truncated ? ' (first 200 listed)' : ''}`;
   return { code: 0, text: `${head}\n${lines.join('\n')}${lines.length ? '\n' : ''}`, json: res };
 }
 

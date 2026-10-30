@@ -46,7 +46,7 @@ async function prepare(E, caller, args) {
   }
   // ADR 0034 amendment 1: with the run's memory off, a hand-back drops its notes and marks and still releases the lease.
   if (given && E.memoryOff('memory.store') === 'refuse') {
-    return { dropped: { reason: 'memory is off for this run (on_embedder_failure off, after an embedder failure), so the notes and reported_wrong were not written', notes: Array.isArray(args.notes) ? args.notes.length : 0, reported_wrong: Array.isArray(args.reported_wrong) ? args.reported_wrong.length : 0 } };
+    return { dropped: { reason: 'notes are off for this run (on_embedder_failure off, after an embedder failure), so the notes and reported_wrong were not written', notes: Array.isArray(args.notes) ? args.notes.length : 0, reported_wrong: Array.isArray(args.reported_wrong) ? args.reported_wrong.length : 0 } };
   }
   const lv = notesLevers(E, caller);
   if (!lv) {
@@ -162,14 +162,13 @@ function liveTarget(E, caller, pending, project, x, i) {
   if ((r.status || 'unverified') === 'refuted') throw err('E_ARGS', `${at}: note ${x.of} is refuted`, { id: x.of });
   const gone = E.store.p('SELECT id FROM memory_entries WHERE supersedes = ? AND namespace = ?').get(x.of, r.namespace);
   if (gone) throw err('E_ARGS', `${at}: note ${x.of} was superseded by ${gone.id}; resolve against ${gone.id}`, { id: x.of, superseded_by: gone.id });
-  // A note held on a report is in dispute: a repeat would record agreement with it and a supersedes would bury it. Matching shows it so a
-  // restated claim waits in pending; the writer resolves that as new, or reports the held note.
-  if ((x.resolve === 'repeats' || x.resolve === 'supersedes') && WH.heldReported(E).get(r.id) === project) {
-    throw err('E_ARGS', `${at}: note ${x.of} is held for review after a report that it is wrong, so it cannot be ${x.resolve === 'repeats' ? 'repeated' : 'superseded'}; resolve as new, or report it`, { id: x.of, reason: 'held_for_review' });
-  }
-  // A held note is hidden by nobody but the archive review and the operator: a refines or supersedes of it is refused here, naming the hold.
-  // (A repeat only adds a sighting and hides nothing, so it is allowed.)
+  // A held note is hidden by nobody but the archive review and the operator: a refines or supersedes of it is refused here (E_HELD), naming the hold.
   if (x.resolve === 'supersedes' || x.resolve === 'refines') require('./held-guard.cjs').check(E, x.resolve, r.id, { resolution: x.resolve });
+  // A held note (any hold that withholds it) is in dispute: a repeat would record agreement with it. Matching names it so a restated claim
+  // waits in pending; the writer resolves that as new, or reports the held note.
+  if ((x.resolve === 'repeats' || x.resolve === 'supersedes') && WH.heldWithheld(E).get(r.id) === project) {
+    throw err('E_ARGS', `${at}: note ${x.of} is held for review, disputed as wrong, superseded or a duplicate, so it cannot be ${x.resolve === 'repeats' ? 'repeated' : 'superseded'}; resolve as new, or report it`, { id: x.of, reason: 'held_for_review' });
+  }
   if ((x.resolve === 'supersedes' || x.resolve === 'refines') && caller.role === 'worker' && r.status === 'verified') {
     throw err('E_ROLE', `${at}: note ${x.of} is verified, and a worker may not ${x.resolve === 'refines' ? 'refine' : 'supersede'} a verified note (a repeat of it is fine)`, { id: x.of, role: caller.role });
   }

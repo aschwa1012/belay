@@ -2,13 +2,13 @@
 // route each one takes into the Core API or the RunManager. `toolsFor(role)` returns exactly what `tools/list` sends for that role:
 // the ten both-role tools plus that role's own. ROUTES is kept separate from the schemas so that no
 // routing field is ever serialised into the listing, which is measured against the ADR 0010 §5 budget
-// (11,264 bytes orchestrator and 7,168 bytes worker since ADR 0010 amendment 6). Descriptions say what the tool returns as proof and
-// when it refuses; nothing else, because every byte is a per-turn tax on the orchestrator's context.
+// (16,384 bytes orchestrator since ADR 0010 amendment 9, 7,168 bytes worker since amendment 6). Descriptions say what the tool returns as proof;
+// a refusal says its own remedy in its error, so it is not repeated here; nothing else, because every byte is a per-turn tax on the orchestrator's context.
 //
 // Two places where ADR 0010 disagrees with itself or with src/core/api.md, resolved in favour of the
 // §2 table and the contract, and reported to the lead:
-//   - §5 prose says the worker role lists ten tools; the §2 table gives it twelve (nine both-role plus
-//     lease_renew, lease_release, checkpoint_write). Twelve are listed.
+//   - §5 prose says the worker role lists ten tools; the §2 table gave it twelve. ADR 0010 amendment 14 takes lease_renew,
+//     checkpoint_write, status and memory_stats off the worker listing: lease_release is its one own tool.
 //   - §2 routes worker_stop to `run.stopWorker` or `run.kill` by mode; api.md §5 gives one RunManager
 //     method, `stop({ worker_id, mode, timeout_ms })`. The contract wins; `mode` is required.
 'use strict';
@@ -26,14 +26,15 @@ const str = (description) => (description ? { type: 'string', description } : { 
 const int = (description) => (description ? { type: 'integer', description } : { type: 'integer' });
 const num = () => ({ type: 'number' });
 const bool = () => ({ type: 'boolean' });
+const DEBUG = { type: 'string', enum: ['debug'] };
 const strs = (description) => {
   const a = { type: 'array', items: { type: 'string' } };
   if (description) a.description = description;
   return a;
 };
 
-// name -> { role, via, method }. `via` is 'core' (a dotted Core method), 'run' (a RunManager method)
-// or 'briefing' (the one tool that composes two Core calls into { line, doc }).
+// name -> { role, via, method }. `via` is 'core' (a dotted Core method), 'run' (a RunManager method),
+// 'compose' (a core write and its follow-up, compose.cjs) or 'briefing' (the one tool that composes two Core calls into { line, doc }).
 const ROUTES = {
   memory_store: { role: 'both', via: 'core', method: 'memory.store' },
   memory_retrieve: { role: 'both', via: 'core', method: 'memory.get' },
@@ -43,25 +44,30 @@ const ROUTES = {
   memory_verify: { role: 'orchestrator', via: 'core', method: 'memory.setStatus' },
   memory_list: { role: 'both', via: 'core', method: 'memory.list' },
   memory_delete: { role: 'both', via: 'core', method: 'memory.delete' },
-  memory_stats: { role: 'both', via: 'core', method: 'memory.stats' },
-  status: { role: 'both', via: 'core', method: 'status.get' },
+  memory_stats: { role: 'orchestrator', via: 'core', method: 'memory.stats' }, // likewise (the knowledge agent lists it by its own table)
+  status: { role: 'orchestrator', via: 'core', method: 'status.get' }, // ADR 0010 amendment 14: not listed to a worker
   task_list: { role: 'both', via: 'core', method: 'task.list' },
   briefing: { role: 'both', via: 'briefing', method: 'continuity.resumeLine+resumeDoc' },
-  worker_spawn: { role: 'orchestrator', via: 'run', method: 'spawn' },
+  worker_spawn: { role: 'orchestrator', via: 'compose', method: 'spawn' }, // ADR 0058: the run manager's spawn, compact by default
   worker_message: { role: 'orchestrator', via: 'run', method: 'message' },
   worker_stop: { role: 'orchestrator', via: 'run', method: 'stop' },
   worker_restart: { role: 'orchestrator', via: 'run', method: 'restart' },
-  task_create: { role: 'orchestrator', via: 'core', method: 'task.create' },
-  task_assign: { role: 'orchestrator', via: 'core', method: 'task.assign' },
+  task_create: { role: 'orchestrator', via: 'compose', method: 'create' }, // ADR 0058 (B4): warns when no check is declared
+  // ADR 0058: the assign, then the task sent to the worker (compose.cjs).
+  task_assign: { role: 'orchestrator', via: 'compose', method: 'assign' },
   // ADR 0010 amendment 3: the only way an orchestrator over MCP can write `done` and clear a dependency.
-  task_evaluate: { role: 'orchestrator', via: 'core', method: 'task.evaluate' },
+  task_evaluate: { role: 'orchestrator', via: 'compose', method: 'evaluate' }, // ADR 0058: then stop_idle_on_done (compose.cjs)
+  fix_from_review: { role: 'orchestrator', via: 'core', method: 'task.fixFromReview' }, // ADR 0058 decision 3
+  task_cancel: { role: 'orchestrator', via: 'compose', method: 'cancel' }, // ADR 0058 decision 7: then the lease holder is told
+  worker_last_reply: { role: 'orchestrator', via: 'compose', method: 'lastReply' }, // ADR 0058 (B11): read from the recorded stream
+  // ADR 0053: a task's own worktree and branch (action remove routes to task.worktreeRemove, belay-mcp.cjs), and the merge step.
+  task_worktree: { role: 'orchestrator', via: 'core', method: 'task.worktreeCreate' },
+  integrate: { role: 'orchestrator', via: 'core', method: 'integration.merge' },
   // ADR 0015: admitted to the surface, which is nineteen tools from that record. It is the only way
   // to wait in the deployment ADR 0009 §1 names first — an operator's own session, which belay
   // attaches to and therefore cannot wake, because it does not own that session's stdin.
   worker_wait: { role: 'orchestrator', via: 'run', method: 'wait' },
-  lease_renew: { role: 'worker', via: 'core', method: 'lease.renew' },
   lease_release: { role: 'worker', via: 'core', method: 'lease.release' },
-  checkpoint_write: { role: 'worker', via: 'core', method: 'continuity.checkpoint' },
   // ADR 0047 decision 4: listed only for a worker whose run has the notes lever on (tools-notes.cjs); the core refuses E_LEVER_OFF otherwise.
   memory_note_resolve: { role: 'worker', via: 'core', method: 'memory.noteResolve' },
   // ADR 0047 decision 1: listed for the orchestrator of a notes run only; callable by either role, the core refuses E_LEVER_OFF otherwise.
@@ -79,15 +85,17 @@ const ROUTES = {
   // ADR 0043 decision 1: listed only when the run's knowledge_agent lever is on (toolsFor's knowledge option);
   // with the lever off the manager refuses it E_LEVER_OFF, and the listing never mentions it.
   knowledge_ask: { role: 'orchestrator', via: 'run', method: 'ask' },
+  // ADR 0054 decision 2: belay runs these git reads with its own argv (git-read.cjs); the orchestrator's shell is the alternative.
+  git_read: { role: 'orchestrator', via: 'git', method: 'gitRead' },
 };
 
 const BOTH = [
   {
     name: 'memory_store',
-    description: 'Store one entry. Returns the row written: id, action, namespace, worker id. Refuses text past the embedder\'s window.',
+    description: 'Store one entry. Returns the row written: id, action, namespace, worker id.',
     inputSchema: S({
       text: str('One self-contained statement'),
-      namespace: str('Defaults to this run; moved to the project when your task ends'),
+      namespace: str('Default: this run only; later runs see it only with project_writes on'),
       type: { type: 'string', enum: ['fact', 'episode', 'procedure'] },
       tags: strs(),
       provenance: str('Source, e.g. a path'),
@@ -103,7 +111,7 @@ const BOTH = [
   },
   {
     name: 'memory_search',
-    description: 'Search memory. Query with one short task line for what you will do, naming files or symbols; several short queries beat one long one. view index: ids and titles only. Result names modes_run, modes_failed, absence_established (true only if both ran and found nothing).',
+    description: 'Search memory. Query with one short task line for what you will do, naming files or symbols; several short queries beat one long one. view index: ids and titles only. Result names modes_run, modes_failed, absence_established (true only if both ran and none reached the relevance floor).',
     inputSchema: S({
       query: str(),
       namespace: str(),
@@ -111,7 +119,7 @@ const BOTH = [
       min_score: num(),
       include_superseded: bool(),
       mode: { type: 'string', enum: ['semantic', 'keyword', 'hybrid'] },
-      view: { type: 'string', enum: ['full', 'index'] },
+      view: { type: 'string', enum: ['debug', 'index'] },
       filter: { type: 'object' },
       order: { type: 'string', enum: ['score', 'newest', 'oldest'] },
       offset: int(),
@@ -119,7 +127,7 @@ const BOTH = [
   },
   {
     name: 'memory_timeline',
-    description: 'Entries around one entry, oldest first: anchor, before, after, scope. Refuses an unknown anchor.',
+    description: 'Entries around one entry, oldest first: anchor, before, after, scope.',
     inputSchema: S({
       anchor_id: str(),
       before: int('default 5'),
@@ -144,7 +152,7 @@ const BOTH = [
   },
   {
     name: 'status',
-    description: 'The liveness ladder: each rung, whether it held and what established it, the run, and per worker pid_alive, last-event age, turns, tokens and cost. Never refuses.',
+    description: 'The liveness ladder: each rung, whether it held and what established it, the run, and per worker pid_alive, last-event age, turns, tokens and cost.',
     inputSchema: S({ deep: bool('Also query the substrate registry; slower') }),
   },
   {
@@ -159,24 +167,33 @@ const BOTH = [
   },
 ];
 
+// The orchestrator's task_list (ADR 0058 amendment 3): compact rows by default (views.cjs), one task's detail by task_ids,
+// the core's rows with view debug. The worker's listing keeps the plain one above, so its bytes are unchanged.
+const ORCH_TASK_LIST = {
+  name: 'task_list',
+  description: 'Tasks: id, state, spec_head, depends_on, branch, lease, last results (failing named), hand-back field names. task_ids: those tasks with hand-back and checks whole. view debug: full rows.',
+  inputSchema: S({ states: strs('open, assigned, released, done or cancelled'), task_ids: strs(), view: DEBUG }),
+};
+
 const ORCHESTRATOR = [
   {
     name: 'worker_spawn',
-    description: 'Launch a real Claude Code or Codex process and wait for its ready event. Returns the worker row: id, substrate, pid, session id, argv hash, started_at, ready_ms. If no ready event arrives it fails with the exit code and stderr tail and writes the row dead, never running. Takes seconds.',
+    description: 'Launch a real Claude Code or Codex process and wait for its ready event. Returns id, substrate, pid, state, session id, worktree, model, effort, tools, ready_ms; view debug: the whole row and launch receipt.',
     inputSchema: S({
       substrate: { type: 'string', enum: ['claude-code', 'codex'] },
-      worktree: str('Absolute path; the worker\'s cwd'),
-      prompt: str('First message'),
-      task_id: str('Assign this task once ready and prepend its resume line'),
+      worktree: str('Absolute path; the worker\'s cwd. Default: task_id\'s worktree'),
+      prompt: str('Without task_id, the first message. With it, instructions added after the task\'s spec'),
+      task_id: str('Assign this task once ready; belay sends its resume line, then its spec'),
       model: str(),
-      agent_type: { type: 'string', enum: WORKER_TYPES, description: 'Configured model and effort default' },
+      agent_type: { type: 'string', enum: WORKER_TYPES, description: 'Configured model, effort and tools' },
       effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
       memory_queries: strs('Up to 4 task lines naming the situations the worker will be in, each max 160 bytes'),
       allowed_tools: strs(),
       permission_mode: str(),
       startup_timeout_ms: int('default 60000'),
       worker_id: str('Otherwise generated'),
-    }, ['substrate', 'worktree', 'prompt']),
+      view: { type: 'string', enum: ['compact', 'debug'] },
+    }, ['substrate']),
   },
   {
     // ADR 0015. `worker_spawn` above returns at the ready event and the worker keeps running; this is
@@ -192,8 +209,13 @@ const ORCHESTRATOR = [
   },
   {
     name: 'worker_message',
-    description: 'Send text to a live worker. Returns the channel used, bytes written, pid and turn. Refuses, naming the substrate, when that substrate cannot take a message in its current state.',
+    description: 'Send text to a live worker. Returns the channel used, bytes written, pid and turn; while it compacts, channel queued, sent when that ends.',
     inputSchema: S({ worker_id: str(), text: str() }, ['worker_id', 'text']),
+  },
+  {
+    name: 'worker_last_reply',
+    description: 'The text a worker\'s last finished turn ended with, from the stream belay recorded (max 4 KB), marked as data.',
+    inputSchema: S({ worker_id: str() }, ['worker_id']),
   },
   {
     name: 'worker_stop',
@@ -211,27 +233,32 @@ const ORCHESTRATOR = [
   },
   {
     name: 'task_create',
-    description: 'Create a task with the checks that decide it is done, the files it owns and the tasks it must wait for. Returns the task row in state open. Refuses, naming the other task and the paths, when a file is already owned by a task that is not done, and refuses a dependency that has no row.',
+    description: 'Create a task with the checks that decide it is done, the files it owns and the tasks it must wait for. Returns id, rev, state open, spec_head (view debug: whole row).',
     inputSchema: S({
       spec: str('What is to be done'),
       acceptance: S({
         commands: {
           type: 'array',
-          items: S({ argv: strs(), cwd: str(), timeout_ms: int() }, ['argv']),
+          items: S({ argv: strs(), cwd: str(), timeout_ms: int(), retries_on_fail: int('0-5; a pass after a fail is marked flaky') }, ['argv']),
         },
         files_within_owned: bool(),
         verdict: { const: true },
+        handoff: S({ required: strs('Fields the hand-back result must carry') }),
       }),
       files_owned: strs('Paths relative to the worktree'),
       depends_on: strs('Task ids that must be done before this one can be assigned'),
-      repairs: str('A fix task: the id of the work task it repairs; capped by max_fix_rounds'),
+      repairs: str('A fix task: the id of the work task it repairs; past max_fix_rounds the answer carries fix_notice'),
+      base: str('Diff base'),
+      tree_of: str('Work in that task\'s worktree (a conflict fix)'),
       id: str(),
-    }, ['spec']),
+      amend: { type: 'boolean', description: 'Replace not-done task id\'s acceptance and spec' },
+      view: DEBUG,
+    }), // spec: required unless amend (validateArgs)
   },
   {
     name: 'task_assign',
-    description: 'Assign a task to a live worker and take a lease for it. Returns the old and new lease rows and the task row. Refuses when the operator holds the lease, when a dependency of the task is not done, naming it and its holder, or when the worker is not starting, running or idle.',
-    inputSchema: S({ task_id: str(), worker_id: str(), ttl_ms: int('default 600000') }, ['task_id', 'worker_id']),
+    description: 'Assign a task to a live worker, take a lease and send the worker the task, its lease id and the hand-back rule. Returns the old lease row, the new lease (id, holder, expires_at), the task\'s task_list row and delivered.',
+    inputSchema: S({ task_id: str(), worker_id: str(), ttl_ms: int('default 600000'), prompt: str('Instructions added after the task\'s spec'), deliver: bool() }, ['task_id', 'worker_id']),
   },
   {
     // ADR 0020 decision 5: the orchestrator's window onto the permission channel, so a headless run
@@ -247,57 +274,98 @@ const ORCHESTRATOR = [
   },
   {
     name: 'task_evaluate',
-    description: 'Run a task\'s checks in worktree. Returns row and results; done (unblocks dependents) only if all pass.',
+    description: 'Run a task\'s checks in worktree. Returns row and results (passing output cut; view debug: whole); done (unblocks dependents) only if all pass. A run with max_parallel_evaluations may queue it; E_BUSY queued: waited too long, nothing run, call again.',
     inputSchema: S({
       task_id: str(),
-      worktree: str(),
-      base: str('Diff base; default merge-base main'),
-    }, ['task_id', 'worktree']),
+      worktree: str('Default: the task\'s worktree'),
+      base: str('Diff base; default the task\'s base, else merge-base main'),
+      view: DEBUG,
+    }, ['task_id']),
+  },
+  {
+    // ADR 0053 decisions 2, 3 and 6.
+    name: 'task_worktree',
+    description: 'Create (default) or remove the task\'s own git worktree and branch belay/<task_id>, cut from base (default HEAD). Returns id, rev, state, spec_head, worktree (view debug: whole row). remove keeps the branch unless delete_branch.',
+    inputSchema: S({
+      task_id: str(),
+      action: { type: 'string', enum: ['create', 'remove'] },
+      base: str(),
+      branch: str(),
+      force: bool(),
+      delete_branch: bool(),
+      view: DEBUG,
+    }, ['task_id']),
+  },
+  {
+    // ADR 0053 decision 5.
+    name: 'integrate',
+    description: 'Merge done tasks\' branches, at the head each was judged at, in order into into (default belay/integrate/<run>), then re-run their checks there. Returns state, merged (what this call merged), carried (count from earlier rows), not_merged, left_out (commits past it), checks (reused ones marked), passed, forced, not_carried (passing output cut; view debug: whole row). A conflict is aborted, tree clean; conflict names task and files; what merged before it is still checked. task_list gives each task\'s integration state. force with reason also merges tasks not done, recorded as forced. A run with max_parallel_evaluations may queue the re-run; E_BUSY queued: refused before any merge, call again.',
+    inputSchema: S({
+      task_ids: strs(),
+      into: str(),
+      base: str('If into is new; default the tasks\' base'),
+      evaluate: { type: 'boolean', description: 'false skips the tasks\' re-runs' },
+      checks: { type: 'array', items: S({ argv: strs(), cwd: str(), timeout_ms: int() }, ['argv']), description: 'Extra commands run on the merged head, before the tasks re-run; all the commands of the call share one 540 s budget' },
+      force: bool(),
+      reason: str(),
+      view: DEBUG,
+    }, ['task_ids']),
+  },
+  {
+    name: 'fix_from_review',
+    description: 'Create the fix task for a review evaluated refuted, with depends_on, repairs, acceptance and files_owned inferred and spec from its findings. Returns id, rev, state, spec_head, repairs, depends_on, files_owned, fix_notice past max_fix_rounds (view debug: whole row).',
+    inputSchema: S({ review_id: str(), spec: str('Default: from the findings'), repairs: str('Which task, if it judged several'), id: str(), view: DEBUG }, ['review_id']),
+  },
+  {
+    name: 'task_cancel',
+    description: 'Give up on a task that is not done: releases its lease and its files_owned, state cancelled (final), and tells the lease holder. Returns the task\'s task_list row, the released lease and notified.',
+    inputSchema: S({ task_id: str(), reason: str() }, ['task_id']),
   },
   {
     // ADR 0040 §4. A worker cannot verify a claim, so this is not on the worker listing.
     name: 'memory_verify',
-    description: 'Set an entry\'s status with its evidence. Returns id, status, previous status, receipt. Refuses a receipt that fails its grammar.',
+    description: 'Set an entry\'s status with its evidence. Returns id, status, previous status, receipt.',
     inputSchema: S({
       id: str(),
       status: { type: 'string', enum: ['unverified', 'verified', 'refuted'] },
       receipt: str('checkpoint:id, task:id, memory:id, commit:sha or test:text; none for unverified'),
     }, ['id', 'status']),
   },
+  {
+    // ADR 0054 decision 2. One tool with an op, not four: the listing pays for one schema.
+    name: 'git_read',
+    description: 'Read-only git, run by belay with fixed argv, in worktree, task_id\'s worktree or the run\'s. Returns exit_code, out (16 KB max, truncated marked; view debug: argv too).',
+    inputSchema: S({
+      op: { type: 'string', enum: ['status', 'log', 'diff', 'show'] },
+      worktree: str(),
+      task_id: str(),
+      rev: str('a..b for log/diff; one commit for show'),
+      path: str(),
+      stat: bool(),
+      n: int('log, default 20'),
+      view: DEBUG,
+    }, ['op']),
+  },
 ];
 
 const WORKER = [
   {
-    name: 'lease_renew',
-    description: 'Extend your lease. Returns the lease row with its new expiry. Refuses if you are not the holder or it expired.',
-    inputSchema: S({ lease_id: str() }, ['lease_id']),
-  },
-  {
     name: 'lease_release',
-    description: 'Release your lease. Returns the released task row; refuses if not the holder. result (max 4KB) hands back branch, head, tests, findings; a review sets verdict holds|refuted and summary. The orchestrator reads it as handoff.',
+    description: 'Release your lease. Returns the task state. result (max 4KB) hands back branch, head, tests, findings; a review sets verdict holds|refuted and summary.',
     inputSchema: S({ lease_id: str(), reason: str(), result: { type: 'object' } }, ['lease_id']),
-  },
-  {
-    name: 'checkpoint_write',
-    description: 'Record what you did and what is next, as your claim. Returns the checkpoint row. Refuses unless you hold the task\'s current lease.',
-    inputSchema: S({
-      task_id: str(),
-      turn: int(),
-      files_touched: strs(),
-      summary: str(),
-      next_step: str(),
-      open_questions: strs(),
-    }, ['task_id']),
   },
 ];
 
 const ROLES = ['orchestrator', 'worker'];
 
+// A worker's listing: the tools both roles share, and its own. status and memory_stats are the orchestrator's (ADR 0010 amendment 14).
+const WORKER_LISTED = BOTH.filter((t) => ROUTES[t.name].role === 'both').concat(WORKER);
+
 // ADR 0043 decision 1. Not in ORCHESTRATOR: the listing carries it only for a run whose knowledge_agent lever is
 // on, so a run without the lever pays no byte for it. Workers never get it; a worker asks through its result.
 const KNOWLEDGE_TOOL = {
   name: 'knowledge_ask',
-  description: 'Ask the run\'s knowledge agent about stored memory. Returns answer, cited ids with found and status, uncited_claims. Answers from memory only; unverified rows are marked. Refuses E_LEVER_OFF when the lever is off.',
+  description: 'Ask the run\'s knowledge agent about stored notes. Returns answer, cited ids with found and status, uncited_claims. Answers from notes only; unverified rows are marked.',
   inputSchema: S({ question: str() }, ['question']),
 };
 
@@ -329,25 +397,30 @@ const withoutQueries = (list) => list.map((t) => {
   return { ...t, inputSchema: { ...t.inputSchema, properties } };
 });
 
-function toolsFor(role, { knowledge = false, workerId = null, notes = false, queries = false } = {}) {
+function toolsFor(role, { knowledge = false, workerId = null, notes = false, queries = false, permissions = false } = {}) {
   if (role === 'orchestrator') {
-    const all = knowledge ? BOTH.concat(ORCHESTRATOR, [KNOWLEDGE_TOOL]) : BOTH.concat(ORCHESTRATOR);
+    const both = BOTH.map((t) => (t.name === 'task_list' ? ORCH_TASK_LIST : t));
+    // permission_list and permission_decide: only for a run that turns the permission channel on (run lever permission_prompt).
+    const own = permissions ? ORCHESTRATOR : ORCHESTRATOR.filter((t) => !PERMISSION_TOOLS.includes(t.name));
+    const all = knowledge ? both.concat(own, [KNOWLEDGE_TOOL]) : both.concat(own);
     const base = queries ? all : withoutQueries(all);
     // A notes run: a project memory_store is a note, and memory_verify is gone (notes are disputed by memory_report, never by a status).
     return notes ? base.filter((t) => t.name !== 'memory_verify').map((t) => (t.name === 'memory_store' ? NOTES.memoryStoreNotes(t, 'orchestrator') : t)).concat([NOTES.SUMMARIES, NOTES.NOTE_REFUTATION, NOTES.MEMORY_REPORT]) : base;
   }
   if (isReviewJob(role, workerId)) return [];
   if (isKnowledgeAgent(role, workerId)) return BOTH.filter((t) => KNOWLEDGE_READ_TOOLS.includes(t.name));
-  if (role === 'worker') return notes ? NOTES.notesWorkerListing(BOTH.concat(WORKER).map((t) => (t.name === 'memory_store' ? NOTES.memoryStoreNotes(t, 'worker') : t))) : BOTH.concat(WORKER);
+  if (role === 'worker') return notes ? NOTES.notesWorkerListing(WORKER_LISTED.map((t) => (t.name === 'memory_store' ? NOTES.memoryStoreNotes(t, 'worker') : t))) : WORKER_LISTED;
   throw Object.assign(new Error(`unknown role ${role}`), { code: 'E_ROLE' });
 }
 
+const PERMISSION_TOOLS = ['permission_list', 'permission_decide'];
 const permitBytes = () => Buffer.byteLength(JSON.stringify(PERMIT_TOOL), 'utf8');
 
 // Which role may call a tool, without building a listing. Returns 'both', 'orchestrator', 'worker', or
 // undefined when the name is not a tool at all.
-const roleOf = (name) => (ROUTES[name] ? ROUTES[name].role : undefined);
-const routeOf = (name) => ROUTES[name];
+// Own keys only: `constructor`, `toString` or `__proto__` is not a tool, however a plain object answers it.
+const routeOf = (name) => (typeof name === 'string' && Object.prototype.hasOwnProperty.call(ROUTES, name) ? ROUTES[name] : undefined);
+const roleOf = (name) => (routeOf(name) ? routeOf(name).role : undefined);
 // `notes` (the run has the notes lever on): the orchestrator is not given memory_verify, since a note is disputed by memory_report and never set by a status.
 const allows = (role, name, workerId = null, { notes = false } = {}) => {
   if (isReviewJob(role, workerId)) return false;
@@ -357,7 +430,7 @@ const allows = (role, name, workerId = null, { notes = false } = {}) => {
   return r === 'both' || r === role;
 };
 
-const BUDGET = { orchestrator: 11264, worker: 7168, permit: 320 }; // ADR 0010 amendment 6: orchestrator 11 KB, worker 7 KB
+const BUDGET = { orchestrator: 16384, worker: 7168, permit: 320 }; // ADR 0010 amendment 9: orchestrator 16 KB, worker 7 KB
 const listingBytes = (role, opts) => Buffer.byteLength(JSON.stringify(toolsFor(role, opts)), 'utf8');
 
 const BY_NAME = new Map();
@@ -367,6 +440,7 @@ for (const t of BOTH.concat(ORCHESTRATOR, WORKER, [KNOWLEDGE_TOOL, NOTES.NOTE_RE
 const schemaOf = (name, notes = false, role = 'worker') => {
   if (notes && name === 'lease_release') return NOTES.LEASE_RELEASE.inputSchema;
   if (notes && name === 'memory_store') return NOTES.memoryStoreNotes(BY_NAME.get(name), role).inputSchema;
+  if (role === 'orchestrator' && name === 'task_list') return ORCH_TASK_LIST.inputSchema;
   return (BY_NAME.get(name) || {}).inputSchema;
 };
 
@@ -378,7 +452,7 @@ const NO_NULL = { task_evaluate: ['base'] };
 // the core, never something a model says (invariant 3), so the boundary refuses them in either role,
 // by name, before the core sees them. The schema does not list them, which is why the listing does
 // not pay for them either.
-const HARNESS_ONLY = { memory_store: ['task_id', 'turn', 'source', 'embed', 'body', 'worker_id'], worker_spawn: ['native_memory', 'tools', 'sandbox', 'max_budget_usd'] }; // worker_spawn: native_memory is the eval driver's lever (ADR 0024 amendment 3); tools is the built-in list, which only allowed_tools may narrow (amendment 4); sandbox is a Codex worker's sandbox mode and max_budget_usd a job worker's spend cap, both the harness's. permission_prompt and permit_wait_ms stay open: ADR 0020 decision 1 makes the permission channel optional per spawn, and decision 5 has the orchestrator answer its requests
+const HARNESS_ONLY = { task_evaluate: ['trigger', 'cancel_key'], memory_store: ['task_id', 'turn', 'source', 'embed', 'body', 'worker_id'], worker_spawn: ['native_memory', 'tools', 'sandbox', 'max_budget_usd'] }; // worker_spawn: native_memory is the eval driver's lever (ADR 0024 amendment 3); tools is the built-in list, which only allowed_tools may narrow (amendment 4); sandbox is a Codex worker's sandbox mode and max_budget_usd a job worker's spend cap, both the harness's. permission_prompt and permit_wait_ms stay open: ADR 0020 decision 1 makes the permission channel optional per spawn, and decision 5 has the orchestrator answer its requests
 // Tools that take exactly the properties their schema names: memory_store's row is written from its arguments, so an
 // unnamed one (an id, a created_at, a vector and its model) would reach the core as if the harness had chosen it.
 const CLOSED = new Set(['memory_store']);
@@ -415,6 +489,8 @@ function validateArgs(name, args, { notes = false, role = 'worker' } = {}) {
   for (const k of schema.required || []) {
     if (a[k] === undefined || a[k] === null) bad(`${name} needs ${k}`, { tool: name, missing: k });
   }
+  // ADR 0061: an amend keeps the task\'s spec unless it names a new one, so only a create needs it.
+  if (name === 'task_create' && a.amend !== true && (a.spec === undefined || a.spec === null)) bad('task_create needs spec', { tool: name, missing: 'spec' });
   if (name === 'memory_retrieve') {
     const hasId = a.id !== undefined && a.id !== null;
     const hasIds = a.ids !== undefined && a.ids !== null;

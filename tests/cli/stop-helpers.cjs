@@ -72,7 +72,7 @@ function makeSpec(dir, overrides = {}) {
   const orchestratorDir = overrides.orchestrator_dir || `${dir}/orch`;
   const spec = {
     worktree: wt, prompt_file: promptFile, run_id: runId, orchestrator_dir: orchestratorDir,
-    startup_timeout_ms: 20000, poll_ms: 500, on_embedder_failure: 'continue', ...overrides,
+    startup_timeout_ms: 60000, poll_ms: 500, on_embedder_failure: 'continue', ...overrides,
   };
   const specPath = `${dir}/spec.json`;
   fs.writeFileSync(specPath, JSON.stringify(spec));
@@ -95,8 +95,9 @@ function receiptOf(run, exitCode) {
 
 // The run's owner serves bound callers (ADR 0045), so this test is the orchestrator the way a run's is: through a bind the operator asks for.
 // A hang guard: a node CLI's start-up took several seconds on a saturated host (w2-flakes), so 10 s was a speed claim.
-async function connectOrchestratorCore(dataDir, runId) {
-  return require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(dataDir, runId, { waitMs: 60000 });
+async function connectOrchestratorCore(dataDir, runId, run = null) { // `run`: the runCli handle, whose stderr tail explains a lost owner
+  const diagnose = run ? () => `run process exitCode ${run.proc.exitCode}, stderr tail ${JSON.stringify(run.stderr.slice(-600))}` : undefined;
+  return require('../helpers/bound-orchestrator.cjs').connectBoundOrchestrator(dataDir, runId, { waitMs: 60000, diagnose });
 }
 
 // A test core that won the election owns the store: close() only drops the client, so shut the owner down

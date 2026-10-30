@@ -400,7 +400,7 @@ test('retitle under off: the resolve is refused by the memory-off gate, as every
   const id = await pendingNote('K4', 'the K4 loader also skips unlisted fixtures, again');
   const was = E._memoryOffFn;
   E._memoryOffFn = () => 'refuse';
-  try { await assert.rejects(resolveNew(id, 'the K9 loader reads fixtures from the index'), (e) => e.code === 'E_LEVER_OFF' || /memory is off/i.test(e.message)); } finally { E._memoryOffFn = was; }
+  try { await assert.rejects(resolveNew(id, 'the K9 loader reads fixtures from the index'), (e) => e.code === 'E_LEVER_OFF' || /notes are off/i.test(e.message)); } finally { E._memoryOffFn = was; }
   assert.strictEqual(rowOf(id).namespace, 'pending/acme');
 });
 
@@ -421,4 +421,15 @@ test('an absolute path in a title names the changed file once the worktree root 
   assert.deepStrictEqual(NP.namedFiles({ title: 'C:/wt/src/a.js is slow', evidence: [] }, ['src/a.js'], 'C:/wt').named, ['src/a.js']);
   assert.deepStrictEqual(NP.namedFiles({ title: 'c:/WT/src/a.js is slow', evidence: [] }, ['src/a.js'], 'C:/wt/').named, ['src/a.js'], 'case and a trailing slash do not matter');
   assert.deepStrictEqual(NP.namedFiles({ title: 'D:/other/src/a.js is slow', evidence: [] }, ['src/a.js'], 'C:/wt').named, [], 'another root is not this worktree');
+});
+
+test('B10: a note\'s own applies_to paths carry the writer\'s role (an orchestrator\'s are not labelled worker), and the review text reads any role as the writer\'s', () => {
+  const NP = require('../../src/core/note-paths.cjs');
+  const n = note('K40', { applies_to: ['lib/plan.cjs'] });
+  const o = NP.merge(n, null, null, 'orchestrator');
+  assert.deepStrictEqual([o.applies_to, o.applies_to_from], [['lib/plan.cjs', 'src/K40.js'], ['orchestrator', 'evidence']]);
+  assert.deepStrictEqual([o.counts.orchestrator, o.counts.worker, o.counts.evidence], [1, 0, 1]);
+  assert.deepStrictEqual(NP.merge(n, null, null).applies_to_from, ['worker', 'evidence'], 'a worker\'s note is as it was');
+  // The write path passes the caller's role (note-write.cjs prepareNotes).
+  assert.match(fs.readFileSync(require.resolve('../../src/core/note-write.cjs'), 'utf8'), /NP\.merge\(n, diff, worker && worker\.worktree, caller\.role\)/);
 });

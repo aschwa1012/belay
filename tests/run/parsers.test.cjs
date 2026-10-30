@@ -282,3 +282,13 @@ test('parser: a cancelled command_lifecycle for a known write emits write_done w
   assert.equal(ev2.answers_write, idx2);
   assert.equal(ev2.state, 'completed');
 });
+
+test('ADR 0058 (B7): a Codex command_execution tool_use carries its command, so two commands hash apart in the digest', () => {
+  const { createParser } = require('../../src/run/parsers.cjs');
+  const W = require('../../src/run/worker.cjs');
+  const p = createParser('codex');
+  const line = (id, command) => JSON.stringify({ type: 'item.started', item: { id, type: 'command_execution', command, aggregated_output: '', status: 'in_progress' } });
+  const uses = [line('i1', 'npm test'), line('i2', 'git status')].flatMap((l) => p.pushLine(l)).filter((e) => e.kind === 'tool_use');
+  assert.deepStrictEqual(uses.map((e) => e.args), [{ command: 'npm test' }, { command: 'git status' }]);
+  assert.notStrictEqual(W.sha12(uses[0].args), W.sha12(uses[1].args));
+});

@@ -18,6 +18,7 @@ function admit(owner, c, req) {
     const caller = { ...entry.identity };
     if (Number.isInteger(sent.pid)) caller.pid = sent.pid;
     if (sent.channel === 'tool') caller.channel = 'tool';
+    else if (sent.channel === 'keepalive' && entry.identity.role === 'worker') caller.channel = 'keepalive'; // the worker adapter's lease keep-alive
     else if (sent.channel === 'harness') {
       // Only an orchestrator's bind admits the harness channel (the run manager); a worker's admits neither it nor any other role.
       if (entry.identity.role !== 'orchestrator') return { code: 'E_UNBOUND', message: `a ${entry.identity.role} bind does not admit the harness channel`, detail: { reason: 'channel', method: req.method, role: entry.identity.role } };

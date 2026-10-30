@@ -18,12 +18,12 @@ test('diffWorkers: a worker seen for the first time baselines at 0, and wakes wh
   assert.deepEqual(next.w1, { turns: 1, state: 'running' });
 });
 
-test('diffWorkers: a worker first seen already dead or stopped wakes nothing, and is baselined as seen', () => {
+test('diffWorkers: a worker first seen dead before the baseline began, or stopped, wakes nothing, and is baselined as seen', () => {
   const rows = [
-    { id: 'w2', run_id: RUN, state: 'dead', turns: 3, seq: 1, exit_code: 1, exit_signal: null, death_established_by: 'exit-event' },
+    { id: 'w2', run_id: RUN, state: 'dead', turns: 3, seq: 1, exit_code: 1, exit_signal: null, death_established_by: 'exit-event', exited_at: 4000 },
     { id: 'w3', run_id: RUN, state: 'stopped', turns: 2, seq: 2 },
   ];
-  const { events, next } = diffWorkers({ prev: {}, rows, runId: RUN });
+  const { events, next } = diffWorkers({ prev: {}, rows, runId: RUN, sinceAt: 5000 });
   assert.deepEqual(events, []);
   assert.deepEqual(next.w2, { turns: 3, state: 'dead' });
   assert.deepEqual(next.w3, { turns: 2, state: 'stopped' });
@@ -104,7 +104,7 @@ test('diffWorkers: a pending death past the grace is no longer pending, and a de
   assert.ok(!('pid_dead_seen_at_ms' in settled.next.w10), 'pid_dead_seen_at_ms must not survive onto a terminal row');
 });
 
-test('diffWorkers: a row seen alive again clears pid_dead_seen_at_ms, and a first-sight dead row is neither a wake nor a pending death', () => {
+test('diffWorkers: a row seen alive again clears pid_dead_seen_at_ms, and a first-sight dead row from before the baseline is neither a wake nor a pending death', () => {
   const startingRow = { id: 'w11', run_id: RUN, state: 'starting', turns: 0, seq: 33, pid_alive: false };
   const baseline = diffWorkers({ prev: {}, rows: [startingRow], runId: RUN, nowMs: 1000, graceMs: 1500 }).next;
 
@@ -114,8 +114,8 @@ test('diffWorkers: a row seen alive again clears pid_dead_seen_at_ms, and a firs
   assert.deepEqual(revived.pending_deaths, []);
   assert.ok(!('pid_dead_seen_at_ms' in revived.next.w11), 'a live pid must clear pid_dead_seen_at_ms');
 
-  const firstSightDead = { id: 'w12', run_id: RUN, state: 'dead', turns: 1, seq: 35, pid_alive: false, exit_code: 1, exit_signal: null, death_established_by: 'exit-event' };
-  const firstSight = diffWorkers({ prev: {}, rows: [firstSightDead], runId: RUN, nowMs: 5000, graceMs: 1500 });
+  const firstSightDead = { id: 'w12', run_id: RUN, state: 'dead', turns: 1, seq: 35, pid_alive: false, exit_code: 1, exit_signal: null, death_established_by: 'exit-event', exited_at: 100 };
+  const firstSight = diffWorkers({ prev: {}, rows: [firstSightDead], runId: RUN, nowMs: 5000, graceMs: 1500, sinceAt: 200 });
   assert.deepEqual(firstSight.events, []);
   assert.deepEqual(firstSight.pending_deaths, []);
   assert.deepEqual(firstSight.next.w12, { turns: 1, state: 'dead' });
@@ -123,7 +123,7 @@ test('diffWorkers: a row seen alive again clears pid_dead_seen_at_ms, and a firs
 
 test('wakeText: a turn_end message carries only the id, the turn and the fixed sentence, under 400 bytes, no worker output', () => {
   const text = wakeText({ worker_id: 'w-abc', event: 'turn_end', turn: 3, seq: 40 });
-  assert.equal(text, "belay: worker w-abc finished turn 3. What it did is in the store: task_list, briefing or memory_search.");
+  assert.equal(text, 'belay: worker w-abc finished turn 3.'); // the pointer to the store (task_list, briefing or memory_search) is gone: the prompt says where a hand-back is read
   assert.ok(Buffer.byteLength(text, 'utf8') < 400, `wake text is ${Buffer.byteLength(text, 'utf8')} bytes`);
 });
 

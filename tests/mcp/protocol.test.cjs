@@ -130,7 +130,7 @@ test('initialize answers without opening a store and leaves the data dir empty',
   assert.strictEqual(fs.existsSync(data), false, 'initialize created the data dir');
   assert.deepStrictEqual(fs.readdirSync(parent), [], 'initialize wrote into the sandbox');
   // tools/list is also answerable without a store.
-  assert.strictEqual((await a.list()).length, 21);
+  assert.strictEqual((await a.list()).length, require('../../src/mcp/tools.cjs').toolsFor('orchestrator').length); // pinned in schema-budget.test.cjs
   assert.strictEqual(fs.existsSync(data), false, 'tools/list created the data dir');
 });
 
@@ -200,10 +200,14 @@ test('an orchestrator-role process refuses every worker tool with E_ROLE', async
   const a = launch({ role: 'orchestrator', data });
   t.after(async () => { await a.close(); a.kill(); });
   await a.initialize();
-  for (const name of ['lease_renew', 'lease_release', 'checkpoint_write']) {
-    const r = await a.call(name, {});
-    assert.strictEqual(r.isError, true, `${name} must be refused`);
-    assert.strictEqual(r.structuredContent.error, 'E_ROLE');
+  const r = await a.call('lease_release', {});
+  assert.strictEqual(r.isError, true, 'lease_release must be refused');
+  assert.strictEqual(r.structuredContent.error, 'E_ROLE');
+  // ADR 0010 amendment 14: these two are no tool at all, for either role.
+  for (const name of ['lease_renew', 'checkpoint_write']) {
+    const gone = await a.call(name, {});
+    assert.strictEqual(gone.isError, true, `${name} must be refused`);
+    assert.match(gone.structuredContent.message, /no such tool/);
   }
 });
 
@@ -242,7 +246,7 @@ test('the run manager is handed this binary\'s own path as paths.mcpBinary', asy
   const a = launch({ role: 'orchestrator', data });
   t.after(async () => { await a.close(); a.kill(); });
   await a.initialize();
-  const r = await a.call('worker_spawn', { substrate: 'claude-code', worktree: data, prompt: 'go' });
+  const r = await a.call('worker_spawn', { substrate: 'claude-code', worktree: data, prompt: 'go', view: 'debug' });
   assert.strictEqual(r.isError, false);
   // api.md §1 leaves paths optional with a default resolved from src/run. The adapter passes its own
   // path instead, which is the one that is right when belay runs from another checkout.

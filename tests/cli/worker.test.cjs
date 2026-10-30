@@ -27,12 +27,8 @@ const CLI = `${ROOT}/src/cli/belay.cjs`;
 const FAKE_CLAUDE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
 const USER_SETTINGS = `${ROOT}/tests/run/fixtures/user-settings.json`;
 
-// A pid that is certainly dead by the time it is used: a child that has already exited, never a
-// made-up number (pids are recycled and a guess can be alive).
-function deadPid() {
-  const r = spawnSync(process.execPath, ['-e', 'process.exit(0)'], { windowsHide: true });
-  return r.pid;
-}
+// A pid no process holds and none will be handed; an exited child's pid is reused within seconds (tests/helpers/dead-pid.cjs).
+const { deadPid } = require('../helpers/dead-pid.cjs');
 
 // A pid that is certainly alive until killed and is not this test process's own.
 function hungChild() {
@@ -246,7 +242,9 @@ test('worker rm: supersedes a dead worker\'s rows as forgotten, hides them from 
       const assign = await plantCore.task.assign({ task_id: t.id, worker_id: 'w-dead2' });
       leaseId = assign.new_lease.id;
       await killHung(hung);
-      await plantCore.worker.write({ id: 'w-dead2', state: 'dead', exit_code: 0, exited_at: Date.now() });
+      // keep_leases: a death a relaunch kept the lease for (ADR 0026 amendment 2), so a lease is really left for rm to name; a first
+      // dead row without it releases the lease (amendment 1), the case the next test covers.
+      await plantCore.worker.write({ id: 'w-dead2', state: 'dead', exit_code: 0, exited_at: Date.now(), keep_leases: true });
     } finally {
       await plantCore.shutdownOwner();
       await plantCore.close();
@@ -281,6 +279,40 @@ test('worker rm: supersedes a dead worker\'s rows as forgotten, hides them from 
       await checkCore.close();
     }
     assert.strictEqual(fs.existsSync(workerDir), true, 'rm must never remove workers/<id> from disk');
+  } finally {
+    await killHung(hung);
+    cleanup(dir);
+  }
+});
+
+test('worker rm: a worker whose death released its lease leaves none, and the receipt names none', async () => {
+  const dir = sandbox();
+  const dataDir = `${dir}/.belay`;
+  const hung = hungChild();
+  let leaseId, taskId;
+  try {
+    const plantCore = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: 'run-d2', pid: process.pid } });
+    try {
+      await plantCore.worker.write({ id: 'w-dead3', substrate: 'claude-code', pid: hung.pid, state: 'starting', turns: 0, started_at: Date.now() });
+      const t = await plantCore.task.create({ spec: 'released by the death of the worker that held it' });
+      taskId = t.id;
+      leaseId = (await plantCore.task.assign({ task_id: t.id, worker_id: 'w-dead3' })).new_lease.id;
+      await killHung(hung);
+      const dead = await plantCore.worker.write({ id: 'w-dead3', state: 'dead', exit_code: 0, exited_at: Date.now() });
+      assert.deepStrictEqual(dead.leases_released, [{ lease_id: leaseId, task_id: t.id }], 'the first dead row released it (ADR 0026 amendment 1)');
+    } finally {
+      await plantCore.shutdownOwner();
+      await plantCore.close();
+    }
+    const r = cliSync(['worker', 'rm', 'w-dead3'], dataDir);
+    assert.strictEqual(r.status, 0, `${r.stdout} / ${r.stderr}`);
+    assert.strictEqual(r.receipt.forgotten, true);
+    assert.deepStrictEqual(r.receipt.left.leases_unreleased, [], `nothing is left: ${JSON.stringify(r.receipt.left)}`);
+    const checkCore = await openCore({ dataDir, caller: { role: 'operator', run_id: 'cli', pid: process.pid } });
+    try {
+      const task = await checkCore.task.get({ task_id: taskId });
+      assert.deepStrictEqual([task.state, task.lease], ['open', null]);
+    } finally { await checkCore.close(); }
   } finally {
     await killHung(hung);
     cleanup(dir);

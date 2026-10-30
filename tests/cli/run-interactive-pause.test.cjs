@@ -53,7 +53,7 @@ async function liveRun(dir, workerIds, extraEnv = {}, specOverrides = {}) {
   assert.ok(rec, 'the stub never started');
   core = await connectOrchestratorCore(r.dataDir, r.runId);
   m = createRunManager({ core, dataDir: r.dataDir, runId: r.runId, paths: { claudeExe: FAKE_WORKER, userSettings: USER_SETTINGS } });
-  control = createWorkerControl({ dataDir: r.dataDir, manager: m, pid: process.pid });
+  control = createWorkerControl({ redeem: null, dataDir: r.dataDir, manager: m, pid: process.pid });
   await control.listen();
   for (const id of workerIds) {
     const wt = `${dir}/${id}-wt`;
@@ -165,7 +165,7 @@ test('stop during a pause: belay stop ends the run and names the left-parked wor
     assert.deepStrictEqual([...stopped.json.left_parked].sort(), ['w1', 'w2']);
     assert.match(stopped.text, /left parked: w1, w2|left parked: w2, w1/);
     const res = await c.r.done;
-    assert.ok(!P.pidAlive(c.rec.pid), 'claude outlived the stop');
+    assert.ok(!(await require('../helpers/dead-pid.cjs').stillRunning(c.rec.pid, c.rec.started_at)), 'claude outlived the stop');
     assert.match(res.json.ended_by, /^stopped by belay stop/);
     assert.deepStrictEqual([...res.json.workers_closed.left_parked].sort(), ['w1', 'w2']);
     assert.ok(currentRunRow(c.r.dataDir, c.r.runId).ended_at != null);

@@ -60,14 +60,20 @@ test('spawn returns the row only after ready, and every artefact is on disk', as
     assert.match(row.argv_hash, /^[0-9a-f]{64}$/);
     assert.ok(typeof row.ready_ms === 'number');
 
-    // The row went through core.worker.write: starting (pidless, so task.assign has a worker to
-    // assign to), starting again with the pid, then running. Never running first.
-    const states = core.rowsFor('w1').map((r) => r.state);
+    // The row went through core.worker.write. The contract: the first row is a pidless 'starting' (so
+    // task.assign has a worker to assign to); no 'running' row exists before the pid is known; a row
+    // carrying the pid exists before the first 'running'. The count of 'starting' rows is not part of it:
+    // restating pid_created (src/run/write-row.cjs) queues one more 'starting' row when the creation-time
+    // read lands before ready, so there are two or three of them depending on host speed.
+    const rows = core.rowsFor('w1');
+    const states = rows.map((r) => r.state);
+    const firstRunning = states.indexOf('running');
     assert.equal(states[0], 'starting');
-    assert.ok(!states.slice(0, states.indexOf('running')).includes('running'));
-    assert.equal(states.indexOf('running'), 2);
-    assert.equal(core.rowsFor('w1')[0].pid, null, 'the first row has no pid yet');
-    assert.ok(core.rowsFor('w1')[1].pid > 0, 'the second carries the pid it launched with');
+    assert.equal(rows[0].pid, null, 'the first row has no pid yet');
+    assert.ok(firstRunning > 0, 'a running row exists, and not first');
+    assert.ok(states.slice(0, firstRunning).every((st) => st === 'starting'), 'only starting rows precede the first running one');
+    assert.ok(rows.slice(0, firstRunning).some((r) => r.pid > 0), 'a row carrying the pid it launched with precedes running');
+    assert.ok(rows.filter((r) => r.state === 'running').every((r) => r.pid > 0), 'no running row without a pid');
 
     const dir = path.join(sb.data, 'workers', 'w1');
     for (const f of ['mcp.json', 'settings.json', 'argv.json', 'stream.jsonl']) {
@@ -84,7 +90,7 @@ test('spawn returns the row only after ready, and every artefact is on disk', as
     // carries the ancestor-exclude/auto-memory hygiene block, computed the same way here.
     assert.deepEqual(JSON.parse(fs.readFileSync(path.join(dir, 'settings.json'), 'utf8')), {
       enabledPlugins: { 'example-plugin@example': false, 'example-extra@example': false, 'codex@openai-codex': false },
-      ...require('../../src/run/surface.cjs').hygieneSettings(sb.worktree),
+      ...require('../../src/run/surface.cjs').hygieneSettings(sb.worktree), hooks: require('../../src/run/kill-guard.cjs').hooksBlock(), // the kill guard
     });
 
     // Every stream line reached stream.jsonl as it arrived: at ready only the init is there, and by
@@ -162,7 +168,22 @@ test('with a task id the lease is taken and the resume line leads the first mess
     assert.equal(core.callsTo('continuity.resumeLine').length, 1);
     const w = m._worker('w1');
     assert.ok(w.firstMessage.startsWith('RESUME-LINE task t9'));
-    assert.ok(w.firstMessage.endsWith('the task'));
+    assert.ok(w.firstMessage.includes('\n\nthe task'), 'the prompt follows the resume line');
+    assert.ok(w.firstMessage.endsWith('call lease_release with lease_id lease-1 and a result object (branch, head, tests, findings).'), 'belay closes the message with the hand-back rule naming the lease');
+  } finally { await teardown(m, sb); }
+});
+
+test('a worker id used twice in a run is refused with the remedy: choose another, an id is used once per run', async () => {
+  const sb = sandbox();
+  const m = mgr(sb, createFakeCore());
+  try {
+    await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'dup-1' });
+    await assert.rejects(() => m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'two', worker_id: 'DUP-1' }), (e) => {
+      assert.strictEqual(e.code, 'E_ARGS');
+      assert.match(e.message, /a worker with that id already exists in this run/);
+      assert.match(e.message, /Choose another id: an id is used once per run, even by a spawn that failed/);
+      return true;
+    });
   } finally { await teardown(m, sb); }
 });
 
@@ -298,6 +319,9 @@ test('stopping a worker that is already gone claims neither a graceful stop nor 
     assert.equal(s.killed, false);
     assert.equal(s.pid, row.pid);
     assert.equal(s.ms_to_exit, 0);
+    assert.equal(s.already_exited, true, 'the receipt says the worker had already exited');
+    assert.match(s.note, /had already exited .*nothing was stopped/);
+    assert.ok(s.state_before, 'and what its row said when the stop arrived');
     assert.equal(core.currentWorker('w9').state, 'dead', 'it died before the stop, so it is dead, not stopped');
   } finally { await teardown(m, sb); }
 });
@@ -346,7 +370,7 @@ test('list reports the in-memory view and shutdown stops every worker and the ow
   try {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'wa' });
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'wb' });
-    const l = m.list();
+    const l = await m.list();
     assert.equal(l.workers.length, 2);
     for (const w of l.workers) {
       assert.equal(w.state, 'running');
@@ -357,7 +381,7 @@ test('list reports the in-memory view and shutdown stops every worker and the ow
     assert.deepEqual(s.stopped.sort(), ['wa', 'wb']);
     assert.ok(s.ms >= 0);
     assert.equal(core.callsTo('shutdownOwner').length, 1);
-    for (const w of m.list().workers) assert.equal(w.pid_alive, false);
+    for (const w of (await m.list()).workers) assert.equal(w.pid_alive, false);
   } finally {
     // build step 6h fix round (blocking, FINDINGS.json line 382): only `cleanup(sb.data)` used to run
     // here, so a throw after either `m.spawn` above left both workers alive, holding the process open.

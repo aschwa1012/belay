@@ -45,15 +45,15 @@ function legacyWorker(core, values) { rows.append(core.owner.store, 'worker', va
 // Run `runId`: an orchestrator that attached; w1 with a task it handed back `holds` and whose
 // acceptance check passed; w2 with a task whose acceptance check failed. `ended` closes the run with usage.
 // `bare` leaves every usage column of w2 and the run unrecorded.
-async function plant(dataDir, runId, { ended = true, bare = false, liveWorker = false, adapterPid = process.pid, forget = false, evil = false, wide = false, c1 = false, spoof = false } = {}) {
+async function plant(dataDir, runId, { ended = true, bare = false, liveWorker = false, adapterPid = process.pid, forget = false, evil = false, wide = false, c1 = false, spoof = false, w1 = 'w1', w2 = 'w2' } = {}) {
   await withOwner(dataDir, runId, 'orchestrator', async (orch) => {
     await orch.run.attach({ adapter_pid: adapterPid });
     const t0 = Date.now() - 60000;
-    await orch.worker.write({ id: 'w1', substrate: 'claude-code', pid: process.pid, state: 'running', started_at: t0, model: 'sonnet-5.5' });
+    await orch.worker.write({ id: w1, substrate: 'claude-code', pid: process.pid, state: 'running', started_at: t0, model: 'sonnet-5.5' });
     const eight = { commands: [...Array(7).fill(PASS.commands[0]), FAIL.commands[0]] };
     const t1 = await orch.task.create({ spec: 'first task', acceptance: wide ? eight : PASS });
-    const a = await orch.task.assign({ task_id: t1.id, worker_id: 'w1' });
-    const wc = await openCore({ dataDir, caller: { role: 'worker', worker_id: 'w1', run_id: runId, pid: process.pid } });
+    const a = await orch.task.assign({ task_id: t1.id, worker_id: w1 });
+    const wc = await openCore({ dataDir, caller: { role: 'worker', worker_id: w1, run_id: runId, pid: process.pid } });
     const fake = 'holds\nworker FORGED  claude-code  state stopped  cost $0\ntotals over 1 agents  cost $0';
     try {
       const result = evil ? { verdict: fake, summary: `summary\r\n${fake}` }
@@ -63,26 +63,26 @@ async function plant(dataDir, runId, { ended = true, bare = false, liveWorker = 
     } finally { await wc.close(); }
     await orch.task.evaluate({ task_id: t1.id, worktree: dataDir.replace(/\/[^/]*$/, '') });
     await orch.worker.write({
-      id: 'w1', state: 'stopped', exited_at: t0 + 42000, exit_code: 0, task_id: t1.id, turns: 5,
+      id: w1, state: 'stopped', exited_at: t0 + 42000, exit_code: 0, task_id: t1.id, turns: 5,
       input_tokens: 1000, output_tokens: 200, cache_read_tokens: 5000, cache_creation_tokens: 300, cost_usd: 0.25, tool_calls: 17,
       base_sha: 'a'.repeat(40), head_sha: 'b'.repeat(40),
     });
     const t2 = await orch.task.create({ spec: 'second task', acceptance: FAIL });
     await orch.task.evaluate({ task_id: t2.id, worktree: dataDir.replace(/\/[^/]*$/, '') });
     if (liveWorker) {
-      await orch.worker.write({ id: 'w2', substrate: 'codex', pid: process.pid, state: 'running', started_at: t0, task_id: t2.id });
+      await orch.worker.write({ id: w2, substrate: 'codex', pid: process.pid, state: 'running', started_at: t0, task_id: t2.id });
     } else {
       await orch.worker.write({
-        id: 'w2', substrate: 'codex', pid: process.pid, state: 'running', started_at: t0,
+        id: w2, substrate: 'codex', pid: process.pid, state: 'running', started_at: t0,
       });
       await orch.worker.write({
-        id: 'w2', state: 'dead', exited_at: t0 + 10000, exit_code: 1, task_id: t2.id,
+        id: w2, state: 'dead', exited_at: t0 + 10000, exit_code: 1, task_id: t2.id,
         ...(bare ? {} : { turns: 2, input_tokens: 400, output_tokens: 50, cache_read_tokens: 0, cache_creation_tokens: 0, cost_usd: 0.05, tool_calls: 3 }),
       });
     }
     await orch.task.create({ spec: 'nobody ran this' });
     if (evil) {
-      await orch.worker.write({ id: 'w1', model: `sonnet\n${'worker FORGED  x'}\ntotals over 9 agents` });
+      await orch.worker.write({ id: w1, model: `sonnet\n${'worker FORGED  x'}\ntotals over 9 agents` });
       // A worker whose own id carries newlines hands a result back: the `by` and the id are both store text.
       const eid = 'w3\nworker FORGED  z';
       legacyWorker(orch, { id: eid, run_id: runId, substrate: 'claude-code', pid: process.pid, state: 'running', started_at: t0 });
@@ -93,7 +93,7 @@ async function plant(dataDir, runId, { ended = true, bare = false, liveWorker = 
       await orch.worker.write({ id: eid, state: 'stopped', exited_at: t0 + 5, task_id: t3.id });
     }
     if (wide) {
-      await orch.worker.write({ id: 'w1', model: 'M'.repeat(80) });
+      await orch.worker.write({ id: w1, model: 'M'.repeat(80) });
       const lid = 'L'.repeat(80);
       legacyWorker(orch, { id: lid, run_id: runId, substrate: 'claude-code', pid: process.pid, state: 'running', started_at: t0 });
       const t4 = await orch.task.create({ spec: 'wide by' });
@@ -104,11 +104,11 @@ async function plant(dataDir, runId, { ended = true, bare = false, liveWorker = 
     }
     if (c1) {
       // 79 characters then an emoji at the 80 cap; C1 controls and a bidi override in a sha.
-      await orch.worker.write({ id: 'w1', model: `${'e'.repeat(79)}\u{1F600}tail`, head_sha: 'x\u0085y\u009b2Jz‮w' });
+      await orch.worker.write({ id: w1, model: `${'e'.repeat(79)}\u{1F600}tail`, head_sha: 'x\u0085y\u009b2Jz‮w' });
     }
     if (forget) {
       const op = await openCore({ dataDir, caller: { role: 'operator', run_id: runId, pid: process.pid } });
-      try { await op.worker.forget({ worker_id: 'w2' }); } finally { await op.close(); }
+      try { await op.worker.forget({ worker_id: w2 }); } finally { await op.close(); }
     }
     if (ended) {
       await orch.run.end({
@@ -183,7 +183,7 @@ test('receipts: --json carries every field of design item 2, null where a column
   assert.strictEqual(w2.task.handoff, null);
   assert.strictEqual(w2.task.checks[0].passed, false);
   assert.strictEqual(j.unassigned_tasks.length, 1);
-  assert.deepStrictEqual(Object.keys(j.unassigned_tasks[0]).sort(), ['checks', 'id', 'state']);
+  assert.deepStrictEqual(Object.keys(j.unassigned_tasks[0]).sort(), ['check_history', 'checks', 'id', 'state']);
   assert.ok('owner' in j);
   const text = receipts(['run-b'], dataDir, { json: false }).stdout;
   assert.match(text, /^worker w2  codex .*\n.*\n  in not recorded  out not recorded/m);
@@ -218,7 +218,7 @@ test('receipts: a live worker and a live run have wall_ms null and live true', g
 
 test('receipts: with no run id the alive run is chosen, and run_id_source says so', guarded(async (dir, dataDir) => {
   await plant(dataDir, 'run-old-alive', { ended: false });
-  await plant(dataDir, 'run-new-ended', { ended: true });
+  await plant(dataDir, 'run-new-ended', { ended: true, w1: 'w1-new', w2: 'w2-new' });
   const j = JSON.parse(receipts([], dataDir).stdout);
   assert.strictEqual(j.run_id, 'run-old-alive', 'the alive run wins over the newer ended one');
   assert.strictEqual(j.run_id_source, 'run.list');
@@ -414,4 +414,39 @@ test('receipts: an empty-string run id is exit 2 with the usage', guarded(async 
   const r = receipts([''], dataDir, { json: false });
   assert.strictEqual(r.status, 2, `${r.stdout} / ${r.stderr}`);
   assert.match(r.stdout + r.stderr, /usage: belay receipts/);
+}));
+
+test('receipts: a worker killed with no result event shows its estimated cost, labelled, and the totals say how much was estimated', guarded(async (dir, dataDir) => {
+  const msgLine = JSON.stringify({ type: 'assistant', message: { id: 'm1', model: 'claude-sonnet-5-5', usage: { input_tokens: 1000000, output_tokens: 100000, cache_read_input_tokens: 1000000, cache_creation_input_tokens: 0 } } });
+  await withOwner(dataDir, 'run-est', 'orchestrator', async (orch) => {
+    await orch.run.attach({ adapter_pid: process.pid });
+    fs.mkdirSync(`${dataDir}/workers/wk`, { recursive: true });
+    fs.writeFileSync(`${dataDir}/workers/wk/stream.jsonl`, `${msgLine}\n`);
+    await orch.worker.write({ id: 'wk', substrate: 'claude-code', pid: process.pid, state: 'running', started_at: Date.now() - 1000, cost_usd: 0, turns: 0 });
+    await orch.worker.write({ id: 'wk', state: 'dead', pid: 2147483000, exit_code: 1, death_established_by: 'test', cost_usd: 0, turns: 0 });
+    await orch.run.end({ exit_reason: 'idle' });
+  });
+  const j = JSON.parse(receipts([], dataDir).stdout);
+  const w = j.workers.find((x) => x.id === 'wk');
+  assert.deepStrictEqual([w.cost_usd, w.cost_source, w.cost_estimate.usd, w.cost_estimate.messages, w.cost_combined_usd], [0, 'transcript_estimate', 3.2, 1, 3.2]);
+  assert.deepStrictEqual([j.totals.cost_usd, j.totals.cost_estimated_usd, j.totals.cost_combined_usd, j.totals.cost_estimated_workers], [0, 3.2, 3.2, 1]);
+  const text = receipts([], dataDir, { json: false }).stdout;
+  assert.match(text, /cost \$0\.0000 reported \+ \$3\.2 estimated from the stream \(1 message no result line reported\) = \$3\.2/);
+  assert.match(text, /totals over 2 agents\s+cost \$0\.0000 reported,\s+\$3\.2 estimated from the streams of 1 worker \(messages no result line reported\), \$3\.2 combined/);
+}));
+
+test('receipts: an estimate whose stream tail lay beyond the scan window says so instead of printing nothing', guarded(async (dir, dataDir) => {
+  const pad = JSON.stringify({ type: 'user', pad: 'x'.repeat(1024 * 1024) });
+  await withOwner(dataDir, 'run-trunc', 'orchestrator', async (orch) => {
+    await orch.run.attach({ adapter_pid: process.pid });
+    fs.mkdirSync(`${dataDir}/workers/wt`, { recursive: true });
+    const head = [JSON.stringify({ type: 'system', subtype: 'init', session_id: 's' }), JSON.stringify({ type: 'result', total_cost_usd: 1 })];
+    fs.writeFileSync(`${dataDir}/workers/wt/stream.jsonl`, head.concat(Array(17).fill(pad)).join('\n') + '\n');
+    await orch.worker.write({ id: 'wt', substrate: 'claude-code', pid: process.pid, state: 'running', started_at: Date.now() - 1000, cost_usd: 1, turns: 1 });
+    await orch.worker.write({ id: 'wt', state: 'dead', pid: 2147483000, exit_code: 1, death_established_by: 'test', cost_usd: 1, turns: 1 });
+    await orch.run.end({ exit_reason: 'idle' });
+  });
+  const text = receipts([], dataDir, { json: false }).stdout;
+  assert.match(text, /not estimated: stream tail over 16 MB/);
+  assert.strictEqual(JSON.parse(receipts([], dataDir).stdout).workers.find((x) => x.id === 'wt').cost_estimate.truncated, true);
 }));

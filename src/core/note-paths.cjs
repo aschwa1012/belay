@@ -92,12 +92,13 @@ function namedFiles(note, paths, worktree) {
 }
 
 // { applies_to, applies_to_from, task_files, task_files_truncated, ambiguous, counts }: the note's own paths and, aligned with them,
-// where each came from (worker, evidence, or diff for a diff file the note names); and the task's whole diff list, apart.
+// where each came from (the writer's role, evidence, or diff for a diff file the note names); and the task's whole diff list, apart.
+// `writer` is the writing caller's role (B10: an orchestrator's own paths were labelled worker), default worker.
 // Both lists are cut by bytes (what belay adds is bounded; what the worker wrote is checked separately and never cut here).
-function merge(note, diff, worktree) {
+function merge(note, diff, worktree, writer = 'worker') {
   const seen = new Map();
   const add = (p, from) => { const k = norm(p); if (k && !seen.has(k)) seen.set(k, from); };
-  for (const p of note.applies_to || []) add(p, 'worker');
+  for (const p of note.applies_to || []) add(p, writer);
   for (const p of evidencePaths(note.evidence, worktree)) add(p, 'evidence');
   const taskFiles = (diff && diff.paths) || [];
   const { named, ambiguous } = namedFiles(note, taskFiles, worktree);
@@ -107,14 +108,14 @@ function merge(note, diff, worktree) {
   let bytes = 0;
   for (const e of all) {
     const b = Buffer.byteLength(e[0]) + 4;
-    if (kept.length >= APPLIES_MAX || (e[1] !== 'worker' && bytes + b > APPLIES_BYTES)) continue;
+    if (kept.length >= APPLIES_MAX || (e[1] !== writer && bytes + b > APPLIES_BYTES)) continue;
     kept.push(e); bytes += b;
   }
   const files = [];
   let fb = 0;
   for (const p of taskFiles) { const b = Buffer.byteLength(p) + 4; if (fb + b > TASK_FILES_BYTES) break; files.push(p); fb += b; }
   const counts = { total: kept.length, worker: 0, evidence: 0, diff: 0, dropped: all.length - kept.length, task_files: taskFiles.length };
-  for (const [, from] of kept) counts[from]++;
+  for (const [, from] of kept) counts[from] = (counts[from] || 0) + 1;
   if (ambiguous.length) counts.ambiguous = ambiguous;
   return { applies_to: kept.map(([p]) => p), applies_to_from: kept.map(([, from]) => from), task_files: files, task_files_truncated: taskFiles.length - files.length, ambiguous, counts };
 }

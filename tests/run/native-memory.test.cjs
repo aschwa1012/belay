@@ -471,7 +471,8 @@ test('resume: a refused resume does not leave the worker paused in that manager,
   } finally { await m.shutdown().catch(() => {}); cleanup(sb.d); }
 });
 
-test('message: two concurrent messages to an idle codex worker start one process and refuse the other E_SUBSTRATE', async () => {
+// ADR 0026 amendment 2: one relaunch owns the window, so the second message is refused E_BUSY (before, E_SUBSTRATE from the launch slot).
+test('message: two concurrent messages to an idle codex worker start one process and refuse the other E_BUSY', async () => {
   const sb = sandbox(); const core = createFakeCore();
   const m = createRunManager({ core, dataDir: sb.data, runId: 'run-nm', paths: { claudeExe: FAKE, codexExe: fwd(path.join(__dirname, 'fakes', 'fake-codex.cjs')), userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
   try {
@@ -483,6 +484,6 @@ test('message: two concurrent messages to an idle codex worker start one process
     const r = await Promise.allSettled([m.message({ worker_id: 'w-cx', text: 'a' }), m.message({ worker_id: 'w-cx', text: 'b' })]);
     assert.equal(m._worker('w-cx').launches, before + 1, 'one launch');
     assert.deepStrictEqual(r.map((x) => x.status).sort(), ['fulfilled', 'rejected']);
-    assert.equal(r.find((x) => x.status === 'rejected').reason.code, 'E_SUBSTRATE');
+    assert.equal(r.find((x) => x.status === 'rejected').reason.code, 'E_BUSY');
   } finally { delete process.env.FAKE_CODEX_TURN_MS; await m.shutdown().catch(() => {}); cleanup(sb.d); }
 });

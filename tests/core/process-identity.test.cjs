@@ -174,6 +174,8 @@ test('descendantsOf and rowTarget: the walk is leaves-first and a row with no pi
   assert.strictEqual(P.rowTarget({ pid: 7, pid_created: T, substrate: 'claude-code' }).created, T);
 });
 
+// src/run/kill-guard.cjs is exempt: its regexes match taskkill in a worker's command in order to refuse it; it runs nothing.
+const GUARD = 'src/run/kill-guard.cjs';
 test('src/ never runs a tree kill by taskkill: no /T argument to taskkill anywhere', () => {
   const offenders = [];
   const walk = (dir) => {
@@ -181,6 +183,7 @@ test('src/ never runs a tree kill by taskkill: no /T argument to taskkill anywhe
       const p = path.join(dir, e.name);
       if (e.isDirectory()) { if (e.name !== 'node_modules') walk(p); continue; }
       if (!/\.cjs$/.test(e.name)) continue;
+      if (path.relative(ROOT, p).split(path.sep).join('/') === GUARD) continue;
       fs.readFileSync(p, 'utf8').split(/\r?\n/).forEach((line, i) => {
         const code = line.replace(/\/\/.*$/, '');
         if (/taskkill/i.test(code)) offenders.push(`${path.relative(ROOT, p)}:${i + 1}: ${line.trim().slice(0, 100)}`);
@@ -212,18 +215,26 @@ test('real: a live process whose pid a row holds with the wrong creation time is
 
 test('real: the creation time read from the snapshot is the identity that kills the tree, and only that tree', async (t) => {
   if (process.platform !== 'win32') return t.skip('the CIM snapshot is Windows only');
-  const src = 'const{spawn}=require("child_process");spawn(process.execPath,["-e","setTimeout(()=>{},60000)"],{stdio:"ignore"});setTimeout(()=>{},60000)';
-  const parent = spawn(process.execPath, ['-e', src], { stdio: 'ignore', windowsHide: true });
+  // The parent names its grandchild on stdout once it has spawned it: the test waits for that, never for a guessed delay.
+  const src = 'const{spawn}=require("child_process");const k=spawn(process.execPath,["-e","setTimeout(()=>{},60000)"],{stdio:"ignore"});process.stdout.write("grandchild "+k.pid+"\\n");setTimeout(()=>{},60000)';
+  const parent = spawn(process.execPath, ['-e', src], { stdio: ['ignore', 'pipe', 'ignore'], windowsHide: true });
+  const parentExit = new Promise((res) => parent.once('exit', res));
   const bystander = sleeper();
   try {
-    await new Promise((r) => setTimeout(r, 900));
+    await new Promise((res, rej) => {
+      let out = '';
+      parent.stdout.on('data', (d) => { out += d; if (/grandchild \d+\n/.test(out)) res(); });
+      parent.once('exit', () => rej(new Error('the parent exited before it spawned its child')));
+    });
     const c = await readCreated(parent.pid);
     assert.ok(c && Number.isFinite(c.created), 'the snapshot must give the parent a creation time');
     const r = await P.killProcess({ pid: parent.pid, created: c.created, image: ['node.exe'] });
     assert.strictEqual(r.refused, null, JSON.stringify(r));
     assert.strictEqual(r.identity.via, 'created');
     assert.ok(r.tree.terminated >= 2, `the grandchild must go too: ${JSON.stringify(r.tree)}`);
-    await new Promise((res) => setTimeout(res, 300));
+    // The kill ends the parent; the bound is only a hang guard with a message.
+    let guard;
+    await Promise.race([parentExit, new Promise((_, rej) => { guard = setTimeout(() => rej(new Error('the parent did not exit within 30 s of the tree kill')), 30000); })]).finally(() => clearTimeout(guard));
     assert.strictEqual(exited(parent), true);
     assert.strictEqual(exited(bystander), false, 'a process outside the tree must survive');
   } finally { bystander.kill(); if (!exited(parent)) parent.kill(); }
