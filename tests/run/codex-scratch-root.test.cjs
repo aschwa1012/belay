@@ -79,3 +79,20 @@ test('the next turn of a Codex reviewer (a resume) keeps its scratch folder as t
     assert.deepStrictEqual(rootsOf('cod1'), []);
   } finally { await m.shutdown().catch(() => {}); cleanup(data); }
 });
+
+test('an adopted Codex reviewer record gets its scratch folder back from the data dir; a coder, a Claude Code worker and a folderless row get none', async () => {
+  const W = require('../../src/run/worker.cjs');
+  const RS = require('../../src/run/review-scratch.cjs');
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-cx-adopt-')).split(path.sep).join('/');
+  const rowOf = (id, substrate) => ({ id, run_id: 'run-ad', substrate, worktree: `${data}/wt`, state: 'idle', seq: 3, pid: null, turns: 1, session_id: 's1' });
+  const adopt = (id, substrate) => W.adopt({ core: { worker: { get: async () => rowOf(id, substrate) } }, workerId: id, dataDir: data });
+  try {
+    const dir = RS.ensure(data, 'rev1', 'run-ad');
+    assert.ok(dir, 'the reviewer folder was made');
+    assert.strictEqual((await adopt('rev1', 'codex')).scratchDir, `${data}/scratch/run-ad/rev1`);
+    assert.strictEqual((await adopt('cod1', 'codex')).scratchDir, null);
+    assert.strictEqual((await adopt('rev1', 'claude-code')).scratchDir, null);
+    const resume = L.codexResumeArgv({ threadId: 't', adapterArgs: ['a.cjs'], prompt: 'p', scratchDir: (await adopt('rev1', 'codex')).scratchDir });
+    assert.ok(resume.some((a) => a === `sandbox_workspace_write.writable_roots=["${data}/scratch/run-ad/rev1"]`));
+  } finally { cleanup(data); }
+});
