@@ -242,6 +242,7 @@ function renderText(rc) {
     lines.push(`unassigned task ${v(t.id)} (${v(t.state)})  checks ${checksText(t.checks)}`);
     if (t.check_history) lines.push(`  ${clean(require('../core/check-history.cjs').line(t.check_history), Infinity)}`);
   }
+  for (const k of rc.flaky_checks || []) lines.push(require('../core/check-flake.cjs').line(k)); // 0.4.0: store-wide, beside the check history
   for (const i of rc.integrate_checks || []) lines.push(RCK.integrateLine(i));
   const t = rc.totals;
   const miss = SUM_FIELDS.filter(f => t.not_recorded[f] > 0).map(f => `${f} ${t.not_recorded[f]}`).join(', ');
@@ -298,6 +299,7 @@ async function run(ctx) {
       orchestrator, workers,
       unassigned_tasks: tasks.filter(t => !assigned.has(t.id)).map((t) => taskView(t, chosen.started_at, tasksById)),
       integrate_checks: RCK.integrateChecksOf(await core.integration.list({ run_id: chosen.id }).then((r) => r.integrations, () => []), chosen.id), // a read that fails leaves the block empty
+      flaky_checks: (await core.check.flake({})).keys,
       totals: totalsOf(orchestrator, workers), owner,
     };
     return { code: 0, text: renderText(receipt), json: receipt };

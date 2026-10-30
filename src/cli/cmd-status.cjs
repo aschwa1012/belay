@@ -62,6 +62,7 @@ function renderText(receipt) {
   if (receipt.retrieval) lines.push(...require('../core/retrieval-view.cjs').lines(receipt.retrieval));
   if (receipt.notes_held && receipt.notes_held.malformed > 0) lines.push(require('./panel-common.cjs').unreadableText({ count: receipt.notes_held.malformed, closed_projects: receipt.notes_held.closed_projects }));
 
+  for (const k of receipt.check_flake || []) lines.push(require('../core/check-flake.cjs').line(k)); // 0.4.0: the checks that changed outcome on one tree; facts, no verdict
   if (receipt.memory_notice) lines.push(`warning: ${receipt.memory_notice.title}. ${receipt.memory_notice.why} ${receipt.memory_notice.fix}`);
   lines.push('');
   return lines.join('\n');
@@ -92,9 +93,10 @@ async function run(ctx) {
       } else runIdSource = 'none';
     }
     const st = await core.status.get(runId ? { run_id: runId } : {});
+    const flakes = (await core.check.flake({})).keys; // 0.4.0: one indexed-free read of a small counter table
     const notice = require('../core/memory-notice.cjs').noticeForRun(runs.find(r => r.id === runId) || null, found); // a live run's own levers win over the config file
     const retrieval = require('../core/retrieval-view.cjs').describe(runs.find(r => r.id === runId) || null, core.ownerInfo()); // the pinned routing and any fallback in force, from the run row
-    const receipt = { ...st, run_id_source: runIdSource, ...(notice ? { memory_notice: notice } : {}), ...(retrieval ? { retrieval } : {}) };
+    const receipt = { ...st, run_id_source: runIdSource, ...(flakes.length ? { check_flake: flakes } : {}), ...(notice ? { memory_notice: notice } : {}), ...(retrieval ? { retrieval } : {}) };
     // Exit 0 whenever the ladder was read, whatever the verdict: a dead system is a valid answer.
     return { code: 0, text: renderText(receipt), json: receipt };
   } catch (e) {
