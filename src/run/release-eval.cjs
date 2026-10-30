@@ -225,6 +225,9 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
   try { tasks = ((await core.task.list({})) || {}).tasks || []; } catch { /* nothing is attached and nothing lands this poll */ }
   if (!tasks) { const flushed = [...held.values()].map((h) => h.ev); held.clear(); return flushed.concat(events); }
   const byId = new Map(tasks.map((t) => [t.id, t]));
+  const PW = require('./policy-wakes.cjs'); // ADR 0073: a task under a plan wakes on exceptions only, so its routine events are consumed here and not sent
+  const polOf = (t) => PW.policyOf(t, byId);
+  if (tasks.some((t) => t.run_id === runId && polOf(t))) { seen.policyArmed = true; seen.policyTasks = tasks; } // the policy watcher reads these rows this poll
   const landed = (t) => t.results && t.results.trigger === 'release' && seen.get(t.id) !== t.results.evaluated_at && (!t.handoff || Number(t.results.evaluated_at) >= Number(t.handoff.at));
   // The conflict forecast (a warning on the wake; it never gates anything) is started, never awaited, when a hand-back is first watched, so
   // it has usually settled when the evaluation lands; a wake carries it only if it has. One per hand-back, at most FORECASTS_MAX at once.
@@ -277,12 +280,15 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
   for (const ev of events) {
     if (held.has(ev.worker_id)) release(ev.worker_id);
     if (ev.event !== 'turn_end') { out.push(ev); continue; }
-    const evs = []; const ing = [];
+    const evs = []; const ing = []; let sawPolicy = false;
     for (const t of tasks) {
       if (t.run_id !== runId || !t.handoff || t.handoff.by !== ev.worker_id) continue;
       if (t.handoff.stood_down) { const key = `${t.id}:${t.handoff.at}`; if (!(seen.stood = seen.stood || new Set()).has(key) && t.state === 'released') { seen.stood.add(key); evs.push({ task_id: t.id, stood_down: t.handoff.stood_down }); } continue; } // a stand-down is a fact for the wake, once
-      if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); if (t.state === 'done') kick(t); evs.push(summaryOf(t, byId, forecasts)); } else if (unevaluated(t, runId, ev.worker_id) && failedOf(t, ev.turn)) { const s = failure(failedOf(t, ev.turn)); if (s) evs.push(s); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: t0, turn: ev.turn }); ing.push(t.id); kick(t); }
+      const pol = polOf(t);
+      if (pol && (landed(t) || unevaluated(t, runId, ev.worker_id))) sawPolicy = true;
+      if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); if (t.state === 'done') kick(t); if (!pol) evs.push(summaryOf(t, byId, forecasts)); } else if (unevaluated(t, runId, ev.worker_id) && failedOf(t, ev.turn)) { const s = failure(failedOf(t, ev.turn)); if (s && !pol) evs.push(s); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: t0, turn: ev.turn }); if (!pol) ing.push(t.id); kick(t); }
     }
+    if (sawPolicy && !evs.length && !ing.length) continue; // the turn end of a hand-back of a task under a plan is routine; a turn end with no hand-back is not, and wakes as before
     if (ing.length && holdMs > 0) { held.set(ev.worker_id, { ev, evs, ids: ing, since: t0 }); continue; }
     if (evs.length) ev.evaluated = evs;
     if (ing.length) ev.evaluating = ing;
@@ -298,13 +304,14 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     const t = byId.get(id);
     if (t && landed(t)) {
       seen.set(id, t.results.evaluated_at); pending.delete(id);
-      if (t.state === 'done') kick(t);
+      if (t.state === 'done') kick(t); // a forecast is kicked for a task under a plan too
+      if (polOf(t)) continue;
       if (!follow.has(p.worker_id)) follow.set(p.worker_id, []);
       follow.get(p.worker_id).push(summaryOf(t, byId, forecasts));
     } else if (t && unevaluated(t, runId, p.worker_id) && failedOf(t, p.turn)) {
       pending.delete(id);
       const s = failure(failedOf(t, p.turn));
-      if (s) { if (!follow.has(p.worker_id)) follow.set(p.worker_id, []); follow.get(p.worker_id).push(s); }
+      if (s && !polOf(t)) { if (!follow.has(p.worker_id)) follow.set(p.worker_id, []); follow.get(p.worker_id).push(s); }
     } else if (!t || !unevaluated(t, runId, p.worker_id) || (t0 - p.since > PENDING_MAX_MS && !(liveWorkers && liveWorkers.has(p.worker_id)))) pending.delete(id);
   }
   for (const [wid, evs] of follow) {

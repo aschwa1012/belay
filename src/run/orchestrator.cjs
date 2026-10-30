@@ -127,6 +127,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   const leftovers = require('./orchestrator-leftovers.cjs').createLeftovers({ child, P, state, core, runId }); // ADR 0054 amendment 2
   const preClose = require('./pre-close-wake.cjs').createPreCloseNotice({ core, runId }); // ADR 0065 amendment 1
   const callWatcher = require('./call-wake.cjs').createCallWatcher({ core, runId });
+  const policyWatcher = require('./policy-wakes.cjs').createPolicyWatcher({ core, runId, enabled: !!spec.policy }); // ADR 0073: the exceptions of a run under a plan
   const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId, enabled: !!spec.notes }); // wave 4: a refuted note wakes the orchestrator (notes runs only)
   let readyTimer = null, sigintHandler = null;
 
@@ -238,16 +239,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       return;
     }
     const text = wakeText(ev);
-    const rec = {
-      at_ms: Date.now() - t0, worker_id: ev.worker_id, event: ev.event, turn: ev.turn,
-      bytes: Buffer.byteLength(text, 'utf8'), orchestrator_idle_at_write: state.idle,
-      established_by: ev.event === 'note_refuted' || ev.event === 'scrub_alarm' ? `${ev.event} receipt seq ${ev.seq}` : ev.event === 'budget_pause' ? 'the budget guard' : ev.event === 'evaluated' ? `task ${ev.task_id} results at ${ev.seq}` : ev.event === 'pre_close' ? 'task.worktreeSweep dry run' : `worker.list row seq ${ev.seq} for the run`,
-    };
-    if (ev.event === 'death') {
-      rec.exit_code = ev.exit_code; rec.exit_signal = ev.exit_signal; rec.death_established_by = ev.death_established_by;
-    }
-    if (ev.event === 'paused') rec.paused_by = ev.paused_by;
-    if (ev.turns_skipped) rec.turns_skipped = ev.turns_skipped;
+    const rec = require('./wake-record.cjs').wakeRecord(ev, text, Date.now() - t0, state.idle);
     if (!ev.unheld && hold.holdWake(rec)) return; // 6f design item 2: held while paused, never suppressed; the budget pause's own wake is the one not held
     if (writeStdinLine(text, ev.worker_id, rec)) state.wakes.push(rec);
     else state.wakesSuppressed.push({ ...ev, reason: 'stdin was broken when this event was found' });
@@ -298,7 +290,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       orphanGraceMs: ORPHAN_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid), sinceAt: t0,
     });
     state.baseline = next;
-    for (const ev of (await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), state.evalSeen || (state.evalSeen = new Map()), { holdMs: require('./release-eval.cjs').holdMs(), workers: rows })).concat(await noteWatcher.poll(), await callWatcher.poll(), spec.budgetWake ? spec.budgetWake.takeWakes() : [])) writeWake(ev); // ADR 0058 amendment 4: a turn_end carries its release evaluation
+    for (const ev of (await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), state.evalSeen || (state.evalSeen = new Map()), { holdMs: require('./release-eval.cjs').holdMs(), workers: rows })).concat(await noteWatcher.poll(), await callWatcher.poll(), await policyWatcher.poll(state.evalSeen), spec.budgetWake ? spec.budgetWake.takeWakes() : [])) writeWake(ev); // ADR 0058 amendment 4: a turn_end carries its release evaluation
     if (state.finishing) return; // a wake's own write may have found the child already gone
 
     if (state.idle && await require('./orchestrator-idle-close.cjs').idleClose({ state, rows, runId, pending_deaths, turnAtCall, hold, awaitingWakeIds, callWatcher, recordHold, preClose, writeWake, closeThenKillOnDeadline })) return;
