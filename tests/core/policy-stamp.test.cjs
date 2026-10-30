@@ -364,3 +364,23 @@ test('a finished claim stamps nothing: any write made for it, not only assign, f
   const row = await h.policyAs(open).task.create({ spec: 'c1 open' });
   assert.strictEqual(row.acted_by, 'policy');
 });
+
+test('policy_made is a fact of the first version: a policy-made fix stays true after hand-back and evaluation, an orchestrator task is false, a worker sees no field', async () => {
+  const { work, review } = await refuted('pm1');
+  const seq = await claim('fix', await taskTrigger(review.id), { task_id: work.id });
+  const fix = await h.policyAs(seq).task.fixFromReview({ review_id: review.id });
+  const w = await worker('plain-coder');
+  const a = await orch.task.assign({ task_id: fix.id, worker_id: 'plain-coder' });
+  await w.lease.release({ lease_id: a.new_lease.id, reason: 'done', result: { branch: 'b', head: 'h' } });
+  const judged = await orch.task.evaluate({ task_id: fix.id, worktree: dir });
+  assert.strictEqual(judged.state, 'done');
+  assert.strictEqual(judged.acted_by, null, 'the newest row is the evaluator\'s');
+  const got = await orch.task.get({ task_id: fix.id });
+  const listed = (await orch.task.list({})).tasks;
+  assert.strictEqual(got.policy_made, true);
+  assert.strictEqual(listed.find((t) => t.id === fix.id).policy_made, true);
+  assert.strictEqual(listed.find((t) => t.id === work.id).policy_made, false);
+  assert.strictEqual((await op.task.get({ task_id: fix.id })).policy_made, true);
+  assert.ok(!('policy_made' in await w.task.get({ task_id: fix.id })));
+  assert.ok((await w.task.list({})).tasks.every((t) => !('policy_made' in t)));
+});

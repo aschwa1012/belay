@@ -193,14 +193,17 @@ async function list(E, caller, args) {
   const states = Array.isArray(args.states) && args.states.length ? new Set(args.states) : null;
   const liveness = holds.runLiveness(E.store);
   const ctx = derived.context(E), tasks = ctx.all.filter(t => !states || states.has(t.state)).map(t => view(E, t, liveness, ctx));
-  return { tasks };
+  if (caller.role === 'worker') return { tasks };
+  const made = PS.policyMadeIds(E.store); // one pass for the list, not a read per row
+  return { tasks: tasks.map(t => ({ ...t, policy_made: made.has(t.id) })) };
 }
 
 async function get(E, caller, args) {
   if (!args.task_id) throw err('E_ARGS', 'task.get needs a task_id');
   const t = rows.current(E.store, 'task', args.task_id);
   if (!t) throw err('E_NOT_FOUND', `no task row exists for ${args.task_id}`, { task_id: args.task_id });
-  return view(E, t);
+  const v = view(E, t);
+  return caller.role === 'worker' ? v : { ...v, policy_made: PS.byPolicy(E.store, 'task', t.id) }; // a worker sees no policy (ADR 0071)
 }
 
 async function evaluate(E, caller, args, queued = null) {
