@@ -68,7 +68,8 @@ test('an inherited GIT_DIR is dropped: the read is of the worktree, not the dire
   try {
     const r = await GS.safeGit(['rev-parse', '--show-toplevel'], p.dir, 30000, { env: { ...process.env, GIT_DIR: other } });
     assert.strictEqual(r.exit_code, 0, r.stderr || r.spawn_error);
-    assert.strictEqual(fwd(fs.realpathSync(r.stdout.trim())).toLowerCase(), fwd(fs.realpathSync(p.dir)).toLowerCase());
+    // .native on both sides: git prints the long name, and the JS realpath keeps an 8.3 short name (RUNNER~1) in TEMP.
+    assert.strictEqual(fwd(fs.realpathSync.native(r.stdout.trim())).toLowerCase(), fwd(fs.realpathSync.native(p.dir)).toLowerCase());
     assert.strictEqual(GS.gitEnv({ GIT_DIR: 'x', git_work_tree: 'y', PATH: 'p' }).GIT_DIR, undefined);
   } finally { p.rm(); fs.rmSync(other, { recursive: true, force: true }); }
 });
