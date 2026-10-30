@@ -59,6 +59,20 @@ function refRun(E, r) {
 
 const byKey = (E, run_id, t, step) => E.store.p('SELECT * FROM policy_step WHERE run_id = ? AND trigger_table = ? AND trigger_id = ? AND trigger_seq = ? AND step = ?').get(run_id, t.table, t.id, t.seq, step);
 
+// The row a step wrote under a claim, found by the stamp the core put on it (policy-stamp.cjs overrides): 'table:id', or null. A step that made a task
+// or a review is named by the task, one that merged by the integration, else by the lease it took.
+function effectOf(E, r) {
+  const trig = JSON.stringify({ table: r.trigger_table, id: r.trigger_id, seq: r.trigger_seq });
+  const order = r.step === 'integrate' ? ['integration', 'task', 'lease'] : ['task', 'integration', 'lease'];
+  for (const table of order) {
+    try {
+      const row = E.store.p(`SELECT id FROM ${table} WHERE run_id = ? AND acted_by = 'policy' AND "trigger" = ? ORDER BY seq LIMIT 1`).get(r.run_id, trig);
+      if (row) return `${table}:${row.id}`;
+    } catch { /* an old store without the columns has none */ }
+  }
+  return null;
+}
+
 async function claim(E, caller, args) {
   harnessOnly(caller, 'policy.claim');
   const a = args || {};
@@ -78,8 +92,14 @@ async function claim(E, caller, args) {
   return E.store.tx(() => {
     const info = E.store.p('INSERT OR IGNORE INTO policy_step(run_id, task_id, step, trigger_table, trigger_id, trigger_seq, policy_rev, outcome, worker_id, turn, at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(run_id, a.task_id || null, a.step, trig.table, trig.id, trig.seq, a.policy_rev === undefined ? null : a.policy_rev, 'started', a.worker_id || null, a.turn === undefined ? null : a.turn, Date.now());
-    const existing = Number(info.changes) === 0;
-    const row = existing ? byKey(E, run_id, trig, a.step) : E.store.p('SELECT * FROM policy_step WHERE seq = ?').get(Number(info.lastInsertRowid));
+    let existing = Number(info.changes) === 0;
+    // A step the executor skipped because the run was paused (error E_PAUSED) took nothing, so its claim is reopened for the retake after the resume.
+    const there = existing ? byKey(E, run_id, trig, a.step) : null;
+    if (there && there.outcome === 'skipped' && /^E_PAUSED/.test(there.error || '')) {
+      E.store.p("UPDATE policy_step SET outcome = 'started', error = NULL, row_ref = NULL, finished_at = NULL, at = ? WHERE seq = ? AND outcome = 'skipped'").run(Date.now(), there.seq);
+      existing = false;
+    }
+    const row = existing ? byKey(E, run_id, trig, a.step) : E.store.p('SELECT * FROM policy_step WHERE seq = ?').get(there && !existing ? there.seq : Number(info.lastInsertRowid));
     if (!row) throw err('E_INTERNAL', 'policy.claim wrote no row and found none for its trigger', { run_id, step: a.step, trigger: trig });
     if (!existing) E.noteWrite();
     return { row, existing };
@@ -125,6 +145,7 @@ async function list(E, caller, args) {
   let rows = [];
   try { rows = E.store.p('SELECT * FROM policy_step WHERE run_id = ? AND seq > ? ORDER BY seq LIMIT ?').all(run_id, a.since_seq || 0, a.limit || LIST_DEFAULT); }
   catch (e) { if (!/no such table/i.test(e.message)) throw e; }
+  for (const r of rows) if (r.outcome === 'started') r.effect = effectOf(E, r); // what a claim left started wrote, if anything: the row stamped with its trigger
   return { rows, last_seq: rows.length ? rows[rows.length - 1].seq : (a.since_seq || 0) };
 }
 
