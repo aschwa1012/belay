@@ -137,7 +137,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
         effort: w.effort, tools: w.tools, maxBudgetUsd: w.maxBudgetUsd, // ADR 0028 decision 2: every launch, fresh or resumed; ADR 0024: a narrowed list too
       });
     } else if (resume) {
-      args = L.codexResumeArgv({ threadId: resume, adapterArgs: w.adapterArgs, prompt, model: w.model });
+      args = L.codexResumeArgv({ threadId: resume, adapterArgs: w.adapterArgs, prompt, model: w.model, scratchDir: w.scratchDir });
     } else {
       args = L.codexLaunchArgv({
         worktree: w.worktree, adapterArgs: w.adapterArgs, prompt, sandbox: w.sandbox, model: w.model, scratchDir: w.scratchDir,

@@ -46,3 +46,36 @@ test('a spawned Codex reviewer gets its scratch folder as the one extra root; a 
     assert.ok(!argsOf('rev2').includes('--add-dir'));
   } finally { await m.shutdown().catch(() => {}); cleanup(data); }
 });
+
+test('codexResumeArgv carries the scratch folder as a writable_roots override, quoted for TOML, and nothing without one', () => {
+  const base = { threadId: 't1', adapterArgs: ['a.cjs'], prompt: '- p', model: 'm' };
+  const without = L.codexResumeArgv(base);
+  assert.ok(!without.some((a) => /writable_roots/.test(a)) && !without.includes('--add-dir'));
+  const dir = ['C:', 'Users', 'me', 'my "data"', 'scratch', 'r', 'rev1'].join(path.win32.sep);
+  const argv = L.codexResumeArgv({ ...base, scratchDir: dir });
+  const i = argv.findIndex((a) => a.startsWith('sandbox_workspace_write.writable_roots='));
+  assert.ok(i > 0 && argv[i - 1] === '-c');
+  assert.ok(!argv.includes('--add-dir'), 'resume takes no --add-dir');
+  assert.strictEqual(argv[i], 'sandbox_workspace_write.writable_roots=["D:/work/my \\"data\\"/scratch/r/rev1"]');
+  assert.deepStrictEqual(JSON.parse(argv[i].slice(argv[i].indexOf('=') + 1)), ['D:/work/my "data"/scratch/r/rev1']);
+  assert.deepStrictEqual(argv.filter((_, k) => k !== i - 1 && k !== i), without, 'the rest of the argv is unchanged');
+  assert.deepStrictEqual(argv.slice(-2), ['--', '- p']);
+});
+
+test('the next turn of a Codex reviewer (a resume) keeps its scratch folder as the writable root; a coder has none', async () => {
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-cx-scratch-r-')).split(path.sep).join('/');
+  const worktree = `${data}/wt`;
+  fs.mkdirSync(worktree, { recursive: true });
+  const m = createRunManager({ core: createFakeCore(), dataDir: data, runId: 'run-cxr', paths: { claudeExe: FAKE, codexExe: FAKE_CODEX, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
+  const rootsOf = (id) => JSON.parse(fs.readFileSync(`${data}/workers/${id}/argv.json`, 'utf8')).spec.args.filter((a) => /writable_roots/.test(a));
+  try {
+    await m.spawn({ substrate: 'codex', worktree, prompt: 'one', worker_id: 'rev1', agent_type: 'reviewer' });
+    await m.spawn({ substrate: 'codex', worktree, prompt: 'one', worker_id: 'cod1', agent_type: 'coder' });
+    for (const id of ['rev1', 'cod1']) {
+      const deadline = Date.now() + 20000;
+      while (Date.now() < deadline) { try { await m.message({ worker_id: id, text: 'again' }); break; } catch (e) { await new Promise((r) => setTimeout(r, 50)); } }
+    }
+    assert.deepStrictEqual(rootsOf('rev1'), [`sandbox_workspace_write.writable_roots=["${data}/scratch/run-cxr/rev1"]`]);
+    assert.deepStrictEqual(rootsOf('cod1'), []);
+  } finally { await m.shutdown().catch(() => {}); cleanup(data); }
+});
