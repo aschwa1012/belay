@@ -1,6 +1,6 @@
 import { describe, expect } from 'claude-code/testing'
 import { test } from './support'
-import { boot, openPane, pane } from './support'
+import { boot, openPane, pane, squeezed } from './support'
 
 const E4 = 'Qwen/Qwen3-Embedding-4B-GGUF'
 const R4 = 'giladgd/Qwen3-Reranker-4B-GGUF'
@@ -16,14 +16,14 @@ describe('retrieval models line', () => {
     const wd = await boot($, on, { retrievalModels: models('warming', { trigger: 'first_search', ms: null, served_warming: 2, error: null }) })
     await openPane($, wd)
     const { text } = await pane($)
-    expect(text).toContain('models embedder Qwen3-Embedding-4B ready')
-    expect(text).toContain('reranker Qwen3-Reranker-4B warm-up warming')
+    expect(text).toContain('embedder ready · Qwen3-Embedding-4B')
+    expect(text).toContain('reranker warm-up warming · Qwen3-Reranker-4B')
   })
 
   test('a finished warm-up shows its time and how many searches kept the fusion order', async ($, on) => {
     const wd = await boot($, on, { retrievalModels: models('ready', { trigger: 'first_search', ms: 8200, served_warming: 3, error: null }) })
     await openPane($, wd)
-    expect((await pane($)).text).toContain('warmed in 8200 ms; 3 searches kept the fusion order meanwhile')
+    expect((await pane($)).text).toContain('warmed 8.2 s')
   })
 
   test('a failed warm-up shows failed and its error', async ($, on) => {
@@ -43,7 +43,7 @@ describe('retrieval models line', () => {
   test('a run that pinned nothing shows no models line', async ($, on) => {
     const wd = await boot($, on, {})
     await openPane($, wd)
-    expect((await pane($)).text).not.toContain('models embedder')
+    expect((await pane($)).text).not.toContain('embedder ready')
   })
 
   test('a fallback in force shows the fallback profile for both models', async ($, on) => {
@@ -56,7 +56,7 @@ describe('retrieval models line', () => {
     const wd = await boot($, on, { retrievalModels: models('unfinished', { trigger: 'first_search', ms: null, served_warming: 1, error: null }) })
     await openPane($, wd)
     const { text } = await pane($)
-    expect(text).toContain('unfinished (the owner stopped)')
+    expect(text).toContain('warm-up unfinished')
     expect(text).not.toContain('failed')
   })
 
@@ -64,7 +64,37 @@ describe('retrieval models line', () => {
     const wd = await boot($, on, { retrievalModels: [{ role: 'embedder', id: 'nano', state: 'ready', warm: null }, { role: 'reranker', id: R4, state: 'from-the-future', warm: null }] })
     await openPane($, wd)
     const { text } = await pane($)
-    expect(text).toContain('embedder nano ready')
+    expect(text).toContain('embedder ready · nano')
     expect(text).not.toContain('from-the-future')
   })
 })
+
+// The state comes first on every row, so a narrow pane cuts the name or the detail and never the state: at the narrowest widths the panel supports,
+// with the longest model ids of the profile table.
+const LONG = [
+  { embedder: 'Qwen/Qwen3-Embedding-8B-GGUF', reranker: 'giladgd/Qwen3-Reranker-4B-GGUF' },
+  { embedder: 'Qwen/Qwen3-Embedding-4B-GGUF', reranker: 'Alibaba-NLP/gte-reranker-modernbert-base' },
+]
+for (const cols of [30, 40, 71]) {
+  describe(`retrieval models rows at ${cols} columns`, () => {
+    for (const ids of LONG) {
+      test(`${ids.embedder} and ${ids.reranker}: the state word of each row is visible`, async ($, on) => {
+        const wd = await boot($, on, { retrievalModels: [{ role: 'embedder', id: ids.embedder, state: 'ready', warm: null }, { role: 'reranker', id: ids.reranker, state: 'ready', warm: { trigger: 'first_search', ms: 2000, served: 2, error: null } }] })
+        await openPane($, wd)
+        const { ui, text } = await pane($, 'terminal', cols)
+        expect(squeezed(await ui.drawn(), cols)).toEqual([])
+        expect(text).toContain('embedder ready')
+        expect(text).toContain('reranker warm-up ready')
+        if (cols >= 71) expect(text).toContain('warmed 2.0 s')
+      })
+    }
+
+    for (const [state, word] of [['failed', 'reranker warm-up failed'], ['unfinished', 'reranker warm-up unfinished'], ['fallback', 'reranker fallback profile']] as const) {
+      test(`${state} keeps its state word first`, async ($, on) => {
+        const wd = await boot($, on, { retrievalModels: [{ role: 'reranker', id: 'Alibaba-NLP/gte-reranker-modernbert-base', state, warm: { trigger: 'retry', ms: 40, served: 0, error: 'model file missing' } }] })
+        await openPane($, wd)
+        expect((await pane($, 'terminal', cols)).text).toContain(word)
+      })
+    }
+  })
+}

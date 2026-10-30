@@ -26,23 +26,30 @@ export function normRetrievalModels(raw: unknown): BelayRetrievalModel[] {
   return out
 }
 
-const short = (id: string): string => { const t = id.split('/').pop() ?? id; return t.replace(/-GGUF$/i, '') }
+/** The name as the panel shows it: no org prefix, no -GGUF/-ONNX suffix. The full id is in the Memory menu's models list. */
+export const shortModel = (id: string): string => (id.split('/').pop() ?? id).replace(/-(GGUF|ONNX)$/i, '')
 
-/** The segments of the one line: `models  embedder <name> ready · reranker <name> warming`. A finished warm-up adds its time, an error its words. */
-export function modelSegs(models: BelayRetrievalModel[]): { t: string; c?: 'success' | 'warning' | 'error'; dim?: boolean }[] {
-  const segs: { t: string; c?: 'success' | 'warning' | 'error'; dim?: boolean }[] = []
-  models.forEach((m, i) => {
-    segs.push({ t: i ? '   ' : 'models ', dim: true }, { t: `${m.role} `, dim: true })
-    if (m.state === 'off') { segs.push({ t: 'off', dim: true }); return }
-    segs.push({ t: `${m.id ? short(m.id) : ''} `.trimStart() })
-    // A reranker's state is its warm-up's (it says the model was loaded, not that reranking is on), so it says so.
-    if (m.role === 'reranker' && m.state !== 'fallback') segs.push({ t: 'warm-up ', dim: true })
-    // A stop is a shutdown, not a failure: an unfinished warm-up is dim, not error-coloured.
-    const look = m.state === 'unfinished' ? { dim: true } : { c: m.state === 'ready' ? 'success' as const : m.state === 'failed' ? 'error' as const : 'warning' as const }
-    segs.push({ t: m.state === 'fallback' ? 'fallback profile' : m.state === 'unfinished' ? 'unfinished (the owner stopped)' : m.state, ...look })
+type WSeg = { t: string; c?: 'success' | 'warning' | 'error'; dim?: boolean; brk?: true }
+const secs = (ms: number): string => `${(ms / 1000).toFixed(1)} s`
+
+/**
+ * One row per model, the state first so a narrow pane cuts the name or the detail and never the state: `reranker warm-up ready · Qwen3-Reranker-4B`,
+ * then `· warmed 2.0 s` and the searches that kept the fusion order as parts that drop whole when they do not fit (fitSegs).
+ * A reranker's state is its warm-up's (it says the model was loaded, not that reranking is on). A stop is a shutdown, not a failure: unfinished is dim.
+ */
+export function modelRows(models: BelayRetrievalModel[]): WSeg[][] {
+  return models.map((m): WSeg[] => {
+    const row: WSeg[] = [{ t: `${m.role} `, dim: true }]
+    if (m.state === 'off') return [...row, { t: 'off', dim: true }]
+    if (m.role === 'reranker' && m.state !== 'fallback') row.push({ t: 'warm-up ', dim: true })
+    const look = m.state === 'unfinished' ? { dim: true as const } : { c: m.state === 'ready' ? 'success' as const : m.state === 'failed' ? 'error' as const : 'warning' as const }
+    row.push({ t: m.state === 'fallback' ? 'fallback profile' : m.state, ...look })
+    if (m.id) row.push({ t: ` · ${shortModel(m.id)}`, dim: true })
     const w = m.warm
-    if (w && m.state === 'ready' && w.ms !== null) segs.push({ t: ` (warmed in ${w.ms} ms${w.served ? `; ${w.served} search${w.served === 1 ? '' : 'es'} kept the fusion order meanwhile` : ''})`, dim: true })
-    if (w && m.state === 'failed') segs.push({ t: w.error ? ` (${w.error})` : '', dim: true })
+    if (w && m.state === 'ready' && w.ms !== null) row.push({ t: ` · warmed ${secs(w.ms)}`, dim: true, brk: true })
+    if (w && w.served > 0) row.push({ t: ` · ${w.served} search${w.served === 1 ? '' : 'es'} kept the fusion order`, dim: true, brk: true })
+    if (w && m.state === 'failed' && w.error) row.push({ t: ` · ${w.error}`, dim: true, brk: true })
+    if (m.state === 'unfinished') row.push({ t: ' · the owner stopped', dim: true, brk: true })
+    return row
   })
-  return segs
 }

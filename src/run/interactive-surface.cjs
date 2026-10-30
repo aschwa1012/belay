@@ -74,7 +74,7 @@ function checkDebugLog(text, requested = {}) {
   else {
     facts.version = v[1];
     checks.push(compareVersions(v[1], floor) < 0
-      ? fail('version', `Claude Code ${v[1]} is below the floor ${floor} (ADR 0021 amendment 3)`)
+      ? fail('version', `Claude Code ${v[1]} is below the floor ${floor}`)
       : pass('version', v[1]));
   }
 

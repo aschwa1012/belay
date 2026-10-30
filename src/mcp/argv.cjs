@@ -38,7 +38,7 @@ function parseArgv(argv) {
     if (a === '--headless') {
       die('--headless is not a mode of this adapter; a headless orchestrator is a `claude -p` session '
         + 'that the CLI spawns with this adapter in its --mcp-config, and its argv is unchanged. '
-        + 'See src/run/launch.cjs orchestratorLaunchArgv (ADR 0009 §1)');
+        + 'See src/run/launch.cjs orchestratorLaunchArgv');
     }
     if (a === '--no-embed') { out.embed = false; continue; }
     // Accepted and ignored. It gated worker_wait while ADR 0014 finding 1 was being probed; ADR 0015

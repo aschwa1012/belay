@@ -56,7 +56,7 @@ function createRunPauseControl({ runId, core, hook, pauseWorker, resumeWorker, s
   async function attemptPause(w, caller, outcomes, reason) {
     if (outcomes.has(w.id)) return;
     if (w.substrate !== 'claude-code') {
-      outcomes.set(w.id, { worker_id: w.id, ok: false, error: { code: 'E_SUBSTRATE', message: `worker ${w.id} is ${w.substrate}; pause is docked for Codex (ADR 0023 decision 2)` } });
+      outcomes.set(w.id, { worker_id: w.id, ok: false, error: { code: 'E_SUBSTRATE', message: `worker ${w.id} is ${w.substrate}; pause is docked for Codex` } });
       return;
     }
     const receipt = await pauseWorker(w.id, caller, reason);

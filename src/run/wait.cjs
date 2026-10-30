@@ -38,7 +38,7 @@ function createWait({ workers, get, core = null }) {
     const limit = envTmo > 0 ? Math.max(1000, envTmo - 10000) : Infinity;
     const ms = Math.min(requested, limit);
     const capNote = ms < requested
-      ? { timeout_capped: { requested_ms: requested, used_ms: ms, by: `MCP_TOOL_TIMEOUT ${envTmo} ms less a 10,000 ms margin (ADR 0029)` } }
+      ? { timeout_capped: { requested_ms: requested, used_ms: ms, by: `MCP_TOOL_TIMEOUT ${envTmo} ms less a 10,000 ms margin` } }
       : null;
     // The state settle() wrote once, fixed at the death; w.state is the fallback for a record adopt()
     // built and never ran settle() on (invariant 4: no affirmative dead this adapter never established).
