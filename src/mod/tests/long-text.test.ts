@@ -1,6 +1,6 @@
 import { describe, expect } from 'claude-code/testing'
 import { test } from './support'
-import { MENU, boot, later, openPane, pane, squeezed, words } from './support'
+import { MENU, boot, later, leaves, openPane, pane, squeezed, words } from './support'
 
 const flat = (s: string): string => s.replace(/\s+/g, '')
 
@@ -28,6 +28,19 @@ for (const cols of [30, 40, 71]) {
       const t = flat(words(tree))
       expect(t).toContain(flat('the saved routing and this profile together need 6.9 GB and 6.8 GB is free: a run would fall back or refuse (see Routing)'))
       expect(t).toContain(flat('gpu-balanced Qwen3-Embedding-4B Q4_K_M + Qwen3-Reranker-4B Q4_K_M'))
+    })
+
+    test('the Memory menu keeps a number with its unit and each profile cost whole, and its footer is one row at the standard width', async ($, on) => {
+      const wd = await boot($, on, { heavy: true })
+      await openPane($, wd)
+      const p = await pane($, 'terminal', cols)
+      await p.ui.press({ key: 'mem' })
+      await later(wd, 10500)
+      const rows = leaves(await p.ui.drawn()).map(l => l.trim())
+      expect(rows.filter(r => /^s(\s|$)/.test(r) || /^(GB|MB|ms)/.test(r) || /~[0-9.]+$/.test(r))).toEqual([]) // no unit starts a row, no number ends one
+      expect(rows.some(r => r.includes('~3.6 s  no VRAM'))).toBe(true) // the cost of cpu-rerank, whole on one row
+      expect(rows.filter(r => /VRAM$|GB$/.test(r) && /~/.test(r)).length).toBeGreaterThan(0)
+      if (cols >= 71) expect(rows).toContain('writes config via belay settings · two presses · /orch toggles')
     })
   })
 }
