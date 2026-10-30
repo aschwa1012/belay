@@ -234,8 +234,12 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     if (started.has(key) || (seen.forecastRunning || 0) >= FORECASTS_MAX) return;
     started.add(key); seen.forecastRunning = (seen.forecastRunning || 0) + 1;
     let p; try { p = Promise.resolve(forecaster(t, runId)); } catch { p = Promise.resolve(null); }
-    p.then((fc) => { if (fc) { forecasts.set(key, fc); recordForecast(core, runId, t, fc); } }, () => { /* a forecast is optional */ }).finally(() => { seen.forecastRunning -= 1; });
+    // Running until its git calls have exited (`exited`, conflict-forecast.cjs), not just until it has an answer, so the cap stays honest.
+    const free = () => { seen.forecastRunning -= 1; };
+    p.then((fc) => { if (fc) { forecasts.set(key, fc); recordForecast(core, runId, t, fc); } return fc && fc.exited; }, () => { /* a forecast is optional */ }).then(free, free);
   };
+  // A hand-back that was over the cap when first watched is started on a later poll, as slots free (kick marks only what it starts).
+  for (const id of pending.keys()) { const t = byId.get(id); if (t && t.state === 'released') kick(t); }
   const fails = await releaseFailures(core, runId, seen, pending, held, events, tasks);
   // A failure ends the attempt of its own turn: a hand-back gets a new attempt after every cancel or error, so a failure from an earlier turn
   // (stale, not yet read) is not this attempt's. `turn` is the turn_end turn the attempt belongs to.
@@ -270,7 +274,7 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     for (const t of tasks) {
       if (t.run_id !== runId || !t.handoff || t.handoff.by !== ev.worker_id) continue;
       if (t.handoff.stood_down) { const key = `${t.id}:${t.handoff.at}`; if (!(seen.stood = seen.stood || new Set()).has(key) && t.state === 'released') { seen.stood.add(key); evs.push({ task_id: t.id, stood_down: t.handoff.stood_down }); } continue; } // a stand-down is a fact for the wake, once
-      if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); evs.push(summaryOf(t, byId, forecasts)); } else if (unevaluated(t, runId, ev.worker_id) && failedOf(t, ev.turn)) { const s = failure(failedOf(t, ev.turn)); if (s) evs.push(s); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: t0, turn: ev.turn }); ing.push(t.id); kick(t); }
+      if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); if (t.state === 'done') kick(t); evs.push(summaryOf(t, byId, forecasts)); } else if (unevaluated(t, runId, ev.worker_id) && failedOf(t, ev.turn)) { const s = failure(failedOf(t, ev.turn)); if (s) evs.push(s); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: t0, turn: ev.turn }); ing.push(t.id); kick(t); }
     }
     if (ing.length && holdMs > 0) { held.set(ev.worker_id, { ev, evs, ids: ing, since: t0 }); continue; }
     if (evs.length) ev.evaluated = evs;

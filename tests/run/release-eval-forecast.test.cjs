@@ -130,3 +130,35 @@ test('the real ledger accepts a release_forecast event, ok and failed, and lists
     assert.strictEqual((await call('memory.events', { run_id: 'r', kinds: ['release_forecast'] })).events.length, 2);
   } finally { store.close(); cleanup(dir); }
 });
+
+test('hand-backs over the cap are forecast on later polls as slots free, and a slot frees when the git calls have exited, not at the answer', async () => {
+  const ids = ['m0', 'm1', 'm2', 'm3', 'm4', 'm5'];
+  const s = { tasks: ids.map((id) => released(id)) }; const seen = new Map();
+  const core = { task: { list: async () => ({ tasks: s.tasks }) } };
+  const calls = []; const gates = new Map();
+  const forecaster = (t) => new Promise((res) => {
+    calls.push(t.id);
+    gates.set(t.id, (exitedGate) => res(Object.defineProperty({ clean: true, against: 'a', ms: 1 }, 'exited', { value: exitedGate, enumerable: false })));
+  });
+  const poll = (events = []) => RE.enrichWakes(core, 'r', events, seen, { holdMs: 0, forecaster });
+  await poll([turnEnd('w1')]);
+  assert.deepStrictEqual(calls, ['m0', 'm1', 'm2', 'm3'], 'four at once');
+  // Answers arrive, but the git calls of m0 and m1 are still running: no slot is free yet.
+  let exit0; const e0 = new Promise((r) => { exit0 = r; });
+  gates.get('m0')(e0); gates.get('m1')(e0);
+  await settle(); await poll([]);
+  assert.deepStrictEqual(calls, ['m0', 'm1', 'm2', 'm3']);
+  exit0(); gates.get('m2')(undefined); gates.get('m3')(undefined);
+  await settle(); await settle();
+  await poll([]);
+  assert.deepStrictEqual(calls, ['m0', 'm1', 'm2', 'm3', 'm4', 'm5'], 'the other two start on a later poll, with no further turn_end');
+  await poll([]); await poll([]);
+  assert.strictEqual(calls.length, 6, 'each is forecast once');
+});
+
+test('a hand-back whose evaluation had already landed when first seen is still forecast', async () => {
+  const seen = new Map(); const calls = [];
+  const core = { task: { list: async () => ({ tasks: [done('t1')] }) } };
+  await RE.enrichWakes(core, 'r', [turnEnd()], seen, { holdMs: 0, forecaster: async (t) => { calls.push(t.id); return null; } });
+  assert.deepStrictEqual(calls, ['t1']);
+});

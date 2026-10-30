@@ -23,6 +23,11 @@ const TOTAL_MS = 5000;
 const MIN_GIT = [2, 38];
 const FILES_MAX = 50;
 
+const noop = () => {};
+// The result carries `exited` (not enumerable): a promise that resolves when every git call the forecast made has exited, which can be after
+// the deadline returned the result. A caller capping how many forecasts run counts one as running until then.
+const withExited = (o, p) => Object.defineProperty(o, 'exited', { value: Promise.resolve(p).then(noop, noop), enumerable: false });
+
 const sha = (s) => { const l = String(s || '').trim().split('\n')[0]; return /^[0-9a-f]{40,64}$/.test(l) ? l : null; };
 
 // The forecast of merging `head` into `against` (both commits of the repository at `repo`; `against` null when the integration
@@ -61,7 +66,7 @@ async function forecast({ repo, head, against, totalMs = TOTAL_MS, scratchRoot =
     return done({ unavailable: `git merge-tree exited ${r.exit_code}: ${String(r.stderr).trim().split('\n').pop() || 'no stderr'}`.slice(0, 200) });
   })().catch((e) => done({ unavailable: String((e && e.message) || e).slice(0, 200) })).finally(() => { settled = true; });
   const late = new Promise((res) => { timer = setTimeout(() => res(done({ unavailable: `deadline of ${end - t0} ms passed` })), left()); });
-  try { return await Promise.race([work, late]); } finally {
+  try { return withExited(await Promise.race([work, late]), work); } finally {
     clearTimeout(timer);
     // A git call still running past the deadline holds the scratch directory on Windows; its own timeout kills it, so retry once it has.
     const rm = () => { try { fs.rmSync(scratch, { recursive: true, force: true }); } catch { /* a leftover scratch directory is harmless */ } };
@@ -80,7 +85,8 @@ async function forecastTask(task, runId, opts = {}) {
   let timer = null;
   // The whole call ends at the deadline even while a git call is still being killed (a kill can take longer than the call's timeout).
   const late = new Promise((res) => { timer = setTimeout(() => res({ unavailable: `deadline of ${deadline - t0} ms passed`, against: null, ms: Date.now() - t0 }), deadline - t0); });
-  try { return await Promise.race([forecastWithin(wt, runId, opts, t0, deadline), late]); } finally { clearTimeout(timer); }
+  const inner = forecastWithin(wt, runId, opts, t0, deadline);
+  try { const r = await Promise.race([inner, late]); return r && withExited(r, inner.then((x) => x && x.exited, noop)); } finally { clearTimeout(timer); }
 }
 
 async function forecastWithin(wt, runId, opts, t0, deadline) {
