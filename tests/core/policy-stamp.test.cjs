@@ -87,8 +87,14 @@ test('a policy assign stamps its lease and task rows from the claim; the next wr
 
 test('a stamp is never taken from arguments, a tool caller or a claim that is not open', async () => {
   await worker('wk-1');
-  // arguments: the fields are not arguments of any write, and nothing in the row comes from them
-  const t = await orch.task.create({ spec: 's2 work', acted_by: 'policy', trigger: { table: 'task', id: 'x', seq: 1 }, policy_rev: 9 });
+  // arguments: the stamp fields are the harness's, so a write that passes one is refused (a silent drop would be a success without effect) and writes nothing
+  const count = () => raw('SELECT COUNT(*) AS n FROM task')[0].n;
+  const n0 = count();
+  for (const bad of [{ acted_by: 'policy' }, { trigger: { table: 'task', id: 'x', seq: 1 } }, { policy_rev: 9 }]) {
+    await rejectsCode(orch.task.create({ spec: 's2 refused', ...bad }), 'E_ARGS');
+  }
+  assert.strictEqual(count(), n0, 'nothing was written');
+  const t = await orch.task.create({ spec: 's2 work' });
   assert.deepStrictEqual([t.acted_by, t.trigger, t.policy_rev], [null, null, null]);
   const seq = await claim('fix', await taskTrigger(t.id));
   // a tool-channel caller naming a step is refused at the engine
