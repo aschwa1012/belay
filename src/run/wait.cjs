@@ -121,14 +121,33 @@ function createWait({ workers, get, core = null }) {
     // `settledOf`, exactly as `waitExit`'s own resolution is, so a worker that dies mid-turn (no
     // `turn_end` event ever reached) still answers its settled state (`dead`, `stopped`, `paused`…),
     // never a manufactured `turn_end` this stream never produced.
-    const watch = (w) => (w.restartInFlight
-      ? w.restartInFlight.then(() => finishedOf(w) || watch(w), (e) => failedOf(w, e))
+    const watch = (w, left = ms) => (w.restartInFlight
+      ? w.restartInFlight.then(() => finishedOf(w) || watch(w, left), (e) => failedOf(w, e))
       : Promise.race([
-        W.waitTurn(w, ms).then((v) => (v ? (v.exited ? { ...settledOf(w) } : { ...turnOf(w, v) }) : never)),
-        W.waitExit(w, ms).then((v) => (v ? { ...settledOf(w) } : never)),
+        W.waitTurn(w, left).then((v) => (v ? (v.exited ? { ...settledOf(w) } : { ...turnOf(w, v) }) : never)),
+        W.waitExit(w, left).then((v) => (v ? { ...settledOf(w) } : never)),
       ]));
+    // A turn that ends with its hand-back under release evaluation (queued or running) is not answered until that evaluation settles:
+    // the answer is the turn with the evaluation's result, in one call. Only this worker's turn end is held. Its death, stop or park,
+    // a turn begun meanwhile, and every other worker's event answer at once through the same race. The call's own bound still holds:
+    // when it runs out first, the turn is answered as it stood, still `evaluating`.
+    const partial = [];
+    const holdTurn = (w, r) => {
+      if (r.event !== 'turn_end' || !r.evaluating || !EV.evaluatingOf(w)) return r;
+      partial.push(r);
+      const ev = w.evaluation;
+      return Promise.race([
+        watch(w, Math.max(1, ms - (now() - t0))),
+        EV.evaluationEnded(w).then(() => {
+          if (ev && ev.cancelled && w.stopRequested && !w.settled) return watch(w, Math.max(1, ms - (now() - t0))); // a stop that cancelled it: answered as the stop settles
+          if (w.turns !== r.turn || !w.turnEnded) return watch(w, Math.max(1, ms - (now() - t0)));
+          const { evaluating, ...rest } = r;
+          return { ...rest, ...require('./release-eval.cjs').evalOf(w), ...(ev && ev.cancelled ? { evaluation: 'cancelled' } : {}) };
+        }),
+      ]);
+    };
     const winner = await Promise.race([
-      ...ws.filter((w) => !evaluating.includes(w)).map(watch),
+      ...ws.filter((w) => !evaluating.includes(w)).map((w) => watch(w).then((r) => holdTurn(w, r))),
       // The worker stays watched through the hold: its death, stop or park, and a turn begun or ended meanwhile, answer as they would
       // without it. Once the evaluation ends the worker is looked at again, so a turn begun during the hold is not answered as the old one.
       ...evaluating.map((w) => { const ev = w.evaluation; return Promise.race([watch(w), EV.evaluationEnded(w).then(() => afterHold(w, ev))]); }),
@@ -139,6 +158,7 @@ function createWait({ workers, get, core = null }) {
       if (w) { await withCode(w); return done({ ...settledOf(w) }); }
     }
     if (winner) return done(winner);
+    if (partial.length) return done(partial[0]); // the bound ran out mid-evaluation: the turn as it stood, still evaluating
     // Only what is still in flight: a cancelled evaluation, or one that ended without an answer, is not listed with empty tasks.
     const stillEvaluating = evaluating.map((w) => ({ worker_id: w.id, turn: w.turns, tasks: EV.evaluatingOf(w) })).filter((e) => e.tasks);
     return {

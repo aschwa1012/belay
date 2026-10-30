@@ -39,7 +39,7 @@ function within(p, ms, what) {
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
 // One turn in which the worker releases its task, then `during(m, w, ctx)` while the evaluation runs. Returns what was seen.
-async function releasedTurn(acceptance, result, { stopIdleOnDone = false, during = null } = {}) {
+async function releasedTurn(acceptance, result, { stopIdleOnDone = false, during = null, turnWaitMs = 30000 } = {}) {
   const dir = sandbox();
   const gate = path.join(dir, 'gate').split(path.sep).join('/');
   const core = await openCore({ dataDir: dir, caller: callerFor('orchestrator', { run_id: RUN }), embed: false });
@@ -58,7 +58,7 @@ async function releasedTurn(acceptance, result, { stopIdleOnDone = false, during
       worker = await openCore({ dataDir: dir, caller: callerFor('worker', { worker_id: 'w1', run_id: RUN }), embed: false });
       await worker.lease.release({ lease_id: lease.id, reason: 'done', ...(result ? { result } : {}) });
       fs.writeFileSync(gate, 'go'); // the turn ends only now, after the release
-      const atTurnEnd = await within(m.wait({ worker_ids: ['w1'], timeout_ms: 30000 }), 40000, 'the turn');
+      const atTurnEnd = await within(m.wait({ worker_ids: ['w1'], timeout_ms: turnWaitMs }), 40000, 'the turn');
       const w = m._worker('w1');
       const ev = result ? await until(() => w.lastEvaluation) : { promise: Promise.resolve(w.lastEvaluation || null) }; // started once the turn's row is written; none without a hand-back
       const wakeAtTurnEnd = wakeText((await RE.enrichWakes(core, RUN, [{ worker_id: 'w1', event: 'turn_end', turn: 1 }], new Map()))[0]);
@@ -84,8 +84,7 @@ async function releasedTurn(acceptance, result, { stopIdleOnDone = false, during
 
 test('a hand-back whose checks pass is evaluated after the turn, off its queue: done, and worker_wait and one wake say so', { timeout: 90000 }, async () => {
   const r = await releasedTurn(PASS, { branch: 'b', head: 'h' });
-  assert.strictEqual(r.atTurnEnd.evaluated, undefined, 'the turn ended before its evaluation: worker_wait is not held for it');
-  assert.deepStrictEqual(r.atTurnEnd.evaluating, [r.row.id], 'the answer at turn end names the hand-back being evaluated');
+  assert.deepStrictEqual([r.atTurnEnd.evaluating, r.atTurnEnd.evaluated], [undefined, [{ task_id: r.row.id, state: 'done', passed: true, executable: true, checks: 1, failing: [] }]], 'worker_wait holds the turn end for its evaluation and answers both at once');
   assert.deepStrictEqual([r.row.state, r.row.results.trigger], ['done', 'release']);
   assert.deepStrictEqual(r.waited.evaluated, [{ task_id: r.row.id, state: 'done', passed: true, executable: true, checks: 1, failing: [] }]);
   const all = [r.wakeAtTurnEnd, ...r.followUp.map((e) => e.text)].join('\n');
@@ -107,6 +106,7 @@ test('a stop during the evaluation does not wait for its command: the command is
     return { commands: [{ argv: [process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 45000)`], timeout_ms: 300000 }] };
   };
   const r = await releasedTurn(slow, { branch: 'b' }, {
+    turnWaitMs: 800, // the evaluation is held by its command: the turn is answered as it stood
     during: async (m, w, dir) => {
       const pidFile = path.join(dir, 'cmd.pid');
       const pid = Number(await until(() => (fs.existsSync(pidFile) ? fs.readFileSync(pidFile, 'utf8') : null)));
@@ -128,11 +128,11 @@ test('a stop during the evaluation does not wait for its command: the command is
 
 test('stop_idle_on_done: a worker whose released task is evaluated done is stopped gracefully once idle; a failing one is left running', { timeout: 120000 }, async () => {
   const done = await releasedTurn(PASS, { branch: 'b' }, { stopIdleOnDone: true });
-  assert.strictEqual(done.waited.evaluated[0].stop_idle_on_done, true);
+  assert.strictEqual(done.atTurnEnd.evaluated[0].stop_idle_on_done, true);
   assert.ok(done.exited, 'the worker process exited');
   assert.deepStrictEqual([done.idleStop.stopped, done.idleStop.by, done.idleStop.receipt.graceful, done.state], [true, 'stop_idle_on_done', true, 'stopped']);
   const failed = await releasedTurn(FAIL, { branch: 'b' }, { stopIdleOnDone: true });
-  assert.deepStrictEqual([failed.idleStop, failed.waited.evaluated[0].stop_idle_on_done, failed.state], [null, undefined, 'running']);
+  assert.deepStrictEqual([failed.idleStop, failed.atTurnEnd.evaluated[0].stop_idle_on_done, failed.state], [null, undefined, 'running']);
   const off = await releasedTurn(PASS, { branch: 'b' });
   assert.deepStrictEqual([off.idleStop, off.state], [null, 'running'], 'the lever is off by default');
 });
@@ -156,6 +156,7 @@ test('F: a hand-back released while an earlier one is still being evaluated wait
       const pidFile = path.join(dir, 'a.pid').split(path.sep).join('/');
       return { commands: [{ argv: [process.execPath, '-e', `const fs=require('fs');fs.writeFileSync(${JSON.stringify(pidFile)},String(process.pid));const t=setInterval(()=>{if(fs.existsSync(${JSON.stringify(gate)})){clearInterval(t);process.exit(0);}},20);`], timeout_ms: 60000 }] };
     }, { branch: 'a' }, {
+      turnWaitMs: 800,
       during: async (m, w, dir) => {
         await until(() => fs.existsSync(path.join(dir, 'a.pid'))); // A's evaluation is running, held by its gate
         const { openCore: oc } = require('../../src/core/index.cjs');
@@ -166,7 +167,7 @@ test('F: a hand-back released while an earlier one is still being evaluated wait
           const asg = await orch.task.assign({ task_id: b.id, worker_id: 'w1' });
           await wk.lease.release({ lease_id: asg.new_lease.id, reason: 'done', result: { branch: 'b' } });
           await m.message({ worker_id: 'w1', text: 'next' });
-          const turn2 = await within(m.wait({ worker_ids: ['w1'], timeout_ms: 30000 }), 40000, 'turn 2');
+          const turn2 = await within(m.wait({ worker_ids: ['w1'], timeout_ms: 800 }), 40000, 'turn 2');
           const stop = stopMidway ? await within(m.stop({ worker_id: 'w1', mode: 'graceful' }), 30000, 'the stop') : null;
           fs.writeFileSync(path.join(dir, 'a-gate'), 'go');
           return { b: b.id, turn2, stop };
