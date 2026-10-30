@@ -227,6 +227,10 @@ function validateCaller(caller) {
   if (caller.channel !== undefined && caller.channel !== 'tool' && caller.channel !== 'harness' && caller.channel !== 'keepalive') {
     throw err('E_ARGS', `caller.channel must be tool, harness or keepalive, and this call carried ${JSON.stringify(caller.channel)}`);
   }
+  // ADR 0072 decision 3: the step a call acts for is named by the harness view alone (core-views.cjs policyAs); no other channel carries one.
+  if (caller.policy_step !== undefined && (caller.channel !== 'harness' || !Number.isInteger(caller.policy_step) || caller.policy_step <= 0)) {
+    throw err('E_ARGS', 'caller.policy_step belongs to the harness channel and is the seq of an open policy claim; this call carried one it may not', { channel: caller.channel || 'tool' });
+  }
   // ADR 0054 amendment 1: the worker adapter's lease keep-alive (lease-keepalive.cjs), a timer of belay's, not the model.
   if (caller.channel === 'keepalive' && caller.role !== 'worker') throw err('E_ARGS', 'the keepalive channel belongs to a worker adapter (its lease keep-alive)', { role: caller.role });
   if (caller.channel === 'harness' && caller.role !== 'orchestrator' && caller.role !== 'operator') {
