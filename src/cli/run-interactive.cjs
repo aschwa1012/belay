@@ -22,7 +22,7 @@ function emptyOrchestratorBlock() {
   return {
     pid: null, session_id: null, model: null, turns: null, externally_triggered_turns: null,
     exit_code: null, exit_signal: null, argv_hash: null, ready_ms: null, later_inits: null,
-    killed_after_close: null, usage: null,
+    killed_after_close: null, stdin_error: null, usage: null,
     surface: null, instructions: null, // the filled block carries both (ADR 0024, S2 fix round F4)
   };
 }

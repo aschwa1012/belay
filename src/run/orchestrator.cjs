@@ -109,7 +109,11 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     // 5b fix round (review 2 finding 2): `wakesExpired` names a pendingWrites entry this run gave up
     // waiting on — see `expireStalePendingWrites` below.
     wakes: [], wakesSuppressed: [], wakesExpired: [], baseline: {}, pendingWrites: [],
+    stdinError: null,
   };
+  // A write to a pipe the child has already closed fails as an asynchronous 'error' event, not a throw;
+  // with no listener Node crashes this process. Record it; the exit handler still settles the run.
+  if (child.stdin) child.stdin.on('error', (e) => { state.stdinError = { code: e && e.code, message: e && e.message }; });
 
   const streamFd = fs.openSync(path.join(written.dir, 'stream.jsonl'), 'a');
   const stderrFd = fs.openSync(path.join(written.dir, 'stderr.txt'), 'a');
@@ -135,6 +139,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   const hold = createRunHold({
     child, getIdle: () => state.idle, onDeadline: (reason) => closeThenKillOnDeadline(reason),
     writeStdinLine: (text, id, rec) => writeStdinLine(text, id, rec), wakeText, pushWake: (rec) => state.wakes.push(rec),
+    suppressWake: (rec) => state.wakesSuppressed.push({ ...rec, reason: 'stdin was broken when this wake was resumed' }),
     // 6f-2 design item 5 (run-hold.cjs:133): every record's `at_ms` counts from this run's own t0, like
     // every entry in `wakes[]` already does — never the wall clock.
     nowMs: () => Date.now() - t0,
@@ -209,6 +214,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   // end can tell what it answered. `forWorkerId` is null for the prompt itself; `wakeRecord` is the
   // exact object pushed to `state.wakes` for a worker's wake, so a later match can stamp it directly.
   function writeStdinLine(text, forWorkerId, wakeRecord) {
+    if (child.stdin && child.stdin.destroyed || state.stdinError) return false; // the pipe is broken: nothing was written, so nothing is recorded
     try {
       // The uuid is what the substrate's `command_lifecycle` events name this write by (pending-writes.cjs).
       const uuid = crypto.randomUUID();
@@ -243,8 +249,8 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     if (ev.event === 'paused') rec.paused_by = ev.paused_by;
     if (ev.turns_skipped) rec.turns_skipped = ev.turns_skipped;
     if (!ev.unheld && hold.holdWake(rec)) return; // 6f design item 2: held while paused, never suppressed; the budget pause's own wake is the one not held
-    writeStdinLine(text, ev.worker_id, rec);
-    state.wakes.push(rec);
+    if (writeStdinLine(text, ev.worker_id, rec)) state.wakes.push(rec);
+    else state.wakesSuppressed.push({ ...ev, reason: 'stdin was broken when this event was found' });
   }
 
   // 5b: one poll chain for the run's whole life, from the moment the ready check begins until the
