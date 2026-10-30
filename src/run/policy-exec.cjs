@@ -24,17 +24,13 @@ const keyOf = (step, t) => `${step}|${t.table}|${t.id}|${t.seq}`;
 const isRelease = (t) => !!(t && t.results && t.results.trigger === 'release');
 const isReviewTask = (t) => !!(t.acceptance && t.acceptance.verdict === true);
 
-// The plan a task acts under and its revision: its own, else that of the work it repairs, else that of the one task it depends on (as
-// policy-wakes.cjs policyOf walks), so a fix task acts under the plan of the work.
+// The plan a task acts under and its revision. The plan is policy-wakes.cjs policyOf (one definition of who inherits); the revision is that of
+// the task holding it: the task's own, else the root work's.
 function planOf(task, byId) {
-  let t = task;
-  for (let n = 0; t && n < 100; n++) {
-    const plan = parse(t.policy);
-    if (plan) return { plan, rev: Number.isInteger(t.policy_rev) ? t.policy_rev : null };
-    const up = t.repairs || (Array.isArray(t.depends_on) && t.depends_on.length === 1 ? t.depends_on[0] : null);
-    t = up ? byId.get(up) : null;
-  }
-  return null;
+  const plan = PW.policyOf(task, byId);
+  if (!plan) return null;
+  const holder = parse(task.policy) ? task : PW.rootOf(task, byId);
+  return { plan, rev: Number.isInteger(holder.policy_rev) ? holder.policy_rev : null };
 }
 const handBy = (t) => (t && t.handoff && typeof t.handoff.by === 'string' ? t.handoff.by : null);
 const merged = (t) => !!(t.integration && t.integration.state === 'merged');
@@ -128,8 +124,11 @@ function createPolicyExecutor({ core, runId, assignFor, closing = () => false, c
   // One reconciliation. -> { steps: [{ seq, step, task_id, outcome, row_ref }], swept: [seq], held: 'paused'|'ended'|null }.
   async function pass() {
     const out = { steps: [], swept: [], held: null };
-    const tasks = await read(g.task.list, 'tasks', []);
     const steps = await read(g.policy.list, 'rows', []);
+    // The core resets a row's stamp on every later write (a hand-back, an evaluation), so a fix a step made stops reading acted_by 'policy'. The
+    // claim log still names it (row_ref), and policyOf's "a row a policy step wrote" is answered from there.
+    const wrote = new Set(steps.map((r) => (typeof r.row_ref === 'string' && r.row_ref.startsWith('task:') ? r.row_ref.split(':')[1] : null)).filter(Boolean));
+    const tasks = (await read(g.task.list, 'tasks', [])).map((t) => (wrote.has(t.id) && t.acted_by !== 'policy' ? { ...t, acted_by: 'policy' } : t));
     out.swept = await sweep(steps);
     if (!tasks.some((t) => t.run_id === runId && parse(t.policy))) return out;
     const run = (await g.run.get({})).run;

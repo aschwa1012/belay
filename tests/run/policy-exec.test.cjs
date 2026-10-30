@@ -107,12 +107,12 @@ test('no plan, nothing armed: the executor reads nothing; armed with no plan on 
   assert.strictEqual(s.calls.length, 0, 'unarmed: no core call at all');
   const n = store({ tasks: [task('A', { state: 'done' })] });
   await n.exec().tick();
-  assert.deepStrictEqual(n.calls.map((c) => c.m), ['task.list', 'policy.list']);
+  assert.deepStrictEqual(n.calls.map((c) => c.m), ['policy.list', 'task.list']);
 });
 
 test('re_review: a done fix with no review gets one that depends on it, assigned to the worker that refuted', async () => {
   const W = work('W', { state: 'pending', review_id: 'R', rounds_left: 1 });
-  const F = task('F1', { state: 'done', repairs: 'W', depends_on: ['W'], handoff: by('b1'), results: rel(), answers: ['R'] });
+  const F = task('F1', { state: 'done', repairs: 'W', acted_by: 'policy', depends_on: ['W'], handoff: by('b1'), results: rel(), answers: ['R'] });
   const s = store({ tasks: [W, review('R', 'W'), F] });
   const out = await s.exec().tick();
   assert.deepStrictEqual(out.steps.map((x) => [x.step, x.outcome, x.row_ref]), [['re_review', 'done', 'task:RR1']]);
@@ -125,7 +125,7 @@ test('re_review: a done fix with no review gets one that depends on it, assigned
 
 test('re_review: a review of the fix that already exists is the orchestrator\'s, and the step is superseded by it', async () => {
   const W = work('W', { state: 'pending', review_id: 'R', rounds_left: 1 });
-  const F = task('F1', { state: 'done', repairs: 'W', depends_on: ['W'], handoff: by('b1'), results: rel(), answers: ['R'] });
+  const F = task('F1', { state: 'done', repairs: 'W', acted_by: 'policy', depends_on: ['W'], handoff: by('b1'), results: rel(), answers: ['R'] });
   const mine = task('RX', { state: 'open', depends_on: ['F1'], acceptance: { verdict: true } });
   // the review appears after the pass read the list: the claim is taken, then the fresh read finds it
   const s = store({ tasks: [W, review('R', 'W'), F] });
@@ -140,7 +140,7 @@ test('re_review: a review of the fix that already exists is the orchestrator\'s,
 });
 
 test('integrate: a held, done, unmerged work is merged with its done fixes and nothing else, into no named branch', async () => {
-  const F = task('F1', { state: 'done', repairs: 'W', depends_on: ['W'] });
+  const F = task('F1', { state: 'done', repairs: 'W', acted_by: 'policy', depends_on: ['W'] });
   const s = store({ tasks: [work('W', { state: 'holds', review_id: 'R2', rounds_left: 1 }), review('R2', 'F1', 'rv', true), F] });
   const out = await s.exec().tick();
   assert.deepStrictEqual(out.steps.map((x) => [x.step, x.outcome, x.row_ref]), [['integrate', 'done', 'integration:I1']]);
@@ -198,19 +198,19 @@ test('pause: a pause that begins mid-pass stops the next claim; an ended run tak
 
 test('halt: a task with a failed step takes no further step until a later row of its own lifts the halt', async () => {
   const W = work('W', refuted(), { written_at: 50 });
-  const failed = { seq: 1, run_id: RUN, task_id: 'W', step: 're_review', trigger_table: 'task', trigger_id: 'Z', trigger_seq: 1, outcome: 'exception', error: 'boom', at: 60, finished_at: 61 };
+  const failed = { seq: 1, run_id: RUN, task_id: 'W', step: 're_review', trigger_table: 'task', trigger_id: 'Z', trigger_seq: 1, outcome: 'exception', error: 'boom', policy_rev: 1, at: 60, finished_at: 61 };
   const s = store({ tasks: [W, review('R', 'W')], steps: [failed] });
   const e = s.exec();
   assert.deepStrictEqual((await e.tick()).steps, [], 'halted');
   assert.deepStrictEqual(s.writes(), []);
-  W.written_at = 70; // the orchestrator acted on it
+  W.policy_rev = 2; // the orchestrator amended the plan
   assert.deepStrictEqual((await e.tick()).steps.map((x) => x.step), ['fix']);
 });
 
 test('halt: a step that fails halts the task for the rest of the pass', async () => {
   const W = work('W', refuted());
   const R = review('R', 'W'); // written before the fix, so its trigger sorts first
-  const F = task('F1', { state: 'done', repairs: 'W', depends_on: ['W'], results: rel(), handoff: by('b1'), answers: ['R'] });
+  const F = task('F1', { state: 'done', repairs: 'W', acted_by: 'policy', depends_on: ['W'], results: rel(), handoff: by('b1'), answers: ['R'] });
   const s = store({ tasks: [W, R, F] }); // a fix is due and so is a re_review: the first fails
   s.script.fix = async () => { throw err('E_PRECONDITION', 'no'); };
   const out = await s.exec().tick();
