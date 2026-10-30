@@ -112,16 +112,7 @@ async function run(ctx) {
   // The headless orchestrator is recorded in the machine-wide spawn register, so another store's owner refuses its descendants too.
   // A register that cannot be written throws: the orchestrator runner ends the child before its first prompt (a launch that fails open
   // would leave other stores taking its descendants for operators).
-  // Its record is stamped while the orchestrator hook says the child has not exited (the run's own exit facts, never a bare pid check), so
-  // a run process that dies without its exit handler leaves a record that closes at the last stamp and not at the spawn.
-  const registerOrchestrator = (h) => {
-    const pid = h && h.pid;
-    if (!Number.isInteger(pid)) return;
-    const SR = require('../core/spawn-register.cjs');
-    SR.registerProcess({ pid, kind: 'orchestrator', dataDir, spawnedAt: Date.now() }, 'the headless orchestrator');
-    const stamp = require('../run/seen-stamp.cjs').stampWhile(() => typeof h.exited === 'function' && !h.exited(), pid);
-    process.once('exit', () => { stamp.stop(); SR.unregister(pid); });
-  };
+  const registerOrchestrator = (h) => require('../run/register-orchestrator.cjs').registerOrchestrator(h, { dataDir });
   const core = await openCore({
     dataDir, caller: { role: 'operator', run_id: parsed.runId, pid: process.pid },
     ownerOpts: {
