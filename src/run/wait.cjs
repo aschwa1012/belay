@@ -135,14 +135,26 @@ function createWait({ workers, get, core = null }) {
     const holdTurn = (w, r) => {
       if (r.event !== 'turn_end' || !r.evaluating || !EV.evaluatingOf(w)) return r;
       partial.push(r);
-      const ev = w.evaluation;
+      const left = () => Math.max(1, ms - (now() - t0));
+      const stopping = () => !!(w.stopRequested || w.parkRequested);
+      // Read when the hold resolves, never at the turn end: the evaluation starts only after the turn's row is written (ids noted
+      // first), so nothing captured then says whether it ran. A stop or park that cancelled it, or that kept it from starting, is
+      // 'cancelled'; an operation that cancelled a running one is too.
+      const cancelled = () => {
+        const le = w.lastEvaluation;
+        if (le && le.turn === r.turn && le.cancelled) return true;
+        const v = require('./release-eval.cjs').evalOf(w);
+        return stopping() && !v.evaluating && !v.evaluated;
+      };
+      const finish = () => { const { evaluating, ...rest } = r; return { ...rest, ...require('./release-eval.cjs').evalOf(w), ...(cancelled() ? { evaluation: 'cancelled' } : {}) }; };
       return Promise.race([
-        watch(w, Math.max(1, ms - (now() - t0))),
-        EV.evaluationEnded(w).then(() => {
-          if (ev && ev.cancelled && w.stopRequested && !w.settled) return watch(w, Math.max(1, ms - (now() - t0))); // a stop that cancelled it: answered as the stop settles
-          if (w.turns !== r.turn || !w.turnEnded) return watch(w, Math.max(1, ms - (now() - t0)));
-          const { evaluating, ...rest } = r;
-          return { ...rest, ...require('./release-eval.cjs').evalOf(w), ...(ev && ev.cancelled ? { evaluation: 'cancelled' } : {}) };
+        // The worker's death, a turn begun meanwhile, and its stop or park settling: a stop or park that cancelled the evaluation
+        // answers the turn with evaluation 'cancelled', not as a bare settled state.
+        watch(w, left()).then((x) => (x.event !== 'turn_end' && x.event !== 'turn_failed' && stopping() && cancelled() ? finish() : x)),
+        EV.evaluationEnded(w).then(async () => {
+          if (w.turns !== r.turn || !w.turnEnded) return watch(w, left());
+          if (cancelled() && stopping() && !w.settled) { if (!(await W.waitExit(w, left()))) return never; }
+          return finish();
         }),
       ]);
     };

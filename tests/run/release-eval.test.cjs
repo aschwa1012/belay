@@ -39,7 +39,7 @@ function within(p, ms, what) {
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 
 // One turn in which the worker releases its task, then `during(m, w, ctx)` while the evaluation runs. Returns what was seen.
-async function releasedTurn(acceptance, result, { stopIdleOnDone = false, during = null, turnWaitMs = 30000 } = {}) {
+async function releasedTurn(acceptance, result, { stopIdleOnDone = false, during = null, turnWaitMs = 30000, whileHeld = null } = {}) {
   const dir = sandbox();
   const gate = path.join(dir, 'gate').split(path.sep).join('/');
   const core = await openCore({ dataDir: dir, caller: callerFor('orchestrator', { run_id: RUN }), embed: false });
@@ -58,7 +58,9 @@ async function releasedTurn(acceptance, result, { stopIdleOnDone = false, during
       worker = await openCore({ dataDir: dir, caller: callerFor('worker', { worker_id: 'w1', run_id: RUN }), embed: false });
       await worker.lease.release({ lease_id: lease.id, reason: 'done', ...(result ? { result } : {}) });
       fs.writeFileSync(gate, 'go'); // the turn ends only now, after the release
-      const atTurnEnd = await within(m.wait({ worker_ids: ['w1'], timeout_ms: turnWaitMs }), 40000, 'the turn');
+      const pTurn = m.wait({ worker_ids: ['w1'], timeout_ms: turnWaitMs });
+      const heldBy = whileHeld ? await whileHeld(m, dir, pTurn) : null; // a call made while the wait holds the turn end for its evaluation
+      const atTurnEnd = await within(pTurn, 40000, 'the turn');
       const w = m._worker('w1');
       const ev = result ? await until(() => w.lastEvaluation) : { promise: Promise.resolve(w.lastEvaluation || null) }; // started once the turn's row is written; none without a hand-back
       const wakeAtTurnEnd = wakeText((await RE.enrichWakes(core, RUN, [{ worker_id: 'w1', event: 'turn_end', turn: 1 }], new Map()))[0]);
@@ -71,7 +73,7 @@ async function releasedTurn(acceptance, result, { stopIdleOnDone = false, during
       const row = await core.task.get({ task_id: task.id });
       const exited = stopIdleOnDone ? await m._waitExit('w1', 20000) : null;
       await w.idleStopping; // the stop's own receipt
-      return { atTurnEnd, out, waited, row, wakeAtTurnEnd, followUp, extra, exited, idleStop: w.idleStop || null, state: w.state };
+      return { atTurnEnd, heldBy, out, waited, row, wakeAtTurnEnd, followUp, extra, exited, idleStop: w.idleStop || null, state: w.state };
     } finally { try { await m.shutdown(); } catch { /* best effort */ } }
   } finally {
     if (saved === undefined) delete process.env.FAKE_ANSWER_GATE_FILE; else process.env.FAKE_ANSWER_GATE_FILE = saved;
@@ -123,6 +125,25 @@ test('a stop during the evaluation does not wait for its command: the command is
   assert.strictEqual(pidAlive(r.extra.pid), false, 'the acceptance command was killed');
   assert.deepStrictEqual(r.out.map((e) => [e.task_id, !!e.cancelled]), [[r.row.id, true]]);
   assert.match(String(r.out[0].by), /stop of worker w1/);
+  assert.deepStrictEqual([r.row.state, r.row.results], ['released', null], 'a cancelled evaluation writes nothing');
+});
+
+test('a stop while worker_wait holds the turn end for the evaluation answers the turn as cancelled, naming the stop', { timeout: 120000 }, async () => {
+  const slow = (dir) => {
+    const pidFile = path.join(dir, 'cmd.pid').split(path.sep).join('/');
+    return { commands: [{ argv: [process.execPath, '-e', `require('fs').writeFileSync(${JSON.stringify(pidFile)}, String(process.pid)); setTimeout(() => {}, 45000)`], timeout_ms: 300000 }] };
+  };
+  const r = await releasedTurn(slow, { branch: 'b' }, {
+    whileHeld: async (m, dir, pTurn) => {
+      const pidFile = path.join(dir, 'cmd.pid');
+      const pid = Number(await until(() => (fs.existsSync(pidFile) ? fs.readFileSync(pidFile, 'utf8') : null))); // the evaluation is running
+      const stopped = await within(m.stop({ worker_id: 'w1', mode: 'graceful' }), 30000, 'the stop');
+      await until(() => !pidAlive(pid), 15000);
+      return { stopped };
+    },
+  });
+  assert.deepStrictEqual([r.atTurnEnd.event, r.atTurnEnd.evaluation, r.atTurnEnd.evaluating, r.atTurnEnd.evaluated], ['turn_end', 'cancelled', undefined, undefined], 'one answer: the turn, its evaluation cancelled');
+  assert.deepStrictEqual(r.heldBy.stopped.cancelled_evaluation.task_ids, [r.row.id]);
   assert.deepStrictEqual([r.row.state, r.row.results], ['released', null], 'a cancelled evaluation writes nothing');
 });
 
