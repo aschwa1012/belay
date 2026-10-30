@@ -51,7 +51,7 @@ test('codexResumeArgv carries the scratch folder as a writable_roots override, q
   const base = { threadId: 't1', adapterArgs: ['a.cjs'], prompt: '- p', model: 'm' };
   const without = L.codexResumeArgv(base);
   assert.ok(!without.some((a) => /writable_roots/.test(a)) && !without.includes('--add-dir'));
-  const dir = ['C:', 'Users', 'me', 'my "data"', 'scratch', 'r', 'rev1'].join(path.win32.sep);
+  const dir = ['D:', 'work', 'my "data"', 'scratch', 'r', 'rev1'].join(path.win32.sep);
   const argv = L.codexResumeArgv({ ...base, scratchDir: dir });
   const i = argv.findIndex((a) => a.startsWith('sandbox_workspace_write.writable_roots='));
   assert.ok(i > 0 && argv[i - 1] === '-c');

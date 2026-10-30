@@ -8,7 +8,6 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
 const { core } = require('../core/helpers.cjs');
 const MM = require('../../src/core/memory-menu.cjs');
 const { GGUF_MODELS } = require('../../src/core/gguf-models.cjs');
@@ -66,7 +65,7 @@ test('delete refuses a model the pinned routing of a LIVE run names, naming the 
   fs.mkdirSync(data);
   writeConfig(proj, { project: 'acme' });
   const dir = fakeFetch(process.env.BELAY_MODEL_CACHE, GGUF_MODELS[R4]);
-  const dead = spawnSync(process.execPath, ['-e', '0']).pid;
+  const dead = require('../helpers/dead-pid.cjs').deadPid(); // an exited child's pid is reused on Windows
   liveStore(data, [{ id: 'r-live', pid: process.pid }, { id: 'r-ended', pid: process.pid, ended: true }, { id: 'r-dead', pid: dead }]);
   const m = await build(proj, data);
   assert.deepStrictEqual(m.live_runs, ['r-live']);
