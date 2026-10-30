@@ -102,7 +102,7 @@ async function copyVerified(E, caller, row, namespace, receipt, at) {
       namespace, worker_id: E.writtenBy(caller), written_by: E.memoryWriter(caller), type: row.type, text: s.text, title: s.title, body: s.body,
       redactions: s.redactions || (was && !was.disabled ? was : null), tags: s.tags, provenance: `${COPY_PREFIX}${row.id}`,
       run_id: row.run_id, task_id: row.task_id, turn: row.turn, source: row.source,
-      ...(vec ? { embedding: vec, embedding_model: row.embedding_model, embedding_revision: row.embedding_revision, dim: row.dim } : {}),
+      ...(vec ? { embedding: vec, embedding_model: row.embedding_model, embedding_revision: row.embedding_revision, dim: row.dim, text_template: row.text_template } : {}),
     });
     // A copy whose text is exactly a note's text is a dedup hit that returned that note unchanged. Setting the note verified on a test: or commit:
     // receipt would verify a note without a review (and, for a held note, past its hold), so it is refused: the copy lands only on a row that is not a note.

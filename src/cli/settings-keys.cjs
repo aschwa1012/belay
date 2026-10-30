@@ -40,6 +40,7 @@ function shape(key) {
   const s = ML.TYPES[leverOf(key)];
   if (s.type === 'boolean') return { type: 'boolean', allowed: [true, false], text: 'true | false' };
   if (s.type === 'enum') return { type: 'enum', allowed: s.values, text: s.values.join(' | ') };
+  if (s.type === 'json') return { type: 'json', nullable: !!s.nullable, allowed: null, text: 'a JSON object from agent type to profile, e.g. {"reviewer":"gpu-rerank"} | null' };
   if (s.type === 'string') return { type: 'string', nullable: !!s.nullable, allowed: null, text: s.nullable ? 'a name | null' : 'a string' };
   const range = s.min !== undefined ? ` ${s.minExclusive ? '>' : ''}${s.min}${s.minExclusive ? '' : '..'}${s.minExclusive ? ' to ' : ''}${s.max}` : '';
   return { type: s.type, allowed: null, text: `${s.type}${range}` };
@@ -76,6 +77,10 @@ function parseValue(key, raw) {
       const chk = checkStored(key, raw); // a Codex model under a Claude `model` key is refused here, before anything is written
       return chk.ok ? { value: raw } : { error: `${JSON.stringify(raw)} is not a value of ${key}: ${chk.reason}` };
     }
+    case 'json': {
+      if (raw === 'null') return { value: null };
+      try { return { value: JSON.parse(raw) }; } catch { return bad('JSON'); }
+    }
     case 'string': return { value: raw === 'null' && sh.nullable ? null : raw };
     case 'tools': {
       if (raw === 'null') return { value: null };
@@ -111,7 +116,7 @@ function checkStored(key, value) {
   const block = { [leverOf(key)]: value };
   const t = typeof value;
   const s = ML.TYPES[leverOf(key)];
-  const typeOk = s.type === 'boolean' ? t === 'boolean' : s.type === 'string' ? (value === null ? !!s.nullable : t === 'string') : s.type === 'enum' ? (isModeKey(key) ? EM.normalize(value) !== null : s.values.includes(value)) : t === 'number';
+  const typeOk = s.type === 'boolean' ? t === 'boolean' : s.type === 'string' ? (value === null ? !!s.nullable : t === 'string') : s.type === 'enum' ? (isModeKey(key) ? EM.normalize(value) !== null : s.values.includes(value)) : s.type === 'json' ? (value === null ? !!s.nullable : t === 'object') : t === 'number';
   if (!typeOk) return { ok: false, reason: `${JSON.stringify(value)} is not ${shape(key).text}` };
   // Ranges and patterns are parseMemoryBlock's to judge; a prerequisite on another key is not this key's fault.
   const r = ML.parseMemoryBlock(block);
@@ -154,6 +159,13 @@ function effective(found, key) {
   return { ...out, value: fieldOf(key) === AD.TOOLS_FIELD && kindOf(key) === 'agents' ? TP.checkList(stored.value).value : stored.value, source: found.path };
 }
 
+// A routing map as one readable line per agent type, for the listing: "orchestrator=gpu-balanced, reviewer=nano+Qwen3-Reranker-4B".
+function routingText(routing) {
+  if (!routing || typeof routing !== 'object' || !Object.keys(routing).length) return "none (every agent type uses the run's profile)";
+  const short = (id) => String(id).split('/').pop();
+  return Object.entries(routing).map(([type, p]) => `${type}=${typeof p === 'string' ? p : `${short(p && p.embedder)}+${p && p.reranker && p.reranker !== 'none' ? short(p.reranker) : 'none'}`}`).join(', ');
+}
+
 // The memory block as the config holds it, after setting `key` to `value`; `null` when it is not an object.
 function memoryBlockWith(config, key, value) {
   const cur = config && config.memory;
@@ -191,4 +203,13 @@ function memoryBlockError(found) {
   return r.error || null;
 }
 
-module.exports = { NAMES, MOD_NAMES, MEMORY_NAMES, AGENT_NAMES, kindOf, shape, parseValue, effective, refusal, expectedSource, expectedValue, memoryBlockError };
+// Does any tier the settings resolve (the run profile, every routed type, with a usable GPU assumed) name a GPU model? Then the panel reads the Memory
+// menu's facts for its badge. The routing resolver is the judge, so a pair, a CPU pick or `custom` count the way a run would count them.
+function heavyConfigured(found) {
+  const block = found && found.found && found.config && found.config.memory && typeof found.config.memory === 'object' && !Array.isArray(found.config.memory) ? found.config.memory : undefined;
+  const r = ML.parseMemoryBlock(block);
+  if (r.error) return false;
+  try { return require('../core/retrieval-routing.cjs').resolveRouting({ levers: r.value, agentTypes: ['orchestrator', 'reviewer', 'coder'], gpu: true }).gpu_models.length > 0; } catch { return false; }
+}
+
+module.exports = { heavyConfigured, routingText, NAMES, MOD_NAMES, MEMORY_NAMES, AGENT_NAMES, kindOf, shape, parseValue, effective, refusal, expectedSource, expectedValue, memoryBlockError };

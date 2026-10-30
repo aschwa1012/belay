@@ -63,6 +63,7 @@ class Owner {
     this.lastWriteAt = Date.now();
     this.idleTruncated = false;
     this.stopped = false;
+    try { const g = require.cache[require.resolve('./gpu-shared.cjs')]; if (g) g.exports.reopen(); } catch { /* the GPU wiring was never loaded */ } // a previous owner's stop latched the shared GPU child; a new owner may fork again
     // 5c: `run.stop`, a pipe-level method dispatched to a control this owner was built with, never to
     // the engine. `inFlightControls` tracks each call plus its flushed reply so `stop()` can wait.
     this.controls = opts.controls || {};
@@ -454,13 +455,21 @@ class Owner {
     // (a settle marker, never a verdict) before the socket it would have answered over is torn down.
     try { if (this.engine) this.engine.settleWaiters(); } catch (e) { record(e); }
     // A call already being served answers before its connection is destroyed (a committed write must not read as a lost owner);
-    // bounded at 5,000 ms like the controls above.
+    // bounded at 5,000 ms like the controls above. Known gap: an in-process owner's own `_local` calls (index.cjs) are not in
+    // inFlightCalls, so this wait does not cover them.
     if (this.inFlightCalls.size) await new Promise((resolve) => { const timer = setTimeout(resolve, 5000); Promise.allSettled([...this.inFlightCalls]).then(() => { clearTimeout(timer); resolve(); }); });
     try { this.binds.close(); } catch (e) { record(e); } // ADR 0045: an owner takes its keys with it
     try { for (const t of this.timers || []) clearInterval(t); } catch (e) { record(e); }
-    // MF1: the embedder child process ends with the owner, even mid-load or mid-embed: `close` over IPC,
-    // at most 2,000 ms of grace, then a kill by its exact pid (embedder.cjs close()).
-    try { if (this.embedderObj) await this.embedderObj.close(); } catch (e) { record(e); }
+    // MF1: the embedder child process ends with the owner, even mid-load or mid-embed (after the in-flight wait above, so a stop can
+    // take up to about 5 s before these closes' own bounds): `close` over IPC, at most 2,000 ms of grace, then a kill by its exact pid (embedder.cjs close()).
+    // ADR 0050: the CPU rerank child, if this owner built one, ends with it too. The two children close CONCURRENTLY, and both are
+    // awaited here, BEFORE the connections are destroyed: the embedder's close rejects its in-flight requests, and those replies must
+    // reach their callers over a connection that is still open (m11). The rerank close is bounded (3,000 ms) and never throws.
+    for (const r of await Promise.allSettled([
+      this.embedderObj ? Promise.resolve().then(() => this.embedderObj.close()) : null,
+      Promise.resolve().then(() => require('./rerank-provider.cjs').closeOwned(this, this.opts.rerankCloseBoundMs || 3000)),
+      Promise.resolve().then(() => require('./embed-provider.cjs').closeOwned(this, 3000)), // the heavy embed providers and, with them, the shared GPU child this owner used
+    ])) if (r.status === 'rejected') record(r.reason);
     try { for (const c of this.conns) c.destroy(); this.conns.clear(); } catch (e) { record(e); }
     await new Promise((resolve) => {
       if (!this.tcpServer) return resolve();

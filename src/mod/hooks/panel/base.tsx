@@ -1,10 +1,11 @@
 // Drawing primitives shared by the panel's views: the element and handler types, a line of segments, and the cell helpers.
 
 import type { Elements } from 'claude-code'
-import type { BelayPanelSettle, BelayPanelSettled, BelayPanelSnap, BelayPanelUi } from '../../types/index'
+import type { BelayPanelMenu, BelayPanelSettle, BelayPanelSettled, BelayPanelSnap, BelayPanelUi } from '../../types/index'
 import { fitSegs, type Seg } from './model'
 import { cells, clipCells } from './wrap'
 import type { SettleAction } from './held'
+import type { MemAction } from './memory'
 
 export type Els = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button' | 'Input'>
 export type Act = {
@@ -30,8 +31,10 @@ export type Act = {
   commit: (id: string) => void
   /** Open an awaiting note's line (its reason and buttons), or close it when it is the open one. UI state only: runs no process. */
   note: (id: string) => void
+  /** The Memory menu's actions: tabs, routing picks and the confirmed writes (index.tsx memPress). */
+  mem: (a: MemAction) => void
 }
-export type Ctx = { E: Els; snap: BelayPanelSnap; ui: BelayPanelUi; now: number; cols: number; act: Act; pend: BelayPanelSettle | null; focused: boolean; settled: BelayPanelSettled }
+export type Ctx = { E: Els; snap: BelayPanelSnap; ui: BelayPanelUi; now: number; cols: number; act: Act; pend: BelayPanelSettle | null; focused: boolean; settled: BelayPanelSettled; menu: BelayPanelMenu | null }
 
 export const tp = (s: Seg): Record<string, unknown> => ({
   ...(s.c ? { color: s.c } : {}), ...(s.dim ? { dimColor: true } : {}), ...(s.bold ? { bold: true } : {}), wrap: 'truncate-end',

@@ -71,16 +71,20 @@ function createEmbedderGuard({ mode: initialMode, pauseRun, stopRun, interactive
   function onFailure({ caller, by, call, error, worker_id: workerId }) {
     if (!isEmbedderFailure(error)) return undefined;
     const worker = workerId || (caller && caller.worker_id) || by || (caller && caller.role) || null;
+    // ADR 0050: a reranker or heavy-embedder failure pauses whatever nano's embedder mode is, never turns nano memory off, and is never
+    // fatal (a GPU that is gone is fixed, or on_heavy_failure set to fallback; it does not end the run).
+    const heavyStage = error.detail.stage === 'rerank' || error.detail.stage === 'heavy_embed';
+    const eff = heavyStage ? 'required' : mode;
     const ev = {
       at: Date.now(), worker, call, code: error.code || null, cause: error.detail.cause || null,
-      message: error.message || String(error), action: mode === 'required' ? 'pause' : mode === 'off' ? 'off' : 'continue', pause: null,
+      message: error.message || String(error), action: eff === 'required' ? 'pause' : eff === 'off' ? 'off' : 'continue', pause: null,
     };
     events.push(ev);
-    if (mode === 'off') off = true;
-    if (mode !== 'required') return undefined;
+    if (eff === 'off') off = true;
+    if (eff !== 'required') return undefined;
     // An interactive run is never ended by an embedder failure (operator, 2026-10-15): even one no re-load can fix pauses it, and
     // the operator resumes with `--embedder keyword|off`.
-    if (isFatal(error) && !interactive) {
+    if (isFatal(error) && !interactive && !heavyStage) {
       // Resuming can never succeed, so under `stop` the run ends, with the error and why, through the existing stop.
       ev.action = 'stop';
       const stopWhy = `ended by an embedder failure that cannot be fixed inside a run: ${ev.code}: ${ev.message}; ${fixFor(ev.code, ev.cause)}; stdin closed`;

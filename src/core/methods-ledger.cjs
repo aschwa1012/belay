@@ -12,7 +12,9 @@ const rows = require('./rows.cjs');
 const { redact } = require('./redact.cjs');
 
 const EVENT_KINDS = ['observation', 'summary', 'project_write', 'usage', 'index_injected', 'bottle', 'wrapup',
-  'corpus_primed', 'knowledge_ask', 'reflection', 'levers_unread', 'embed_bound', 'index_bound', 'notes_applied', 'note_chance', 'note_changed', 'archive_purge', 'note_matches', 'note_review', 'note_brief', 'note_refuted', 'review_job', 'scrub_job', 'scrub_owed', 'scrub_alarm', 'review_stage', 'stage_overrun', 'review_claim', 'call_detached', 'call_ended', 'release_failed'];
+  'corpus_primed', 'knowledge_ask', 'reflection', 'levers_unread', 'embed_bound', 'index_bound', 'notes_applied', 'note_chance', 'note_changed', 'archive_purge', 'note_matches', 'note_review', 'note_brief', 'note_refuted', 'review_job', 'scrub_job', 'scrub_owed', 'scrub_alarm', 'review_stage', 'stage_overrun', 'review_claim', 'call_detached', 'call_ended', 'release_failed', 'search', 'index'];
+// Written only by the owner's search log (search-log.cjs passes opts.searchLog); no caller may record them.
+const SEARCH_LOG_KINDS = ['search', 'index'];
 const SUBSTRATES = ['claude-code', 'codex'];
 const COST_BASES = ['delta-of-cumulative', 'delta-of-cumulative (new process)', 'none'];
 const GROUPS = ['task', 'worker', 'model', 'turn'];
@@ -64,9 +66,14 @@ async function recordEvent(E, caller, args) { return recordEventSync(E, caller, 
 
 // The same write with no await in it, so a caller already inside a store transaction (memory.promote) records its
 // event in that transaction: the move and its receipt commit together or not at all.
-function recordEventSync(E, caller, args) {
+// `opts.prescrubbed` (never reachable from a request: only a caller in this process passes it) skips the message scrub, for a message
+// that is structured JSON whose free text the caller already scrubbed (the search log): a scrub over the whole string would break it.
+function recordEventSync(E, caller, args, opts = {}) {
   if (!EVENT_KINDS.includes(args.kind)) {
     throw err('E_ARGS', `memory.recordEvent kind must be one of ${EVENT_KINDS.join(', ')}, and this call carried ${JSON.stringify(args.kind)}`);
+  }
+  if (SEARCH_LOG_KINDS.includes(args.kind) && !opts.searchLog) {
+    throw err('E_ROLE', `memory.recordEvent: kind ${args.kind} belongs to the store owner's search log and cannot be written by a caller`, { kind: args.kind });
   }
   const code = optStr(args.code, 'code');
   const ok = flag(args.ok === undefined ? (code ? 0 : 1) : args.ok, 'ok');
@@ -85,7 +92,7 @@ function recordEventSync(E, caller, args) {
   const vals = [
     `me-${crypto.randomUUID()}`, runId, optStr(args.worker_id, 'worker_id'), optStr(args.task_id, 'task_id'),
     args.kind, key, rowIds, optStr(args.newest_row_id, 'newest_row_id'), optCount(args.bytes, 'bytes'),
-    optStr(args.sha256, 'sha256'), ok, code, scrubMessage(E, caller, optStr(args.message, 'message')),
+    optStr(args.sha256, 'sha256'), ok, code, opts.prescrubbed ? optStr(args.message, 'message') : scrubMessage(E, caller, optStr(args.message, 'message')),
     args.dropped === undefined || args.dropped === null ? null : flag(args.dropped, 'dropped'),
     args.over_budget === undefined || args.over_budget === null ? null : flag(args.over_budget, 'over_budget'),
     Date.now(), caller.channel === 'harness' ? 'harness' : E.writtenBy(caller), // ADR 0044: the run manager's events say harness
@@ -120,6 +127,8 @@ async function events(E, caller, args) {
     for (const k of args.kinds) if (!EVENT_KINDS.includes(k)) throw err('E_ARGS', `memory.events kinds named ${JSON.stringify(k)}, and must be among ${EVENT_KINDS.join(', ')}`);
     where.push(`kind IN (${args.kinds.map(() => '?').join(', ')})`); params.push(...args.kinds);
   }
+  // The search log (kinds search and index) is large and is read only on request: a call that names no kinds leaves it out.
+  if (args.kinds === undefined || args.kinds === null) { where.push(`kind NOT IN (${SEARCH_LOG_KINDS.map(() => '?').join(', ')})`); params.push(...SEARCH_LOG_KINDS); }
   let limit = '';
   if (args.limit !== undefined && args.limit !== null) {
     if (!Number.isInteger(args.limit) || args.limit < 1) throw err('E_ARGS', 'memory.events limit must be a positive integer');

@@ -127,6 +127,7 @@ async function archivePurge(E, caller, args) {
     const sha256 = crypto.createHash('sha256').update(fs.readFileSync(file)).digest('hex');
     if (fs.readFileSync(file, 'utf8').trim().split('\n').length !== rows.length) throw err('E_INTERNAL', `the purge file ${file} does not hold the ${rows.length} rows; nothing was removed`);
     for (const r of rows) E.store.p('DELETE FROM memory_entries WHERE id = ?').run(r.id);
+    E.store.sweepVectors(rows); // the rows are gone: their vectors go too, unless another row still carries the same text
     for (const ns of new Set(rows.map(r => r.namespace))) E.store.cache.delete(ns);
     // The receipt outlives the call: a ledger row names the file, its hash and the ids, in the same transaction.
     recordEventSync(E, caller, { kind: 'archive_purge', key: file, row_ids: rows.map(r => r.id), bytes: fs.statSync(file).size, sha256, ok: true, message: `purged ${rows.length} archived notes to ${file}` });

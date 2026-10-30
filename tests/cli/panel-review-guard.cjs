@@ -5,6 +5,8 @@
 // node, and it asserts WHICH items name the launcher's pieces, so an alias, a destructuring, a bracket access or a helper elsewhere in
 // src/mod is a violation however it is spelled. The chain it proves:
 //   view.tsx  <Button key="review" onPress={act.review}>  ->  index.tsx acts().review  ->  reviewPress  ->  dispatchReview  ->  $.process.run(... REVIEW_ARGS ...)
+// The Memory menu's writes (ADR 0050 amendment 3) are a second chain of the same kind, checked the same way:
+//   view.tsx / memview.tsx  act.mem(a)  ->  index.tsx acts().mem  ->  memAct  ->  memPress  ->  dispatchMenu  ->  $.process.run(argvFor(cli, writeArgv(...)))
 
 // Comments and the inside of string and template literals become spaces (same length, same newlines); `${...}` code inside a template
 // stays code. Returns { code, lits } where lits are the string literals as { at, text }.
@@ -94,7 +96,7 @@ function analyze(files) {
   }
   const spawns = where(procCalls.spawn), runs = where(procCalls.run);
   if (!spawns.every((s) => s.startsWith('hooks/wake/index.ts:'))) bad.push(`$.process.spawn is called from ${JSON.stringify(spawns)}; only the wake stream (hooks/wake/index.ts) may spawn`);
-  const want = ['hooks/panel/index.tsx:dispatchReview', 'hooks/panel/index.tsx:runJson', 'hooks/panel/index.tsx:settlePress'];
+  const want = ['hooks/panel/index.tsx:dispatchMenu', 'hooks/panel/index.tsx:dispatchReview','hooks/panel/index.tsx:runJson', 'hooks/panel/index.tsx:settlePress'];
   if (JSON.stringify(runs) !== JSON.stringify(want)) bad.push(`$.process.run is called from ${JSON.stringify(runs)}; expected exactly ${JSON.stringify(want)}`);
 
   // 2. The launcher's pieces appear only where the chain says.
@@ -113,6 +115,23 @@ function analyze(files) {
   if (JSON.stringify(where(press)) !== JSON.stringify(['hooks/panel/index.tsx:acts']) || !press.every((r) => /^\s*review:\s*\(\)\s*=>\s*\{\s*void reviewPress\(\$\)\s*\},?\s*$/.test(r.line))) {
     bad.push(`reviewPress is named in ${JSON.stringify(where(press))}; only the \`review\` handler of acts() may call it`);
   }
+
+  // 2b. The Memory menu's chain: dispatchMenu is called by memPress only, memPress by memAct only, memAct by the `mem` handler of acts() only, and
+  // writeArgv (the one place a write's argv is built) only by dispatchMenu. Nothing outside the panel names any of them.
+  const notDecl = (rs, name) => rs.filter((r) => !new RegExp(`function\\s+${name}\\b`).test(r.line) && !/^\s*(import|export)\b/.test(r.line) && !/^\s*\}?\s*from\b/.test(r.line));
+  const menuDisp = notDecl(refs(/\bdispatchMenu\b/g), 'dispatchMenu');
+  if (JSON.stringify(where(menuDisp)) !== JSON.stringify(['hooks/panel/index.tsx:memPress'])) bad.push(`dispatchMenu is called from ${JSON.stringify(where(menuDisp))}; only memPress may`);
+  const menuPress = notDecl(refs(/\bmemPress\b/g), 'memPress');
+  if (JSON.stringify(where(menuPress)) !== JSON.stringify(['hooks/panel/index.tsx:memAct'])) bad.push(`memPress is called from ${JSON.stringify(where(menuPress))}; only memAct may`);
+  const menuAct = notDecl(refs(/\bmemAct\b/g), 'memAct');
+  if (JSON.stringify(where(menuAct)) !== JSON.stringify(['hooks/panel/index.tsx:acts']) || !menuAct.every((r) => /^\s*mem:\s*a\s*=>\s*\{\s*void memAct\(\$, a\)\s*\},?\s*$/.test(r.line))) {
+    bad.push(`memAct is named in ${JSON.stringify(where(menuAct))}; only the \`mem\` handler of acts() may call it`);
+  }
+  const argvBuilt = notDecl(refs(/\bwriteArgv\b/g), 'writeArgv');
+  if (JSON.stringify(where(argvBuilt)) !== JSON.stringify(['hooks/panel/index.tsx:dispatchMenu'])) bad.push(`writeArgv is named in ${JSON.stringify(where(argvBuilt))}; only dispatchMenu may build a write's argv`);
+  const memMembers = refs(/\.\s*mem\b/g).filter((r) => r.f !== 'hooks/panel/view.tsx' && r.f !== 'hooks/panel/memview.tsx');
+  if (memMembers.length) bad.push(`a \`.mem\` member is used outside the panel's views: ${JSON.stringify(where(memMembers))}`);
+  for (const [f, o] of Object.entries(info)) for (const l of o.lits) if (l.text === 'mem' && /\[\s*$/.test(o.code.slice(Math.max(0, l.at - 8), l.at))) bad.push(`${f}:${ownerOf(o.its, l.at)}: bracket access to ['mem']`);
 
   // 2b. The review launcher's argv, checked on the MASKED code of dispatchReview (comments and strings blanked, so a copy in a comment counts for nothing): first
   // [...REVIEW_ARGS, project, START_FLAG] with no run, then at most once more with `--run <watch.runId>` when the launcher said the one run with notes on is live.
@@ -222,6 +241,7 @@ function analyze(files) {
   // 4. Nothing outside the panel names the chain, and no module crosses between the wake and the panel.
   for (const [f, o] of Object.entries(info)) {
     if (!f.startsWith('hooks/panel/') && /\b(dispatchReview|reviewPress|REVIEW_ARGS|START_FLAG|RUN_FLAG|settlePress|settleArgs)\b/.test(o.code)) bad.push(`${f} names the review launcher or the settle writer`);
+    if (!f.startsWith('hooks/panel/') && /\b(dispatchMenu|memPress|memAct|writeArgv|routingWrites)\b/.test(o.code)) bad.push(`${f} names the Memory menu's write chain`);
     const imports = [...o.text.matchAll(/(?:from|import)\s*\(?\s*['"]([^'"]+)['"]/g)].map((m) => m[1]);
     if (f.startsWith('hooks/wake/') && imports.some((p) => /panel/.test(p))) bad.push(`${f} imports from the panel: ${imports.filter((p) => /panel/.test(p)).join(', ')}`);
     if (f.startsWith('hooks/panel/') && imports.some((p) => /wake/.test(p))) bad.push(`${f} imports from the wake: ${imports.filter((p) => /wake/.test(p)).join(', ')}`);
@@ -235,12 +255,12 @@ function analyze(files) {
   if (JSON.stringify(where(tk)) !== JSON.stringify(['hooks/panel/index.tsx:ensureTicker']) || !tk.every((r) => /timer = \$\.clock\.every\(1000, \(\) => \{ void tick\(\$\) \}\)/.test(r.line))) bad.push(`tick is named in ${JSON.stringify(where(tk))}; only the timer in ensureTicker may start a round`);
 
   // 6. The generic read helper runs reads only, and no spelling reaches the launcher's words or the host object by a computed name.
-  const READS = /^runJson\(\$,\s*cli,\s*(?:\['(?:agents|notices|transcript|settings)'|\['memory', 'held', '--awaiting'\],)/;
+  const READS = /^runJson\(\$,\s*cli,\s*(?:\['(?:agents|notices|transcript|settings)'|\['memory', 'held', '--awaiting'\],|\['memory',\s*'menu'\s*(?:,\s*'--badge'\s*)?\])/;
   for (const [f, o] of Object.entries(info)) {
     for (const m of o.code.matchAll(/\brunJson\s*\(/g)) {
       if (/function\s+$/.test(o.code.slice(Math.max(0, m.index - 12), m.index))) continue;
-      if (!READS.test(o.text.slice(m.index, m.index + 80))) bad.push(`${f}:${ownerOf(o.its, m.index)}: runJson is called other than with a literal read verb (agents, notices, transcript, settings, or memory held --awaiting)`);
-      else if (ownerOf(o.its, m.index) !== 'fetchSnapshot') bad.push(`${f}:${ownerOf(o.its, m.index)}: runJson is called outside fetchSnapshot; a press runs no read`);
+      if (!READS.test(o.text.slice(m.index, m.index + 80))) bad.push(`${f}:${ownerOf(o.its, m.index)}: runJson is called other than with a literal read verb (agents, notices, transcript, settings, memory held --awaiting, or memory menu)`);
+      else if (!['fetchSnapshot', 'fetchMenu'].includes(ownerOf(o.its, m.index))) bad.push(`${f}:${ownerOf(o.its, m.index)}: runJson is called outside fetchSnapshot and fetchMenu; a press runs no read`);
     }
     if (f.startsWith('hooks/wake/')) continue;
     for (const m of o.code.matchAll(/\$\s*\[|\(\s*\$\s+as\b|=\s*\$\s*(?:as\b[^;\n]*)?(?:[;\n]|$)/g)) bad.push(`${f}:${ownerOf(o.its, m.index)}: the host object is reached by a computed member, a cast or an alias: ${o.text.slice(m.index, m.index + 30).trim()}`);

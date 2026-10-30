@@ -360,6 +360,7 @@ async function run(ctx) {
         max_fix_rounds: nn(chosen.max_fix_rounds), // the run row records the limit, not the rounds used
         fix_hard_cap: nn(chosen.fix_hard_cap), fix_hard_cap_source: nn(chosen.fix_hard_cap_source),
         memory_notice: require('../core/memory-notice.cjs').noticeForRun(chosen, null), // this run's own notice (or null): the panel shows it, never the config's
+        retrieval_models: require('../core/retrieval-view.cjs').models(require('../core/retrieval-view.cjs').describe(chosen, core.ownerInfo())), // the pinned embedder and reranker with their state, from the run row
         agents, footer: footerOf(agents), owner: core.ownerInfo(),
         ...(chosen.budget_usd != null ? { budget: require('../core/run-budget.cjs').blockOf(chosen, await core.usage.spend({ run_id: chosen.id })) } : {}), // reported spend beside its limit; no query for a run without one
       };

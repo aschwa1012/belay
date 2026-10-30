@@ -35,8 +35,13 @@ test('TYPES covers every lever and says what each accepts (the settings CLI deri
   assert.deepStrictEqual(Object.keys(TYPES).sort(), Object.keys(DEFAULTS).sort());
   assert.deepStrictEqual(TYPES.on_embedder_failure, { type: 'enum', values: ['required', 'keyword', 'off'] }, 'the aliases are the parser\'s, not listed');
   for (const [k, t] of Object.entries(TYPES)) {
-    assert.ok(['boolean', 'number', 'integer', 'enum', 'string'].includes(t.type), k);
+    assert.ok(['boolean', 'number', 'integer', 'enum', 'string', 'json'].includes(t.type), k);
     if (t.type === 'enum') assert.ok(t.values.includes(DEFAULTS[k]), `${k}: the default is one of the values`);
     if (t.type === 'boolean') assert.strictEqual(typeof DEFAULTS[k], 'boolean', k);
+    if (t.type === 'json') {
+      assert.ok(t.nullable, `${k}: a json lever is nullable`);
+      const d = DEFAULTS[k];
+      assert.ok(d === null || (typeof d === 'object' && !Array.isArray(d)), `${k}: the default is null or a plain object`);
+    }
   }
 });

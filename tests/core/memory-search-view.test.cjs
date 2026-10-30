@@ -179,3 +179,12 @@ test('compact keeps supersedes, and marks a superseded row when include_supersed
   assert.strictEqual(o.superseded, true);
   assert.strictEqual(all.results.find(x => x.id === neu.id).superseded, undefined);
 });
+
+test('a heavy tier (floor null) marks no row below the floor, claims no absence and says why an empty answer proves nothing', () => {
+  const V = require('../../src/core/memory-search-view.cjs');
+  assert.deepStrictEqual(V.relevanceFields(0.1, null), { relevance: 0.1 });
+  assert.strictEqual(V.belowFloor(0.1, null), false);
+  assert.strictEqual(V.relevanceOf({}, 'heavy/model', null).floor, null);
+  assert.match(V.warningFor({ mode: 'hybrid' }, ['semantic', 'keyword'], [], [], false, 0, 0, null), /no measured relevance floor/);
+  assert.match(V.warningFor({ mode: 'hybrid' }, ['semantic', 'keyword'], [], [], false, 0, 0), /offset or min_score/);
+});

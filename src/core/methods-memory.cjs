@@ -306,7 +306,7 @@ async function warm(E, caller, args = {}) {
   const p = E.getEmbedder();
   if (args.wait) await p; else p.catch(() => { /* reported by state and error below */ });
   const state = o && o.embedState ? o.embedState() : 'unknown';
-  return { state, pid: o && o.embedInfo ? o.embedInfo.pid : null, error: o && o.embedError ? o.embedError : null };
+  return { state, pid: o && o.embedInfo ? o.embedInfo.pid : null, error: o && o.embedError ? o.embedError : null, rerankers: require('./retrieval-warm.cjs').warmList(E) };
 }
 
 module.exports = { leversOf, runAlpha, store, delete: del, stats, warm, nsFor, resolveNamespace, projectOf, withEmbedding, notifyEmbedderFailure, adviseEmbedderFailure, reachOf, checkReach, runEmbedderMode, scrub };

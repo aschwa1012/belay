@@ -3,7 +3,7 @@
 
 import type { BelayAgent, BelayHeld, BelayReadIssue, BelayPanelSnap, BelayPanelWatch } from '../../types/index'
 import { countAwaiting, normAwaiting, normHeld } from './held'
-import { DEFAULT_SETTINGS, normAgents, normNotices, normTranscript, parseMemoryNotice, parseSettings, type AgentsRead } from './model'
+import { DEFAULT_SETTINGS, normAgents, normNotices, normTranscript, parseMemoryNotice, parseSettings, heavyConfigured, type AgentsRead } from './model'
 
 export type RunFile = { role: string; runId: string; dataDir: string; cli: string; node: string; orchDir: string | null }
 export type RunFileRead = { file: RunFile } | { error: string }
@@ -99,8 +99,8 @@ export function parseRan(args: string[], r: { exitCode: number; stdout: string }
 export function fatalSnapshot(message: string, runId: string | null, now: number): BelayPanelSnap {
   return {
     fetchedAt: now, runId, mode: null, runState: null, stale: false, fatal: message, transcriptOk: false, transcriptAt: null,
-    startedAtMs: null, pausedAtMs: null, frozenAtMs: null, endedAtMs: null, tasks: null, maxFixRounds: null, fixHardCap: null, fixHardCapSource: null, embedder: null, agents: [], footer: null, notices: [], held: null, transcript: null,
-    settings: DEFAULT_SETTINGS, memoryNotice: null, errors: [], readIssues: [], goodAt: null,
+    startedAtMs: null, pausedAtMs: null, frozenAtMs: null, endedAtMs: null, tasks: null, maxFixRounds: null, fixHardCap: null, fixHardCapSource: null, embedder: null, retrievalModels: [], agents: [], footer: null, notices: [], held: null, transcript: null,
+    settings: DEFAULT_SETTINGS, memoryNotice: null, memWanted: false, errors: [], readIssues: [], goodAt: null,
   }
 }
 
@@ -196,8 +196,10 @@ export function buildSnapshot(p: Parts): BelayPanelSnap {
     fixHardCap: ag ? ag.fixHardCap : (prev?.fixHardCap ?? null),
     fixHardCapSource: ag ? ag.fixHardCapSource : (prev?.fixHardCapSource ?? null),
     embedder: ag ? ag.embedder : (prev?.embedder ?? null),
+    retrievalModels: ag ? ag.retrievalModels : (prev?.retrievalModels ?? []),
     agents: ag ? ag.agents : (prev?.agents ?? []),
     footer: ag ? ag.footer : (prev?.footer ?? null),
-    notices, held: heldWith(nj !== undefined ? normHeld(nj) : (prev?.held ?? null), aw, prev?.held ?? null, p.now), transcript, settings, memoryNotice, errors, readIssues, goodAt: readIssues.length ? (prev?.goodAt ?? null) : p.now,
+    notices, held: heldWith(nj !== undefined ? normHeld(nj) : (prev?.held ?? null), aw, prev?.held ?? null, p.now), transcript, settings, memoryNotice,
+    memWanted: sj !== undefined ? heavyConfigured(sj) : (prev?.memWanted ?? false), errors, readIssues, goodAt: readIssues.length ? (prev?.goodAt ?? null) : p.now,
   }
 }

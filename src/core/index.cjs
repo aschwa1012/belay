@@ -71,6 +71,9 @@ class Core {
   // adapter, belay run's warm-up) for the 600 s backstop. The limit ends the CALL; the load continues and
   // a retry joins it. Only a vector call has a limit; every other method returns as before.
   _local(method, params, capMs) {
+    // A search this timeout abandons must not reach the search log when it finishes: the keyword re-run below is the one that answers.
+    const abandon = { abandoned: false };
+    if (method === 'memory.search') params = { ...params, [Symbol.for('belay.search.abandoned')]: abandon };
     // This process IS the owner and the caller is itself, so its own pid is the checked one (a peer_pid in the arguments is dropped).
     const { peer_pid: forged, ...own } = params.caller || {};
     if (params.caller) params = { ...params, caller: own.role === 'operator' ? { ...own, peer_pid: process.pid } : own };
@@ -81,6 +84,7 @@ class Core {
     const writes = method === 'memory.store' || method === 'lease.release';
     return new Promise((resolve, reject) => {
       const timer = setTimeout(() => {
+        abandon.abandoned = true;
         const e = err('E_TIMEOUT', method + ' did not finish within ' + limit + ' ms in this process (the owner); its embedder is still loading or embedding and the load continues, so ' + (writes ? 'RE-READ before retrying: the row is written when the load finishes' : 'a retry waits on the same load'), { method, timeout_ms: limit, in_process: true, ...(writes ? { may_have_committed: true } : {}) });
         if (method === 'memory.search' && params.mode === 'hybrid') {
           const engine = this.owner.engine;
@@ -91,7 +95,9 @@ class Core {
           const bound = err('E_EMBED_BOUND', 'memory.search hybrid: its semantic half did not finish within ' + limit + ' ms (the embedder of the owner is still loading or embedding and the load continues)', { embedder: true, cause: 'timeout', op: 'embed', method, timeout_ms: limit, in_process: true });
           if (this.owner.opts && typeof this.owner.opts.embedderMode === 'function') notifyEmbedderFailure(engine, params.caller, 'memory.search', bound);
           try { adviseEmbedderFailure(engine, params.caller, bound); onSemanticFailure(engine, params.caller, bound); } catch (refusal) { return reject(refusal); }
-          engine.handle(method, { ...params, mode: 'keyword' }).then(r => resolve(withSemanticFailure(r, e)), () => reject(e));
+          const rerun = { ...params, mode: 'keyword' };
+          delete rerun[Symbol.for('belay.search.abandoned')];
+          engine.handle(method, rerun).then(r => resolve(withSemanticFailure(r, e)), () => reject(e));
         } else reject(e);
       }, limit);
       run.then(v => { clearTimeout(timer); resolve(v); }, e => { clearTimeout(timer); reject(e); });
@@ -412,10 +418,10 @@ class Core {
   isOwner() { return !!(this.owner && !this.owner.stopped); }
 
   ownerInfo() {
-    if (this.isOwner()) return { pid: process.pid, pipe: this.owner.pipe, alive: true, established_by: 'this process holds the lock' };
+    if (this.isOwner()) return { pid: process.pid, ...(Number.isFinite(this.owner.opts && this.owner.opts.created) ? { created: this.owner.opts.created } : {}), pipe: this.owner.pipe, alive: true, established_by: 'this process holds the lock' };
     const lock = readOwnerLock(this.dataDir);
     if (!lock) return null;
-    return { pid: lock.pid, pipe: lock.pipe || pipeName(this.dataDir), alive: pidAlive(lock.pid), established_by: 'owner.lock pid check' };
+    return { pid: lock.pid, ...(Number.isFinite(lock.created) ? { created: lock.created } : {}), pipe: lock.pipe || pipeName(this.dataDir), alive: pidAlive(lock.pid), established_by: 'owner.lock pid check' };
   }
 
   async close() { await this._dropClient(); }

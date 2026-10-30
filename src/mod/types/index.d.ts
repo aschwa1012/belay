@@ -79,6 +79,14 @@ export type BelayHeld = { count: number; queued?: number; unsupported: number; b
 /** `belay settings`' memory_notice: notes are on by default but no memory.project is set, so memory is off. null once a project is set. */
 export type BelayMemoryNotice = { title: string; why: string; fix: string; configLine: string; short: string }
 
+export type BelayRetrievalModel = {
+  role: 'embedder' | 'reranker'
+  id: string | null
+  state: 'off' | 'warming' | 'ready' | 'failed' | 'unfinished' | 'fallback'
+  /** The newest warm-up of this model: what started it, how long it took, the searches that waited, the error if it failed. */
+  warm: { trigger: string | null; ms: number | null; served: number; error: string | null } | null
+}
+
 export type BelayPanelSnap = {
   fetchedAt: number
   runId: string | null
@@ -103,6 +111,8 @@ export type BelayPanelSnap = {
   fixHardCap: number | null
   fixHardCapSource: string | null
   embedder: string | null
+  /** The run's pinned embedder and reranker with their live state, from the run row (`retrieval_models` of `belay agents --json`). Empty when the run pinned nothing. */
+  retrievalModels: BelayRetrievalModel[]
   agents: BelayAgent[]
   footer: BelayPanelFooter | null
   notices: BelayNotice[]
@@ -111,6 +121,8 @@ export type BelayPanelSnap = {
   transcript: BelayEntry[] | null
   settings: BelaySettings
   memoryNotice: BelayMemoryNotice | null
+  /** The settings name a heavy profile or a routing: the panel then reads the Memory menu's facts (for the main page badge) beside the round. */
+  memWanted: boolean
   /** One line per failing command: the command and its exit code. */
   errors: string[]
   /** The reads of the latest round that timed out or failed (their data is from an earlier round). Empty when every read succeeded. */
@@ -146,6 +158,56 @@ export type BelayPanelUi = {
   seen: string[]
   /** The archive review button was pressed once: the project it would review and when. A second press inside CONFIRM_MS dispatches. */
   confirm: { project: string; at: number } | null
+  /** The Memory menu's open tab (null: the main page). */
+  memTab: 'profiles' | 'routing' | 'models' | null
+  /** A Memory menu write was pressed once: the action it names (a stable id), what it would do (one line) and when. A second press of the same button inside CONFIRM_MS runs it. */
+  memConfirm: { id: string; text: string; at: number } | null
+  /** The one-line answer to the last Memory menu action: a command to run, or what a write did. */
+  memNote: string | null
+  /** Routing picks not saved yet. null: the saved routing is shown. */
+  routeDraft: BelayRouteDraft | null
+}
+
+/** A routing pick: null is "run default" (the Profiles choice), a profile name, or a custom pair that is kept as it is. */
+export type BelayRoutePick = string | { embedder: string; reranker?: string } | null
+export type BelayRouteDraft = { gpu: Record<string, BelayRoutePick>; cpu: Record<string, string | null> }
+
+export type BelayMenuModel = {
+  id: string
+  kind: 'embedder' | 'reranker'
+  runtime: 'onnx' | 'gguf'
+  device: 'cpu' | 'gpu'
+  label: string
+  bytes: number
+  vramMb: number | null
+  vramSource: string | null
+  state: 'ready' | 'download'
+  inUse: boolean
+  inUseBy: string[]
+  heavy: boolean
+  backlog: number | null
+}
+export type BelayMenuProfile = { name: string; embedder: string; reranker: string | null; device: 'cpu' | 'gpu'; embedderLabel: string; rerankerLabel: string; timeS: number; vramMb: number }
+
+/** `belay memory menu --json`, read defensively. */
+export type BelayMenu = {
+  project: string | null
+  gpu: { state: 'probed' | 'not_probed'; device: string | null; freeMb: number | null; totalMb: number | null; ok: boolean | null; reason: string | null; at: string | null; runtimeInstalled: boolean; runtimeOk: boolean; runtimeCommand: string }
+  levers: { profile: string; profileCpu: string; onHeavyFailure: string; onHeavyBehind: string; rerankDepth: number; searchLog: boolean; searchLogCapMb: number; routing: Record<string, BelayRoutePick> | null; routingCpu: Record<string, string | null> | null }
+  headroomMb: number
+  profiles: BelayMenuProfile[]
+  models: BelayMenuModel[]
+  mainTypes: string[]
+  advancedTypes: string[]
+  selectedEmbedder: string | null
+  behind: number
+  backlogReason: string | null
+  diskBytes: number
+  diskModels: number
+}
+/** The Memory menu's last read: the facts, or why there are none. */
+/** `behind` is the main page badge: set by the full menu read and by the light `--badge` read between menu visits. */
+export type BelayPanelMenu = { menu: BelayMenu | null; error: string | null; at: number; behind: number }
   /** The id of the awaiting note whose reason and buttons are shown; one at a time. Pure UI state: pressing runs nothing. */
   openNote?: string | null
 }
@@ -169,6 +231,7 @@ declare module 'claude-code' {
       panelWatch: BelayPanelWatch | null
       panelSnap: BelayPanelSnap | null
       panelUi: BelayPanelUi
+      panelMenu: BelayPanelMenu
       panelSettle: BelayPanelSettle | null
       panelSettled: BelayPanelSettled
     }

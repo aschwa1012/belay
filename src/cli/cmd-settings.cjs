@@ -7,9 +7,10 @@
 // defaults (`agents.<type>.model|effort`), both defined in settings-keys.cjs from the modules that own them.
 //
 // `settings` and `settings <key>` are mode R: discovery and one read, no file created, no process
-// started. `settings <key> <value>` writes the config file and nothing else — never the store — and
-// returns the old and new value as its receipt (invariant 5). Nothing here imports src/core beyond the pure
-// src/core/memory-levers.cjs (it requires nothing), through settings-keys.cjs.
+// started. `settings <key> <value>` and `settings --set <key> <value> [--set <key> <value>]...` write the config file and nothing else — never
+// the store — and return the old and new value of each key as their receipt (invariant 5). The several-key form refuses a repeated key and any
+// invalid final block before it writes, and writes once. Nothing here imports src/core beyond the pure
+// src/core/memory-levers.cjs (pure data; it loads no GPU module, no embedder), through settings-keys.cjs.
 
 const fs = require('node:fs');
 const C = require('./config.cjs');
@@ -43,6 +44,8 @@ const USAGE = [
   '  settings              every setting: value, source and allowed values',
   '  settings <key>        one setting',
   '  settings <key> <value>  write it to the config file; prints the old and new value',
+  '  settings --set <key> <value> [--set <key> <value>]...  write several at once: every value is validated, in order, against the file the earlier ones',
+  '          would produce, and either all are written (in one rename) or none',
   '',
   `keys: ${K.MOD_NAMES.join(', ')}`,
   '      memory.<lever>   a notes lever (memory.*), the default every run inherits (the run spec overrides it key by key)',
@@ -59,14 +62,15 @@ function usageError(message) {
 const row = (found, key) => K.effective(found, key);
 
 function line(r, width) {
-  return `  ${r.key.padEnd(width)}  ${JSON.stringify(r.value)}  (from ${r.source})  [${r.type || r.allowed.join(' | ')}]`;
+  const shown = r.key === 'memory.routing' ? K.routingText(r.value) : JSON.stringify(r.value);
+  return `  ${r.key.padEnd(width)}  ${shown}  (from ${r.source})  [${r.type || r.allowed.join(' | ')}]`;
 }
 
 function listResult(found, json) {
   const rows = SETTING_NAMES.map((k) => row(found, k));
   const memoryError = K.memoryBlockError(found);
   const notice = MN.noticeForConfig(found); // the panel reads this; null once a project is set
-  const payload = { found: found.found, path: found.path, parse_error: found.parse_error || null, ...(memoryError ? { memory_error: memoryError } : {}), memory_notice: notice, settings: rows };
+  const payload = { found: found.found, path: found.path, parse_error: found.parse_error || null, ...(memoryError ? { memory_error: memoryError } : {}), memory_notice: notice, memory_heavy: K.heavyConfigured(found), settings: rows };
   if (json) return { code: 0, text: '', json: payload };
   const width = Math.max(...SETTING_NAMES.map((k) => k.length));
   const lines = [found.found ? `config: ${found.path}` : 'config: none found (settings <key> <value> writes one)'];
@@ -101,7 +105,7 @@ const fail = (message, key, extra = {}) => ({
 // the text the config was parsed from (null when the file did not exist); if the file differs just
 // before the rename, another writer got in between and this write would silently undo theirs. A window
 // remains between that compare and the rename: Windows has no compare-and-swap rename. There is no lock
-// because the only other writer is the operator's editor; the mod writes nothing (ADR 0036 amendment 1 §6).
+// because the other writers are the operator's editor and the panel's Memory menu (ADR 0050 amendment 3), which runs this command, one press at a time.
 function writeAtomic(file, text, expectRaw) {
   const tmp = `${file}.${process.pid}.tmp`;
   try {
@@ -184,7 +188,66 @@ function writeSetting(found, key, rawValue, ctx) {
   return { code: 0, text, json: receipt };
 }
 
+// `--set k v [--set k v]...`: validates every pair against the config the earlier pairs would produce (the whole memory block each time), then writes the
+// file ONCE by the same temp file and rename. A refusal of any pair writes none. Receipt { keys, results: [{ key, old, new }], path, created }.
+function writeSettings(found, pairs, ctx) {
+  if (!pairs.length) return usageError('--set needs a key and a value');
+  if (found.found && found.parse_error) return fail(`refusing to write: ${found.parse_error}`, pairs[0][0]);
+  const created = !found.found;
+  const file = created ? `${C.writeDirOf(ctx.cwd)}/${C.CONFIG_NAME}` : found.path;
+  const dir = file.slice(0, file.lastIndexOf('/'));
+  if (!C.discover(dir).searched.includes(file)) return fail(`refusing to write ${file}: discovery would never read a config file there (the home directory)`, pairs[0][0]);
+  const config = created ? {} : JSON.parse(JSON.stringify(found.config));
+  const olds = [];
+  const values = [];
+  const seen = new Set();
+  for (const [key, raw] of pairs) {
+    if (!SETTING_NAMES.includes(key)) return usageError(`unknown key ${key}; the keys are ${SETTING_NAMES.join(', ')}`);
+    if (seen.has(key)) return usageError(`${key} is given twice; nothing was written`);
+    seen.add(key);
+    const parsed = K.parseValue(key, raw);
+    if (parsed.error) return usageError(`${parsed.error}; nothing was written`);
+    olds.push(row(found, key));
+    values.push(parsed.value);
+    const segs = key.split('.');
+    let at = config;
+    for (const seg of segs.slice(0, -1)) {
+      if (at[seg] === undefined) at[seg] = {};
+      if (!at[seg] || typeof at[seg] !== 'object' || Array.isArray(at[seg])) return fail(`refusing to write: "${seg}" in ${file} is not an object`, key);
+      at = at[seg];
+    }
+    at[segs[segs.length - 1]] = parsed.value;
+  }
+  // The FINAL block is judged once: a prerequisite one pair needs may come from another pair, whatever their order.
+  const mem = pairs.findIndex(([key]) => key.startsWith('memory.'));
+  if (mem >= 0) {
+    const refused = K.refusal(config, pairs[mem][0], values[mem]);
+    if (refused) return usageError(refused);
+  }
+  try { writeAtomic(file, `${JSON.stringify(config, null, 2)}\n`, created ? null : found.raw); } catch (e) { return fail(e.conflict ? e.message : `could not write ${file}: ${e.message}`, pairs[0][0]); }
+  const back = seams.discover(ctx.cwd);
+  const results = [];
+  for (let i = 0; i < pairs.length; i += 1) {
+    const key = pairs[i][0];
+    const now = K.effective(back, key);
+    if (JSON.stringify(now.value) !== JSON.stringify(K.expectedValue(key, values[i])) || now.source !== K.expectedSource(key, values[i], file)) {
+      return fail(`wrote ${file} but reading it back gave ${JSON.stringify(now.value)} from ${now.source} for ${key}`, key, { written: true, path: file });
+    }
+    results.push({ key, old: { value: olds[i].value, source: olds[i].source, ...(olds[i].invalid ? { invalid: olds[i].invalid } : {}) }, new: { value: now.value, source: now.source } });
+  }
+  const text = `${results.map((r) => `${r.key}: ${JSON.stringify(r.old.value)} (${r.old.source}) -> ${JSON.stringify(r.new.value)}`).join('\n')}\n${created ? 'created' : 'updated'} ${file}\n`;
+  return { code: 0, text, json: { keys: results.map((r) => r.key), results, path: file, created } };
+}
+
 async function run(ctx) {
+  if (ctx.argv[0] === '--set') {
+    const pairs = [];
+    for (let i = 0; i < ctx.argv.length; i += 3) {
+      if (ctx.argv[i] !== '--set' || ctx.argv[i + 1] === undefined || ctx.argv[i + 2] === undefined) return usageError('--set takes a key and a value each time: --set <key> <value> [--set <key> <value>]...');
+      pairs.push([ctx.argv[i + 1], ctx.argv[i + 2]]);
+    }
+    return writeSettings(C.discover(ctx.cwd), pairs, ctx);
+  }
   const [key, value, extra] = ctx.argv;
   if (retiredKey(key) && extra === undefined) return retiredResult(key, value);
   if (key !== undefined && !SETTING_NAMES.includes(key)) {
@@ -198,4 +261,4 @@ async function run(ctx) {
   return writeSetting(found, key, value, ctx);
 }
 
-module.exports = { run, writeSetting, USAGE, seams };
+module.exports = { run, writeSetting, writeSettings, USAGE, seams };

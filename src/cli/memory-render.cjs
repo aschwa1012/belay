@@ -47,9 +47,13 @@ const FLAGS = {
   '--dry-run': { key: 'dryRun', type: 'bool' },
   '--reembed': { key: 'reembed', type: 'bool' },
   '--template': { key: 'template', type: 'one' },
+  '--model': { key: 'model', type: 'one' },
   '--candidates': { key: 'candidates', type: 'bool' },
+  '--export': { key: 'export', type: 'one' },
+  '--force': { key: 'force', type: 'bool' },
   '--approve': { key: 'approve', type: 'bool' },
   '--reject': { key: 'reject', type: 'bool' },
+  '--badge': { key: 'badge', type: 'bool' },
   '--awaiting': { key: 'awaiting', type: 'bool' },
   '--if-awaiting': { key: 'ifAwaiting', type: 'bool' },
   '--archive': { key: 'archive', type: 'bool' },
@@ -69,7 +73,7 @@ const VERBS = {
   verify: { flags: ['--status', '--receipt'], positional: [1, 1], usage: 'belay memory verify <id> --status verified|refuted|unverified --receipt <r>' },
   stats: { flags: [], positional: [0, 1], usage: 'belay memory stats [run-id]' },
   export: { flags: ['--namespace', '--since', '--out', '--all'], positional: [0, 1], usage: 'belay memory export [run-id] [--namespace ns]... [--since <ms|iso>] [--out <file>] [--all]' },
-  embed: { flags: ['--project', '--dry-run', '--reembed', '--template'], positional: [0, 0], usage: 'belay memory embed [--project <p>] [--dry-run] | belay memory embed --reembed --template v2 [--project <p>] [--dry-run]' },
+  embed: { flags: ['--project', '--dry-run', '--reembed', '--template', '--model'], positional: [0, 0], usage: 'belay memory embed --model <gguf embedder> [--project <p>] | belay memory embed [--project <p>] [--dry-run] | belay memory embed --reembed --template v2 [--project <p>] [--dry-run]' },
   import: { flags: ['--namespace-map', '--namespace', '--no-embed'], positional: [1, 1], usage: 'belay memory import <file> [--namespace-map from=to]... [--namespace ns] [--no-embed]' },
   proposals: { flags: ['--project', '--all'], positional: [0, 0], usage: 'belay memory proposals [--project p] [--all]' },
   restore: { flags: ['--reason', '--candidates'], positional: [1, 1], usage: 'belay memory restore <id> --reason <text>   |   belay memory restore <id> --candidates' },
@@ -77,6 +81,8 @@ const VERBS = {
   review: { flags: ['--run', '--project', '--worktree', '--all', '--start'], positional: [0, 0], usage: 'belay memory review [--project <p>] [--all] [--run <id>] [--worktree <dir>] [--start]' },
   resolve: { flags: ['--evidence'], positional: [2, 3], usage: 'belay memory resolve <id> new   |   belay memory resolve <id> repeats <of>   |   belay memory resolve <id> supersedes <of> --evidence <text>' },
   promote: { flags: ['--approve', '--reject', '--reason'], positional: [1, 1], usage: 'belay memory promote <note-id> (--approve | --reject) [--reason <text>]' },
+  'search-log': { flags: ['--export', '--run', '--since', '--force'], positional: [0, 0], usage: 'belay memory search-log --export <file> [--run <id>] [--since <ms|iso>] [--force]' },
+  menu: { flags: ['--badge'], positional: [0, 0], usage: 'belay memory menu [--badge]   (the facts the panel Memory menu shows: GPU, profiles, models, backlog; a read; --badge: only the backlog of the selected embedder)' },
   held: { flags: ['--project', '--awaiting', '--archive', '--release', '--reoffer', '--reason', '--if-awaiting'], positional: [0, 2], usage: 'belay memory held [--project p] [--awaiting]   |   belay memory held settle <note-id> (--archive | --release | --reoffer) --reason <text> [--if-awaiting]' },
   report: { flags: ['--reason', '--replaced-by'], positional: [1, 1], usage: 'belay memory report <note-id> --reason <text> [--replaced-by <note-id>]' },
   archive: { flags: ['--ids', '--older-than', '--confirm', '--project'], positional: [1, 1], usage: 'belay memory archive purge (--ids a,b | --older-than <days>) --confirm [--project p]' },
@@ -188,6 +194,7 @@ function checkOpts(sub, opts, positional = []) {
   if (sub === 'held') return checkHeld(opts, positional);
   if (sub === 'promote' && !!opts.approve === !!opts.reject) return { error: 'belay memory promote needs exactly one of --approve or --reject' };
   if (sub === 'archive') return checkPurge(opts);
+  if (sub === 'search-log' && !opts.export) return { error: 'belay memory search-log needs --export <file>' };
   if (sub === 'verify') {
     if (opts.status === undefined) return { error: 'belay memory verify needs --status verified|refuted|unverified' };
     if (opts.receipt === undefined && opts.status !== 'unverified') return { error: 'belay memory verify needs --receipt <r>: a status without evidence is refused' };
