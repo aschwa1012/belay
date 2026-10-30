@@ -236,6 +236,7 @@ async function evaluate(E, caller, args, queued = null) {
       evaluated_at: Date.now(), executable, passed, checks, ...(args.trigger ? { trigger: args.trigger } : {}), ...(queued ? { queued } : {}), ...J.fields(judged), ...(checks.some(c => c.flaky) ? { flaky: true } : {}), // ADR 0060: what was judged (4, 6); a pass only on a retry is never silent (2)
       ...(checks.length === 0 ? { note: 'the task declares no acceptance criteria, so nothing was executed and nothing is proven' } : {}),
     };
+    require('./check-flake.cjs').record(E.store, checks, judged); // 0.4.0: the store-wide flaky-check record, in this write
     return rows.append(E.store, 'task', {
       ...fresh, results, state: executable && passed ? 'done' : fresh.state,
     }, E.writtenBy(caller), Date.now());
