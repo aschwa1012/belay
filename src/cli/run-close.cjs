@@ -37,6 +37,14 @@ const adapterWaitBoundMs = (n, graceMs, snapMs = SNAPSHOT_TIMEOUT_MS) => Math.ma
 
 // A Codex `idle` row has no process by design (api.md §2): run.end closes it, belay run never kills it.
 const hasProcess = (w) => !(w.substrate === 'codex' && w.state === 'idle');
+// A pid that answers a pid check is the adapter only if it is the process the run row recorded: a recorded creation time is checked
+// against one snapshot (taken only for a pid that answers), so a pid another process now holds is not waited on. No recorded time, or a
+// snapshot that cannot be read, leaves the pid check as it was. `deps.prepare` is a test seam.
+async function runsAs(pid, created, deps = {}) {
+  if (!pidAlive(pid)) return false;
+  if (created == null) return true;
+  try { return (await (deps.prepare || require('../core/live-as.cjs').prepare)([{ pid, created }])).runsAs(pid, created); } catch { return true; }
+}
 const claimsLiveProcess = (w) => LIFE_CLAIMING_STATES.has(w.state) && hasProcess(w) && pidAlive(w.pid);
 
 // Returns { adapter_pid, adapter_gone, adapter_wait_ms, adapter_wait_bound_ms, killed: [...], still_alive: [...],
@@ -56,10 +64,10 @@ async function closeRunWorkers(opts) {
   const handled = new Set([out.adapter_pid, ...candidates]);
   const lates = [];
   for (let round = 0; round < 2 && !(opts.fast && opts.fast.requested()); round += 1) {
-    const late = await lateAdapterPid(opts.core, handled, opts.ownPid === undefined ? process.pid : opts.ownPid);
+    const late = await lateAdapterPid(opts.core, handled, opts.ownPid === undefined ? process.pid : opts.ownPid, opts.deps);
     if (late == null) break;
-    handled.add(late); lates.push(late);
-    const more = await closeRunWorkersOnce({ ...opts, adapterPid: late }); // the pid the read named, not a second read
+    handled.add(late.pid); lates.push(late.pid);
+    const more = await closeRunWorkersOnce({ ...opts, adapterPid: late.pid, adapterCreated: late.created }); // the pid the read named, not a second read
     out = { ...more, adapter_pid: out.adapter_pid, adapter_gone: out.adapter_gone && more.adapter_gone, adapter_wait_ms: out.adapter_wait_ms + more.adapter_wait_ms, adapter_wait_bound_ms: Math.max(out.adapter_wait_bound_ms, more.adapter_wait_bound_ms), killed: [...out.killed, ...more.killed], still_alive: [...out.still_alive, ...more.still_alive], errors: [...out.errors, ...more.errors], unregistered_adapter_pids: out.unregistered_adapter_pids, late_adapter_pids: [...lates] };
   }
   return out;
@@ -77,15 +85,16 @@ async function adapterCandidates({ orchestrator, ownPid = process.pid, deps = {}
   } catch { return []; } // the scan is best effort; the run row and the second read still cover an adapter that registered
 }
 
-async function lateAdapterPid(core, handled, ownPid) {
+async function lateAdapterPid(core, handled, ownPid, deps = {}) {
   try {
     const got = await core.run.get();
     const pid = got && got.run ? got.run.adapter_pid : null;
-    return Number.isInteger(pid) && !handled.has(pid) && pid !== ownPid && pidAlive(pid) ? pid : null;
+    const created = got && got.run && got.run.adapter_pid_created != null ? got.run.adapter_pid_created : null;
+    return Number.isInteger(pid) && !handled.has(pid) && pid !== ownPid && await runsAs(pid, created, deps) ? { pid, created } : null;
   } catch { return null; } // run.end follows and reports its own failure
 }
 
-async function closeRunWorkersOnce({ core, runId, graceMs, ownPid = process.pid, deps = {}, fast = null, candidatesP = Promise.resolve([]), adapterPid }) {
+async function closeRunWorkersOnce({ core, runId, graceMs, ownPid = process.pid, deps = {}, fast = null, candidatesP = Promise.resolve([]), adapterPid, adapterCreated }) {
   const { killProcess, waitPidGone, withKillLock } = { ...processDefaults, ...deps };
   const { rowTarget } = processDefaults;
   const cut = { v: false }; // set when the budget's race timer fires or finalizeCut runs: a snapshot landing after it signals nothing
@@ -98,9 +107,12 @@ async function closeRunWorkersOnce({ core, runId, graceMs, ownPid = process.pid,
 
   // (a) The run row's adapter is the orchestrator's adapter once it attached, else this process itself
   // (belay run's own attach), which is alive by definition and must not be waited on.
+  let adapterBorn = null;
   try {
-    const pid = adapterPid !== undefined ? adapterPid : (((await core.run.get()) || {}).run || {}).adapter_pid;
+    const row = adapterPid !== undefined ? null : (((await core.run.get()) || {}).run || {}); // one read, for the pid and its creation time
+    const pid = adapterPid !== undefined ? adapterPid : row.adapter_pid;
     out.adapter_pid = Number.isInteger(pid) ? pid : null;
+    adapterBorn = adapterPid !== undefined ? (adapterCreated === undefined ? null : adapterCreated) : (row.adapter_pid_created == null ? null : row.adapter_pid_created);
   } catch (e) { out.errors.push(`run.get: ${(e && e.message) || String(e)}`); }
   // BELAY_CLOSE_LOG names a file; the close appends `run-row-read` once it has read the run row. Off unless set. A test that must
   // land an attach after this read waits for the line, so the order is a fact it observed and not an assumption about timing.
@@ -110,7 +122,7 @@ async function closeRunWorkersOnce({ core, runId, graceMs, ownPid = process.pid,
   if (fast) { fast.progress = { out, unrecorded, cut }; for (const w of before || []) if (claimsLiveProcess(w)) unrecorded.set(w.id, { w, touched: () => false }); }
   const liveCount = before ? before.filter(claimsLiveProcess).length : 0;
   out.adapter_wait_bound_ms = Math.max(graceMs, adapterWaitBoundMs(liveCount, graceMs, SNAPSHOT_TIMEOUT_MS));
-  if (out.adapter_pid != null && out.adapter_pid !== ownPid && pidAlive(out.adapter_pid)) {
+  if (out.adapter_pid != null && out.adapter_pid !== ownPid && await runsAs(out.adapter_pid, adapterBorn, deps)) {
     if (fast && fast.requested()) {
       out.adapter_gone = false; out.adapter_wait_ms = 0; out.fast_close = true;
     } else {

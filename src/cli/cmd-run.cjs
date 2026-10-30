@@ -112,12 +112,7 @@ async function run(ctx) {
   // The headless orchestrator is recorded in the machine-wide spawn register, so another store's owner refuses its descendants too.
   // A register that cannot be written throws: the orchestrator runner ends the child before its first prompt (a launch that fails open
   // would leave other stores taking its descendants for operators).
-  const registerOrchestrator = (pid) => {
-    if (!Number.isInteger(pid)) return;
-    const SR = require('../core/spawn-register.cjs');
-    SR.registerProcess({ pid, kind: 'orchestrator', dataDir, spawnedAt: Date.now() }, 'the headless orchestrator');
-    process.once('exit', () => SR.unregister(pid));
-  };
+  const registerOrchestrator = (h) => require('../run/register-orchestrator.cjs').registerOrchestrator(h, { dataDir });
   const core = await openCore({
     dataDir, caller: { role: 'operator', run_id: parsed.runId, pid: process.pid },
     ownerOpts: {
@@ -183,7 +178,7 @@ async function run(ctx) {
   });
   budget = require('../run/budget-guard.cjs').createBudgetGuard({ dataDir, core, runId: parsed.runId, runLimit: parsed.levers.budget_usd || null, source: parsed.levers.budget_source || null, countInFlight: parsed.levers.budget_counts_in_flight === true, interactive: !!ce, warn: ctx.json ? null : (m) => process.stderr.write(m), pauseRun: (why) => runPauseControl.pause({ run_id: parsed.runId, caller: opCaller }, why) });
   if (ce && ctx.interactiveDeps && ctx.interactiveDeps.onGuard) ctx.interactiveDeps.onGuard(guard); // test seam
-  const attachHook = { attach: (h) => { stopControl.attach(h); Object.assign(hookBox, h); if (!ce) registerOrchestrator(h.pid); } };
+  const attachHook = { attach: (h) => { stopControl.attach(h); Object.assign(hookBox, h); if (!ce) registerOrchestrator(h); } };
 
   // Step 2 (5a-2 design): elect before any write, any file under orchestrator_dir, or any process
   // spawned. A refusal here has made no write of any kind.
@@ -257,7 +252,7 @@ async function run(ctx) {
     try {
       clearRunStart(orchestratorDir); // before this launch's attach: no marker of an earlier life of this run id survives
       RID.watchOrchestrator(pid); // ADR 0039: run-identity.cjs; the attach never waits on a snapshot
-      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, max_follow_ups: parsed.levers.max_follow_ups, fix_hard_cap: parsed.levers.fix_hard_cap, fix_hard_cap_source: parsed.levers.fix_hard_cap_source, max_parallel_evaluations: parsed.levers.max_parallel_evaluations === undefined ? null : parsed.levers.max_parallel_evaluations, merge_into: parsed.levers.merge_into === undefined ? null : parsed.levers.merge_into, run_mode: mode, budget_usd: parsed.levers.budget_usd || null, budget_explicit: /^spec/.test(parsed.levers.budget_source || ''), project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
+      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, max_follow_ups: parsed.levers.max_follow_ups, fix_hard_cap: parsed.levers.fix_hard_cap, fix_hard_cap_source: parsed.levers.fix_hard_cap_source, max_parallel_evaluations: parsed.levers.max_parallel_evaluations === undefined ? null : parsed.levers.max_parallel_evaluations, merge_into: parsed.levers.merge_into === undefined ? null : parsed.levers.merge_into, run_mode: mode, budget_usd: parsed.levers.budget_usd || null, policy_default: parsed.levers.policy_default || null, budget_explicit: /^spec/.test(parsed.levers.budget_source || ''), project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
       await budget.loadAttach(attachRow.run); for (const w of attachRow.warnings || []) process.stderr.write("belay run: warning: " + w + String.fromCharCode(10));
       // ADR 0050: the routing is resolved once, here, before the orchestrator's first prompt (a heavy backlog is drained or fallen back from first).
       try {

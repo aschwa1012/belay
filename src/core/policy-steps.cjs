@@ -70,6 +70,7 @@ async function claim(E, caller, args) {
   for (const k of ['policy_rev', 'turn']) if (a[k] !== undefined && a[k] !== null && !isInt(a[k])) throw err('E_ARGS', `policy.claim ${k} must be an integer`, { field: k });
   if (!TABLES.includes(t.table)) throw err('E_ARGS', `policy.claim trigger.table must be one of ${TABLES.join(', ')}`, { field: 'trigger' });
   if (VERSIONED.has(t.table) && t.seq === undefined) throw err('E_ARGS', `a trigger on a ${t.table} row needs its seq: the step acts on that version of the row, and a later version is a new trigger`, { field: 'trigger' });
+  if (!VERSIONED.has(t.table) && t.seq !== undefined && t.seq !== 0) throw err('E_ARGS', `a trigger on a ${t.table} row has no version: seq is 0 or absent`, { field: 'trigger' });
   const trig = { table: t.table, id: t.id, seq: t.seq === undefined ? 0 : t.seq };
   const run_id = caller.run_id;
   if (!isStr(run_id)) throw err('E_ARGS', 'policy.claim needs a caller with a run_id', { field: 'run_id' });

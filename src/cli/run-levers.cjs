@@ -225,6 +225,8 @@ function parseLevers(spec, opts = {}) {
   if (merged.dropped) out.memory_dropped = merged.dropped; // config levers a spec's `notes: false` left out, so the receipt says what did not apply
   const bud = require('./run-budget-levers.cjs').applyBudget(out, spec, opts); // the run's dollar budget; turns the usage ledger on
   if (bud.error) return bud;
+  const pol = require('./run-policy-levers.cjs').applyPolicy(out, spec, opts); // the user's default task plan (ADR 0071)
+  if (pol.error) return pol;
   return out;
 }
 

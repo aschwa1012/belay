@@ -131,7 +131,7 @@ test('a trigger names a known table and, for a versioned row, the version it act
   const d = sandbox();
   const s = new Store(path.join(d, 'memory.db'), { stamp: true });
   try {
-    for (const trigger of [{ table: 'task', id: 't-1' }, { table: 'lease', id: 'l-1' }, { table: 'integration', id: 'i-1' }, { table: 'review', id: 'x', seq: 1 }, { table: 'task', id: 't-1', seq: 1.5 }, { id: 'x', seq: 1 }]) {
+    for (const trigger of [{ table: 'task', id: 't-1' }, { table: 'lease', id: 'l-1' }, { table: 'integration', id: 'i-1' }, { table: 'review', id: 'x', seq: 1 }, { table: 'task', id: 't-1', seq: 1.5 }, { table: 'worker', id: 'w-1', seq: 3 }, { table: 'run', id: 'r1', seq: 1 }, { id: 'x', seq: 1 }]) {
       await rejectsCode(steps.claim(E(s), HARNESS, { step: 'fix', trigger }), 'E_ARGS');
     }
     assert.strictEqual(rowsOf(s).length, 0);

@@ -31,16 +31,22 @@ async function headOf(worktree) {
 // over one that moved on, or (for a pid-checked row) whose pid came back, in the meantime.
 const CODEX_IDLE_BY = 'run.end: a Codex worker between turns has no process by design; its run ended';
 const isCodexIdle = (w) => w.substrate === 'codex' && w.state === 'idle';
+// A pid that answers is the worker only if it is the process the row recorded (pid_created, checked against one snapshot taken for the
+// rows that need it): a pid another process now holds is not a life, and the row closes. A row with no recorded time, or a snapshot that
+// cannot be read, keeps the pid check as it was (live-as.cjs).
 async function closeEpochWorkers(E, runId, by, lifeClaiming) {
   const marked = [];
   const t = Date.now();
+  const mine = rows.currentAll(E.store, 'worker').filter((w) => w.run_id === runId && lifeClaiming.has(w.state) && !isCodexIdle(w));
+  const LA = require('./live-as.cjs');
+  const ready = await LA.prepare(mine.flatMap(LA.pairsOf));
   for (const w of rows.currentAll(E.store, 'worker')) {
     if (w.run_id !== runId || !lifeClaiming.has(w.state)) continue;
     const codexIdle = isCodexIdle(w);
-    if (!codexIdle && pidAlive(w.pid)) continue;
+    if (!codexIdle && ready.runsAs(w.pid, w.pid_created)) continue;
     const head = await headOf(w.worktree);
     const cur = rows.current(E.store, 'worker', w.id);
-    if (!cur || cur.seq !== w.seq || (!codexIdle && pidAlive(cur.pid))) continue;
+    if (!cur || cur.seq !== w.seq || (!codexIdle && pidAlive(cur.pid) && ready.runsAs(cur.pid, cur.pid_created))) continue;
     // The head the row carries: git's answer, else the head the row already had (never overwritten with null).
     const headSha = head.sha == null ? (cur.head_sha == null ? null : cur.head_sha) : head.sha;
     const values = {
@@ -51,7 +57,10 @@ async function closeEpochWorkers(E, runId, by, lifeClaiming) {
     };
     require('./cost-estimate.cjs').apply(E.dataDir, values); // no adapter wrote this life's end: its unreported last turn comes from the stream
     const { released } = appendDead(E, values, by, t);
-    marked.push({ worker_id: w.id, from_state: w.state, head_sha: headSha, ...(head.error ? { head_error: head.error } : {}), ...(released.length ? { leases_released: released } : {}) });
+    // The adapter that would have unregistered this pid never saw it exit (it died with the run), so its spawn register record is
+    // retired here, at the last moment it was seen alive; left, it would cover whatever started after the worker as its descendants.
+    const registerRetired = Number.isInteger(cur.pid) && require('./spawn-register.cjs').retire(cur.pid, t, cur.last_event_at, { checked: true });
+    marked.push({ worker_id: w.id, from_state: w.state, head_sha: headSha, ...(head.error ? { head_error: head.error } : {}), ...(released.length ? { leases_released: released } : {}), ...(registerRetired ? { register_retired: true } : {}) });
   }
   return marked;
 }

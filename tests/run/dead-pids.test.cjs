@@ -131,3 +131,16 @@ test('with the real identity check, a live pid whose creation time differs reads
     assert.strictEqual(await run(created - 60000), false, 'another process holding the number');
   } finally { child.kill(); }
 });
+
+// The adapter's own pid reused: a bare pid check calls the dead adapter alive, so the orphan check never starts. A row silent for the
+// stale bound is checked whatever the adapter's pid answers.
+test('a row silent past the stale bound is checked by identity even when the adapter pid answers, and a reused pid reads dead', async () => {
+  const { m, calls } = mk({ adapterAlive: () => true, staleMs: 600000 });
+  m.apply([orphan({ last_event_age_ms: 599000 })]); await m.settled();
+  assert.strictEqual(calls.length, 0, 'a live adapter and an event inside the bound: no snapshot');
+  assert.strictEqual(m.apply([orphan({ last_event_age_ms: 601000 })])[0].pid_alive, true, 'the poll that asks is not changed');
+  await m.settled();
+  const r = m.apply([orphan({ last_event_age_ms: 602000 })])[0];
+  assert.deepStrictEqual([r.pid_alive, r.pid_dead_by], [false, 'identity'], 'the same pid with another creation time is not the worker');
+  assert.deepStrictEqual(calls, [[{ pid: 4242, created: 111 }]]);
+});

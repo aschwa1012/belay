@@ -48,6 +48,7 @@ function renderText(receipt) {
     if (r.budget) lines.push(`budget: ${require('../core/run-budget.cjs').textOf(r.budget)}`);
     if (r.paused_at != null && r.ended_at == null) lines.push(`run paused at ${new Date(r.paused_at).toISOString()} by ${r.paused_by}${/embedder-failure [(]/.test(r.paused_by || '') ? ` (an embedder failure, on_embedder_failure required: fix the embedder and belay resume, or choose: belay resume ${r.id} --embedder keyword | --embedder off, which also saves the choice; belay settings memory.on_embedder_failure keyword | off saves it for later runs; or leave it paused)` : ''}`);
   }
+  lines.push(...require('../core/status-plans.cjs').lines(receipt)); // ADR 0071 decision 5
   for (const w of receipt.workers || []) { // a turn that has not ended: an estimate from the worker's stream, apart from the reported cost
     if (w.cost_in_flight_usd != null) lines.push(`worker ${w.id}: $${w.cost_in_flight_usd.toFixed(2)} ${w.cost_in_flight_source}${w.cost_in_flight_partial ? ' (partial: stream not yet read to its end)' : ''}, not in its reported cost ${w.cost_usd == null ? 'not recorded' : `$${Number(w.cost_usd).toFixed(2)}`}`);
   }
@@ -62,6 +63,8 @@ function renderText(receipt) {
   if (receipt.retrieval) lines.push(...require('../core/retrieval-view.cjs').lines(receipt.retrieval));
   if (receipt.notes_held && receipt.notes_held.malformed > 0) lines.push(require('./panel-common.cjs').unreadableText({ count: receipt.notes_held.malformed, closed_projects: receipt.notes_held.closed_projects }));
 
+  for (const k of receipt.check_flake || []) lines.push(require('../core/check-flake.cjs').line(k)); // 0.4.0: the checks that changed outcome on one tree; facts, no verdict
+  if ((receipt.check_flake_total || 0) > (receipt.check_flake || []).length) lines.push(`flaky check: ${receipt.check_flake_total - receipt.check_flake.length} more flipped keys not shown (${receipt.check_flake_total} in all)`);
   if (receipt.memory_notice) lines.push(`warning: ${receipt.memory_notice.title}. ${receipt.memory_notice.why} ${receipt.memory_notice.fix}`);
   lines.push('');
   return lines.join('\n');
@@ -92,9 +95,10 @@ async function run(ctx) {
       } else runIdSource = 'none';
     }
     const st = await core.status.get(runId ? { run_id: runId } : {});
+    const flaked = await core.check.flake({ limit: 10 }); const flakes = flaked.keys; // 0.4.0: the newest ten flipped keys through a partial index, and how many there are
     const notice = require('../core/memory-notice.cjs').noticeForRun(runs.find(r => r.id === runId) || null, found); // a live run's own levers win over the config file
     const retrieval = require('../core/retrieval-view.cjs').describe(runs.find(r => r.id === runId) || null, core.ownerInfo()); // the pinned routing and any fallback in force, from the run row
-    const receipt = { ...st, run_id_source: runIdSource, ...(notice ? { memory_notice: notice } : {}), ...(retrieval ? { retrieval } : {}) };
+    const receipt = { ...st, run_id_source: runIdSource, ...(flakes.length ? { check_flake: flakes, check_flake_total: flaked.total } : {}), ...(notice ? { memory_notice: notice } : {}), ...(retrieval ? { retrieval } : {}) };
     // Exit 0 whenever the ladder was read, whatever the verdict: a dead system is a valid answer.
     return { code: 0, text: renderText(receipt), json: receipt };
   } catch (e) {

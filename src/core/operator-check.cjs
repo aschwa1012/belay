@@ -85,10 +85,13 @@ function spawnedMatch(chain, spawned) {
 }
 
 // -> async ({ conn, caller, method }) => { ok: true, via: 'peer', peer } | { ok: false, reason }
+// `persist` is true only for a method that writes (owner-admit.cjs): the check then saves the register's retirements; for a read it
+// computes the same answer from the same files and writes nothing (invariant 6). `spawned({ snap, persist })` lists the spawned
+// processes with the register's records judged against the same snapshot `provenance(snap, { persist })` is given.
 // `provenance(snap)` -> { alive: [{ pid, created, kind }] }, the orphans of spawned processes found in this snapshot; it throws when
 // the spawn history cannot be read, which is a refusal.
 function create({ startedAt, spawned, provenance = null, deps = {} }) {
-  return async function operatorCheck({ conn }) {
+  return async function operatorCheck({ conn, persist = false }) {
     if (conn.belayPeer) return { ok: true, via: 'peer', peer: conn.belayPeer };
     if (conn.belayTransport !== 'tcp') return { ok: false, reason: 'an operator claim is verified on the owner\'s loopback port, and this connection is a pipe' };
     if (!SUPPORTED && !deps.table) return { ok: false, reason: 'this platform has no peer check' };
@@ -99,9 +102,9 @@ function create({ startedAt, spawned, provenance = null, deps = {} }) {
     const { chain, root, intact } = chainOf(found.pid, shot);
     if (!intact || !root) return { ok: false, reason: `the peer's process chain could not be followed to a root (pid ${found.pid})` };
     let known;
-    try { known = spawned(); } catch (e) { return { ok: false, reason: `the processes belay spawned could not be listed (${(e && e.message) || e}), so descent from one cannot be ruled out` }; }
+    try { known = spawned({ snap: shot, persist }); } catch (e) { return { ok: false, reason: `the processes belay spawned could not be listed (${(e && e.message) || e}), so descent from one cannot be ruled out` }; }
     if (provenance) {
-      try { known = known.concat(provenance(shot).alive); } catch (e) { return { ok: false, reason: `the orphans of the processes belay spawned could not be listed (${(e && e.message) || e}), so descent from one cannot be ruled out` }; }
+      try { known = known.concat(provenance(shot, { persist }).alive); } catch (e) { return { ok: false, reason: `the orphans of the processes belay spawned could not be listed (${(e && e.message) || e}), so descent from one cannot be ruled out` }; }
     }
     const bad = spawnedMatch(chain, known);
     if (bad) return { ok: false, reason: `the peer descends from a process belay spawned (${bad.kind} pid ${bad.pid}, ${bad.image || 'unknown image'})` };

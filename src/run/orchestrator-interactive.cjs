@@ -436,7 +436,7 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
   const block = {
     pid: child.pid == null ? null : child.pid, session_id: sessionId, model, turns: null, externally_triggered_turns: null,
     exit_code: state.exitCode, exit_signal: state.exitSignal, usage: null, argv_hash: argvHash, ready_ms: null, later_inits: null,
-    killed_after_close: false, surface: null, instructions: I.instructionsFields(instructions),
+    killed_after_close: false, stdin_error: null, surface: null, instructions: I.instructionsFields(instructions),
     permission_mode_requested: permissionMode, permission_mode_effective: actual.permission_mode,
     permission_mode_degraded: actual.permission_mode ? actual.permission_mode !== permissionMode : null,
     claude_code_version: actual.version,
@@ -459,7 +459,7 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
     },
   };
   return {
-    ended_by: endedBy, holds: [], polls: 0, wakes: [], wakes_suppressed: [], wakes_expired: [], wakes_held: [], pauses: [],
+    ended_by: endedBy, holds: [], polls: 0, wakes: wakePub ? wakePub.receipt() : [], wakes_suppressed: [], wakes_expired: [], wakes_held: [], pauses: [],
     interactive_clean: clean, primary_cause: primary ? endedBy : null, orchestrator: block,
   };
 }
