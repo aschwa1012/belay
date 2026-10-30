@@ -289,7 +289,7 @@ test('embedder fetch: the lock is written in the exclusive open; an empty lock i
     const old = new Date(Date.now() - 11 * 60 * 1000);
     fs.utimesSync(lock, old, old);
     assert.strictEqual(takeLock(lock), true, 'an empty or unreadable lock older than 10 minutes is stolen');
-    const dead = require('child_process').spawnSync(process.execPath, ['-e', ''], { windowsHide: true }).pid;
+    const dead = require('../helpers/dead-pid.cjs').deadPid(); // an exited child's pid is reused on Windows
     fs.writeFileSync(lock, String(dead));
     assert.strictEqual(takeLock(lock), true, 'a lock naming a dead pid is stolen');
     assert.strictEqual(fs.readFileSync(lock, 'utf8'), String(process.pid));

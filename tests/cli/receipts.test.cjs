@@ -205,7 +205,7 @@ test('receipts: a live worker and a live run have wall_ms null and live true', g
   assert.match(text, /^  model .*  wall live/m);
   assert.strictEqual(j.run.alive, true);
   // SF6: the same run with a dead adapter pid says what is known, not "live".
-  const dead = spawnSync(process.execPath, ['--version'], { windowsHide: true });
+  const dead = { pid: require('../helpers/dead-pid.cjs').deadPid() }; // an exited child's pid is reused on Windows
   const dir2 = sandbox();
   try {
     await plant(`${dir2}/.belay`, 'run-c2', { ended: false, adapterPid: dead.pid });
