@@ -254,6 +254,15 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       // back unchanged (already names what would clear it, so it is not translated into E_NO_READY).
       w.launchFailed = true;
       await writeRow(w, 'dead');
+      if (e && e.code === 'E_PAUSED' && !(e.detail && e.detail.cause === 'embedder_failure')) {
+        // The run paused between the spawn gate and the assignment (ADR 0066 gap). The refusal is the gate's own, so it must not leave
+        // the worker standing: drop it and its directory as an unstarted spawn does. The `starting` row is already in the store (an
+        // append-only table), so it stays, written dead, and the message says so: the id is used. The embedder-failure E_PAUSED (also
+        // from the preface) already names the row and what to do, and keeps its worker record, so it is left as it is.
+        await discardUnstarted(workers, w, dirExisted);
+        e.message = `${e.message}. worker ${w.id} was not launched; its starting row was written dead, so spawn the task again with a NEW worker id`;
+        e.detail = { ...(e.detail || {}), worker_id: w.id, launched: false };
+      }
       throw e;
     }
     // The index's embedding is the harness's wait, not the worker's: it counts neither toward the startup window nor in ready_ms
