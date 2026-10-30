@@ -143,11 +143,12 @@ test('a steady stream of orchestrator lines does not starve the worker read: the
     const o = spy({ run: 0 });
     const g = mk(o, { dataDir: w.dataDir, tickMs: 20 });
     g.tick(w.rows);
-    const t0 = Date.now(); let n = 0;
-    while (Date.now() - t0 < 60) { g.noteOrchestratorLine(msg(`o${n++}`, 10)); await new Promise((r) => setTimeout(r, 2)); } // lines inside every slot
+    let n = 0;
+    // Driven by iterations, not a wall-clock window: each pass sleeps past the tick slot, so every pass has a slot to open.
+    for (let i = 0; i < 3; i++) { g.noteOrchestratorLine(msg(`o${n++}`, 10)); await new Promise((r) => setTimeout(r, 30)); } // lines inside every slot
     fs.appendFileSync(`${w.dataDir}/workers/w1/stream.jsonl`, msg('late') + '\n'); // the worker turn grows by $2.00
-    const t1 = Date.now();
-    while (Date.now() - t1 < 80) { g.noteOrchestratorLine(msg(`p${n++}`, 10)); g.tick(w.rows); await new Promise((r) => setTimeout(r, 2)); }
+    for (let i = 0; i < 4; i++) { g.noteOrchestratorLine(msg(`p${n++}`, 10)); g.tick(w.rows); await new Promise((r) => setTimeout(r, 30)); }
+    g.tick(w.rows); // the last slot is open by now: this pass reads the worker stream
     await settle(g);
     assert.strictEqual(g.state().record.in_flight_workers.by_worker.w1, 4);
   } finally { w.done(); }
