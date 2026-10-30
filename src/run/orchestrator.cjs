@@ -139,6 +139,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   const hold = createRunHold({
     child, getIdle: () => state.idle, onDeadline: (reason) => closeThenKillOnDeadline(reason),
     writeStdinLine: (text, id, rec) => writeStdinLine(text, id, rec), wakeText, pushWake: (rec) => state.wakes.push(rec),
+    suppressWake: (rec) => state.wakesSuppressed.push({ ...rec, reason: 'stdin was broken when this wake was resumed' }),
     // 6f-2 design item 5 (run-hold.cjs:133): every record's `at_ms` counts from this run's own t0, like
     // every entry in `wakes[]` already does — never the wall clock.
     nowMs: () => Date.now() - t0,

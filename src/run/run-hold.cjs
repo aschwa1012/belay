@@ -28,7 +28,7 @@ const INTERRUPT_TIMEOUT_MS = 5000;
 // own, injected so `resume()` can write the resume line and every held wake without orchestrator.cjs
 // needing its own wrapper around this module's state. `nowMs()` (design item 5, run-hold.cjs:133) is
 // milliseconds since the run's own t0, the same basis every entry in `wakes[]` uses — never the wall clock.
-function createRunHold({ child, getIdle, onDeadline, writeStdinLine, wakeText, pushWake, nowMs }) {
+function createRunHold({ child, getIdle, onDeadline, writeStdinLine, wakeText, pushWake, suppressWake, nowMs }) {
   let paused = false;
   let pausedAt = null;
   let pausedBy = null;
@@ -152,8 +152,8 @@ function createRunHold({ child, getIdle, onDeadline, writeStdinLine, wakeText, p
       bytes: Buffer.byteLength(lineText, 'utf8'), orchestrator_idle_at_write: getIdle(),
       established_by: 'run resume',
     };
-    pushWake(resumeRec);
-    writeStdinLine(lineText, null, resumeRec);
+    // A refused write (a broken stdin pipe) is a suppressed wake, never one recorded as written.
+    if (writeStdinLine(lineText, null, resumeRec) !== false) pushWake(resumeRec); else suppressWake(resumeRec);
     // Marked delivered rather than removed, so `wakesHeld` stays the full history across however many
     // pause/resume cycles this run has, for the final receipt's `wakes_held` (design item 2).
     const held = wakesHeld.filter((w) => !w.delivered);
@@ -162,7 +162,7 @@ function createRunHold({ child, getIdle, onDeadline, writeStdinLine, wakeText, p
       w.delivered = true;
       const heldRec = { ...w, held_ms: nowMs() - w.held_at_ms };
       delete heldRec.held_at_ms; delete heldRec.delivered;
-      writeStdinLine(wakeText(w), w.worker_id, heldRec);
+      if (writeStdinLine(wakeText(w), w.worker_id, heldRec) === false) { suppressWake(heldRec); continue; }
       pushWake(heldRec);
       delivered.push(heldRec);
     }
