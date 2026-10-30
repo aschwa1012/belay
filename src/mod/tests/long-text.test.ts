@@ -7,7 +7,7 @@ const flat = (s: string): string => s.replace(/\s+/g, '')
 // Long free text is wrapped to the pane, never cut off at the side: a notice's explanation under its clipped headline, and the Memory menu's answers.
 for (const cols of [30, 40, 71]) {
   describe(`long text at ${cols} columns`, () => {
-    test('a notice whose text is longer than the row keeps a clipped headline and wraps the whole text under it', async ($, on) => {
+    test('a notice whose text is longer than the row shows its text once: the first line beside the time, the rest wrapped under it', async ($, on) => {
       const wd = await boot($, on, { runId: 'render-20261008061234-abcdef', longNotices: true })
       await openPane($, wd)
       const wide = flat((await pane($, 'terminal', 200)).text)
@@ -15,6 +15,7 @@ for (const cols of [30, 40, 71]) {
       const { ui, text } = await pane($, 'terminal', cols)
       expect(squeezed(await ui.drawn(), cols)).toEqual([])
       expect(flat(text)).toContain(flat('pid not alive (process exit observed by the adapter)'))
+      expect(flat(text).split(flat('coder-0 dead')).length - 1).toBe(1) // the text once: no clipped headline followed by the same sentence in full
     })
 
     test('the Memory menu wraps its warning and a long profile line instead of cutting them off', async ($, on) => {

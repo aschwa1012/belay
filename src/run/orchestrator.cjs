@@ -326,7 +326,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       // to race — the whole check has already run by the time `pollOnce` is reached.
       const gate = verifyClaudeReady({ substrate: 'claude-code', tools: S.ORCHESTRATOR_TOOLS }, ev); // ADR 0054: held to its list
       if (!gate.ok) {
-        abortForReadyFailure(`the orchestrator's ready check failed (ADR 0001 §8): ${gate.reason}`);
+        abortForReadyFailure(`the orchestrator's ready check failed: ${gate.reason}`);
         return;
       }
       state.readyVerified = true;
@@ -431,7 +431,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       if (!state.endedBy) {
         state.endedBy = state.readyVerified
           ? 'the orchestrator exited on its own before any close condition was reached'
-          : 'the orchestrator exited before a ready event verified the belay MCP server (ADR 0001 §8)';
+          : 'the orchestrator exited before a ready event verified the belay MCP server';
       }
       settle();
     });

@@ -29,7 +29,7 @@ async function headOf(worktree) {
 // row: its process exits between turns by design (api.md §2), so its pid proves nothing and the row is
 // closed with the run whatever the pid says. The row is re-read after the git call and nothing is written
 // over one that moved on, or (for a pid-checked row) whose pid came back, in the meantime.
-const CODEX_IDLE_BY = 'run.end: a Codex worker between turns has no process by design; its run ended (ADR 0029)';
+const CODEX_IDLE_BY = 'run.end: a Codex worker between turns has no process by design; its run ended';
 const isCodexIdle = (w) => w.substrate === 'codex' && w.state === 'idle';
 async function closeEpochWorkers(E, runId, by, lifeClaiming) {
   const marked = [];
@@ -46,7 +46,7 @@ async function closeEpochWorkers(E, runId, by, lifeClaiming) {
     const values = {
       ...cur, state: 'dead', exited_at: cur.exited_at == null ? t : cur.exited_at,
       death_established_by: codexIdle ? CODEX_IDLE_BY
-        : `run.end: pid ${cur.pid} not alive when the run ended; no adapter wrote its exit (ADR 0029)`,
+        : `run.end: pid ${cur.pid} not alive when the run ended; no adapter wrote its exit`,
       head_sha: headSha, head_error: headSha != null ? null : (cur.head_error == null ? null : cur.head_error), paused_at: null, paused_by: null,
     };
     require('./cost-estimate.cjs').apply(E.dataDir, values); // no adapter wrote this life's end: its unreported last turn comes from the stream

@@ -112,7 +112,7 @@ function assertDependenciesDone(E, task) {
     const dl = rows.currentLeaseForTask(E.store, dep);
     const held = dl && !dl.released_at ? `${dl.holder_role} ${dl.holder}` : 'no one';
     if (refutedReview(d)) {
-      throw err('E_DEPENDENCY_OPEN', `task ${task.id} depends on task ${dep}, a review whose last evaluation returned refuted; it is not done unless it is re-judged and holds. A fix task depends on the work it fixes, never on the review (ADR 0030)`,
+      throw err('E_DEPENDENCY_OPEN', `task ${task.id} depends on task ${dep}, a review whose last evaluation returned refuted; it is not done unless it is re-judged and holds. A fix task depends on the work it fixes, never on the review`,
         { task_id: task.id, blocked_by: dep, dependency_state: d.state, dependency_verdict: 'refuted', holder: dl && !dl.released_at ? dl.holder : null, holder_role: dl && !dl.released_at ? dl.holder_role : null });
     }
     throw err('E_DEPENDENCY_OPEN', `task ${task.id} depends on task ${dep}, which is ${d.state} and held by ${held}; assign this task again once ${dep} is done`,
@@ -257,7 +257,7 @@ async function evaluate(E, caller, args, queued = null) {
   if (!args.task_id) throw err('E_ARGS', 'task.evaluate needs a task_id');
   if (args.worktree !== undefined && (!args.worktree || typeof args.worktree !== 'string')) throw err('E_ARGS', 'task.evaluate needs the worktree the acceptance criteria run in');
   if (args.base !== undefined && (typeof args.base !== 'string' || !args.base)) throw err('E_ARGS', 'task.evaluate: base must be a non-empty string (a commit or ref)');
-  if (args.trigger !== undefined && args.trigger !== 'release') throw err('E_ARGS', 'task.evaluate: trigger is release (the run manager evaluating a hand-back, ADR 0058) or absent');
+  if (args.trigger !== undefined && args.trigger !== 'release') throw err('E_ARGS', 'task.evaluate: trigger is release (the run manager evaluating a hand-back) or absent');
   const task = rows.current(E.store, 'task', args.task_id);
   if (!task) throw err('E_NOT_FOUND', `no task row exists for ${args.task_id}`, { task_id: args.task_id });
   // The same two gates assign applies, checked before any command runs and again inside the write's transaction. `done` is
