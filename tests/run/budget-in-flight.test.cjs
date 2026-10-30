@@ -137,6 +137,22 @@ test('a new run process does not carry the earlier in-flight figure', async () =
   assert.ok(o.s.written.length >= 1, 'the stale figure was cleared on the run row');
 });
 
+test('a steady stream of orchestrator lines does not starve the worker read: the worker figure keeps growing', async () => {
+  const w = withWorker(1); // $2.00
+  try {
+    const o = spy({ run: 0 });
+    const g = mk(o, { dataDir: w.dataDir, tickMs: 20 });
+    g.tick(w.rows);
+    const t0 = Date.now(); let n = 0;
+    while (Date.now() - t0 < 60) { g.noteOrchestratorLine(msg(`o${n++}`, 10)); await new Promise((r) => setTimeout(r, 2)); } // lines inside every slot
+    fs.appendFileSync(`${w.dataDir}/workers/w1/stream.jsonl`, msg('late') + '\n'); // the worker turn grows by $2.00
+    const t1 = Date.now();
+    while (Date.now() - t1 < 80) { g.noteOrchestratorLine(msg(`p${n++}`, 10)); g.tick(w.rows); await new Promise((r) => setTimeout(r, 2)); }
+    await settle(g);
+    assert.strictEqual(g.state().record.in_flight_workers.by_worker.w1, 4);
+  } finally { w.done(); }
+});
+
 test('the in-flight check is throttled: lines inside one tick cost one check', async () => {
   const o = spy({ run: 1 });
   const g = mk(o, { countInFlight: true, tickMs: 60000 });

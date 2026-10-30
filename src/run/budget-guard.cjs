@@ -50,7 +50,7 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
   const orch = { base: 0, last: 0, inFlight: 0 };
   const acc = createAccumulator(); // the headless orchestrator's turn in flight, priced from its stream lines as they arrive
   const workers = dataDir ? createTracker({ dataDir }) : { update() {}, figures: () => ({ usd: 0, by_worker: {}, partial: [], unpriced: [] }) }; // the live workers' turns in flight
-  let lastTick = 0;
+  let lastTick = 0; let lastRead = 0;
   let published = { total: 0, key: '[[],[]]' };
   const rec = record && typeof record === 'object' ? record : { source, soft_threshold: SOFT_THRESHOLD, events: [] };
   let chain = Promise.resolve();
@@ -193,9 +193,10 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
   function tick(rows) {
     if (interactive || !active()) return undefined;
     const now = Date.now();
+    // The worker read has its own slot: a tick fired by an orchestrator line carries no rows, and must not use up the poll's slot.
+    if (Array.isArray(rows) && dataDir && now - lastRead >= tickMs) { lastRead = now; workers.update(rows); }
     if (now - lastTick < tickMs) return undefined;
     lastTick = now;
-    if (Array.isArray(rows) && dataDir) workers.update(rows);
     maybePublish();
     return countInFlight ? schedule(null) : undefined;
   }
