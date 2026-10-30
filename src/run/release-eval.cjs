@@ -16,6 +16,7 @@ const reviewWake = require('./review-wake.cjs');
 const { forecastTask } = require('../core/conflict-forecast.cjs');
 
 const WAKE_TEXT_MAX = 221;
+const FORECAST_EXIT_CEILING_MS = 30000; // how long past its answer a forecast may hold its slot while its git calls have not exited
 const FORECASTS_MAX = 4; // conflict forecasts running at once (conflict-forecast.cjs)
 const PENDING_MAX_MS = 900000; // a watched evaluation that never lands (cancelled, or the owner gone) is forgotten after this, unless its worker is live: a release evaluation may queue for a slot and then run 540 s
 // ADR 0058 amendment 4: how long a turn_end wake waits for its hand-backs' evaluation; BELAY_RELEASE_WAKE_HOLD_MS (ms) overrides it.
@@ -216,7 +217,7 @@ function turnEndText(head, tail, evs, evaluating) {
 // held wake first, so a worker's wakes keep their order. `holdMs` 0 holds nothing. `now` is the clock, for a test to set.
 // `workers` (the poll's worker rows, optional): a watched evaluation whose worker is live is not forgotten by age, because a queued release
 // evaluation waits for its slot without bound (ADR 0061 amendment); it leaves `pending` when it lands, is no longer awaiting evaluation, or its worker is gone.
-async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.now, workers = null, forecaster = forecastTask } = {}) {
+async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.now, workers = null, forecaster = forecastTask, exitCeilingMs = FORECAST_EXIT_CEILING_MS, log = (m) => process.stderr.write(`${m}\n`) } = {}) {
   const pending = seen.pending || (seen.pending = new Map());
   const held = seen.held || (seen.held = new Map());
   if (!events.some((e) => e.event === 'turn_end') && !pending.size && !held.size) return events;
@@ -235,8 +236,14 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     started.add(key); seen.forecastRunning = (seen.forecastRunning || 0) + 1;
     let p; try { p = Promise.resolve(forecaster(t, runId)); } catch { p = Promise.resolve(null); }
     // Running until its git calls have exited (`exited`, conflict-forecast.cjs), not just until it has an answer, so the cap stays honest.
+    // The wait has a ceiling: a survivor holding the pipes after a timeout kill must not pin the slot for the life of the process.
     const free = () => { seen.forecastRunning -= 1; };
-    p.then((fc) => { if (fc) { forecasts.set(key, fc); recordForecast(core, runId, t, fc); } return fc && fc.exited; }, () => { /* a forecast is optional */ }).then(free, free);
+    const ceiling = (exited) => {
+      if (!exited) return undefined;
+      let timer; const cut = new Promise((res) => { timer = setTimeout(() => { log(`belay: conflict forecast of task ${t.id} still had git running ${exitCeilingMs} ms after its answer; its slot is freed`); res(); }, exitCeilingMs); if (timer.unref) timer.unref(); });
+      return Promise.race([exited, cut]).finally(() => clearTimeout(timer));
+    };
+    p.then((fc) => { if (fc) { forecasts.set(key, fc); recordForecast(core, runId, t, fc); } return ceiling(fc && fc.exited); }, () => { /* a forecast is optional */ }).then(free, free);
   };
   // A hand-back that was over the cap when first watched is started on a later poll, as slots free (kick marks only what it starts).
   for (const id of pending.keys()) { const t = byId.get(id); if (t && t.state === 'released') kick(t); }
@@ -252,7 +259,7 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
   const settle = (h) => {
     h.ids = h.ids.filter((id) => {
       const t = byId.get(id);
-      if (t && landed(t)) { seen.set(id, t.results.evaluated_at); pending.delete(id); h.evs.push(summaryOf(t, byId, forecasts)); return false; }
+      if (t && landed(t)) { seen.set(id, t.results.evaluated_at); pending.delete(id); if (t.state === 'done') kick(t); h.evs.push(summaryOf(t, byId, forecasts)); return false; }
       const f = t && unevaluated(t, runId, h.ev.worker_id) && failedOf(t, h.ev.turn);
       if (f) { pending.delete(id); const s = failure(f); if (s) h.evs.push(s); return false; }
       if (!t || !unevaluated(t, runId, h.ev.worker_id)) { pending.delete(id); return false; }
@@ -291,6 +298,7 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     const t = byId.get(id);
     if (t && landed(t)) {
       seen.set(id, t.results.evaluated_at); pending.delete(id);
+      if (t.state === 'done') kick(t);
       if (!follow.has(p.worker_id)) follow.set(p.worker_id, []);
       follow.get(p.worker_id).push(summaryOf(t, byId, forecasts));
     } else if (t && unevaluated(t, runId, p.worker_id) && failedOf(t, p.turn)) {

@@ -162,3 +162,41 @@ test('a hand-back whose evaluation had already landed when first seen is still f
   await RE.enrichWakes(core, 'r', [turnEnd()], seen, { holdMs: 0, forecaster: async (t) => { calls.push(t.id); return null; } });
   assert.deepStrictEqual(calls, ['t1']);
 });
+
+test('a forecast whose git calls never exit frees its slot at the ceiling, with a line logged', async () => {
+  const ids = ['c0', 'c1', 'c2', 'c3', 'c4'];
+  const s = { tasks: ids.map((id) => released(id)) }; const seen = new Map();
+  const core = { task: { list: async () => ({ tasks: s.tasks }) } };
+  const calls = []; const lines = []; let logged; const loggedP = new Promise((r) => { logged = r; });
+  const forecaster = async (t) => { calls.push(t.id); return Object.defineProperty({ clean: true, against: 'a', ms: 1 }, 'exited', { value: new Promise(() => {}), enumerable: false }); };
+  const poll = (events = []) => RE.enrichWakes(core, 'r', events, seen, { holdMs: 0, forecaster, exitCeilingMs: 20, log: (m) => { lines.push(m); logged(); } });
+  await poll([turnEnd('w1')]); await settle();
+  assert.deepStrictEqual(calls, ['c0', 'c1', 'c2', 'c3'], 'the survivors hold all four slots');
+  await poll([]);
+  assert.strictEqual(calls.length, 4);
+  await loggedP; await settle();
+  assert.ok(lines.length >= 1 && /still had git running 20 ms/.test(lines[0]), lines[0]);
+  await poll([]);
+  assert.deepStrictEqual(calls, ['c0', 'c1', 'c2', 'c3', 'c4'], 'the fifth starts once the ceiling freed a slot');
+});
+
+test('a capped hand-back that lands before it was ever started is forecast on landing, on the follow-up and the held paths alike', async () => {
+  for (const holdMs of [0, 30000]) {
+    const ids = ['l0', 'l1', 'l2', 'l3', 'l4'];
+    const s = { tasks: ids.map((id) => released(id, 'w1')) }; const seen = new Map();
+    const core = { task: { list: async () => ({ tasks: s.tasks }) } };
+    const calls = [];
+    const forecaster = async (t) => { calls.push(t.id); return { clean: true, against: 'a', ms: 1 }; };
+    // Four slots taken by forecasts that have not answered: l4 is over the cap when first watched.
+    const gate = []; const slow = (t) => { calls.push(t.id); return new Promise((res) => gate.push(() => res({ clean: true, against: 'a', ms: 1 }))); };
+    const poll2 = (events = []) => RE.enrichWakes(core, 'r', events, seen, { holdMs, now: () => 1000, forecaster: calls.length < 4 ? slow : forecaster });
+    await poll2([turnEnd('w1')]);
+    assert.deepStrictEqual(calls, ['l0', 'l1', 'l2', 'l3'], `holdMs ${holdMs}`);
+    gate.forEach((g) => g()); await settle(); await settle();
+    s.tasks = ids.map((id) => done(id, 'w1')); // all landed before l4 was ever started
+    await poll2([]);
+    await settle();
+    assert.ok(calls.includes('l4'), `l4 was never forecast (holdMs ${holdMs}): ${calls.join(',')}`);
+    assert.strictEqual(calls.filter((c) => c === 'l4').length, 1);
+  }
+});
