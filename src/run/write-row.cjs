@@ -52,6 +52,7 @@ function createWriteRow(ctx, flags) {
   // pid or the core's E_WORKER_NOT_LIVE returns null with nothing settled, so the exit event (which carries
   // the exit code) or the pid poll records the death as before.
   return async function writeRow(w, state, opts = {}) {
+    const launchesAtEntry = w.launches;
     // build step 6i-2 design item 3 (R4): checked first, before any pid or core work — a write this
     // late has nothing left to elect an owner for.
     if (flags.closed) {
@@ -87,10 +88,11 @@ function createWriteRow(ctx, flags) {
     }
     // The exit-code fill-in (opts.fillIn) follows this record's own direct terminal write whose response was still in flight
     // when the fill-in was built: its basis seq is one behind. If the row now current is that same terminal state still lacking
-    // the code, it is this record's own and is restated once on the new basis; anything else (a forget) stands.
+    // the code, it is this record's own life's and is restated once on the new basis; anything else (a forget, a later life) stands.
     if (written && written.skipped && opts.fillIn) {
       const cur = await ctx.core.worker.get({ worker_id: w.id });
-      if (cur && cur.state === state && cur.exit_code == null && cur.exit_signal == null && Number.isInteger(cur.seq)) {
+      const sameLife = w.launches === launchesAtEntry && cur && cur.pid === w.pid && (w.pidCreated == null || cur.pid_created == null || cur.pid_created === w.pidCreated);
+      if (sameLife && cur.state === state && cur.exit_code == null && cur.exit_signal == null && Number.isInteger(cur.seq)) {
         w.lastWrittenSeq = cur.seq;
         return writeRow(w, state, { guard: true });
       }
