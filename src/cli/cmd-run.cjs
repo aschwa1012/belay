@@ -26,7 +26,7 @@ const { closeRunWorkers, workersClosedBlock, finalizeCut } = require('./run-clos
 const { warmEmbedder, createEmbedderGuard } = require('../run/embedder-guard.cjs');
 const { RESUME_WARM_MS } = require('./embedder-bounds.cjs');
 const { liveRunRow, liveRunMessage } = require('./run-live-guard.cjs');
-const { attachMemory, memoryText, substituteLevers, stripMarkers, countReviewRounds } = require('./run-levers.cjs');
+const { attachMemory, substituteLevers, stripMarkers, countReviewRounds } = require('./run-levers.cjs');
 const fwd = (p) => String(p).split('\\').join('/');
 
 // BELAY_FAKE_CORE (test-only): same confinement as src/mcp/belay-mcp.cjs's own use of it — resolved
