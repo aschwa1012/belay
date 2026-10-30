@@ -10,6 +10,7 @@ const { pidAlive } = require('./lock.cjs');
 const { DEFAULT_LEASE_TTL_MS, TASK_STATES } = require('./schema.cjs');
 const { runAcceptance, ACCEPTANCE_BUDGET_MS } = require('./evaluate.cjs');
 const holds = require('./task-holds.cjs');
+const PS = require('./policy-stamp.cjs'); // ADR 0072: who took a step, and the one-trigger rule
 const LHD = require('./lease-holder-dead.cjs'); // ADR 0026 amendments 1 and 2
 const derived = require('./task-derived.cjs');
 const { filesOverlap, treeHint, runNotLive, resolveOwner, assertNotOwnReview } = require('./methods-task-hold.cjs');
@@ -65,6 +66,8 @@ async function assign(E, caller, args) {
   const checkOnly = args.check_only === true;
   if (!args.task_id || (!checkOnly && !args.worker_id)) throw err('E_ARGS', 'task.assign needs a task_id and a worker_id');
   if (args.worktree !== undefined && (!checkOnly || !args.worktree || typeof args.worktree !== 'string')) throw err('E_ARGS', 'task.assign worktree is the directory a spawn will run in, a non-empty string, and only with check_only');
+  PS.openClaim(E, caller); // a policy step's claim must be open before anything is read or written for it
+  let standing = false; // the step's lease already stands (ADR 0072 decision 2): nothing is written
   let snapAt = null; // ADR 0054 amendment 1: a review's worktree, decided inside the transaction and snapshotted after it commits
 
   // Every read this decision rests on happens inside the same BEGIN IMMEDIATE as the two writes it
@@ -75,6 +78,7 @@ async function assign(E, caller, args) {
   // on a task still `assigned`, is a state the contract has no name for (ADR 0002 §4).
   // A worker's pid must run as the process its row records (ADR 0039); the transaction below is synchronous, so the snapshot comes first, from a read in a transaction of its own.
   const identity = await require('./live-as.cjs').prepare(require('./live-as.cjs').pairsOf(checkOnly ? null : E.store.tx(() => rows.current(E.store, 'worker', args.worker_id))));
+  await PS.pause('assign.beforeTx', { task_id: args.task_id, worker_id: args.worker_id, policy_step: PS.stepOf(caller) });
   const out = E.store.tx(() => {
     const task = rows.current(E.store, 'task', args.task_id);
     if (!task) throw err('E_NOT_FOUND', `no task row exists for ${args.task_id}`, { task_id: args.task_id });
@@ -95,6 +99,14 @@ async function assign(E, caller, args) {
     // whichever worker was named, an open dependency is the answer, and the refusal names what would
     // clear it (ADR 0013 §1). Only `done` opens the gate, and `done` is earned by executable evidence
     // (api.md §2), so a worker cannot talk its way past this by saying it finished.
+    // One trigger, one step: a worker's lease on this task that a policy step granted answers the orchestrator that asks for the same
+    // worker, and any live worker lease answers a policy step (the orchestrator's stands, or the policy's own: PS.duplicate). A task the
+    // orchestrator hands to another worker than the policy chose is the orchestrator's reassignment, and goes on below.
+    const live = old && !old.released_at && old.holder_role === 'worker' && (old.expires_at == null || old.expires_at >= Date.now());
+    if (live && !checkOnly && (PS.stepOf(caller) !== null || (old.holder === args.worker_id && PS.byPolicy(E.store, 'lease', old.id)))) {
+      standing = true;
+      return PS.duplicate(E, caller, 'lease', old.id, { task, old_lease: null, new_lease: old, paused_worker: null, existing: true });
+    }
     assertDependenciesDone(E, task);
     assertNotOwnReview(E.store, task, args.worker_id); // with check_only too, when the spawn names its worker id
 
@@ -148,7 +160,7 @@ async function assign(E, caller, args) {
     const row = rows.append(E.store, 'task', { ...task, run_id: ownerRun, state: 'assigned' }, by, t);
     return { task: row, old_lease: old, new_lease: lease, paused_worker: null, ...reported };
   });
-  if (!checkOnly) E.noteWrite();
+  if (!checkOnly && !standing) E.noteWrite();
   return snapAt ? require('./review-tree.cjs').afterGrant(E, caller, out, snapAt) : out;
 }
 

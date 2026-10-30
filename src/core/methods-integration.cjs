@@ -18,7 +18,8 @@ const { pidAlive } = require('./lock.cjs');
 const INC = require('./integration-incremental.cjs');
 const ID = require('./proc-identity.cjs');
 const MUG = require('./merge-user-gate.cjs');
-const { checkTakeOver, checkArgs, readTasks } = require('./integration-policy.cjs');
+const PS = require('./policy-stamp.cjs');
+const { checkTakeOver, checkArgs, readTasks, policyGuard, standingMerge } = require('./integration-policy.cjs');
 
 // `not_merged` and `left_out` (each merged branch head past what was judged, ADR 0060 decision 4) are derived from the row, never stored.
 const leftOut = (r) => { const l = (r.merged || []).filter((m) => m && m.left_out).map((m) => ({ task_id: m.task_id, ...m.left_out })); return l.length ? l : null; };
@@ -220,6 +221,7 @@ async function rerun(tasks, tree, reuse, head, beside = null, extra = [], until 
 async function merge(E, caller, args) {
   W.ownBootProbe(E);
   args = W.present(args);
+  const claim = policyGuard(E, caller, args); // ADR 0072 decision 5
   checkArgs(args);
   const takeOver = checkTakeOver(caller, args, 'integration.merge');
   const force = args.force === true;
@@ -229,6 +231,7 @@ async function merge(E, caller, args) {
   const fold = await MUG.folder(repo);
   await MUG.refuseVariant(repo, into, fold); // another spelling of an existing branch is that branch, on a host with case-insensitive refs
   const userBranch = await MUG.isUserBranch(E, repo, into, caller.run_id, fold);
+  if (claim && userBranch) throw err('E_PRECONDITION', `${into} is a branch the user owns; a policy step merges into belay/integrate/${caller.run_id} only`, { into, policy_step: claim.seq });
   if (userBranch) {
     if (force) throw err('E_PRECONDITION', `force is not accepted for ${into}, a branch the user owns: work that is not done does not go onto it through belay`, { into });
     const g = MUG.authorize(E, caller, args, MUG.requestOf(repo, into, args.task_ids, targets, await MUG.placement(E, repo, into, args, tasks, fold), args, tasks));
@@ -236,6 +239,7 @@ async function merge(E, caller, args) {
   }
   // The re-run counts toward the run's max_parallel_evaluations, and its slot is taken here, before the branch lock and before any merge: a call
   // that waits too long is refused E_BUSY { queued: true } with the branch untouched, and the lock is never held while waiting (evaluate-cancel.cjs WAIT).
+  await PS.pause('merge.beforeLock', { task_ids: args.task_ids, policy_step: PS.stepOf(caller) }); // fault-injection point (tests only)
   const EC = require('./evaluate-cancel.cjs');
   const t0call = Date.now();
   const extra = args.checks || []; // shape checked in checkArgs
@@ -251,6 +255,8 @@ async function merge(E, caller, args) {
     const abandoned = await abandonStale(E, caller, repo, into, takeOver);
     const tree = await integrationTree(E, repo, into, args, tasks, abandoned);
     const by = E.writtenBy(caller);
+    const standing = await standingMerge(E, caller, args, { tree: tree.path, repo, into }, view); // ADR 0072 decision 2
+    if (standing) return standing;
     const baseSha = (await G.must(tree.path, ['rev-parse', 'HEAD'], 'HEAD of the integration tree')).trim();
     const carried = await INC.carriedOf(E, tree.path, repo, into, new Set(args.task_ids)); // tasks an earlier call left on the branch
     const base = {

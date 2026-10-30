@@ -10,6 +10,7 @@ const W = require('./methods-worktree.cjs');
 const J = require('./judged.cjs');
 const { checkShape } = require('./integration-checks.cjs');
 const { pidAlive } = require('./lock.cjs');
+const PS = require('./policy-stamp.cjs');
 
 const MAX_TASKS = 50;
 const MAX_REASON = 300;
@@ -112,4 +113,37 @@ async function targetsOf(E, tasks, repo) {
   return targets;
 }
 
-module.exports = { checkTakeOver, checkArgs, readTasks, targetsOf, MAX_TASKS, MAX_REASON };
+// ADR 0072 decision 5: a policy step's merge goes into the run's own integration branch and nowhere else, and carries no authority past it.
+// The branch is fixed here, not by the caller: `into` is refused unless it spells that branch, and force, approval, approved_in_chat and
+// take_over are refused outright (merging into a user branch stays the orchestrator's under the merge gate). -> the open claim, or null for
+// every other caller. Called before anything is read or written.
+const POLICY_REFUSED = ['force', 'approval', 'approved_in_chat', 'take_over'];
+function policyGuard(E, caller, args) {
+  const claim = PS.openClaim(E, caller);
+  if (!claim) return null;
+  const own = `belay/integrate/${caller.run_id}`;
+  for (const k of POLICY_REFUSED) if (args[k] !== undefined) throw err('E_ARGS', `integration.merge: a policy step does not pass ${k}; it merges into ${own} only`, { field: k, policy_step: claim.seq });
+  if (args.into !== undefined && args.into !== own) throw err('E_ARGS', `integration.merge: a policy step merges into ${own} only, not ${args.into}`, { field: 'into', policy_step: claim.seq });
+  return claim;
+}
+
+// One trigger, one step, for a merge (ADR 0072 decision 2): when every task of the call is already on the branch (the merge a step would make
+// has been made) and one kind of writer, a policy step or the orchestrator, merged them, there is nothing to write. The orchestrator's call is
+// answered with the policy step's integration row, `existing: true`; a policy step after the orchestrator is PS.duplicate's tie-break. Extra
+// checks or an evaluation still owed make it a new merge. Called holding the branch's integrate lock, in its tree. -> the answer, or null.
+async function standingMerge(E, caller, args, at, view) {
+  if ((args.checks || []).length) return null;
+  const merged = (id) => rows.currentAll(E.store, 'integration').some((r) => r.into_branch === at.into && G.samePath(r.repo, at.repo) && Array.isArray(r.merged) && r.merged.some((m) => m && m.task_id === id));
+  if (!args.task_ids.every(merged)) return null; // no git is asked for a call that merges something new
+  const on = (await require('./integration-incremental.cjs').carriedOf(E, at.tree, at.repo, at.into, new Set())).entries; // what the branch holds now, this call's tasks included
+  if (!args.task_ids.every((id) => on.some((c) => c.task_id === id))) return null;
+  const from = [...new Set(args.task_ids.map((id) => on.find((c) => c.task_id === id).carried_from))].map((id) => rows.current(E.store, 'integration', id));
+  const kinds = new Set(from.map((r) => PS.byPolicy(E.store, 'integration', r.id)));
+  if (kinds.size !== 1) return null;
+  const row = from.reduce((x, y) => (y.seq > x.seq ? y : x));
+  if (args.evaluate !== false && row.checks == null) return null;
+  if (PS.stepOf(caller) === null && !kinds.has(true)) return null; // the orchestrator's own earlier merge: a repeat is the call as it was
+  return PS.duplicate(E, caller, 'integration', row.id, { ...view(row), existing: true });
+}
+
+module.exports = { checkTakeOver, checkArgs, readTasks, targetsOf, policyGuard, standingMerge, MAX_TASKS, MAX_REASON };

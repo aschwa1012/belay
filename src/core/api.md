@@ -338,3 +338,25 @@ check_flake (argv, cwd, key_sha, key_kind 'tree'|'head', pass_n INT, fail_n INT,
 | `policy.list` | all (a read) | `{ run_id? = caller's, since_seq? = 0, limit? = 500, max 2000 }` | `{ rows (in seq order after `since_seq`), last_seq }`; a store from before the table answers empty |
 
 Nothing retries or resumes a claim left `started` by a crash: the executor finishes it as `exception`. `setHooksForTest({ beforeInsert })` in `policy-steps.cjs` is the fault-injection seam the race test uses; it is awaited between a claim's validation and its INSERT.
+
+### Stamps and the one-trigger rule (0.4.0, ADR 0072 decisions 2, 3 and 5)
+
+How the executor (`src/run`) acts through the core, and what the core does about it. Code: `policy-stamp.cjs`, `integration-policy.cjs`, and the writers named below.
+
+**Acting for a claim.** The executor claims a step (`policy.claim`), then makes its calls through `core.harness().policyAs(seq)`: the same Core API methods, on a frozen caller that carries `policy_step: seq`. Nothing else names a step. `validateCaller` refuses `policy_step` on any caller that is not on the harness channel, and `policyAs` is reachable only by code that holds the Core object, so a tool call cannot make one. A call whose claim is not an open claim of the caller's run (`outcome: 'started'`, same `run_id`) is `E_ARGS` and writes nothing. The caller travels in the call's parameters, so this works over the owner's pipe as it does in the owner's process.
+
+**Stamps.** Every `task`, `lease` and `integration` row `rows.append` writes takes `acted_by`, `trigger` and `policy_rev` from `policy-stamp.cjs overrides`, never from the values a writer passes. A write made under a policy claim takes `acted_by: 'policy'`, the claim's `trigger` `{ table, id, seq }` and its `policy_rev` (a claim with no `policy_rev` leaves a task row's own). Every other write resets them to null, so a writer that spreads the current row (a renewal, a release, an evaluation, a cancel, an abandon, a removal) does not carry a policy stamp onto a row the step did not make. On a task row `policy_rev` is the plan's revision and, like `policy`, is carried by the writer's own spread; `lease` and `integration` rows carry it only as a stamp. The stamp is therefore on the version the step wrote, and a later version is the next writer's: whether a row's first version came from a policy step is `byPolicy(store, table, id)`.
+
+**One trigger, one effect.** A step's effect stands once, whichever of the orchestrator and the policy step reaches it first, and each decides in one synchronous transaction after its last await:
+
+| Method | The effect that stands | The orchestrator's call, after a policy step | A policy step's call, after the orchestrator |
+|---|---|---|---|
+| `task.fixFromReview` | a live fix task that answers the review | the fix, `existing: true` | the fix, `existing: true, superseded: true` |
+| `task.assign` | a live worker lease on the task (a policy lease for the same worker answers the orchestrator; another worker is the orchestrator's reassignment and is written) | `{ task, old_lease: null, new_lease, paused_worker: null, existing: true }` | the same, with `superseded: true` |
+| `integration.merge` | every task of the call already on the branch (`carriedOf`), merged by one kind of writer, with no extra `checks` and no evaluation owed | that integration row, `existing: true` | that row, `existing: true, superseded: true` |
+
+`superseded: true` is the orchestrator-first answer of `onOrchestratorFirst` (`orchestratorWins` in `policy-stamp.cjs`, the record's recommendation while 0072 Q1 is open). The executor finishes the claim `superseded` with `row_ref` naming the row that stands. To change the rule, replace that one function (it may throw to refuse the step instead). A policy step whose call finds a row that a policy step wrote gets it back with `existing: true` and no `superseded`. Nothing is written in any of these answers (no `noteWrite`).
+
+**A policy merge.** `integration.merge` called under a claim refuses `force`, `approval`, `approved_in_chat` and `take_over`, and any `into` other than `belay/integrate/<run>` (that spelling is accepted; the default is that branch), each `E_ARGS` before anything is read; if the branch turns out to be one the user owns it is `E_PRECONDITION`. Merging into a user branch stays the orchestrator's under the merge gate.
+
+**Tests only.** `policy-stamp.cjs setHooksForTest({ at, onOrchestratorFirst })`. `at(point, info)` is awaited at `assign.beforeTx`, `fix.beforeWrite` and `merge.beforeLock`, with `info.policy_step` the caller's claim seq or null, so a test stalls one writer to force an interleaving.
