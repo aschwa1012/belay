@@ -59,27 +59,38 @@ test('a second pending moment needs a real input change: a turn end, or the pid 
   assert.strictEqual(flap.holds.length, 4);
 });
 
-test('a pid that read dead and then alive (a reused number) stays one pending moment through the run\'s dead-pid memory', async () => {
+test('a pid that read dead and then alive (a reused number) stays one pending moment through the dead-pid memory', async () => {
   const { createDeadPids } = require('../../src/run/dead-pids.cjs');
   const withMemory = async (useMemory) => {
     const h = harness();
     const mem = createDeadPids();
-    const feed = (alive, t) => h.poll(useMemory ? mem.apply([{ ...row(alive), pid: 4242, pid_created: 111 }]) : [row(alive)], t);
+    const feed = (alive, t) => h.poll(useMemory ? mem.apply([{ ...row(alive), pid: 4242 }]) : [row(alive)], t);
     await feed(true, 0);
     await feed(false, 300);
     await feed(true, 4000); // another process holds the number now
     await feed(false, 4300);
-    return pendingMoments(h.holds).length;
+    return h;
   };
-  assert.strictEqual(await withMemory(false), 2, 'without the memory the reused pid makes a second moment');
-  assert.strictEqual(await withMemory(true), 1);
-  const mem = createDeadPids();
-  mem.apply([{ id: 'w', pid: 4242, pid_created: 111, pid_alive: false }]);
-  assert.strictEqual(mem.apply([{ id: 'w', pid: 4242, pid_created: 222, pid_alive: true }])[0].pid_alive, true, 'a relaunch (new creation time) is a new process');
-  assert.strictEqual(mem.apply([{ id: 'w', pid: 5000, pid_created: 111, pid_alive: true }])[0].pid_alive, true, 'a new pid is a new process');
+  assert.strictEqual(pendingMoments((await withMemory(false)).holds).length, 2, 'without the memory the reused pid makes a second moment');
+  const h = await withMemory(true);
+  assert.strictEqual(pendingMoments(h.holds).length, 1);
 });
 
-test('the orchestrator poll reads its rows through the dead-pid memory', () => {
-  const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', '..', 'src', 'run', 'orchestrator.cjs'), 'utf8');
-  assert.match(src, /const rows = deadPids\.apply\(list\.workers \|\| \[\]\)/);
+test('the hold text names what kept a dead pid dead when the number reads alive again', async () => {
+  const { createDeadPids } = require('../../src/run/dead-pids.cjs');
+  const h = harness();
+  const mem = createDeadPids({ now: () => 777 });
+  await h.poll(mem.apply([{ ...row(true), pid: 4242 }]), 0);
+  await h.poll(mem.apply([{ ...row(false), pid: 4242 }]), 300);
+  h.reset(); // a turn ended: the next idle period records its hold afresh, from rows that read alive again
+  await h.poll(mem.apply([{ ...row(true), pid: 4242 }]), 600);
+  assert.strictEqual(h.holds.filter((m) => m.busy.length).length, 1, 'the reused number never makes the worker busy again');
+  assert.strictEqual(h.holds.length, 3);
+  assert.strictEqual(h.holds[2].established_by, "worker.list; pid dead (seen dead at w 777 by pid check, and the number reads alive since: another process may hold it), awaiting the detector's row");
+});
+
+test('the orchestrator poll and the interactive wake publisher read their rows through the dead-pid memory', () => {
+  const read = (f) => require('node:fs').readFileSync(require('node:path').join(__dirname, '..', '..', 'src', 'run', f), 'utf8');
+  assert.match(read('orchestrator.cjs'), /const rows = deadPids.apply(list.workers || [])/);
+  assert.match(read('wake-pipe.cjs'), /workers: deadPids.apply(list.workers || [])/);
 });
