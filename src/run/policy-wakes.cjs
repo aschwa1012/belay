@@ -71,7 +71,7 @@ function derive(snap) {
   const out = [];
   // `fact`: { key, seq } names the fact the wake is about (an evaluation, a review's verdict, a step), so the wake is one per fact and is not sent
   // again when the trigger row is rewritten. `trigger` is the row at derivation; `seq` (the fact's number) makes the interactive wake id stable.
-  const add = (exception, task, trigger, field, detail, fact, extra = {}) => out.push({ exception, task_id: task.id, trigger, field: field || 'none', seq: fact.seq, uid: `${exception}:${field || 'none'}:${fact.key}`, detail: detail || {}, ...extra });
+  const add = (exception, task, trigger, field, detail, fact, extra = {}) => out.push({ exception, task_id: task.id, trigger, field: field || 'none', seq: fact.seq, key: fact.key, uid: `${exception}:${field || 'none'}:${fact.key}`, detail: detail || {}, ...extra });
   const evOf = (t) => ({ key: `${t.id}@${t.results.evaluated_at}`, seq: Number(t.results.evaluated_at) || 0 });
   const tref = (t) => ({ table: 'task', id: t.id, seq: Number(t.seq) || 0 });
   const fails = snap.failures || [];
@@ -192,7 +192,7 @@ function textOf(e) {
 }
 const clean = (s) => String(s || 'no reason').replace(/[\x00-\x1f\x7f]+/g, ' ').slice(0, 80);
 
-const wakeOf = (e) => ({ event: 'evaluated', worker_id: `policy:${e.exception}:${e.field}:${e.task_id}`, turn: 0, seq: e.seq, task_id: e.task_id, exception: e.exception, trigger: `${e.trigger.table}:${e.trigger.id}:${e.trigger.seq}`, field: e.field, text: textOf(e) });
+const wakeOf = (e) => ({ event: 'evaluated', worker_id: `policy:${e.exception}:${e.field}:${e.task_id}`, turn: 0, seq: e.seq, task_id: e.task_id, exception: e.exception, trigger: `${e.trigger.table}:${e.trigger.id}:${e.trigger.seq}`, field: e.field, key: e.key, text: textOf(e) });
 
 // The watcher both wake paths hold. `seen` is the release-eval map the caller already carries: enrichWakes sets `seen.policyTasks` (the
 // task rows it read this poll) and `seen.policyArmed` once it sees a task under a plan, so a run with no plan reads nothing more.

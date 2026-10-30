@@ -201,7 +201,7 @@ test('exceptionOf names today\'s wakes E4, E9 and E10, and a routine wake nothin
   const e = PW.derive(snap([work('W', { policy: { fix: 'builder' } })]))[0];
   const w = PW.wakeOf(e);
   const rec = wakeRecord(w, w.text, 5, true);
-  assert.deepStrictEqual([rec.exception, rec.task_id, rec.event, rec.trigger], ['E1', 'W', 'evaluated', w.trigger]);
+  assert.deepStrictEqual([rec.exception, rec.task_id, rec.event, rec.trigger, rec.key], ['E1', 'W', 'evaluated', w.trigger, `W@20`]);
   const plain = wakeRecord({ event: 'turn_end', worker_id: 'w1', turn: 1, seq: 2 }, 't', 5, false);
   assert.deepStrictEqual([plain.exception, plain.task_id], [null, null]);
 });

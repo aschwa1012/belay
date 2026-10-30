@@ -12,7 +12,7 @@ function wakeRecord(ev, text, atMs, idle) {
     at_ms: atMs, worker_id: ev.worker_id, event: ev.event, turn: ev.turn,
     bytes: Buffer.byteLength(text, 'utf8'), orchestrator_idle_at_write: idle,
     established_by: establishedBy(ev),
-    exception: exceptionOf(ev), task_id: ev.task_id || null, trigger: ev.trigger || null, // ADR 0073: E1 to E10, or null for a wake that is not an exception
+    exception: exceptionOf(ev), task_id: ev.task_id || null, trigger: ev.trigger || null, key: ev.key || null, // ADR 0073: E1 to E10, or null for a wake that is not an exception
   };
   if (ev.event === 'death') {
     rec.exit_code = ev.exit_code; rec.exit_signal = ev.exit_signal; rec.death_established_by = ev.death_established_by;
