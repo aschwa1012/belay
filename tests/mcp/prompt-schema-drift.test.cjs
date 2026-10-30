@@ -164,8 +164,14 @@ test('tripwire: invented fields appended to a prompt are caught, in both prompts
   }
 });
 
-test('A5 the largest orchestrator listing (every lever on) is pinned and inside the 16,384 byte budget', () => {
+test('A5 the largest orchestrator listing (every lever on) is pinned and inside the 18,432 byte budget', () => {
   const bytes = tools.listingBytes('orchestrator', { notes: true, knowledge: true, queries: true });
   assert.ok(bytes <= tools.BUDGET.orchestrator, `everything-on orchestrator listing is ${bytes} bytes, over ${tools.BUDGET.orchestrator} by ${bytes - tools.BUDGET.orchestrator}`);
   assert.strictEqual(bytes, 16091, 'the everything-on orchestrator listing size is pinned; change this with the ADR 0010 amendment that changes it');
+});
+
+test('the everything-on listing with the permission channel is pinned and inside the budget (ADR 0010 amendment 16)', () => {
+  const bytes = tools.listingBytes('orchestrator', { notes: true, knowledge: true, queries: true, permissions: true });
+  assert.ok(bytes <= tools.BUDGET.orchestrator, `permissions-on orchestrator listing is ${bytes} bytes, over ${tools.BUDGET.orchestrator} by ${bytes - tools.BUDGET.orchestrator}`);
+  assert.strictEqual(bytes, 16856, 'pinned; change this with the ADR 0010 amendment that changes it');
 });
