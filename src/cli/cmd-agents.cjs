@@ -228,7 +228,7 @@ function streamPathOf(dataDir, id) {
   return /[\\/]/.test(sid) || sid === '..' || sid === '.' ? null : `${dataDir}/workers/${sid}/stream.jsonl`;
 }
 
-function workerRow(w, tasksById, dataDir, { now, pending, leaseTaskOf = new Map() }) {
+function workerRow(w, tasksById, dataDir, { now, pending, leaseTaskOf = new Map(), inFlight = null }) {
   const claude = w.substrate === 'claude-code';
   const streamPath = streamPathOf(dataDir, w.id);
   // A Codex stream is not Claude Code's: what it carries is not parsed here, so its context is not recorded.
@@ -242,7 +242,7 @@ function workerRow(w, tasksById, dataDir, { now, pending, leaseTaskOf = new Map(
     model: w.model != null ? w.model : ctx.model_seen, model_seen: ctx.model_seen, effort: nn(w.effort_requested), effort_is: 'requested',
     state: nn(w.state), context_tokens: ctx.context_tokens, context_window: ctx.context_window, context_pct: ctx.context_pct,
     window_source: ctx.context_window != null ? 'own result line' : null,
-    cost_estimated: !!w.cost_source, cost_usd: rowCost, cost_source: rowCost == null ? null : 'worker row cost_usd', ...estimatedCost(w, rowCost),
+    cost_estimated: !!w.cost_source, cost_usd: rowCost, cost_source: rowCost == null ? null : 'worker row cost_usd', ...estimatedCost(w, rowCost), ...require('../core/inflight-cost.cjs').workerFigures(inFlight, w),
     ...D.workerDisplay(w, { pending: pending.has(w.id), stall: stallAge(w, dataDir, now) }), cache: D.cacheOf(scan, now),
     stream_path: streamPath, stream_exists: !!scan.exists, stream_error: scan.error, result_ts_ms: scan.result_ts_ms,
   };
@@ -307,7 +307,8 @@ function renderText(rc) {
     lines.push(...P.wrapLine('  ', `task ${task}  cache ${D.cacheText(a.cache)}`));
     const cost = a.cost_usd == null ? (a.cost_note ? `cost not priced (${P.v(a.cost_note, 80)})` : 'cost not recorded') : `cost ${P.money(a.cost_usd)} (${a.cost_source})`;
     const estNote = a.cost_estimate_empty ? ' (not estimated: stream tail over 16 MB)' : a.cost_estimated ? ` + ${a.cost_estimated_usd == null ? 'not priced' : P.money(a.cost_estimated_usd)} estimated (${a.cost_estimated_source}${a.cost_estimate_truncated ? ', truncated' : ''}) = ${P.money(a.cost_combined_usd)}` : '';
-    lines.push(...P.wrapLine('  ', `${contextText(a)}  ${cost}${estNote}`));
+    const flNote = a.cost_in_flight_usd != null ? ` + ${P.money(a.cost_in_flight_usd)} ${a.cost_in_flight_source}${a.cost_in_flight_partial ? ' (partial: stream not yet read to its end)' : ''}` : '';
+    lines.push(...P.wrapLine('  ', `${contextText(a)}  ${cost}${estNote}${flNote}`));
   }
   if (!rc.agents.length) return '(no agents)\n';
   const f = rc.footer;
@@ -347,12 +348,13 @@ async function run(ctx) {
       const tasksById = new Map(everyTask.filter((t) => t.run_id === chosen.id).map((t) => [t.id, t]));
       const leaseTaskOf = leaseTasksOf([...tasksById.values()]);
       const { dir: orchDir, stream_path: orchStream } = P.orchestratorStreamPath(chosen.id, parsed.dir, ctx.cwd);
-      const workers = everyWorker.filter((w) => w.run_id === chosen.id).map((w) => workerRow(w, tasksById, dataDir, { now, pending, leaseTaskOf }));
+      const workers = everyWorker.filter((w) => w.run_id === chosen.id).map((w) => workerRow(w, tasksById, dataDir, { now, pending, leaseTaskOf, inFlight: require('../core/run-budget.cjs').publishedInFlight(chosen) }));
       const orchestrator = orchestratorRow(chosen, orchStream, now);
       fillFromTranscript(orchestrator, orchDir, chosen, { now });
       borrowWindow(orchestrator, workers);
       const agents = [orchestrator, ...workers];
       const runTasks = [...tasksById.values()];
+      const spend = chosen.budget_usd != null ? await core.usage.spend({ run_id: chosen.id }) : null; // no query for a run without a limit
       const receipt = {
         run_id: chosen.id, run_id_source: source, ...D.modeOf(orchDir, chosen, orchestrator.stream_exists ? D.streamStart(orchStream) : null),
         started_at_ms: nn(chosen.started_at), paused_at_ms: nn(chosen.paused_at), ended_at_ms: nn(chosen.ended_at),
@@ -362,7 +364,7 @@ async function run(ctx) {
         memory_notice: require('../core/memory-notice.cjs').noticeForRun(chosen, null), // this run's own notice (or null): the panel shows it, never the config's
         retrieval_models: require('../core/retrieval-view.cjs').models(require('../core/retrieval-view.cjs').describe(chosen, core.ownerInfo())), // the pinned embedder and reranker with their state, from the run row
         agents, footer: footerOf(agents), owner: core.ownerInfo(),
-        ...(chosen.budget_usd != null ? { budget: require('../core/run-budget.cjs').blockOf(chosen, await core.usage.spend({ run_id: chosen.id })) } : {}), // reported spend beside its limit; no query for a run without one
+        ...(chosen.budget_usd != null ? { budget: require('../core/run-budget.cjs').blockOf(chosen, spend) } : {}), // reported spend beside its limit; no query for a run without one
       };
       return { code: 0, text: renderText(receipt), json: receipt };
     });

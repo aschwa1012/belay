@@ -19,9 +19,11 @@ function applyBudget(out, spec, opts = {}) {
     if (!valid(opts.config.run.budget_usd)) return { error: `run.budget_usd in ${opts.config.path} must be a positive number (dollars at API rates)` };
     value = opts.config.run.budget_usd; source = opts.config.path;
   }
+  if (spec.budget_counts_in_flight !== undefined && typeof spec.budget_counts_in_flight !== 'boolean') return { error: 'budget_counts_in_flight must be true or false' };
+  if (spec.budget_counts_in_flight === true && !valid(value)) return { error: 'budget_counts_in_flight needs a budget: set budget_usd (or run.budget_usd in belay.config.json)' };
   if (!valid(value)) { if (source) out.budget_source = source; return {}; } // a spec null is recorded, so a restart does not read it as "not stated"
   out.budget_usd = value;
-  out.budget_source = source;
+  out.budget_source = source; out.budget_counts_in_flight = spec.budget_counts_in_flight === true; // off unless the spec says so: the basis of the budget is the operator's call
   const have = out.memory_levers;
   if (have) have.cost_ledger = true;
   else {

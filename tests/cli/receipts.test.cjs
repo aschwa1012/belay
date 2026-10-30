@@ -450,3 +450,17 @@ test('receipts: an estimate whose stream tail lay beyond the scan window says so
   assert.match(text, /not estimated: stream tail over 16 MB/);
   assert.strictEqual(JSON.parse(receipts([], dataDir).stdout).workers.find((x) => x.id === 'wt').cost_estimate.truncated, true);
 }));
+
+test('receipts: a live worker turn that has not ended shows an in-flight estimate, labelled and apart from the reported cost', guarded(async (dir, dataDir) => {
+  await withOwner(dataDir, 'run-fl', 'orchestrator', async (orch) => {
+    await orch.run.attach({ adapter_pid: process.pid });
+    await orch.worker.write({ id: 'wf', substrate: 'claude-code', pid: process.pid, state: 'running', started_at: Date.now() - 1000, cost_usd: 0.5, turns: 1 });
+  });
+  await withOwner(dataDir, 'run-fl', 'operator', async (op) => { // what the run process publishes while the turn runs
+    await op.run.setBudget({ budget_usd: 5, budget: { counts_in_flight: false, orchestrator: { counted: true, usd: 0, in_flight_usd: 0 }, in_flight_workers: { usd: 1, by_worker: { wf: 1 }, partial: [], unpriced: [] } } });
+  });
+  const j = JSON.parse(receipts([], dataDir).stdout);
+  const w = j.workers.find((x) => x.id === 'wf');
+  assert.deepStrictEqual([w.cost_usd, w.cost_in_flight_usd, w.cost_in_flight_source, w.cost_source], [0.5, 1, 'in flight (estimate)', null]);
+  assert.match(receipts([], dataDir, { json: false }).stdout, /cost \$0\.5 \+ \$1 in flight \(estimate\)/);
+}));
