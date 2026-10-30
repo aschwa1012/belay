@@ -8,9 +8,11 @@
 // was one `node --test` chain; this script adds only the two phase lines after both have run.
 // H1: each phase has a wall-clock bound (`--test-timeout` is per test and never fires for a hung
 // setup). On expiry the phase's child, held by a live handle, is stopped by exact pid with its tree.
-// BELAY_TEST_CONCURRENCY=N (a positive integer) is passed to both phases as `--test-concurrency=N`, capping how many test
+// BELAY_TEST_CONCURRENCY=N (a positive integer) is passed to phase 1 as `--test-concurrency=N`, capping how many test
 // files run at once; absent or invalid, no flag is passed (an invalid value is logged as ignored).
-// `npm run test:budgets` is unchanged and still runs the budgets glob alone.
+// Phase 2 always runs its files one at a time (`--test-concurrency=1`, whatever the environment says): a budget gate is measured in a
+// phase that runs nothing else (invariant 9), and `node --test` would otherwise run the budget files beside each other.
+// `npm run test:budgets` runs the budgets glob alone, one file at a time too.
 
 const fs = require('node:fs');
 const os = require('node:os');
@@ -24,7 +26,10 @@ const PHASE1_GLOBS = [
 ];
 const PHASE2_GLOB = 'tests/budgets/**/*.test.cjs';
 const PHASE1_TIMEOUT_MS = 1200000;
-const PHASE2_TIMEOUT_MS = 300000;
+// A runner bound, not a product budget: it only stops a hung phase. Phase 2 runs its 21 budget tests one at a time (invariant 9), which took
+// 515 s on a loaded host, so 300 s would kill a healthy phase. The lead records the quiet-host serial time from the next full suite.
+const PHASE2_TIMEOUT_MS = 900000;
+const BUDGET_CONCURRENCY = 1; // phase 2 ignores BELAY_TEST_CONCURRENCY: budget files never run beside each other
 
 function bound(envName, dflt) {
   const n = Number(process.env[envName]);
@@ -143,7 +148,7 @@ async function runPhases({ globs1 = PHASE1_GLOBS, glob2 = PHASE2_GLOB, timeout1 
     console.log(`phase 1: exit ${p1.status} (stop failed)`);
     console.log('phase 2: not started (phase 1 could not be stopped)');
   } else {
-    p2 = await runPhase([glob2], { timeoutMs: timeout2, label: 'phase 2', killTreeImpl, concurrency, spawnImpl, env: scratch ? { ...process.env, ...tmpEnv } : undefined });
+    p2 = await runPhase([glob2], { timeoutMs: timeout2, label: 'phase 2', killTreeImpl, concurrency: BUDGET_CONCURRENCY, spawnImpl, env: scratch ? { ...process.env, ...tmpEnv } : undefined });
     console.log(`phase 1: exit ${p1.status}`);
     console.log(`phase 2: exit ${p2.status}`);
   }

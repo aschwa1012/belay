@@ -39,7 +39,7 @@
   ],
   "scripts": {
     "test": "node scripts/test.cjs",
-    "test:budgets": "node --test --test-timeout=60000 \"tests/budgets/**/*.test.cjs\""
+    "test:budgets": "node --test --test-concurrency=1 --test-timeout=60000 \"tests/budgets/**/*.test.cjs\""
   },
   "dependencies": {},
   "devDependencies": {},
