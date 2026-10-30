@@ -342,3 +342,19 @@ test('a step does not merge onto belay/integrate/<run> when that branch exists a
   const own = await h.policyAs(seq2).integration.merge({ task_ids: [b] });
   assert.strictEqual(own.acted_by, 'policy');
 });
+
+test('a finished claim stamps nothing: any write made for it, not only assign, fix and merge, is refused and writes nothing', async () => {
+  const t = await orch.task.create({ spec: 'c1 work' });
+  const seq = await claim('fix', await taskTrigger(t.id));
+  await h.policy.finish({ seq, outcome: 'exception', error: 'test' });
+  const tasks = () => raw('SELECT COUNT(*) AS n FROM task')[0].n;
+  const before = tasks();
+  await rejectsCode(h.policyAs(seq).task.create({ spec: 'c1 stamped?' }), 'E_ARGS');
+  await rejectsCode(h.policyAs(seq).task.cancel({ task_id: t.id, reason: 'x' }), 'E_ARGS');
+  await rejectsCode(h.policyAs(seq).task.fixFromReview({ review_id: t.id, follow_up: true }), 'E_ARGS');
+  assert.strictEqual(tasks(), before, 'nothing was written');
+  // an open claim still lets a write through, stamped
+  const open = await claim('fix', { table: 'task', id: t.id, seq: 99 });
+  const row = await h.policyAs(open).task.create({ spec: 'c1 open' });
+  assert.strictEqual(row.acted_by, 'policy');
+});
