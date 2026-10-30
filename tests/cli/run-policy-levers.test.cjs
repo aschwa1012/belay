@@ -33,7 +33,7 @@ test('the config run block is the default, the spec wins field by field, and nul
   const both = parseLevers({ policy: { integrate: 'on_hold', fix: 'builder' } }, cfg({ policy: { review: { worker: 'cfg-rev' } } }));
   assert.deepStrictEqual(both.policy_default, { review: { worker: 'cfg-rev' }, integrate: 'on_hold', fix: 'builder' }, 'spec {fix, integrate} plus config {review} gives all three');
   assert.strictEqual(both.policy_source, 'spec + /p/belay.config.json');
-  assert.deepStrictEqual(parseLevers({ policy: { review: { worker: 'spec-rev' } } }, c).policy_default, { review: { worker: 'spec-rev' }, fix: 'builder' }, 'a spec field beats the config's; the rest is filled');
+  assert.deepStrictEqual(parseLevers({ policy: { review: { worker: 'spec-rev' } } }, c).policy_default, { review: { worker: 'spec-rev' }, fix: 'builder' }, 'a spec field beats the configs; the rest is filled');
   const off = parseLevers({ policy: null }, c);
   assert.deepStrictEqual([off.policy_default, off.policy_source], [undefined, 'spec (off)']);
 });
