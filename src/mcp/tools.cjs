@@ -14,6 +14,7 @@
 'use strict';
 
 const { isJobId } = require('../run/job-prefixes.cjs'); // pure
+const { KNOWLEDGE_PREFIX, isReservedWorkerId } = require('../core/reserved-ids.cjs'); // pure
 const { isPathId, pathIdMessage } = require('../core/path-id.cjs'); // pure
 const NOTES = require('./tools-notes.cjs'); // ADR 0047: the listing of a worker whose run has the notes lever on
 const { S, str, int, num, bool, DEBUG, strs } = require('./tools-schema.cjs');
@@ -273,7 +274,7 @@ const HARNESS_ONLY = { task_create: STAMPS, task_assign: STAMPS, fix_from_review
 const CLOSED = new Set(['memory_store']);
 // ADR 0043 decision 1: the knowledge agent's id, knowledge-<run>, is the harness's. A worker the orchestrator named
 // with that prefix would be taken for the agent (or block it), so a caller-chosen id with it is refused.
-const RESERVED_WORKER_PREFIX = 'knowledge-';
+const RESERVED_WORKER_PREFIX = KNOWLEDGE_PREFIX;
 const MAX_IDS = 50;
 
 // The model is a boundary, so the required fields and the declared type of each named top-level
@@ -302,7 +303,7 @@ function validateArgs(name, args, { notes = false, role = 'worker' } = {}) {
     if (a[k] !== undefined && a[k] !== null && (schema.properties || {})[k] && !isPathId(a[k])) bad(`${name}: ${pathIdMessage(k, a[k])}`, { tool: name, field: k, reason: 'bad_id' });
   }
   if (Array.isArray(a.worker_ids) && a.worker_ids.some((x) => !isPathId(x))) bad(`${name}: worker_ids has an id that is not valid: use ${require('../core/path-id.cjs').PATH_ID_GRAMMAR}`, { tool: name, field: 'worker_ids', reason: 'bad_id' });
-  if (name === 'worker_spawn' && typeof a.worker_id === 'string' && (a.worker_id.startsWith(RESERVED_WORKER_PREFIX) || isJobId(a.worker_id))) {
+  if (name === 'worker_spawn' && typeof a.worker_id === 'string' && isReservedWorkerId(a.worker_id)) {
     bad(`worker_spawn: worker ids starting ${RESERVED_WORKER_PREFIX}, notereview-, scrub- or archreview- are reserved for belay's own workers`, { tool: name, field: 'worker_id', reason: 'reserved', prefix: RESERVED_WORKER_PREFIX });
   }
   for (const k of schema.required || []) {

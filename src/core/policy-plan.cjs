@@ -8,6 +8,7 @@
 
 const { err } = require('./errors.cjs');
 const { isPathId, pathIdMessage } = require('./path-id.cjs');
+const { isReservedWorkerId } = require('./reserved-ids.cjs');
 
 // The worker agent types a spawn may name. Kept here because the core imports nothing from src/run; a test pins it to agent-defaults.cjs WORKER_TYPES.
 const AGENT_TYPES = ['coder', 'tester', 'reviewer', 'researcher'];
@@ -37,6 +38,7 @@ function checkReview(v, where) {
   for (const sk of Object.keys(s)) if (sk !== 'agent_type' && sk !== 'worker_id') throw notAccepted(`${where}.spawn.${sk}`, undefined, 'agent_type, worker_id');
   if (!AGENT_TYPES.includes(s.agent_type)) throw err('E_ARGS', `${where}.spawn.agent_type must be one of ${AGENT_TYPES.join(', ')}`, { field: `${where}.spawn.agent_type` });
   if (s.worker_id !== undefined && !isPathId(s.worker_id)) throw err('E_ARGS', `${where}.spawn.worker_id: ${pathIdMessage('worker_id', s.worker_id)}`, { field: `${where}.spawn.worker_id` });
+  if (s.worker_id !== undefined && isReservedWorkerId(s.worker_id)) throw err('E_ARGS', `${where}.spawn.worker_id: ids starting knowledge-, notereview-, scrub- or archreview- are reserved for belay's own workers`, { field: `${where}.spawn.worker_id`, reason: 'reserved' });
   return { spawn: { agent_type: s.agent_type, ...(s.worker_id !== undefined ? { worker_id: s.worker_id } : {}) } };
 }
 

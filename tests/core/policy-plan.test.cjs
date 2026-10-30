@@ -39,6 +39,7 @@ test('malformed plans are refused', () => {
   refused({ review: { worker: '../x' } }, /not a valid id/);
   refused({ review: { spawn: { agent_type: 'wizard' } } }, /agent_type must be one of/);
   refused({ review: { spawn: { agent_type: 'coder', worker_id: 'a b' } } }, /not a valid id/);
+  for (const id of ['knowledge-run1', 'notereview-1', 'scrub-1', 'archreview-1']) refused({ review: { spawn: { agent_type: 'reviewer', worker_id: id } } }, /reserved for belay/);
   refused({ review: {} }, /exactly one/);
   refused({ review: { worker: 'a', spawn: { agent_type: 'coder' } } }, /exactly one/);
 });
