@@ -27,7 +27,7 @@ const { withDataNotice } = require('./data-notice.cjs'); // invariant 8: a resul
 const { parseArgv, die } = require('./argv.cjs'); // identity from argv only; moved out to keep this file short
 
 const SERVER_NAME = 'belay';
-const SERVER_VERSION = '0.3.0';
+const SERVER_VERSION = '0.3.1';
 const DEFAULT_PROTOCOL = '2025-06-18';
 
 const opts = parseArgv(process.argv.slice(2));
