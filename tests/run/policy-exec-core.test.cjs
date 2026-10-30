@@ -192,3 +192,17 @@ test('a step claimed at plan rev 1 that fails halts its task, and an amend to re
     assert.ok(!(await halted(e)).has(work.id), 'the amend lifts it');
   } finally { await e.close(); }
 });
+
+test('a worker\'s view of a task shows neither the plan nor that a policy step made it', async () => {
+  const e = await env();
+  try {
+    const { work } = await judged(e, 'v', 'refuted');
+    await e.exec().tick();
+    const fix = e.raw('SELECT DISTINCT id FROM task WHERE repairs = ?', work.id)[0].id;
+    const w = await e.worker('build-v');
+    for (const t of [(await w.task.get({ task_id: fix })), (await w.task.get({ task_id: work.id })), ...(await w.task.list({})).tasks]) {
+      assert.ok(!('made_by_policy' in t) && !('policy' in t) && !('policy_rev' in t), t.id);
+    }
+    assert.strictEqual((await e.h.task.get({ task_id: fix })).made_by_policy, true, 'the orchestrator sees it');
+  } finally { await e.close(); }
+});

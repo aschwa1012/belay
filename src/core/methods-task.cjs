@@ -172,7 +172,7 @@ function refutedReview(d) {
 }
 
 // ADR 0076 decision 4: a worker is not shown the plan belay holds for its task (it is data for the run's executor, not for the worker).
-const forRole = (caller, t) => { if (!caller || caller.role !== 'worker') return t; const { policy, policy_rev, ...rest } = t; return rest; };
+const forRole = (caller, t) => { if (!caller || caller.role !== 'worker') return t; const { policy, policy_rev, made_by_policy, ...rest } = t; return rest; };
 
 function view(E, task, liveness, ctx) {
   const t = Date.now();
