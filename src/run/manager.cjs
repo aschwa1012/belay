@@ -43,7 +43,7 @@ const { EARLY, createBudget } = require('./restart-budget.cjs');
 const RG = require('./relaunch-guard.cjs'); // ADR 0026 amendment 2: a death during a relaunch keeps its lease
 const { waitTurnOrLanded } = require('./turn-wait.cjs'); // a turn that ended before the wait began is answered
 
-const { POLL_MS, holdBoundMs } = require('./exit-hold.cjs');
+const { POLL_MS } = require('./exit-hold.cjs');
 const now = () => Date.now();
 
 // `memoryLevers`: the run's levers when the caller holds the run row (ADR 0041); `worktree`: the run's (ADR 0043).
@@ -85,8 +85,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
   const { failNoReady, guarded } = createStartFail({ core, writeRow }); // contract §5; ADR 0045 decision 2: every failed start settles its launch
 
-  // A null `running` write saw the pid gone with the exit event still owed (held, exit-hold.cjs): a Codex turn that exited 0 is `idle` only once it lands.
-  const awaitSettled = async (w) => { if (!w.settled) await W.waitExit(w, holdBoundMs() + POLL_MS + 1000); await w.queue; };
+  const awaitSettled = (w) => W.awaitSettled(w); // a Codex turn that exited 0 is `idle` only once its held exit lands (worker-waits.cjs)
   function startPoll() {
     if (poll) return;
     poll = setInterval(() => {
