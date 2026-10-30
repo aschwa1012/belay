@@ -146,6 +146,8 @@ const METHODS = {
   // build step 4a: every run's current row, so a CLI with no run id argument (belay status,
   // belay workers) has a way to find the current run at all.
   'run.list': { roles: ALL, kind: 'read', fn: run.listRuns },
+  // 0.4.0 (item J): the check commands whose outcome flipped on one tree; check-flake.record writes the rows inside task.evaluate's write.
+  'check.flake': { roles: ALL, kind: 'read', fn: lazy('./check-flake.cjs', 'list') },
 
   // `harnessGuard(E, caller, args)`: the one write an operator on the harness channel (core.harness(), never a tool call) may make
   // beyond its roles. The run process becomes the parent of the run-close stages' child and writes that child's rows, and only

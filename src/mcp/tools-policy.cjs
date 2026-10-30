@@ -7,7 +7,7 @@ const STAMPS = ['acted_by', 'trigger', 'policy_rev'];
 
 const POLICY_PROPERTY = {
   type: ['object', 'null'],
-  description: 'What belay does for this task; a field left out stays yours. On amend it replaces the plan, null hands the task back',
+  description: 'What belay does for this task. A field left out takes the run default, else stays yours. On amend it replaces the plan. null: no plan, no default',
   properties: {
     review: { type: 'object', description: '{worker: id} or {spawn: {agent_type, worker_id?}}; when the task passes' },
     fix: { enum: ['builder'] },

@@ -30,7 +30,7 @@ const COLUMNS = {
 
 // Text in SQLite, parsed objects on the wire (api.md §1).
 const JSON_COLUMNS = {
-  run: [], worker: ['memory_queries', 'tools', 'leases_released', 'cost_estimate'], lease: ['tree'],
+  run: ['policy_default'], worker: ['memory_queries', 'tools', 'leases_released', 'cost_estimate'], lease: ['tree'],
   task: ['acceptance', 'files_owned', 'results', 'depends_on', 'handoff', 'worktree', 'answers', 'amended', 'follows_up', 'policy', 'trigger'],
   integration: ['task_ids', 'merged', 'conflict', 'error', 'checks', 'junctions', 'forced', 'approver', 'prepared'],
   checkpoint: ['files_touched', 'tool_digest', 'stated'],

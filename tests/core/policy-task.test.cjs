@@ -32,7 +32,7 @@ const rowOf = (id) => orch.task.get({ task_id: id });
 
 test('the run keeps the user\'s default; the orchestrator\'s re-attach does not lose it', async () => {
   const run = (await orch.run.get()).run;
-  assert.deepStrictEqual(JSON.parse(run.policy_default), DEFAULT);
+  assert.deepStrictEqual(run.policy_default, DEFAULT);
 });
 
 test('a task with no plan takes the default whole, at revision 1', async () => {
@@ -139,5 +139,15 @@ test('a worker can neither set nor amend a plan: the core refuses the role', asy
 test('the run\'s default is the launching process\'s to state: the orchestrator is refused, a bad default is refused', async () => {
   await rejectsCode(orch.run.attach({ adapter_pid: process.pid, policy_default: { fix: 'builder' } }), 'E_ROLE');
   await rejectsCode(operator.run.attach({ adapter_pid: process.pid, policy_default: { follow_up: 'wake' } }), 'E_ARGS');
-  assert.deepStrictEqual(JSON.parse((await orch.run.get()).run.policy_default), DEFAULT, 'unchanged');
+  assert.deepStrictEqual((await orch.run.get()).run.policy_default, DEFAULT, 'unchanged');
+});
+
+test('a worker is not shown the plan: task.list and task.get leave out policy and policy_rev, and the orchestrator still sees both', async () => {
+  const seen = await orch.task.get({ task_id: 'pt-def' });
+  assert.deepStrictEqual([seen.policy, seen.policy_rev], [DEFAULT, 1]);
+  const w = await worker.task.get({ task_id: 'pt-def' });
+  assert.ok(!('policy' in w) && !('policy_rev' in w) && w.id === 'pt-def');
+  const listed = (await worker.task.list({})).tasks;
+  assert.ok(listed.length > 3 && listed.every((t) => !('policy' in t) && !('policy_rev' in t)));
+  assert.ok((await orch.task.list({})).tasks.some((t) => t.policy));
 });
