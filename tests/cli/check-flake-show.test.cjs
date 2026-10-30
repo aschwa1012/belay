@@ -49,3 +49,21 @@ test('a key that never flipped is not shown', async () => {
     assert.deepStrictEqual(JSON.parse(cli(dataDir, 'receipts', 'run-f', '--json').stdout).flaky_checks, []);
   } finally { cleanup(dir); }
 });
+
+test('status shows ten flipped keys and counts the rest, and reading creates no file', async () => {
+  const fs = require('node:fs');
+  const dir = sandbox(), dataDir = `${dir}/.belay`;
+  try {
+    await plant(dataDir, true);
+    const s = new Store(path.join(dataDir, 'memory.db'), { stamp: true });
+    try {
+      for (let i = 0; i < 12; i++) { const a = { ...chk(true), argv: ['t', String(i)] }; F.record(s, [a], { tree_sha: 'ff' }, 100 + i); F.record(s, [{ ...a, passed: false }], { tree_sha: 'ff' }, 200 + i); }
+    } finally { s.close(); }
+    const names = () => fs.readdirSync(dataDir, { recursive: true }).sort();
+    const before = names();
+    const json = JSON.parse(cli(dataDir, 'status', '--json').stdout);
+    assert.deepStrictEqual([json.check_flake.length, json.check_flake_total], [10, 13]);
+    assert.match(cli(dataDir, 'status').stdout, /flaky check: 3 more flipped keys not shown \(13 in all\)/);
+    assert.deepStrictEqual(names(), before, 'status created or left no file');
+  } finally { cleanup(dir); }
+});

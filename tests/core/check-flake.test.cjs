@@ -92,3 +92,51 @@ test('task.evaluate writes the row in its own write: a fail then a pass on one t
     assert.deepStrictEqual([k[0].pass_n, k[0].fail_n, k[0].flips, k[0].last_outcome], [1, 1, 1, 'pass']);
   } finally { try { await orch.shutdownOwner(); } finally { await orch.close(); cleanup(dir); } }
 });
+
+test('an attempt the evaluation budget cut short is not an outcome', () => {
+  const d = sandbox();
+  const s = new Store(path.join(d, 'memory.db'), { stamp: true });
+  try {
+    F.record(s, [check(true)], TREE, 1);
+    F.record(s, [check(false, { detail: { timed_out: true, budget_capped_ms: 500 } })], TREE, 2); // capped timeout: nothing recorded
+    let r = rowsOf(s)[0];
+    assert.deepStrictEqual([r.pass_n, r.fail_n, r.flips, r.last_at], [1, 0, 0, 1]);
+    // a timeout with no cap is the command's own failure; a capped retry is dropped while the real failure before it counts
+    F.record(s, [check(false, { detail: { timed_out: true } })], TREE, 3);
+    assert.deepStrictEqual([rowsOf(s)[0].fail_n, rowsOf(s)[0].flips], [1, 1]);
+    const capped = check(false, { detail: { budget_capped_ms: 500, attempts: [{ exit_code: 1, timed_out: false }, { exit_code: null, timed_out: true }] } });
+    F.record(s, [capped], TREE, 4);
+    r = rowsOf(s)[0];
+    assert.deepStrictEqual([r.pass_n, r.fail_n, r.flips], [1, 2, 1]);
+  } finally { s.close(); cleanup(d); }
+});
+
+test('a rolled-back evaluation write leaves no row', () => {
+  const d = sandbox();
+  const s = new Store(path.join(d, 'memory.db'), { stamp: true });
+  try {
+    assert.throws(() => s.tx(() => { F.record(s, [check(true)], TREE, 1); throw new Error('the result row failed'); }), /result row failed/);
+    assert.strictEqual(rowsOf(s).length, 0);
+  } finally { s.close(); cleanup(d); }
+});
+
+test('list caps the rows and counts them all; a missing table is empty and any other failure is thrown', () => {
+  const d = sandbox();
+  const s = new Store(path.join(d, 'memory.db'), { stamp: true });
+  try {
+    for (let i = 0; i < 4; i++) { F.record(s, [{ ...check(true), argv: ['k', String(i)] }], TREE, 10 + i); F.record(s, [{ ...check(false), argv: ['k', String(i)] }], TREE, 20 + i); }
+    const got = F.list({ store: s }, null, { limit: 3 });
+    assert.strictEqual(got.total, 4);
+    assert.deepStrictEqual(got.keys.map((k) => k.argv[1]), ['3', '2', '1'], 'newest first');
+    assert.deepStrictEqual(s.p("SELECT name FROM sqlite_master WHERE name = 'ix_check_flake_flipped'").all().length, 1);
+    s.db.exec('DROP INDEX ix_check_flake_flipped; DROP TABLE check_flake');
+    assert.deepStrictEqual(F.list({ store: s }), { keys: [], total: 0 });
+    assert.throws(() => F.list({ store: { p() { throw new Error('database disk image is malformed'); } } }), /malformed/);
+  } finally { s.close(); cleanup(d); }
+});
+
+test('line names the program by its last path part for a Windows path too', () => {
+  const bs = String.fromCharCode(92);
+  const k = { argv: [`C:${bs}node${bs}node.exe`, 'x.js'], key_kind: 'tree', key_sha: 'abc', pass_n: 1, fail_n: 1, flips: 1, last_outcome: 'fail', last_concurrent: false };
+  assert.match(F.line(k), /^flaky check: node\.exe x\.js /);
+});
