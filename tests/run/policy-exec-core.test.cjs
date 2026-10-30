@@ -170,7 +170,7 @@ test('a fix a step wrote stays under its work\'s plan after the worker\'s hand-b
     const other = await judged(e, 'h2', 'refuted');
     const mine = await e.orch.task.fixFromReview({ review_id: other.review.id });
     const again = new Map((await e.h.task.list({})).tasks.map((t) => [t.id, t]));
-    assert.strictEqual(again.get(mine.id).policy_made, undefined);
+    assert.strictEqual(again.get(mine.id).policy_made, false);
     assert.strictEqual(PW.policyOf(again.get(mine.id), again), null);
     assert.ok(review);
   } finally { await e.close(); }
