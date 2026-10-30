@@ -29,6 +29,8 @@ test('run close: an orchestrator child that has not registered is waited for, an
   const run = runCli(specPath, dataDir, { BELAY_CLAUDE_EXE: FAKE_CLAUDE, FAKE_ORPHAN_CHILD: '1', FAKE_CHILD_PID_FILE: pidFile, FAKE_ANSWER_GATE_FILE: gate, BELAY_SNAPSHOT_LOG: snapLog, BELAY_CLOSE_LOG: closeLog });
   let core = null;
   let worker = null;
+  let workerBornBy = 0;
+  const { stillRunning } = require('../helpers/dead-pid.cjs');
   try {
     core = await connectOrchestratorCore(dataDir, runId);
     const adapterPid = await waitUntil(() => { try { return Number(fs.readFileSync(pidFile, 'utf8')) || null; } catch { return null; } }, 60000, 50);
@@ -51,6 +53,7 @@ test('run close: an orchestrator child that has not registered is waited for, an
     const att = await core.run.attach({ adapter_pid: adapterPid });
     assert.ok(att.epoch >= 2 && att.run.ended_at === null, 'the late attach landed on an open run');
     worker = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], { windowsHide: true, stdio: 'ignore' });
+    workerBornBy = Date.now(); // a live pid created after this is not the worker: the host hands a killed pid out again
     await core.worker.write({ id: 'w-late', run_id: runId, substrate: 'claude-code', pid: worker.pid, pid_image: 'node.exe', state: 'running', worktree: wt, turns: 0, started_at: Date.now() });
 
     // The orchestrator has gone by now, so the child is an orphan, still known by its pid and creation time.
@@ -70,7 +73,7 @@ test('run close: an orchestrator child that has not registered is waited for, an
     // No worker row left running past run.end, and the run reads as ended.
     const w = readStoreCopy(dataDir, (db) => db.prepare('SELECT * FROM worker WHERE id = ? ORDER BY seq DESC LIMIT 1').get('w-late'));
     assert.strictEqual(w.state, 'dead', 'the late worker was closed with the run');
-    assert.ok(!P.pidAlive(worker.pid), 'the late worker process was stopped');
+    assert.ok(!(await stillRunning(worker.pid, workerBornBy)), 'the late worker process was stopped');
     const runRow = H.currentRunRow(dataDir, runId);
     assert.notStrictEqual(runRow.ended_at, null, 'the run reads as ended');
     const rowsAfter = readStoreCopy(dataDir, (db) => db.prepare('SELECT COUNT(*) AS n FROM run WHERE id = ?').get(runId).n);
