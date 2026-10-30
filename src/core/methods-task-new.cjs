@@ -12,6 +12,9 @@ const { filesOverlap, treeHint } = require('./methods-task-hold.cjs');
 function one(E, caller, args, own, runTop) {
   const AM = require('./methods-task-amend.cjs');
   if (args.follows_up !== undefined) throw err('E_ARGS', 'task.follows_up is written only by fix_from_review with follow_up: true; a caller cannot set it', { field: 'follows_up' }); // ADR 0064 decision 1
+  for (const k of ['acted_by', 'trigger', 'policy_rev']) { // ADR 0072 decision 3: the policy step's stamps are the harness's, never a caller's argument
+    if (args[k] !== undefined) throw err('E_ARGS', `task.create: ${k} is written by the core for a policy step; a caller cannot set it`, { field: k, reason: 'harness_only' });
+  }
   if (typeof args.spec !== 'string' || !args.spec.trim()) throw err('E_ARGS', 'task.create needs a spec describing the work');
   const filesOwned = args.files_owned == null ? null : args.files_owned;
   if (filesOwned != null && (!Array.isArray(filesOwned) || filesOwned.some(p => typeof p !== 'string'))) {
@@ -78,11 +81,12 @@ function one(E, caller, args, own, runTop) {
     overlaps = holds.acrossTrees(scan);
   }
 
+  const plan = require('./policy-plan.cjs').forCreate(rows.current(E.store, 'run', caller.run_id), args, { repairs, follows_up: own.follows_up, acceptance }); // ADR 0071: checked before the append, so a refused plan writes nothing
   const t = Date.now();
   const budget = require('./run-budget.cjs').taskLimit(E, caller, args); // dollar limit, checked before the append; null when none (the run process is told after the write: run-budget noteRows)
   const row = rows.append(E.store, 'task', {
     id, run_id: caller.run_id, spec: args.spec, acceptance, files_owned: filesOwned, state: 'open', ...(budget ? { budget_usd: budget } : {}),
-    results: null, depends_on: deps, repairs, ...(tree ? { worktree: tree } : {}), ...(own.answers ? { answers: own.answers } : {}), ...(own.follows_up ? { follows_up: own.follows_up } : {}), ...(args.base != null ? { base: require('./methods-worktree.cjs').baseArg(args.base) } : {}),
+    results: null, depends_on: deps, repairs, ...plan, ...(tree ? { worktree: tree } : {}), ...(own.answers ? { answers: own.answers } : {}), ...(own.follows_up ? { follows_up: own.follows_up } : {}), ...(args.base != null ? { base: require('./methods-worktree.cjs').baseArg(args.base) } : {}),
   }, E.writtenBy(caller), t);
   E.noteWrite();
   return overlaps.length || fixNotice ? { ...row, ...(overlaps.length ? { overlaps } : {}), ...(fixNotice ? { fix_notice: fixNotice } : {}) } : row;
