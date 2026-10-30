@@ -105,6 +105,13 @@ test('finish moves a claim once and names its effect; it refuses a step without 
     assert.strictEqual(rowsOf(s)[0].outcome, 'started', 'a ref to nothing recorded nothing');
     const tseq = seedTask(s, 'fix-1');
     await rejectsCode(steps.finish(E(s), HARNESS, { seq: row.seq, outcome: 'done', row_ref: `task:fix-1:${tseq + 50}` }), 'E_NOT_FOUND'); // the id exists, that version does not
+    // A row of another run is not this step's effect; a row with no run id passes.
+    const other = Number(s.p("INSERT INTO task(id, run_id, spec, state, written_at, written_by) VALUES ('alien', 'r9', 'x', 'open', 1, 'orchestrator')").run().lastInsertRowid);
+    await rejectsCode(steps.finish(E(s), HARNESS, { seq: row.seq, outcome: 'done', row_ref: `task:alien:${other}` }), 'E_ARGS');
+    await rejectsCode(steps.finish(E(s), HARNESS, { seq: row.seq, outcome: 'done', row_ref: 'task:alien' }), 'E_ARGS');
+    await rejectsCode(steps.finish(E(s), HARNESS, { seq: row.seq, outcome: 'done', row_ref: 'run:r9' }), 'E_NOT_FOUND');
+    s.p("INSERT INTO task(id, run_id, spec, state, written_at, written_by) VALUES ('nullrun', NULL, 'x', 'open', 1, 'orchestrator')").run();
+    assert.strictEqual(rowsOf(s)[0].outcome, 'started');
     const done = await steps.finish(E(s), HARNESS, { seq: row.seq, outcome: 'done', row_ref: `task:fix-1:${tseq}` });
     assert.strictEqual(done.row.seq, row.seq);
     assert.strictEqual(done.row.outcome, 'done');
@@ -115,6 +122,8 @@ test('finish moves a claim once and names its effect; it refuses a step without 
     const c2 = (await steps.claim(E(s), HARNESS, { step: 'fix', trigger: { ...TRIG, seq: 9 } })).row;
     const ex = await steps.finish(E(s), HARNESS, { seq: c2.seq, outcome: 'exception', error: 'E_BUSY: w-1 is working' });
     assert.deepStrictEqual([ex.row.outcome, ex.row.error, ex.row.row_ref], ['exception', 'E_BUSY: w-1 is working', null]);
+    const c3 = (await steps.claim(E(s), HARNESS, { step: 'fix', trigger: { ...TRIG, seq: 12 } })).row;
+    assert.strictEqual((await steps.finish(E(s), HARNESS, { seq: c3.seq, outcome: 'done', row_ref: 'task:nullrun' })).row.row_ref, 'task:nullrun', 'a row with no run id passes');
   } finally { s.close(); cleanup(d); }
 });
 

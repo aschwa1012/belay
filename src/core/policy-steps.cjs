@@ -49,10 +49,12 @@ function parseRef(ref) {
   if (!ok) throw err('E_ARGS', `row_ref must be table:id or table:id:seq with table one of ${TABLES.join(', ')}; got ${JSON.stringify(ref)}`, { field: 'row_ref' });
   return { table: p[0], id: p[1], seq: p.length === 3 ? Number(p[2]) : null };
 }
-// The row a step says it wrote must be in the store (invariant 5); checked inside finish's transaction.
-function refExists(E, r) {
-  const q = r.table === 'run' || r.seq === null ? `SELECT 1 AS x FROM ${r.table} WHERE id = ? LIMIT 1` : `SELECT 1 AS x FROM ${r.table} WHERE id = ? AND seq = ? LIMIT 1`;
-  return !!(r.table === 'run' || r.seq === null ? E.store.p(q).get(r.id) : E.store.p(q).get(r.id, r.seq));
+// The row a step says it wrote must be in the store (invariant 5) and be this run's; checked inside finish's transaction. -> the row's
+// run id (null when the row carries none), or undefined when there is no such row. A run row is its own run.
+function refRun(E, r) {
+  if (r.table === 'run') return E.store.p('SELECT id FROM run WHERE id = ? LIMIT 1').get(r.id) ? r.id : undefined;
+  const row = r.seq === null ? E.store.p(`SELECT run_id FROM ${r.table} WHERE id = ? ORDER BY seq DESC LIMIT 1`).get(r.id) : E.store.p(`SELECT run_id FROM ${r.table} WHERE id = ? AND seq = ?`).get(r.id, r.seq);
+  return row ? row.run_id : undefined;
 }
 
 const byKey = (E, run_id, t, step) => E.store.p('SELECT * FROM policy_step WHERE run_id = ? AND trigger_table = ? AND trigger_id = ? AND trigger_seq = ? AND step = ?').get(run_id, t.table, t.id, t.seq, step);
@@ -95,7 +97,11 @@ async function finish(E, caller, args) {
   const ref = a.row_ref ? parseRef(a.row_ref) : null;
   if (!isStr(caller.run_id)) throw err('E_ARGS', 'policy.finish needs a caller with a run_id', { field: 'run_id' });
   return E.store.tx(() => {
-    if (ref && !refExists(E, ref)) throw err('E_NOT_FOUND', `row_ref ${a.row_ref} names a row that is not in the store, so the step has no effect to record`, { row_ref: a.row_ref });
+    if (ref) {
+      const owner = refRun(E, ref);
+      if (owner === undefined) throw err('E_NOT_FOUND', `row_ref ${a.row_ref} names a row that is not in the store, so the step has no effect to record`, { row_ref: a.row_ref });
+      if (owner !== null && owner !== caller.run_id) throw err('E_ARGS', `row_ref ${a.row_ref}: row belongs to another run`, { field: 'row_ref', row_run_id: owner });
+    }
     const cur = E.store.p('SELECT * FROM policy_step WHERE seq = ?').get(a.seq);
     if (!cur || cur.run_id !== caller.run_id) throw err('E_NOT_FOUND', `no policy step ${a.seq} in this run`, { seq: a.seq });
     if (cur.outcome !== 'started') throw err('E_BUSY', `policy step ${a.seq} is already finished (${cur.outcome}); a step is finished once`, { seq: a.seq, outcome: cur.outcome, reason: 'already_finished' });
