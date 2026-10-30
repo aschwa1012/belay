@@ -28,6 +28,7 @@ function start({ core, manager, opts, run = null, log = () => {} }) {
   const exec = createPolicyExecutor({ core: h, runId: opts.runId, assignFor, closing: () => manager._closing(), log });
   current = exec;
   if (armEarly || (run && run.policy_default)) exec.arm();
+  // One task.list at start (an indexed read of the run's task rows, once per adapter life) arms the executor when any task already carries a plan, so a restart mid-run loses nothing. A run with no plan pays only this read.
   else h.task.list({}).then((r) => { if (((r && r.tasks) || []).some((t) => t.run_id === opts.runId && t.policy)) exec.arm(); }, () => {});
   const timer = setInterval(() => { exec.tick().catch((e) => log(`policy tick: ${e && e.code}: ${e && e.message}`)); }, TICK_MS);
   if (timer.unref) timer.unref();
