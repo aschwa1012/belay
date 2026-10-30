@@ -14,6 +14,7 @@ const { spawn, spawnSync } = require('node:child_process');
 
 const H = require('./stop-helpers.cjs');
 const P = require('../../src/run/process.cjs');
+const { deadPid } = require('../helpers/dead-pid.cjs');
 
 const { ROOT, sleep, sandbox, cleanup, waitUntil, waitForFileLine, waitForExit, makeSpec, runCli, receiptOf, connectOrchestratorCore, readStoreCopy, releaseCore, currentRunRow } = H;
 const FAKE_CLAUDE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
@@ -66,16 +67,21 @@ async function s8Scenario({ stallSetupMs = 0 }) { // checks run before the sandb
     // The orchestrator's adapter: a process whose pid is the run row's adapter_pid, alive for a while yet.
     adapter = sleeper(30000);
     await core.run.attach({ adapter_pid: adapter.pid });
-    worker = sleeper(60000);
+    // A pid no process holds and none will be handed (tests/helpers/dead-pid.cjs). A real child the test killed frees its pid, which
+    // Windows hands out again within seconds under load; the close then finds a live pid whose identity it cannot prove, rightly
+    // refuses to kill it, and exits 1 ("still alive after its kill", seen once in a full suite).
+    const live = sleeper(60000); // the row must first be written over a live pid (the core refuses `running` over a dead one)
+    worker = { child: null, pid: deadPid() };
     const t = Date.now();
-    await core.worker.write({ id: 'w-s8', run_id: runId, substrate: 'claude-code', pid: worker.pid, pid_image: 'node.exe', state: 'running', worktree: wt, turns: 0, started_at: t });
-    await core.worker.write({ id: 'w-s8', state: 'stopping' });
+    await core.worker.write({ id: 'w-s8', run_id: runId, substrate: 'claude-code', pid: live.pid, pid_image: 'node.exe', state: 'running', worktree: wt, turns: 0, started_at: t });
+    // Then the row moves to the dead pid and the real child is killed at once, so no pid the host can hand out again is in the row.
+    await core.worker.write({ id: 'w-s8', state: 'stopping', pid: worker.pid });
+    require('../crash.cjs').crash(live.child);
     const seqBefore = workerRowCount(dataDir, 'w-s8');
     fs.writeFileSync(gate, 'go'); // setup is complete: now the orchestrator's turn may end
 
     assert.ok(await waitForFileLine(`${orchestratorDir}/stream.jsonl`, '"type":"result"', 120000), 'the orchestrator turn never ended');
-    // The shutdown is cut off: the worker is gone, and no final row will be written.
-    require('../crash.cjs').crash(worker.child);
+    // The shutdown is cut off: the worker is gone (its pid is dead from the start), and no final row will be written.
     // When the adapter's kill was issued, taken in this process at the call. Its own 'exit' event is not
     // a death time: on a saturated host the event reached the test seconds after the pid was gone
     // (w2-flakes/exit-lag-32.txt), so comparing the run's clock with the event's flaked.
