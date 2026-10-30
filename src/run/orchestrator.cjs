@@ -270,6 +270,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     let failReason = null;
     try { list = await core.worker.list({}); }
     catch (e) { failReason = (e && (e.code || e.message)) || String(e); }
+    if (spec.budgetWake) spec.budgetWake.tick(); // the in-flight figure and, with the lever on, the check, while a worker's turn runs and the orchestrator is silent
     state.polls += 1;
     pollInFlight = false;
     // A turn end whose poll was skipped because a read the ready event or the timer started was in flight is the turn a hold from
@@ -378,7 +379,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
 
   child.stdout.on('data', (chunk) => {
     const { lines, events } = parser.pushChunk(chunk);
-    for (const l of lines) { try { fs.writeSync(streamFd, l + '\n'); } catch { /* fd may be closing */ } }
+    for (const l of lines) { try { fs.writeSync(streamFd, l + '\n'); } catch { /* fd may be closing */ } if (spec.budgetWake) spec.budgetWake.noteOrchestratorLine(l); } // the turn in flight, priced as it arrives (budget-guard.cjs)
     for (const ev of events) handleEvent(ev);
   });
   child.stderr.on('data', (chunk) => { try { fs.writeSync(stderrFd, chunk); } catch { /* closing */ } });

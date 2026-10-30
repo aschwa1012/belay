@@ -3,6 +3,7 @@
 // spend sums over the usage ledger, the task a turn is charged to, the status block, and the two methods the run process
 // uses (run.setBudget, usage.spend). Pure of the run manager: the guard that pauses a run lives in src/run/budget-guard.cjs.
 // Every figure is the cost the substrate reported for a turn, at API rates; belay bills nothing. A transcript estimate of a killed turn (cost_estimate on a worker row) is never added.
+// The in-flight estimate of a turn that has not ended (inflight-cost.cjs) is shown beside it, and counted only when the run's lever budget_counts_in_flight is on.
 
 const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
@@ -94,11 +95,27 @@ function detailOf(store, runId) {
   return out;
 }
 
-// usage.spend { run_id?, task_id?, detail? } — a read: the sum above for the caller's run (or the run named).
+// The in-flight estimate of the live Claude Code workers of a run (inflight-cost.cjs): dollars at API rates, never a reported figure.
+function inFlightOf(E, runId) {
+  const IF = require('./inflight-cost.cjs');
+  let usd = 0; let workers = 0; let unpriced = 0;
+  for (const w of rows.currentAll(E.store, 'worker')) {
+    if (w.run_id !== runId) continue;
+    const e = IF.workerInFlight(E.dataDir, w);
+    if (!e) continue;
+    workers += 1;
+    if (typeof e.usd === 'number') usd += e.usd; else unpriced += 1;
+  }
+  return { usd, workers, unpriced };
+}
+
+// usage.spend { run_id?, task_id?, detail?, in_flight? } — a read: the sum above for the caller's run (or the run named). With
+// in_flight, the live workers' in-flight estimate comes beside it as in_flight_usd (never added into usd).
 async function usageSpend(E, caller, args) {
   const runId = args.run_id || caller.run_id;
   const out = spendOf(E.store, runId, args.task_id == null ? null : args.task_id);
-  return args.detail ? { ...out, ...detailOf(E.store, runId) } : out;
+  const f = args.in_flight && args.task_id == null ? inFlightOf(E, runId) : null;
+  return { ...(args.detail ? { ...out, ...detailOf(E.store, runId) } : out), ...(f ? { in_flight_usd: f.usd, in_flight_workers: f.workers, in_flight_unpriced: f.unpriced } : {}) };
 }
 
 // run.setBudget { budget_usd?, budget? } — the run process's write (operator): the run's limit and/or its budget record.
@@ -120,24 +137,33 @@ async function setBudget(E, caller, args) {
 
 // The run's budget block (status.get's run.budget, belay agents' budget): from the run row and a ledger sum. Only for a run whose row
 // carries a limit (the caller checks), so a run without one never reaches the query.
-function blockOf(runRow, s) {
+function blockOf(runRow, s, inFlight = null) {
   let rec = runRow.budget;
   if (typeof rec === 'string') { try { rec = JSON.parse(rec); } catch { rec = null; } }
   const overridden = !!(rec && rec.overrides && rec.overrides.run);
   const state = overridden ? 'overridden' : runRow.paused_by && /\[budget [(]/.test(runRow.paused_by) && runRow.paused_at != null ? 'paused' : 'under';
   const orchestrator = rec && rec.orchestrator ? rec.orchestrator : { counted: 'headless runs only; an interactive session is not counted' };
   const orchUsd = orchestrator.counted === true && Number.isFinite(orchestrator.usd) ? orchestrator.usd : 0; // the guard pauses on ledger + this
+  // An ended run has no turn in flight: a figure its run process left on the row is stale.
+  const ifOrch = runRow.ended_at == null && orchestrator.counted === true && Number.isFinite(orchestrator.in_flight_usd) ? orchestrator.in_flight_usd : 0;
+  const ifWorkers = runRow.ended_at == null && inFlight && Number.isFinite(inFlight.usd) ? inFlight.usd : 0;
+  const counted = !!(rec && rec.counts_in_flight === true); // run-spec lever budget_counts_in_flight: the guard pauses on reported + in flight
+  const inFlightTotal = ifOrch + ifWorkers;
   return {
-    limit_usd: runRow.budget_usd, spent_usd: s.usd + orchUsd, ledger_usd: s.usd, unknown_turns: s.unknown_turns, state, basis: 'reported', orchestrator,
+    limit_usd: runRow.budget_usd, spent_usd: s.usd + orchUsd + (counted ? inFlightTotal : 0), ledger_usd: s.usd, unknown_turns: s.unknown_turns, state,
+    basis: counted ? 'reported + in flight (estimate)' : 'reported', orchestrator,
+    in_flight: { usd: inFlightTotal, orchestrator_usd: ifOrch, workers_usd: ifWorkers, label: 'in flight (estimate)', counted },
   };
 }
-const statusBlock = (store, runRow) => blockOf(runRow, spendOf(store, runRow.id));
+const statusBlock = (E, runRow) => blockOf(runRow, spendOf(E.store, runRow.id), runRow.ended_at == null ? inFlightOf(E, runRow.id) : null);
 
 // One line, every figure the reported cost per turn: "at least $4.10 of $20.00 reported (under); 6 turns report no dollars".
 function textOf(b) {
   const m = (n) => `$${(Math.round(n * 100) / 100).toFixed(2)}`;
   const orch = b.orchestrator && b.orchestrator.counted === true && b.orchestrator.usd > 0 ? `, ${m(b.orchestrator.usd)} of it the orchestrator's` : '';
-  return `${b.unknown_turns ? 'at least ' : ''}${m(b.spent_usd)} of ${m(b.limit_usd)} reported${orch} (${b.state})${b.unknown_turns ? `; ${b.unknown_turns} turn${b.unknown_turns === 1 ? '' : 's'} report no dollars` : ''}`;
+  const f = b.in_flight && b.in_flight.usd > 0 ? b.in_flight : null;
+  const fl = !f ? '' : f.counted ? `; ${m(f.usd)} of it in flight (estimate), counted` : `; ${m(f.usd)} in flight (estimate), not counted`;
+  return `${b.unknown_turns ? 'at least ' : ''}${m(b.spent_usd)} of ${m(b.limit_usd)} reported${orch} (${b.state})${fl}${b.unknown_turns ? `; ${b.unknown_turns} turn${b.unknown_turns === 1 ? '' : 's'} report no dollars` : ''}`;
 }
 
 module.exports = { SOFT_THRESHOLD, isLimit, checkLimit, ledgerOn, taskLimit, attachLimit, noteTask, noteRows, turnTask, spendOf, detailOf, usageSpend, setBudget, statusBlock, blockOf, textOf };

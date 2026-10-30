@@ -194,7 +194,7 @@ test('the orchestrator part is written to the budget record and survives a run p
   await g.noteOrchestratorCost(4);
   await g.settled(); await new Promise((r) => setImmediate(r));
   const last = a.s.written[a.s.written.length - 1];
-  assert.deepStrictEqual(last.orchestrator, { counted: true, usd: 4, base: 0, last: 4 });
+  assert.deepStrictEqual(last.orchestrator, { counted: true, usd: 4, base: 0, last: 4, in_flight_usd: 0 });
   const b = spy({ run: 3 });
   const g2 = mk(b, { runLimit: 10 });
   await g2.loadAttach({ budget_usd: 10, budget: { source: 'spec', events: [], orchestrator: last.orchestrator } });
