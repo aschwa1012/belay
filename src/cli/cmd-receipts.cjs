@@ -85,14 +85,14 @@ function costParts(w) {
   };
 }
 
-function workerView(w, tasksById, dataDir, since = null) { // a task's check history is shown whole: a line is never clipped, only wrapped
+function workerView(w, tasksById, dataDir, since = null, inFlight = null) { // a task's check history is shown whole: a line is never clipped, only wrapped
   const t = w.task_id ? tasksById.get(w.task_id) : null;
   const task = t ? { ...taskView(t, since, tasksById), handoff: handoffView(t.handoff) } : null;
   return {
     id: w.id, substrate: nn(w.substrate), state: nn(w.state), model: nn(w.model), turns: nn(w.turns),
     input_tokens: nn(w.input_tokens), output_tokens: nn(w.output_tokens),
     cache_read_tokens: nn(w.cache_read_tokens), cache_creation_tokens: nn(w.cache_creation_tokens),
-    cost_usd: nn(w.cost_usd), ...costParts(w), tool_calls: nn(w.tool_calls),
+    cost_usd: nn(w.cost_usd), ...costParts(w), ...require('../core/inflight-cost.cjs').workerFigures(inFlight, w), tool_calls: nn(w.tool_calls),
     ...wall(w.started_at, w.exited_at),
     exit_code: nn(w.exit_code), base_sha: nn(w.base_sha), head_sha: nn(w.head_sha), task,
     ...(compactionsOf(dataDir, w.id)), // ADR 0007 decision 7: only a worker with compactions carries the key
@@ -146,12 +146,13 @@ const wallText = (a) => (a.live ? 'live' : (a.wall_ms === null ? 'not recorded' 
 
 // A worker with messages no result line reported shows reported, estimated and the sum, each labelled.
 function costNote(w) {
-  if (!w.cost_source) return '';
+  const live = w.cost_in_flight_usd == null ? '' : ` + ${money(w.cost_in_flight_usd)} ${w.cost_in_flight_source}${w.cost_in_flight_partial ? ' (partial: stream not yet read to its end)' : ''}`; // a turn that has not ended: not in the reported figure
+  if (!w.cost_source) return live;
   const e = w.cost_estimate;
   const n = e && typeof e.messages === 'number' ? e.messages : 0;
   if (e && e.truncated && !n) return ' (not estimated: stream tail over 16 MB)';
   const est = w.cost_estimated_usd == null ? 'not priced' : money(w.cost_estimated_usd);
-  return ` + ${est} estimated from the stream (${n} message${n === 1 ? '' : 's'} no result line reported${e && e.truncated ? ', truncated' : ''}) = ${money(w.cost_combined_usd)}`;
+  return ` + ${est} estimated from the stream (${n} message${n === 1 ? '' : 's'} no result line reported${e && e.truncated ? ', truncated' : ''}) = ${money(w.cost_combined_usd)}${live}`;
 }
 
 // At most 4 decimals, trailing zeros trimmed; a value that rounds to zero prints 0.0000.
@@ -288,7 +289,7 @@ async function run(ctx) {
     const { tasks: everyTask } = await core.task.list({});
     const tasks = everyTask.filter(t => t.run_id === chosen.id);
     const tasksById = new Map(tasks.map(t => [t.id, t]));
-    const workers = everyWorker.filter(w => w.run_id === chosen.id).map(w => workerView(w, tasksById, dataDir, chosen.started_at));
+    const workers = everyWorker.filter(w => w.run_id === chosen.id).map(w => workerView(w, tasksById, dataDir, chosen.started_at, require('../core/run-budget.cjs').publishedInFlight(chosen)));
     const assigned = new Set(workers.filter(w => w.task).map(w => w.task.id));
     const orchestrator = orchestratorView(chosen);
     const receipt = {

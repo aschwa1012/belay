@@ -117,7 +117,11 @@ function estimateLines(lines, prices = PRICES) {
     if (!m) continue;
     if (m.id) byId.set(m.id, m); else anon.push(m);
   }
-  const msgs = [...byId.values(), ...anon];
+  return priceMessages([...byId.values(), ...anon], prices);
+}
+
+// Price already-parsed messages ({ model, u }): null when there are none. Shared with the live in-flight estimate (inflight-cost.cjs).
+function priceMessages(msgs, prices = PRICES) {
   if (!msgs.length) return null;
   const tokens = { input: 0, output: 0, cache_read: 0, cache_creation: 0 };
   const unpriced = new Set();
@@ -225,4 +229,4 @@ function statusFigures(row) {
   return { cost_estimated_usd: f.estimated, cost_combined_usd: f.combined, cost_source: row.cost_source == null ? null : row.cost_source };
 }
 
-module.exports = { apply, figures, statusFigures, estimateLines, estimateStream, scanLives, estimateOf, SOURCE, SCAN_CAP };
+module.exports = { apply, figures, statusFigures, estimateLines, priceMessages, lineUsage, estimateStream, scanLives, estimateOf, SOURCE, SCAN_CAP };

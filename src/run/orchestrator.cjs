@@ -284,6 +284,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       return;
     }
 
+    if (spec.budgetWake) spec.budgetWake.tick(list.workers || []); // the live workers' turns in flight and, with the lever on, the check, while the orchestrator is silent
     const rows = deadPids.apply(list.workers || []); // a pid seen dead stays dead: a reused number is not the worker (dead-pids.cjs)
     const nowMs = Date.now() - t0;
     const { events, next, pending_deaths } = diffWorkers({
@@ -378,7 +379,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
 
   child.stdout.on('data', (chunk) => {
     const { lines, events } = parser.pushChunk(chunk);
-    for (const l of lines) { try { fs.writeSync(streamFd, l + '\n'); } catch { /* fd may be closing */ } }
+    for (const l of lines) { try { fs.writeSync(streamFd, l + '\n'); } catch { /* fd may be closing */ } if (spec.budgetWake) spec.budgetWake.noteOrchestratorLine(l); } // the turn in flight, priced as it arrives (budget-guard.cjs)
     for (const ev of events) handleEvent(ev);
   });
   child.stderr.on('data', (chunk) => { try { fs.writeSync(stderrFd, chunk); } catch { /* closing */ } });

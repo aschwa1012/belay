@@ -3,7 +3,8 @@
 // usage.record hook (onUsageRecorded) and the headless orchestrator's turn ends feed it; a breach calls the run pause's own
 // pause with a reason, so `paused_by` reads `operator:<pid> [budget (...)]` on the run row and on every park.
 //
-// Every figure is the cost the substrate reported (belay bills nothing). Codex turns report no dollars: they are counted as unknown and the text
+// Every figure is the cost the substrate reported (belay bills nothing), unless the run's lever budget_counts_in_flight is on: then the
+// estimate of the turns in flight (inflight-cost.cjs, labelled) is added to what the guard compares, and the pause says so. Codex turns report no dollars: they are counted as unknown and the text
 // says "at least". The guard pauses at SOFT_THRESHOLD of a limit because a turn's spend is seen only when the turn ends.
 // With no limit anywhere nothing here runs: no query, no write. A resume of a budget pause is refused unless it raises the
 // breached limit or overrides it; each is recorded on the run row's `budget` column (operator only: run.resume answers only the operator).
@@ -11,17 +12,21 @@
 // and every resume that is not a budget resume clears what the guard believed and checks the budget again.
 
 const { SOFT_THRESHOLD } = require('../core/run-budget.cjs');
+const { createAccumulator, createTracker } = require('../core/inflight-cost.cjs');
 
 const BUDGET_PAUSE = /\[budget [(]/;
+const TICK_MS = 2000; // the least gap between two reads of the live workers' streams and two in-flight checks
+const PUBLISH_STEP_USD = 0.05; // the least move of the published in-flight figure that is written, or this fraction of it if larger
+const PUBLISH_STEP_FRACTION = 0.05;
 const usd = (n) => `$${(Math.round(n * 100) / 100).toFixed(2)}`;
 const isBudgetPause = (pausedBy) => BUDGET_PAUSE.test(String(pausedBy || ''));
 const argError = (message, detail) => Object.assign(new Error(message), { code: 'E_ARGS', detail });
 
 // The wake text: facts only, at most `max` bytes (the interactive wake budget). Longest form first. In an interactive run the
 // orchestrator is the user's own session: the text asks the user to decide and does not hand the session the raise command.
-function wakeTextOf({ runId, scope, taskId, spent, limit, unknown, interactive = false }, max = 221) {
+function wakeTextOf({ runId, scope, taskId, spent, limit, unknown, interactive = false, inFlight = false }, max = 221) {
   const where = scope === 'task' ? `task ${taskId}` : 'run';
-  const amount = `${unknown ? 'at least ' : ''}${usd(spent)} of ${usd(limit)} reported`;
+  const amount = `${unknown ? 'at least ' : ''}${usd(spent)} of ${usd(limit)} reported${inFlight ? ' + in flight (estimate)' : ''}`;
   const forms = interactive ? [
     `belay: ${where} budget reached (${amount}); run ${runId} is paused. Ask your user to raise the budget or override it with belay resume ${runId}`,
     `belay: ${where} budget reached (${amount}); run paused. Ask your user to raise or override it`,
@@ -36,13 +41,17 @@ function wakeTextOf({ runId, scope, taskId, spent, limit, unknown, interactive =
   return forms.find((t) => Buffer.byteLength(t, 'utf8') <= max) || forms[forms.length - 1];
 }
 
-function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseRun, interactive = false, record = null, warn = null }) {
+function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseRun, interactive = false, record = null, warn = null, countInFlight = false, tickMs = TICK_MS, dataDir = null }) {
   let limit = runLimit;
   const taskLimits = new Map();
   const overrides = { run: false, tasks: new Set() };
   let open = null; // the breach the run is paused for: { scope, task_id }
   let lastAuth = null; // the breach a resume was authorised for, kept so a retry of a resume that failed afterwards can succeed
-  const orch = { base: 0, last: 0 };
+  const orch = { base: 0, last: 0, inFlight: 0 };
+  const acc = createAccumulator(); // the headless orchestrator's turn in flight, priced from its stream lines as they arrive
+  const workers = dataDir ? createTracker({ dataDir }) : { update() {}, figures: () => ({ usd: 0, by_worker: {}, partial: [], unpriced: [] }) }; // the live workers' turns in flight
+  let lastTick = 0; let lastRead = 0;
+  let published = { total: 0, key: '[[],[]]' };
   const rec = record && typeof record === 'object' ? record : { source, soft_threshold: SOFT_THRESHOLD, events: [] };
   let chain = Promise.resolve();
   const pending = new Set();
@@ -51,8 +60,15 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
 
   const orchSpend = () => (interactive ? 0 : orch.base + orch.last);
   // What the run row's budget record says about the orchestrator's part, so status shows the figure the guard pauses on.
-  const orchRecord = () => (interactive ? { counted: false, why: 'an interactive session is not counted; belay agents prices its transcript' } : { counted: true, usd: orchSpend(), base: orch.base, last: orch.last });
+  const orchRecord = () => (interactive ? { counted: false, why: 'an interactive session is not counted; belay agents prices its transcript' } : { counted: true, usd: orchSpend(), base: orch.base, last: orch.last, in_flight_usd: orch.inFlight });
   const active = () => limit != null || taskLimits.size > 0;
+  rec.counts_in_flight = countInFlight; // status reads it from the run row's record
+  // The run's spend as the guard counts it: the ledger and the orchestrator's reported cost, plus the in-flight estimate when the lever is on.
+  async function runSpent() {
+    const s = await core.usage.spend({});
+    const fl = countInFlight && !interactive ? orch.inFlight + workers.figures().usd : 0;
+    return { s, total: s.usd + orchSpend() + fl, inFlight: fl };
+  }
   const ownPause = (row) => isBudgetPause(row && row.paused_by);
 
   async function flush() { await core.run.setBudget({ budget: rec }); }
@@ -67,22 +83,25 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
       try { for (const t of ((await core.task.list({})) || {}).tasks || []) if (t.run_id === runId && t.budget_usd > 0) taskLimits.set(t.id, t.budget_usd); } catch { /* the record below still applies */ }
     }
     const b = runRow.budget && typeof runRow.budget === 'object' ? runRow.budget : null;
-    if (!b) return;
+    if (!b) { if (countInFlight) await flush().catch(() => {}); return; } // the lever is part of the record status reads
+    const stale = !!(b.in_flight_workers || (b.orchestrator && b.orchestrator.in_flight_usd));
     Object.assign(rec, b);
+    rec.counts_in_flight = countInFlight; // this life's lever, not a record from an earlier one
+    orch.inFlight = 0; rec.in_flight_workers = null; if (rec.orchestrator) rec.orchestrator.in_flight_usd = 0; // a figure the earlier life left is not this life's
     if (!interactive && b.orchestrator && b.orchestrator.counted === true) { orch.base = (Number(b.orchestrator.base) || 0) + (Number(b.orchestrator.last) || 0); orch.last = 0; } // a new run process has a new orchestrator process: its own count starts over
     if (!Array.isArray(rec.events)) rec.events = [];
     if (runRow.budget_usd != null) limit = runRow.budget_usd;
     if (b.overrides) { overrides.run = !!b.overrides.run; for (const t of b.overrides.tasks || []) overrides.tasks.add(t); }
     for (const [id, v] of Object.entries(b.tasks || {})) taskLimits.set(id, v);
+    if (countInFlight || stale) await flush().catch(() => {});
   }
 
   async function check(taskId) {
     if (open) return;
     const c = { scope: null };
     if (limit != null && !overrides.run) {
-      const s = await core.usage.spend({});
-      const total = s.usd + orchSpend();
-      if (total >= SOFT_THRESHOLD * limit) Object.assign(c, { scope: 'run', limit, spent: total, unknown: s.unknown_turns });
+      const { s, total, inFlight } = await runSpent();
+      if (total >= SOFT_THRESHOLD * limit) Object.assign(c, { scope: 'run', limit, spent: total, unknown: s.unknown_turns, inFlight: inFlight > 0 });
     }
     if (!c.scope && taskId && taskLimits.has(taskId) && !overrides.tasks.has(taskId)) {
       const s = await core.usage.spend({ task_id: taskId });
@@ -91,7 +110,7 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
     if (!c.scope) return;
     open = { scope: c.scope, task_id: c.task_id || null };
     lastAuth = null;
-    const why = `budget (${c.scope === 'task' ? `task ${c.task_id}` : 'run'}, ${usd(c.spent)} of ${usd(c.limit)} reported)`;
+    const why = `budget (${c.scope === 'task' ? `task ${c.task_id}` : 'run'}, ${usd(c.spent)} of ${usd(c.limit)} reported${c.inFlight ? ' + in flight (estimate)' : ''})`;
     try { await pauseRun(why); } catch (e) { open = null; rec.events.push({ type: 'pause_failed', at: Date.now(), scope: c.scope, message: (e && e.message) || String(e) }); await flush().catch(() => {}); return; }
     // The pause is ours only if the row carries our reason. pause() hands back a pause already in flight, whoever started it; if that is
     // an operator's or the embedder guard's, it is theirs, the guard must not wait for a budget resume that will never come, and the
@@ -101,16 +120,16 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
     if (rowRead && !ownPause(now)) { open = null; return; }
     // Measured again after the parks settled: the turns in flight when the threshold was crossed still added theirs.
     const detail = await core.usage.spend({ detail: true });
-    const after = c.scope === 'task' ? (await core.usage.spend({ task_id: c.task_id })).usd : detail.usd + orchSpend();
+    const after = c.scope === 'task' ? (await core.usage.spend({ task_id: c.task_id })).usd : (await runSpent()).total; // the parks settled: what is still in flight is counted when the lever is on
     const ev = {
       type: 'pause', at: Date.now(), scope: c.scope, ...(c.task_id ? { task_id: c.task_id } : {}), limit: c.limit, spent: c.spent, spent_after_parks: after,
       first_seq: detail.first_seq, last_seq: detail.last_seq, per_worker: detail.per_worker, per_task: detail.per_task, unknown_turns: detail.unknown_turns, unknown_workers: detail.unknown_workers,
       orchestrator: orchRecord(),
-      basis: 'reported', ...(rowRead ? {} : { run_row_unreadable: true }),
+      basis: countInFlight ? 'reported + in flight (estimate)' : 'reported', ...(countInFlight ? { in_flight_usd: (await runSpent()).inFlight } : {}), ...(rowRead ? {} : { run_row_unreadable: true }),
     };
     rec.events.push(ev);
     await flush().catch(() => {});
-    wakes.push({ id: `${runId}:budget:${++wakeSeq}`, text: wakeTextOf({ runId, scope: c.scope, taskId: c.task_id, spent: after, limit: c.limit, unknown: detail.unknown_turns > 0, interactive }) });
+    wakes.push({ id: `${runId}:budget:${++wakeSeq}`, text: wakeTextOf({ runId, scope: c.scope, taskId: c.task_id, spent: after, limit: c.limit, unknown: detail.unknown_turns > 0, interactive, inFlight: !!c.inFlight }) });
   }
 
   function schedule(taskId) {
@@ -134,9 +153,52 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
   function noteOrchestratorCost(cost) {
     if (interactive || typeof cost !== 'number' || !Number.isFinite(cost) || limit == null) return undefined;
     if (cost < orch.last) orch.base += orch.last;
-    orch.last = cost;
-    rec.orchestrator = orchRecord(); Promise.resolve().then(flush).catch(() => {}); // the run row carries it for status and for a restarted run process
+    orch.last = cost; orch.inFlight = 0; // the turn ended: its reported cost replaces the estimate
+    publish(); // the run row carries it for status and for a restarted run process; the in-flight figure goes with it
     return schedule(null);
+  }
+
+  // What the run row's record carries about turns in flight, and one write of it. Written only when the figure moved by a material
+  // step (the larger of PUBLISH_STEP_USD and PUBLISH_STEP_FRACTION of the last published figure), when it fell to zero, or when the set
+  // of partial streams changed; an unchanged figure, and zero staying zero, write nothing (each write is a new run-row version).
+  function publish() {
+    const wk = workers.figures();
+    const total = orch.inFlight + wk.usd;
+    rec.orchestrator = orchRecord();
+    rec.in_flight_workers = { usd: wk.usd, by_worker: wk.by_worker, partial: wk.partial, unpriced: wk.unpriced };
+    published = { total, key: JSON.stringify([wk.partial, wk.unpriced]) };
+    Promise.resolve().then(flush).catch(() => {});
+  }
+  function maybePublish() {
+    const wk = workers.figures();
+    const total = orch.inFlight + wk.usd;
+    const key = JSON.stringify([wk.partial, wk.unpriced]);
+    const step = Math.max(PUBLISH_STEP_USD, PUBLISH_STEP_FRACTION * published.total);
+    const moved = Math.abs(total - published.total) >= step || (total === 0 && published.total !== 0) || (key !== published.key && total > 0);
+    if (moved) publish();
+  }
+
+  // One line of the headless orchestrator's stream, fed as it arrives: a running sum, then the throttled pulse.
+  function noteOrchestratorLine(line) {
+    if (interactive || limit == null) return undefined;
+    acc.feed(line);
+    const snap = acc.snapshot();
+    orch.inFlight = snap && typeof snap.usd === 'number' ? snap.usd : 0;
+    return tick();
+  }
+
+  // The run's own timer-free pulse (the orchestrator's poll, with its worker rows, and its stream lines call it), at most once per tickMs:
+  // reads the next bytes of each live worker's stream (the only place a stream is read), publishes a figure that moved materially, and
+  // with the lever on checks the budget. A run with no limit does nothing; an interactive run has no tick.
+  function tick(rows) {
+    if (interactive || !active()) return undefined;
+    const now = Date.now();
+    // The worker read has its own slot: a tick fired by an orchestrator line carries no rows, and must not use up the poll's slot.
+    if (Array.isArray(rows) && dataDir && now - lastRead >= tickMs) { lastRead = now; workers.update(rows); }
+    if (now - lastTick < tickMs) return undefined;
+    lastTick = now;
+    maybePublish();
+    return countInFlight ? schedule(null) : undefined;
   }
 
   // Called when a resume has settled (run-pause's afterResume): the budget is checked again, so a run still over its limit pauses again
@@ -172,7 +234,7 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
     if (typeof next !== 'number' || !Number.isFinite(next) || next <= 0) throw argError('the raised budget must be a positive number (dollars at API rates)', { budget_pause: true });
     const prior = [...rec.events].reverse().find((e) => e.type === 'raise' && sameScope(e));
     if (prior && lastAuth && prior.new === next) return done(prior); // the same raise again after a resume that failed: it already holds
-    const spent = b.scope === 'task' ? (await core.usage.spend({ task_id: b.task_id })).usd : (await core.usage.spend({})).usd + orchSpend();
+    const spent = b.scope === 'task' ? (await core.usage.spend({ task_id: b.task_id })).usd : (await runSpent()).total;
     const need = spent / SOFT_THRESHOLD;
     const old = isTask ? taskLimits.get(b.task_id) : limit;
     if (!(next > old)) throw argError(`the raised budget ${usd(next)} is not above the current limit ${usd(old)}`, { budget_pause: true, limit: old });
@@ -185,7 +247,7 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
   }
 
   return {
-    onUsage, onTaskBudget, noteOrchestratorCost, authorizeResume, loadAttach, recheck, active,
+    onUsage, onTaskBudget, noteOrchestratorCost, noteOrchestratorLine, tick, authorizeResume, loadAttach, recheck, active,
     // the one wake a budget pause sends, taken once; the orchestrator's launcher writes it past the run's hold
     takeWakes() { return wakes.splice(0).map((w) => ({ event: 'budget_pause', worker_id: `budget:${runId}`, turn: 0, seq: 0, id: w.id, text: w.text, unheld: true })); },
     settled: () => Promise.all([...pending]).then(() => undefined),
