@@ -143,3 +143,22 @@ test('a captured stray that exited (absent) or whose pid was reused (mismatch) i
   assert.deepStrictEqual(r.refused.map((x) => x.pid), [900004]);
   assert.deepStrictEqual(r.killed, []);
 });
+
+test('the register is judged against the snapshot the capture took, and the read writes nothing', async () => {
+  const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
+  const SRg = require('../../src/core/spawn-register.cjs');
+  const keep = process.env.BELAY_SPAWN_REGISTRY;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-leftovers-reg-'));
+  process.env.BELAY_SPAWN_REGISTRY = dir;
+  try {
+    const boot = SRg.bootMs();
+    // a record from before the boot whose pid (this process) is now a stranger's: the bare read lists it and hides its subtree
+    fs.writeFileSync(path.join(dir, `${process.pid}.json`), JSON.stringify({ pid: process.pid, created: null, kind: 'orchestrator', data_dir: null, worker_id: null, spawned_at: boot - 36e5, by_pid: 1, at: boot - 36e5 + 500 }));
+    const before = fs.readFileSync(path.join(dir, `${process.pid}.json`), 'utf8');
+    const snap = new Map([[process.pid, { ppid: 1, created: Date.now() - 1000, image: 'node.exe' }]]);
+    const core = { run: { list: async () => ({ runs: [{ id: 'r1', adapter_pid: 4242, adapter_pid_created: 5 }] }) } };
+    const { list } = await require('../../src/run/orchestrator-leftovers.cjs').ownedProcesses(core, 'r1', snap);
+    assert.deepStrictEqual(list.map((o) => o.pid), [4242], 'only the run row\'s adapter: the stale record is not owned');
+    assert.strictEqual(fs.readFileSync(path.join(dir, `${process.pid}.json`), 'utf8'), before, 'and the record is untouched');
+  } finally { process.env.BELAY_SPAWN_REGISTRY = keep; fs.rmSync(dir, { recursive: true, force: true }); }
+});

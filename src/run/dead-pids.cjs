@@ -13,11 +13,14 @@
 //
 // The one case a memory cannot cover is a pid reused before it was ever read dead. For a row that records its creation time, whose
 // adapter is gone and whose last event is older than the death grace, one identity check (live-as.cjs, one snapshot) is started in
-// the background and its verdict used by a later poll; it never delays a poll and runs once per life.
+// the background and its verdict used by a later poll; it never delays a poll and runs once per life. The adapter's own pid can be
+// reused too, and a bare pid check then calls a dead adapter alive for good; so a row silent for STALE_MS gets the same check whatever
+// the adapter's pid answers (an adapter that is alive writes its worker's exit long before then).
 const LIFE = new Set(['starting', 'running', 'stopping']);
+const STALE_MS = 15 * 60000;
 const CHECK_TIMEOUT_MS = 5000; // a stalled snapshot leaves the row reading as the bare check does
 
-function createDeadPids({ now = Date.now, graceMs = 8000, adapterAlive = null, prepare = null, checkTimeoutMs = CHECK_TIMEOUT_MS } = {}) {
+function createDeadPids({ now = Date.now, graceMs = 8000, adapterAlive = null, prepare = null, checkTimeoutMs = CHECK_TIMEOUT_MS, staleMs = STALE_MS } = {}) {
   const seen = new Map();    // worker id -> { pid, created, seq, seenAt, by }
   const inflight = new Set();
   const lives = new Map();   // worker id -> { pid, created, lifeSeq }: the life the row is in now
@@ -50,9 +53,10 @@ function createDeadPids({ now = Date.now, graceMs = 8000, adapterAlive = null, p
         return w;
       }
       if (e) return { ...w, pid_alive: false, pid_dead_seen_at: e.seenAt, pid_dead_by: e.by };
-      if (w.pid_created != null && adapterAlive && !adapterAlive(w.adapter_pid)) {
+      if (w.pid_created != null && adapterAlive) {
         const age = w.last_event_age_ms != null ? w.last_event_age_ms : now() - Number(w.started_at || now());
-        if (age > graceMs && !checked.has(life)) check(w, life);
+        const orphan = !adapterAlive(w.adapter_pid);
+        if (((orphan && age > graceMs) || age > staleMs) && !checked.has(life)) check(w, life);
       }
       return w;
     });

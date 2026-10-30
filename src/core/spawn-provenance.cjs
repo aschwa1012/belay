@@ -44,28 +44,46 @@ function covers(w, pid, e) {
   return e.ppid === w.pid && e.created >= (w.created == null ? w.from : w.created) && (w.until == null || e.created <= w.until + SLACK_MS);
 }
 
-// -> { alive: [{ pid, created, kind }] } the recorded descendants whose process is alive.
-function refresh(snap, { now = Date.now() } = {}) {
-  const liveRecords = SR.live(); // first: it retires the records whose process is gone, and those tombstones are read next
-  const tombs = SR.tombstones();
-  const known = new Map(tombs.map((t) => [keyOf(t), t]));
-  for (const t of tombs) if (t.until == null && !present(t, snap)) { t.until = now; SR.saveTombstone(t); }
+// A lifetime that began before the current boot ended with it, and whatever began at the boot is not its child.
+function beforeBoot(t, boot) {
+  if (t.via == null) return t.from + SR.BOOT_SLACK_MS < boot;
+  if (t.via_from != null) return t.via_from + SR.BOOT_SLACK_MS < boot;
+  return true; // a descendant tombstone with no via_from is old-code output (operator ruling 2026-10-30): the processes a boot starts were recorded under a worker from before it
+}
+
+// -> { alive: [{ pid, created, kind }] } the recorded descendants whose process is alive. The decision is computed from the register's
+// files and `snap` and nothing else; with `persist` false (a read command's operator check) nothing is written, and the same files give
+// the same answer next time. With it (a writer's check) the retired records, the new descendants and the dropped lifetimes are saved.
+function refresh(snap, { now = Date.now(), boot = SR.bootMs(now), persist = true, afterScan = null } = {}) {
+  const scan = SR.scan({ snap, now, boot }); // first: the records whose process is gone have lifetimes, read below with the tombstones
+  if (afterScan) afterScan(); // test seam: the interleaving between the scan and the settle
+  const known = new Map();
+  for (const t of SR.tombstones()) known.set(keyOf(t), t);
+  for (const d of scan.dead) if (d.tomb) known.set(keyOf(d.tomb), d.tomb);
+  const saves = new Map(); const drops = [];
+  for (const [k, t] of [...known]) if (beforeBoot(t, boot)) { known.delete(k); drops.push(t); }
+  for (const t of known.values()) if (t.until == null && !present(t, snap)) { t.until = now; saves.set(keyOf(t), t); }
   const lifetimes = [
-    ...liveRecords.map((r) => ({ pid: r.pid, created: Number.isFinite(r.created) ? r.created : null, from: SR.startOf(r), until: null, kind: r.kind || 'worker', window: true })),
+    ...scan.live.map((r) => ({ pid: r.pid, created: Number.isFinite(r.created) ? r.created : null, from: SR.startOf(r), until: null, kind: r.kind || 'worker', window: true })),
     ...[...known.values()].map((t) => ({ ...t, window: t.via == null })),
   ];
   for (const [pid, e] of snap) {
     if (e.created == null || !isRoot(pid, e, snap) || known.has(`${pid}-${e.created}`)) continue;
     const hit = lifetimes.find((w) => covers(w, pid, e));
     if (!hit) continue;
-    const t = { pid, created: e.created, from: e.created, until: null, kind: 'descendant', via: `${hit.kind} pid ${hit.pid}` };
-    SR.saveTombstone(t);
+    const t = { pid, created: e.created, from: e.created, until: null, kind: 'descendant', via: `${hit.kind} pid ${hit.pid}`, via_from: hit.from };
+    saves.set(keyOf(t), t);
     known.set(keyOf(t), t);
   }
   const alive = [];
   for (const t of known.values()) {
-    if (t.until != null) SR.dropTombstone(t); // everything alive that it could reach is recorded above
+    if (t.until != null) drops.push(t); // everything alive that it could reach is recorded above
     else alive.push({ pid: t.pid, created: t.created, kind: `descendant of ${t.via}` });
+  }
+  if (persist) {
+    SR.settle(scan.dead, { tombstones: false }); // their lifetimes were used above and are dropped below
+    for (const t of saves.values()) if (t.until == null) SR.saveTombstone(t);
+    for (const t of drops) SR.dropTombstone(t);
   }
   return { alive };
 }

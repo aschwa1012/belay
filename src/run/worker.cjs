@@ -127,6 +127,7 @@ async function adopt({ core, workerId, dataDir }) {
   w.pid = Number.isInteger(row.pid) ? row.pid : null;
   PI.adoptFromRow(w, row);
   w.state = row.state;
+  require('./seen-stamp.cjs').stampAdopted(w); // an adopted worker holds no handle: its register record is stamped by pid and creation time
   w.startedAt = row.started_at || w.startedAt;
   w.lastEventAt = row.last_event_at || null;
   w.turns = row.turns || 0;
