@@ -37,7 +37,7 @@ async function env() {
   e.close = async () => {
     for (const c of e.workers.values()) await c.close();
     await op.close();
-    try { await orch.shutdownOwner(); } finally { await orch.close(); cleanup(dir); }
+    try { await orch.shutdownOwner(); } finally { await orch.close(); if (process.env.BELAY_KEEP_SANDBOX) require("node:fs").cpSync(`${dir}/data`, `${process.env.BELAY_KEEP_SANDBOX}/${require("node:path").basename(dir)}`, { recursive: true }); cleanup(dir); }
   };
   return e;
 }
