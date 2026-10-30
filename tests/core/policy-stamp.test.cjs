@@ -8,7 +8,7 @@
 const { test: nodeTest, before, after } = require('node:test');
 const assert = require('node:assert');
 const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
-const { makeRepo, git, write, commit, rejectsCode, guarded } = require('./worktree-helpers.cjs');
+const { makeRepo, git, write, commit, rejectsCode, guarded, stageRuns } = require('./worktree-helpers.cjs');
 
 const test = guarded(nodeTest);
 const { openCore } = core('index.cjs');
@@ -70,7 +70,7 @@ test('a policy assign stamps its lease and task rows from the claim; the next wr
   for (const row of [out.new_lease, out.task]) {
     assert.strictEqual(row.acted_by, 'policy');
     assert.deepStrictEqual(row.trigger, trig);
-    assert.strictEqual(row.policy_rev, 3);
+    assert.strictEqual(row.policy_rev, row === out.task ? null : 3, 'a task keeps the plan revision; a lease takes the claim revision');
   }
   // the lease keep-alive renews the lease: the renewed version is the keep-alive's write, not the step's
   const w = await worker('wk-1');
@@ -78,7 +78,7 @@ test('a policy assign stamps its lease and task rows from the claim; the next wr
   assert.deepStrictEqual([renewed.acted_by, renewed.trigger, renewed.policy_rev], [null, null, null]);
   // the orchestrator's next write to the task: acted_by and trigger reset, the plan's revision carried
   const after1 = (await orch.task.cancel({ task_id: t.id, reason: 'stamp reset' })).task;
-  assert.deepStrictEqual([after1.acted_by, after1.trigger, after1.policy_rev], [null, null, 3]);
+  assert.deepStrictEqual([after1.acted_by, after1.trigger, after1.policy_rev], [null, null, null]);
   const leases = raw('SELECT acted_by, trigger, policy_rev FROM lease WHERE task_id = ? ORDER BY seq', t.id);
   assert.deepStrictEqual(leases.map((l) => l.acted_by), ['policy', null, null], 'the grant is stamped; the renewal and the release are not');
   assert.ok(leases.slice(1).every((l) => l.trigger === null && l.policy_rev === null));
@@ -209,7 +209,7 @@ test('fix, policy first: the orchestrator\'s call, stalled until the step has wr
   const second = await late;
   PS.setHooksForTest(null);
   assert.strictEqual(first.existing, undefined);
-  assert.deepStrictEqual([first.acted_by, first.trigger, first.policy_rev], ['policy', trig, 2]);
+  assert.deepStrictEqual([first.acted_by, first.trigger, first.policy_rev], ['policy', trig, null]);
   assert.deepStrictEqual([second.existing, second.superseded, second.id], [true, undefined, first.id]);
   assert.strictEqual(fixesOf(work.id).length, 1, 'exactly one fix task');
   await h.policy.finish({ seq, outcome: 'done', row_ref: `task:${first.id}` });
@@ -278,4 +278,67 @@ test('merge, orchestrator first then the step: the step, stalled until the orche
   assert.strictEqual(first.acted_by, null);
   assert.strictEqual(integrations().filter((r) => r.repo === repo).length, 2, "only the orchestrator's two versions: the step wrote none");
   await h.policy.finish({ seq, outcome: 'superseded', row_ref: `integration:${first.id}` });
+});
+
+// ---- review round: the plan's revision, a claim finished mid-merge, a merge elsewhere, a branch this run did not make -------------------
+
+test('a task\'s policy_rev is the plan\'s: a step claimed at revision 1 assigns a task already at revision 2 and leaves it there', async () => {
+  await worker('wk-1');
+  const t = await orch.task.create({ spec: 'r1 work' });
+  const { append, current } = core('rows.cjs');
+  orch.owner.engine.store.tx(() => append(orch.owner.engine.store, 'task', { ...current(orch.owner.engine.store, 'task', t.id), policy_rev: 2 }, 'orchestrator'));
+  const seq = await claim('fix', await taskTrigger(t.id), { task_id: t.id, policy_rev: 1 });
+  const out = await h.policyAs(seq).task.assign({ task_id: t.id, worker_id: 'wk-1' });
+  assert.deepStrictEqual([out.task.acted_by, out.task.policy_rev, out.new_lease.policy_rev], ['policy', 2, 1]);
+});
+
+test('a policy fix call for a review other than the one its claim is on is refused', async () => {
+  const { work, review } = await refuted('f3');
+  const seq = await claim('fix', { table: 'task', id: work.id, seq: 1 });
+  await rejectsCode(h.policyAs(seq).task.fixFromReview({ review_id: review.id }), 'E_ARGS');
+  assert.strictEqual(fixesOf(work.id).length, 0);
+});
+
+test('a claim finished while the merge runs does not lose the merge\'s record: the integration row is written, stamped by the step', async () => {
+  const repo = makeRepo(dir);
+  const a = await doneTask(repo, { 'a.txt': 'a\n' });
+  const seq = await claim('integrate', { table: 'task', id: 'review-s2', seq: 1 }, { task_id: a, policy_rev: 6 });
+  PS.setHooksForTest({ at: async (p, info) => { if (p === 'merge.beforeRecord' && info.policy_step === seq) await h.policy.finish({ seq, outcome: 'exception', error: 'finished mid-merge' }); } });
+  let row;
+  try { row = await h.policyAs(seq).integration.merge({ task_ids: [a] }); } finally { PS.setHooksForTest(null); }
+  assert.deepStrictEqual([row.state, row.acted_by, row.policy_rev], ['evaluated', 'policy', 6]);
+  assert.ok(integrations().some((r) => r.id === row.id && r.state === 'evaluated'), 'the row is in the store');
+  // and a claim that is no longer open starts nothing
+  await rejectsCode(h.policyAs(seq).integration.merge({ task_ids: [a] }), 'E_ARGS');
+});
+
+test('a step\'s merge of tasks the orchestrator already merged into another branch is superseded by that merge and writes nothing', async () => {
+  const repo = makeRepo(dir);
+  const a = await doneTask(repo, { 'a.txt': 'a\n' });
+  await stageRuns(`${dir}/data`, ['other-s3']);
+  const first = await orch.integration.merge({ task_ids: [a], into: 'belay/integrate/other-s3' });
+  assert.strictEqual(first.into_branch, 'belay/integrate/other-s3');
+  const seq = await claim('integrate', { table: 'task', id: 'review-s3', seq: 1 }, { task_id: a });
+  const before = integrations().filter((r) => r.repo === repo).length;
+  const out = await h.policyAs(seq).integration.merge({ task_ids: [a] });
+  assert.deepStrictEqual([out.existing, out.superseded, out.id], [true, true, first.id]);
+  assert.strictEqual(integrations().filter((r) => r.repo === repo).length, before, 'nothing was written');
+  assert.strictEqual(git(repo, 'branch', '--list', `belay/integrate/${RUN}`), '', 'the run\'s branch was not made');
+});
+
+test('a step does not merge onto belay/integrate/<run> when that branch exists and this run made no integration on it', async () => {
+  const repo = makeRepo(dir);
+  const a = await doneTask(repo, { 'a.txt': 'a\n' });
+  git(repo, 'branch', `belay/integrate/${RUN}`, 'main'); // a reused run id, or the user's own branch of that name
+  const seq = await claim('integrate', { table: 'task', id: 'review-s4', seq: 1 }, { task_id: a });
+  const before = integrations().filter((r) => r.repo === repo).length;
+  await rejectsCode(h.policyAs(seq).integration.merge({ task_ids: [a] }), 'E_PRECONDITION');
+  assert.strictEqual(integrations().filter((r) => r.repo === repo).length, before);
+  // the orchestrator may merge there; once the run has an integration on it the step may too
+  const mine = await orch.integration.merge({ task_ids: [a] });
+  assert.strictEqual(mine.into_branch, `belay/integrate/${RUN}`);
+  const b = await doneTask(repo, { 'b.txt': 'b\n' });
+  const seq2 = await claim('integrate', { table: 'task', id: 'review-s4b', seq: 1 }, { task_id: b });
+  const own = await h.policyAs(seq2).integration.merge({ task_ids: [b] });
+  assert.strictEqual(own.acted_by, 'policy');
 });

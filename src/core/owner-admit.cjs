@@ -23,6 +23,9 @@ function admit(owner, c, req) {
       // Only an orchestrator's bind admits the harness channel (the run manager); a worker's admits neither it nor any other role.
       if (entry.identity.role !== 'orchestrator') return { code: 'E_UNBOUND', message: `a ${entry.identity.role} bind does not admit the harness channel`, detail: { reason: 'channel', method: req.method, role: entry.identity.role } };
       caller.channel = 'harness';
+      // ADR 0072 decision 3: the step the run manager acts for. Only the orchestrator's harness bind carries one, and only as an integer;
+      // the core still checks that it is an open claim of this run before anything is stamped or written.
+      if (Number.isInteger(sent.policy_step) && sent.policy_step > 0) caller.policy_step = sent.policy_step;
     }
     params.caller = caller;
     c.belayVia = 'bound';

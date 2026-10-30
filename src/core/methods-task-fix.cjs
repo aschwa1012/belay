@@ -95,7 +95,8 @@ async function fixFromReview(E, caller, args) {
   if (args.follow_up !== undefined && typeof args.follow_up !== 'boolean') throw err('E_ARGS', 'task.fixFromReview follow_up must be a boolean');
   if (args.follow_up === true) return require('./methods-follow-up.cjs').followUp(E, caller, args); // ADR 0064: a held review's should-fix findings, not a fix round
   if (!args.review_id || typeof args.review_id !== 'string') throw err('E_ARGS', 'task.fixFromReview needs the review_id of a refuted review task');
-  PS.openClaim(E, caller); // a policy step's claim must be open before anything is read or written for it (ADR 0072 decision 3)
+  const claim = PS.openClaim(E, caller); // a policy step's claim must be open before anything is read or written for it (ADR 0072 decision 3)
+  if (claim && claim.trigger_table === 'task' && claim.trigger_id !== args.review_id) throw err('E_ARGS', `policy step ${claim.seq} was claimed on review ${claim.trigger_id}, not ${args.review_id}`, { policy_step: claim.seq, review_id: args.review_id });
   const review = rows.current(E.store, 'task', args.review_id);
   if (!review) throw err('E_NOT_FOUND', `no task row exists for ${args.review_id}`, { review_id: args.review_id });
   if (!review.acceptance || review.acceptance.verdict !== true) throw err('E_ARGS', `task ${review.id} is not a review task (its acceptance has no verdict: true); pass the id of the review task that judged the work`, { review_id: review.id });
