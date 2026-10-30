@@ -6,6 +6,7 @@
 // Under CPU saturation the event trailed the pid check by up to 4.7 s (receipts/w2-flakes/exit-lag-32.txt);
 // 15 s is three times that and still bounded. A spawn error answers at once, not after this (noteExitEvent above).
 const EXIT_CODE_WAIT_MS = 15000;
+const { holdBoundMs, POLL_MS } = require('../core/exit-hold.cjs');
 
 // A death established by a pid check (not an exit event, not a spawn error) is the only one an exit event can
 // still be on its way for. wait.cjs and failNoReady gate their wait on it; a spawn-error death emits no `exit`.
@@ -18,6 +19,21 @@ async function awaitExitCode(w, ms) {
   let timer;
   await Promise.race([w.exitEventSeen, new Promise((r) => { timer = setTimeout(r, ms); })]);
   clearTimeout(timer);
+}
+
+// A null `running` write saw the pid gone with the exit event still owed (held, exit-hold.cjs): the caller waits for the record to settle
+// before judging it. The time spent is kept on the record, so failNoReady's own wait for the code takes only what is left of its
+// EXIT_CODE_WAIT_MS and a restart's two waits stay inside the one bound the CLI allows for them (adapter-pipe.cjs restartBoundMs).
+async function awaitSettled(w, now = Date.now) {
+  const t0 = now();
+  if (!w.settled) await waitExit(w, holdBoundMs() + POLL_MS + 1000);
+  w.settleWaitedMs = (w.settleWaitedMs || 0) + (now() - t0);
+  await w.queue;
+}
+function exitCodeBudgetMs(w) {
+  const left = Math.max(0, EXIT_CODE_WAIT_MS - (w.settleWaitedMs || 0));
+  w.settleWaitedMs = 0;
+  return left;
 }
 
 const waitReady = (w, ms) =>
@@ -64,4 +80,4 @@ const waitExit = (w, ms) =>
     w.exitWaiters.push(r);
   });
 
-module.exports = { waitReady, waitTurn, waitExit, awaitExitCode, deathByPidCheck, PID_CHANNELS, EXIT_CODE_WAIT_MS };
+module.exports = { waitReady, waitTurn, waitExit, awaitExitCode, awaitSettled, exitCodeBudgetMs, deathByPidCheck, PID_CHANNELS, EXIT_CODE_WAIT_MS };

@@ -436,7 +436,7 @@ function attach(w, child, ctx) {
 }
 
 // The waits on a record's ready, turn and exit, and the bounded wait for an exit code: worker-waits.cjs.
-const { waitReady, waitTurn, waitExit, awaitExitCode, deathByPidCheck, EXIT_CODE_WAIT_MS } = require('./worker-waits.cjs');
+const { waitReady, waitTurn, waitExit, awaitExitCode, awaitSettled, exitCodeBudgetMs, deathByPidCheck, EXIT_CODE_WAIT_MS } = require('./worker-waits.cjs');
 
 // ADR 0021 decisions 3 and 4, once per launch after the ready gate: what this launch's system/init
 // said it started with. Returns the facts for the caller's receipt (ready.cjs initFacts).
@@ -463,5 +463,5 @@ module.exports = {
   newWorkerRecord, adopt, rowOf, noteInit, attach, settle, terminalState, noteStoppedWhileSettled, onTurnEnd, turnStarted,
   noteToolUse, noteToolResult, appendStream, sha12,
   assertTakesMessage,
-  waitReady, waitTurn, waitExit, awaitExitCode, deathByPidCheck, EXIT_CODE_WAIT_MS, POLL_EXIT_HOLD_MS, DEATH_GRACE_MS, holdForExitEvent, settleHeld,
+  waitReady, waitTurn, waitExit, awaitExitCode, awaitSettled, exitCodeBudgetMs, deathByPidCheck, EXIT_CODE_WAIT_MS, POLL_EXIT_HOLD_MS, DEATH_GRACE_MS, holdForExitEvent, settleHeld,
 };

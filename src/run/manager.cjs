@@ -85,6 +85,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
   const { failNoReady, guarded } = createStartFail({ core, writeRow }); // contract §5; ADR 0045 decision 2: every failed start settles its launch
 
+  const awaitSettled = (w) => W.awaitSettled(w); // a Codex turn that exited 0 is `idle` only once its held exit lands (worker-waits.cjs)
   function startPoll() {
     if (poll) return;
     poll = setInterval(() => {
@@ -146,7 +147,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const { command, prefixArgs } = L.resolveExe(exeFor(w.substrate));
     const spec = { exe: command, args: [...prefixArgs, ...args], cwd: w.worktree };
     w.argvHash = L.writeArgvJson(w.dir, spec);
-    w.settled = false; w.pidGoneAt = null; w.pidGonePid = null; // the exit-event hold is per launch
+    w.settled = false; w.pidGoneAt = null; w.pidGonePid = null; w.settleWaitedMs = 0; // the exit-event hold is per launch
     w.settledState = null; // the last process's end; a restatement of this one's row must never carry it
     w.exitedAt = null;
     w.turnEnded = false;
@@ -290,7 +291,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       // caller is owed E_NO_READY, never a `running` row the store never took.
       const written = await writeRow(w, 'running');
       if (!written) {
-        await w.queue;
+        await awaitSettled(w);
         // One exception: a Codex turn can finish before this line; a settled `idle` worker did start, so
         // the row to return is the store's own (`worker.get`'s pid_alive/last_event_age_ms dropped here).
         if (w.state === 'idle') {
@@ -382,7 +383,8 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       if (!v.ok) await failNoReady(w, v.reason, { branch: d.branch });
       w.readyEvidence = v.evidence;
       init = W.noteInit(w, ready); // ADR 0021 decisions 3 and 4
-      if (!(await writeRow(w, 'running')) && w.state !== 'idle') {
+      const reran = await writeRow(w, 'running') || (await awaitSettled(w), null);
+      if (!reran && w.state !== 'idle') {
         await failNoReady(w, `the relaunched worker reached ready but its pid ${w.pid} was no longer alive when the running row would have been written`, { branch: d.branch });
       }
     }, { parkOnFailure: skipDeadPidKill }); // a failed resume goes back to parked (start-fail.cjs)
