@@ -65,6 +65,11 @@ function byPolicy(store, table, id) {
   return !!first && first.acted_by === 'policy';
 }
 
+// The ids of every task whose first version a policy step wrote, in one pass (task.list's `policy_made`).
+function policyMadeIds(store) {
+  return new Set(store.p("SELECT t.id FROM task t JOIN (SELECT id, MIN(seq) AS m FROM task GROUP BY id) x ON t.seq = x.m WHERE t.acted_by = 'policy'").all().map((r) => r.id));
+}
+
 // A step's effect already stands as the row `table:id` (a task, lease or integration row). `answer` is what to return for it, `existing: true`
 // in it. The orchestrator's call is answered with it. A policy step's call is answered the same when a policy step wrote the row; when the
 // orchestrator did, the tie-break decides.
@@ -76,4 +81,4 @@ function duplicate(E, caller, table, id, answer) {
 // A fault-injection point (tests only): awaited between a method's last read and its write.
 async function pause(point, info) { if (hooks.at) await hooks.at(point, info); }
 
-module.exports = { stepOf, openClaim, overrides, duplicate, byPolicy, pause, orchestratorWins, setHooksForTest };
+module.exports = { stepOf, openClaim, overrides, duplicate, byPolicy, policyMadeIds, pause, orchestratorWins, setHooksForTest };

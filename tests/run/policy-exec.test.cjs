@@ -66,7 +66,7 @@ function store({ tasks = [], steps = [], integrations = [], workers = [idle('b1'
     policyAs: (seq) => { open(seq); return Object.freeze(reads(seq)); },
   };
   s.assignFor = (stepCore) => async (a) => stepCore.task.assign(a); // the adapter's assign, over the stamped view
-  s.exec = (extra = {}) => { const e = createPolicyExecutor({ core: s.core, runId: RUN, assignFor: s.assignFor, closeWaitMs: 0, ...extra }); e.arm(); return e; };
+  s.exec = (extra = {}) => { const e = createPolicyExecutor({ core: s.core, runId: RUN, assignFor: s.assignFor, closeWaitMs: 0, identity: { pid: process.pid, created: 't' }, ...extra }); e.arm(); return e; };
   s.writes = () => s.calls.filter((c) => ['task.fixFromReview', 'task.create', 'task.assign', 'integration.merge', 'policy.claim'].includes(c.m));
   s.noneStarted = () => assert.deepStrictEqual(s.rows.filter((r) => r.outcome === 'started'), [], 'no claim is left started');
   return s;
@@ -131,7 +131,7 @@ test('re_review: a review of the fix that already exists is the orchestrator\'s,
   const s = store({ tasks: [W, review('R', 'W'), F] });
   const list = s.core.task.list;
   let n = 0;
-  s.core.task.list = async (a) => { const r = await list(a); n += 1; if (n === 1) return r; return { tasks: [...r.tasks, mine] }; };
+  s.core.task.list = async (a) => { const r = await list(a); n += 1; if (n <= 2) return r; return { tasks: [...r.tasks, mine] }; };
   const reads = s.core.policyAs;
   s.core.policyAs = (seq) => { const v = reads(seq); return Object.freeze({ ...v, task: { ...v.task, list: s.core.task.list } }); };
   const out = await s.exec().tick();

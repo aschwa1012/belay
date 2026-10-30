@@ -33,7 +33,7 @@ test('the schema is version 3 and a fresh store has the policy tables and step c
     const s = new Store(path.join(d, 'memory.db'), { stamp: true });
     try {
       const cols = (t) => s.db.prepare(`PRAGMA table_info(${t})`).all().map((c) => c.name);
-      assert.deepStrictEqual(cols('policy_step'), ['seq', 'run_id', 'task_id', 'step', 'trigger_table', 'trigger_id', 'trigger_seq', 'policy_rev', 'outcome', 'row_ref', 'error', 'worker_id', 'turn', 'at', 'finished_at']);
+      assert.deepStrictEqual(cols('policy_step'), ['seq', 'run_id', 'task_id', 'step', 'trigger_table', 'trigger_id', 'trigger_seq', 'policy_rev', 'outcome', 'row_ref', 'error', 'worker_id', 'turn', 'at', 'finished_at', 'claimant_pid', 'claimant_created']);
       assert.deepStrictEqual(cols('check_flake'), ['argv', 'cwd', 'key_sha', 'key_kind', 'pass_n', 'fail_n', 'flips', 'last_outcome', 'last_concurrent', 'first_at', 'last_at']);
       for (const t of ['task', 'lease', 'integration']) for (const c of ['acted_by', 'trigger', 'policy_rev']) assert.ok(cols(t).includes(c), `${t}.${c}`);
       assert.ok(cols('task').includes('policy'));
@@ -48,7 +48,7 @@ test('a double claim answers the first row with existing: true, and writes no se
   try {
     const first = await steps.claim(E(s), HARNESS, { task_id: 't-1', step: 'fix', trigger: TRIG, policy_rev: 2, worker_id: 'w-9', turn: 7 });
     assert.strictEqual(first.existing, false);
-    assert.deepStrictEqual({ ...first.row }, { seq: first.row.seq, run_id: 'r1', task_id: 't-1', step: 'fix', trigger_table: 'task', trigger_id: 't-1', trigger_seq: 4, policy_rev: 2, outcome: 'started', row_ref: null, error: null, worker_id: 'w-9', turn: 7, at: first.row.at, finished_at: null });
+    assert.deepStrictEqual({ ...first.row }, { seq: first.row.seq, run_id: 'r1', task_id: 't-1', step: 'fix', trigger_table: 'task', trigger_id: 't-1', trigger_seq: 4, policy_rev: 2, outcome: 'started', row_ref: null, error: null, worker_id: 'w-9', turn: 7, at: first.row.at, finished_at: null, claimant_pid: null, claimant_created: null });
     const again = await steps.claim(E(s), HARNESS, { task_id: 't-1', step: 'fix', trigger: TRIG, policy_rev: 3 });
     assert.strictEqual(again.existing, true);
     assert.deepStrictEqual({ ...again.row }, { ...first.row }, 'the first row, untouched by the second claimant (its rev, worker and turn are not written over it)');

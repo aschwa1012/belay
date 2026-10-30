@@ -33,11 +33,11 @@ async function env() {
     return c;
   };
   // The adapter's task_assign over the stamped view, without the message to a process.
-  e.exec = () => { const x = createPolicyExecutor({ core: e.h, runId: RUN, assignFor: (stepCore) => async (a) => stepCore.task.assign(a), closeWaitMs: 0 }); x.arm(); return x; };
+  e.exec = (extra = {}, c = e.h) => { const x = createPolicyExecutor({ core: c, runId: RUN, assignFor: (stepCore) => async (a) => stepCore.task.assign(a), closeWaitMs: 0, identity: { pid: process.pid, created: 'own' }, ...extra }); x.arm(); return x; };
   e.close = async () => {
     for (const c of e.workers.values()) await c.close();
     await op.close();
-    try { await orch.shutdownOwner(); } finally { await orch.close(); cleanup(dir); }
+    try { await orch.shutdownOwner(); } finally { await orch.close(); if (process.env.BELAY_KEEP_SANDBOX) require("node:fs").cpSync(`${dir}/data`, `${process.env.BELAY_KEEP_SANDBOX}/${require("node:path").basename(dir)}`, { recursive: true }); cleanup(dir); }
   };
   return e;
 }
@@ -164,13 +164,13 @@ test('a fix a step wrote stays under its work\'s plan after the worker\'s hand-b
     const byId = new Map(tasks.map((t) => [t.id, t]));
     const row = byId.get(fix);
     assert.strictEqual(row.acted_by, null, 'the hand-back and the evaluation reset the stamp');
-    assert.strictEqual(row.made_by_policy, true, 'the first version was the step\'s');
+    assert.strictEqual(row.policy_made, true, 'the first version was the step\'s');
     assert.deepStrictEqual(PW.policyOf(row, byId), PLAN);
     // the orchestrator's own fix of another refuted review resolves its own plan
     const other = await judged(e, 'h2', 'refuted');
     const mine = await e.orch.task.fixFromReview({ review_id: other.review.id });
     const again = new Map((await e.h.task.list({})).tasks.map((t) => [t.id, t]));
-    assert.strictEqual(again.get(mine.id).made_by_policy, undefined);
+    assert.strictEqual(again.get(mine.id).policy_made, false);
     assert.strictEqual(PW.policyOf(again.get(mine.id), again), null);
     assert.ok(review);
   } finally { await e.close(); }
@@ -190,5 +190,124 @@ test('a step claimed at plan rev 1 that fails halts its task, and an amend to re
     await e.orch.task.create({ id: work.id, amend: true, policy: PLAN });
     assert.strictEqual(latest(e, 'task', work.id).policy_rev, 2);
     assert.ok(!(await halted(e)).has(work.id), 'the amend lifts it');
+  } finally { await e.close(); }
+});
+
+test('a worker\'s view of a task shows neither the plan nor that a policy step made it', async () => {
+  const e = await env();
+  try {
+    const { work } = await judged(e, 'v', 'refuted');
+    await e.exec().tick();
+    const fix = e.raw('SELECT DISTINCT id FROM task WHERE repairs = ?', work.id)[0].id;
+    const w = await e.worker('build-v');
+    for (const t of [(await w.task.get({ task_id: fix })), (await w.task.get({ task_id: work.id })), ...(await w.task.list({})).tasks]) {
+      assert.ok(!('policy_made' in t) && !('policy' in t) && !('policy_rev' in t), t.id);
+    }
+    assert.strictEqual((await e.h.task.get({ task_id: fix })).policy_made, true, 'the orchestrator sees it');
+  } finally { await e.close(); }
+});
+
+// The harness view with some calls replaced: over.policy(group) -> the policy group to use.
+const wrap = (h, over) => new Proxy({}, { get: (_, k) => (over[k] ? over[k](h[k]) : h[k]) });
+const fixesOf = (e, id) => e.raw('SELECT DISTINCT id FROM task WHERE repairs = ?', id);
+
+test('a plan amended away between the claim and the effect: the step is skipped and writes nothing', async () => {
+  const e = await env();
+  try {
+    const { work } = await judged(e, 'm', 'refuted');
+    const amendAfterClaim = wrap(e.h, { policy: (p) => ({ ...p, claim: async (a) => { const r = await p.claim(a); await e.orch.task.create({ id: work.id, amend: true, policy: null }); return r; } }) });
+    const out = await e.exec({}, amendAfterClaim).tick();
+    assert.deepStrictEqual(out.steps.map((s) => [s.step, s.outcome]), [['fix', 'skipped']]);
+    assert.match(stepsOf(e)[0].error, /no longer due|plan/);
+    assert.strictEqual(fixesOf(e, work.id).length, 0, 'no fix was made');
+    assert.strictEqual(e.raw("SELECT COUNT(*) AS n FROM lease WHERE acted_by = 'policy'")[0].n, 0);
+  } finally { await e.close(); }
+});
+
+test('a plan revision that moved between the claim and the effect skips the step', async () => {
+  const e = await env();
+  try {
+    const { work } = await judged(e, 'n', 'refuted');
+    const amend = wrap(e.h, { policy: (p) => ({ ...p, claim: async (a) => { const r = await p.claim(a); await e.orch.task.create({ id: work.id, amend: true, policy: PLAN }); return r; } }) });
+    const out = await e.exec({}, amend).tick();
+    assert.deepStrictEqual(out.steps.map((s) => s.outcome), ['skipped']);
+    assert.match(stepsOf(e)[0].error, /rev 1 to rev 2/);
+    assert.strictEqual(fixesOf(e, work.id).length, 0);
+  } finally { await e.close(); }
+});
+
+test('a pause between the claim and the first write skips the step as paused; the resume reopens the claim and the step completes once', async () => {
+  const e = await env();
+  try {
+    const { work } = await judged(e, 'q', 'refuted');
+    const pauseAfterClaim = wrap(e.h, { policy: (p) => ({ ...p, claim: async (a) => { const r = await p.claim(a); await e.orch.run.setPaused({ paused: true }); return r; } }) });
+    const first = await e.exec({}, pauseAfterClaim).tick();
+    assert.deepStrictEqual(first.steps.map((s) => s.outcome), ['skipped']);
+    assert.match(stepsOf(e)[0].error, /^E_PAUSED/);
+    assert.strictEqual(fixesOf(e, work.id).length, 0);
+    await e.orch.run.setPaused({ paused: false });
+    const second = await e.exec().tick();
+    assert.deepStrictEqual(second.steps.map((s) => [s.step, s.outcome]), [['fix', 'done']]);
+    assert.strictEqual(stepsOf(e).length, 1, 'the same claim row, reopened');
+    assert.strictEqual(stepsOf(e)[0].outcome, 'done');
+    assert.strictEqual(fixesOf(e, work.id).length, 1);
+    assert.deepStrictEqual((await e.exec().tick()).steps, [], 'and not again');
+  } finally { await e.close(); }
+});
+
+test('the sweep names the row a dead step wrote (done), or records the interruption when it wrote none (exception)', async () => {
+  const e = await env();
+  try {
+    const { work, review } = await judged(e, 'w', 'refuted');
+    // a step whose process ended after the fix was made and before its claim was finished
+    const dying = wrap(e.h, { policy: (p) => ({ ...p, finish: async () => { throw Object.assign(new Error('the owner is gone'), { code: 'E_TIMEOUT' }); } }) });
+    await e.exec({}, dying).tick();
+    const fix = fixesOf(e, work.id)[0].id;
+    assert.strictEqual(stepsOf(e)[0].outcome, 'started');
+    // a claim that wrote nothing
+    const bare = (await e.h.policy.claim({ step: 'integrate', trigger: { table: 'task', id: review.id, seq: 1 }, task_id: work.id })).row.seq;
+    await e.exec({ identity: { pid: 999999, created: 'later' }, aliveBy: async () => false }).tick(); // a later adapter life; the first one's process is gone
+    const rows = stepsOf(e);
+    assert.deepStrictEqual([rows[0].outcome, rows[0].row_ref], ['done', `task:${fix}`]);
+    const b = rows.find((r) => r.seq === bare);
+    assert.strictEqual(b.outcome, 'exception');
+    assert.match(b.error, /interrupted/);
+    assert.strictEqual(fixesOf(e, work.id).length, 1, 'nothing was repeated');
+  } finally { await e.close(); }
+});
+
+test('two executors on one run: a claim whose claimant is alive is not swept by the other; once the claimant is gone it is', async () => {
+  const e = await env();
+  try {
+    const { work, review } = await judged(e, 'l', 'refuted');
+    // executor A's step is in flight: claimed, not finished
+    const live = (await e.h.policy.claim({ step: 'integrate', trigger: { table: 'task', id: review.id, seq: 1 }, task_id: work.id, claimant_pid: process.pid, claimant_created: 'own' })).row.seq;
+    const outcome = () => e.raw('SELECT outcome FROM policy_step WHERE seq = ?', live)[0].outcome;
+    const alive = async (pid, created) => pid === process.pid && created === 'own';
+    await e.exec({ identity: { pid: 999998, created: 'b' }, aliveBy: alive }).tick(); // executor B, whose first pass sweeps
+    assert.strictEqual(outcome(), 'started', 'a live claimant claim is left alone');
+    await e.exec({ identity: { pid: 999997, created: 'c' }, aliveBy: async () => false }).tick(); // A is gone
+    assert.strictEqual(outcome(), 'exception');
+  } finally { await e.close(); }
+});
+
+test('the sweep of a fix that died between its task and its assignment is an exception that names the task, and the task is halted', async () => {
+  const e = await env();
+  try {
+    const { work } = await judged(e, 'z', 'refuted');
+    const dead = (v) => Object.freeze({ ...v, task: { ...v.task, assign: async () => { throw Object.assign(new Error('the adapter ended'), { code: 'E_TIMEOUT' }); } } });
+    const dying = wrap(e.h, {
+      policyAs: (orig) => (seq) => dead(orig(seq)),
+      policy: (p) => ({ ...p, finish: async () => { throw Object.assign(new Error('the owner is gone'), { code: 'E_TIMEOUT' }); } }),
+    });
+    await e.exec({}, dying).tick();
+    const fix = fixesOf(e, work.id)[0].id;
+    assert.strictEqual(stepsOf(e)[0].outcome, 'started');
+    assert.strictEqual(e.raw("SELECT COUNT(*) AS n FROM lease WHERE acted_by = 'policy'")[0].n, 0, 'it never assigned');
+    await e.exec({ identity: { pid: 999999, created: 'later' }, aliveBy: async () => false }).tick();
+    const [s] = stepsOf(e);
+    assert.deepStrictEqual([s.outcome, s.row_ref], ['exception', `task:${fix}`]);
+    assert.match(s.error, /last write/);
+    assert.ok((await halted(e)).has(work.id), 'E8 halts the task and wakes the orchestrator');
   } finally { await e.close(); }
 });
