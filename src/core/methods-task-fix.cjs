@@ -6,6 +6,7 @@
 
 const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
+const PS = require('./policy-stamp.cjs');
 
 const SPEC_FINDINGS_MAX = 2000; // bytes of findings quoted into the default spec
 
@@ -94,6 +95,7 @@ async function fixFromReview(E, caller, args) {
   if (args.follow_up !== undefined && typeof args.follow_up !== 'boolean') throw err('E_ARGS', 'task.fixFromReview follow_up must be a boolean');
   if (args.follow_up === true) return require('./methods-follow-up.cjs').followUp(E, caller, args); // ADR 0064: a held review's should-fix findings, not a fix round
   if (!args.review_id || typeof args.review_id !== 'string') throw err('E_ARGS', 'task.fixFromReview needs the review_id of a refuted review task');
+  PS.openClaim(E, caller); // a policy step's claim must be open before anything is read or written for it (ADR 0072 decision 3)
   const review = rows.current(E.store, 'task', args.review_id);
   if (!review) throw err('E_NOT_FOUND', `no task row exists for ${args.review_id}`, { review_id: args.review_id });
   if (!review.acceptance || review.acceptance.verdict !== true) throw err('E_ARGS', `task ${review.id} is not a review task (its acceptance has no verdict: true); pass the id of the review task that judged the work`, { review_id: review.id });
@@ -113,14 +115,17 @@ async function fixFromReview(E, caller, args) {
   const repairs = original.id;
   // Called again for a review an open fix of this run already answers (the same review, or another refutation that fix took in),
   // that fix is returned, and no fix round is spent. A refutation decided after the fix was made is not in it: it gets its own.
+  // One trigger, one step (ADR 0072 decision 2): the fix already standing answers whoever asks second.
+  const standing = (fix) => PS.duplicate(E, caller, 'task', fix.id, { ...fix, from_review: review.id, existing: true });
   let { refs, existing } = unanswered(E, caller, judged, review, repairs);
-  if (existing) return { ...existing, from_review: review.id, existing: true };
+  if (existing) return standing(existing);
   await require('./methods-worktree.cjs').assertTreeListed(judged);
+  await PS.pause('fix.beforeWrite', { review_id: review.id, policy_step: PS.stepOf(caller) });
   // The await let other calls run: another fix for this review may have been written, and the judged row's tree may have been
   // removed. Read both again; nothing awaits between here and the task row's write.
   const judgedNow = rows.current(E.store, 'task', judgedId) || judged;
   ({ refs, existing } = unanswered(E, caller, judgedNow, review, repairs));
-  if (existing) return { ...existing, from_review: review.id, existing: true };
+  if (existing) return standing(existing);
   const tree = inheritedTree(judgedNow);
   const row = await T.create(E, caller, {
     spec: typeof args.spec === 'string' && args.spec.trim() ? args.spec : defaultSpec(refs, judged, original),

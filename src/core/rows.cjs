@@ -40,6 +40,14 @@ const JSON_COLUMNS = {
   permission: [],
 };
 
+// ADR 0072 decision 3: who took a row's step. Written only by policy-stamp.cjs from the open claim the harness caller names, never from a
+// value a writer passes or spreads (so a writer that copies the current row does not carry another writer's stamp). Added here, not in the lists
+// above, so each table's own columns stay as their owners wrote them.
+const STAMPED = { task: ['acted_by', 'trigger', 'policy_rev', 'policy'], lease: ['acted_by', 'trigger', 'policy_rev'], integration: ['acted_by', 'trigger', 'policy_rev'] };
+for (const [t, cs] of Object.entries(STAMPED)) for (const c of cs) if (!COLUMNS[t].includes(c)) COLUMNS[t].push(c);
+for (const t of Object.keys(STAMPED)) if (!JSON_COLUMNS[t].includes('trigger')) JSON_COLUMNS[t].push('trigger');
+if (!JSON_COLUMNS.task.includes('policy')) JSON_COLUMNS.task.push('policy');
+
 // node:sqlite binds null, numbers, strings, bigints and buffers only: a boolean or an object thrown at
 // it is a TypeError at call time, so coerce here rather than at each call site.
 function bind(v) {
@@ -64,7 +72,8 @@ function append(store, table, values, writtenBy, at = Date.now()) {
   const cols = COLUMNS[table];
   const all = [...cols, 'written_at', 'written_by'];
   const sql = `INSERT INTO ${table}(${all.join(', ')}) VALUES (${all.map(() => '?').join(', ')})`;
-  const params = cols.map(c => bind(values[c]));
+  const over = STAMPED[table] ? require('./policy-stamp.cjs').overrides(store, table, values) : null;
+  const params = cols.map(c => bind(over && c in over ? over[c] : values[c]));
   params.push(at, String(writtenBy));
   const info = store.p(sql).run(...params);
   const seq = Number(info.lastInsertRowid);

@@ -13,15 +13,13 @@ const W = require('./methods-worktree.cjs');
 const J = require('./judged.cjs');
 const H = require('./git-hooks.cjs');
 const { runCommand, outputTails, DEFAULT_COMMAND_TIMEOUT_MS, ACCEPTANCE_BUDGET_MS } = require('./evaluate.cjs');
-const { checkShape } = require('./integration-checks.cjs');
 const { notMerged, stale, checkName } = require('./integration-state.cjs');
 const { pidAlive } = require('./lock.cjs');
 const INC = require('./integration-incremental.cjs');
 const ID = require('./proc-identity.cjs');
 const MUG = require('./merge-user-gate.cjs');
-
-const MAX_TASKS = 50;
-const MAX_REASON = 300;
+const PS = require('./policy-stamp.cjs');
+const { checkTakeOver, checkArgs, readTasks, policyGuard, standingMerge } = require('./integration-policy.cjs');
 
 // `not_merged` and `left_out` (each merged branch head past what was judged, ADR 0060 decision 4) are derived from the row, never stored.
 const leftOut = (r) => { const l = (r.merged || []).filter((m) => m && m.left_out).map((m) => ({ task_id: m.task_id, ...m.left_out })); return l.length ? l : null; };
@@ -78,104 +76,6 @@ async function abandonStale(E, caller, repo, into, takeOver = false) {
   });
   E.noteWrite();
   return left.map((r) => r.id);
-}
-
-// `take_over` closes a `merging` row whose pid runs but is not proven to be the merge. It is the operator's alone: the
-// orchestrator's tool does not list it, and core refuses it from any other role.
-function checkTakeOver(caller, args, method) {
-  if (args.take_over === undefined) return false;
-  if (typeof args.take_over !== 'boolean') throw err('E_ARGS', `${method}: take_over must be a boolean`, { field: 'take_over' });
-  if (args.take_over && caller.role !== 'operator') throw err('E_ROLE', `${method}: take_over is the operator's, never the ${caller.role}'s`, { field: 'take_over', role: caller.role });
-  return args.take_over;
-}
-
-function checkArgs(args) {
-  const ids = args.task_ids;
-  if (!Array.isArray(ids) || !ids.length || ids.length > MAX_TASKS || ids.some((x) => typeof x !== 'string' || !x)) {
-    throw err('E_ARGS', `integration.merge needs task_ids: 1 to ${MAX_TASKS} task ids, in merge order`, { task_ids: ids });
-  }
-  if (new Set(ids).size !== ids.length) throw err('E_ARGS', 'integration.merge: task_ids names a task twice', { task_ids: ids });
-  if (args.evaluate !== undefined && typeof args.evaluate !== 'boolean') throw err('E_ARGS', 'integration.merge: evaluate must be a boolean', { field: 'evaluate' });
-  checkShape(args.checks);
-  if (args.force !== undefined && typeof args.force !== 'boolean') throw err('E_ARGS', 'integration.merge: force must be a boolean', { field: 'force' });
-  if (args.force === true && (typeof args.reason !== 'string' || !args.reason.trim() || args.reason.length > MAX_REASON)) {
-    throw err('E_ARGS', `integration.merge: force needs a reason, 1 to ${MAX_REASON} characters, saying why merging a task that is not done is expected`, { field: 'reason' });
-  }
-  for (const k of ['into', 'base']) if (args[k] !== undefined && (typeof args[k] !== 'string' || !args[k])) throw err('E_ARGS', `integration.merge: ${k} must be a non-empty string`, { field: k });
-}
-
-// Every task done, with a recorded branch, in one repository, and its tree (if still there) clean.
-async function readTasks(E, ids, force) {
-  const tasks = ids.map((id) => {
-    const t = rows.current(E.store, 'task', id);
-    if (!t) throw err('E_NOT_FOUND', `no task row exists for ${id}`, { task_id: id });
-    return t;
-  });
-  // A review task judges work and has none to merge, forced or not.
-  const reviews = tasks.filter((t) => t.acceptance && t.acceptance.verdict === true).map((t) => t.id);
-  if (reviews.length) throw err('E_PRECONDITION', `these are review tasks, which have no work to merge: ${reviews.join(', ')}; merge the work they judged`, { review_tasks: reviews });
-  // `force` (a merge past a task that is not done) takes a task that is not done, but never a cancelled one: that is final.
-  const notDone = tasks.filter((t) => (force ? t.state === 'cancelled' : t.state !== 'done')).map((t) => ({ task_id: t.id, state: t.state }));
-  if (notDone.length) throw err('E_PRECONDITION', `only done tasks are merged; not done: ${notDone.map((x) => `${x.task_id} (${x.state})`).join(', ')}. Leave them out, or merge once task_evaluate makes them done`, { not_done: notDone });
-  const noBranch = tasks.filter((t) => !t.worktree || !t.worktree.branch).map((t) => t.id);
-  if (noBranch.length) throw err('E_PRECONDITION', `these tasks have no belay branch to merge: ${noBranch.join(', ')}. integrate merges only tasks worked in their own tree (task_worktree before the coder starts); leave these out, their work is already where it was committed`, { no_branch: noBranch });
-  // Even forced, a task still being worked is not merged: its head moves. A worker running a turn or parked in its tree, or a lease not released.
-  for (const t of tasks.filter((x) => x.state !== 'done')) {
-    const a = W.active(t);
-    // An idle worker (its turn handed back) does not block: that is the state after a failed evaluation. Running, starting and parked do.
-    const w = a && rows.currentAll(E.store, 'worker').find((x) => x.worktree && W.under(x.worktree, a.path) && (x.state === 'paused' || (['running', 'starting'].includes(x.state) && x.pid != null && pidAlive(x.pid)))) || null;
-    if (w) throw err('E_WORKER_LIVE', `worker ${w.id} (${w.state}) works in task ${t.id}'s tree ${a.path}; a task still being worked is not merged, even forced`, { task_id: t.id, worker_id: w.id, state: w.state });
-    const l = rows.currentLeaseForTask(E.store, t.id);
-    if (l && l.released_at == null) throw err('E_PRECONDITION', `task ${t.id} is leased to ${l.holder} and not released; a task still being worked is not merged, even forced`, { task_id: t.id, lease_id: l.id, holder: l.holder });
-  }
-  // A fix task works on the branch of the work it fixes: merging the done work would take the open fix's unreviewed commits.
-  for (const t of tasks) {
-    const open = W.openSharer(E, t);
-    if (open) throw err('E_PRECONDITION', `task ${t.id}'s branch ${t.worktree.branch} is shared with task ${open.id} (${open.state}), which is not done; merge once it is done or cancelled`, { task_id: t.id, branch: t.worktree.branch, open_task_id: open.id, open_state: open.state });
-  }
-  const repo = tasks[0].worktree.repo;
-  const other = tasks.find((t) => !G.samePath(t.worktree.repo, repo));
-  if (other) throw err('E_PRECONDITION', `task ${other.id}'s branch is in ${other.worktree.repo}, not ${repo}; integrate each repository's tasks in a call of their own`, { task_id: other.id, repo: other.worktree.repo, expected: repo });
-  const dirty = [];
-  for (const t of tasks) {
-    const a = W.active(t);
-    if (a && fs.existsSync(a.path)) { const d = await G.dirtyPaths(a.path); if (d.length) dirty.push({ task_id: t.id, path: a.path, dirty: d.slice(0, 20) }); }
-  }
-  if (dirty.length) throw err('E_PRECONDITION', `a merge would leave uncommitted work behind in ${dirty.map((d) => d.task_id).join(', ')}; commit it first`, { dirty });
-  for (const t of tasks) {
-    if (J.judgedOf(t) || t.state !== 'done') continue; // a forced task not done may have been judged on nothing: its branch head is merged
-    const h = await G.run(repo, ['rev-parse', '--verify', `refs/heads/${t.worktree.branch}^{commit}`]);
-    const head = h.ok ? h.stdout.trim() : null;
-    throw err('E_PRECONDITION', `task ${t.id} records nothing it was judged on (it was evaluated before belay recorded it), so belay cannot tell its work from what came after on ${t.worktree.branch} (head ${head || 'unresolved'}); judge the branch again as a new task`, { task_id: t.id, branch: t.worktree.branch, branch_head: head });
-  }
-  return { tasks, repo, targets: await targetsOf(E, tasks, repo) };
-}
-
-// ADR 0060 decisions 4 and 6: integrate merges what was judged. Each branch is merged at the commit that is the newest judgement
-// among the done tasks on it (judged.cjs commitOf: the newest commit whose tree is the judged content, or an old row's head), never
-// at a branch head past it. When no commit on the branch is that content (judged uncommitted and never committed as judged, or
-// committed with more changes), the merge is refused before anything is written. A branch that does not resolve is left to the
-// merge, which records it failed.
-async function targetsOf(E, tasks, repo) {
-  const targets = new Map();
-  for (const t of tasks) {
-    const own = t.state !== 'done' && J.judgedOf(t) ? [t] : []; // a forced task not done is judged on what its own failing evaluation recorded
-    const on = [...J.onBranch(E, t), ...own].sort((a, b) => Number(a.results.evaluated_at) - Number(b.results.evaluated_at));
-    const by = on[on.length - 1];
-    const h = await G.run(repo, ['rev-parse', '--verify', `refs/heads/${t.worktree.branch}^{commit}`]);
-    if (!h.ok) continue;
-    const tip = h.stdout.trim();
-    if (t.state !== 'done' && !own.length) { targets.set(t.id, { by: null, sha: tip, tip, on: [], unjudged: true }); continue; }
-    if (!by) continue;
-    const sha = await J.commitOf(repo, by, tip);
-    if (!sha) {
-      const j = J.judgedOf(by);
-      throw err('E_PRECONDITION', `no commit on ${t.worktree.branch} (head ${tip}) is what task ${by.id} was judged on (tree ${j.tree || j.head}); commit exactly the judged state, or merge it as a new task`,
-        { task_id: t.id, judged_by: by.id, judged_tree: j.tree, judged_head: j.head, branch: t.worktree.branch, branch_head: tip });
-    }
-    targets.set(t.id, { by, sha, tip, on });
-  }
-  return targets;
 }
 
 // The tree the merge happens in: where `into` is checked out (it must be clean), else a new integration worktree.
@@ -321,6 +221,7 @@ async function rerun(tasks, tree, reuse, head, beside = null, extra = [], until 
 async function merge(E, caller, args) {
   W.ownBootProbe(E);
   args = W.present(args);
+  const claim = policyGuard(E, caller, args); // ADR 0072 decision 5
   checkArgs(args);
   const takeOver = checkTakeOver(caller, args, 'integration.merge');
   const force = args.force === true;
@@ -330,6 +231,7 @@ async function merge(E, caller, args) {
   const fold = await MUG.folder(repo);
   await MUG.refuseVariant(repo, into, fold); // another spelling of an existing branch is that branch, on a host with case-insensitive refs
   const userBranch = await MUG.isUserBranch(E, repo, into, caller.run_id, fold);
+  if (claim && userBranch) throw err('E_PRECONDITION', `${into} is a branch the user owns; a policy step merges into belay/integrate/${caller.run_id} only`, { into, policy_step: claim.seq });
   if (userBranch) {
     if (force) throw err('E_PRECONDITION', `force is not accepted for ${into}, a branch the user owns: work that is not done does not go onto it through belay`, { into });
     const g = MUG.authorize(E, caller, args, MUG.requestOf(repo, into, args.task_ids, targets, await MUG.placement(E, repo, into, args, tasks, fold), args, tasks));
@@ -337,6 +239,7 @@ async function merge(E, caller, args) {
   }
   // The re-run counts toward the run's max_parallel_evaluations, and its slot is taken here, before the branch lock and before any merge: a call
   // that waits too long is refused E_BUSY { queued: true } with the branch untouched, and the lock is never held while waiting (evaluate-cancel.cjs WAIT).
+  await PS.pause('merge.beforeLock', { task_ids: args.task_ids, policy_step: PS.stepOf(caller) }); // fault-injection point (tests only)
   const EC = require('./evaluate-cancel.cjs');
   const t0call = Date.now();
   const extra = args.checks || []; // shape checked in checkArgs
@@ -352,6 +255,8 @@ async function merge(E, caller, args) {
     const abandoned = await abandonStale(E, caller, repo, into, takeOver);
     const tree = await integrationTree(E, repo, into, args, tasks, abandoned);
     const by = E.writtenBy(caller);
+    const standing = await standingMerge(E, caller, args, { tree: tree.path, repo, into }, view); // ADR 0072 decision 2
+    if (standing) return standing;
     const baseSha = (await G.must(tree.path, ['rev-parse', 'HEAD'], 'HEAD of the integration tree')).trim();
     const carried = await INC.carriedOf(E, tree.path, repo, into, new Set(args.task_ids)); // tasks an earlier call left on the branch
     const base = {

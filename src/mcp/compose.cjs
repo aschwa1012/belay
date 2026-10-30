@@ -36,7 +36,7 @@ const hasCheck = (a) => !!a && ((Array.isArray(a.commands) && a.commands.length 
 const launchedHere = (r, id) => !!(r && typeof r._worker === 'function' && r._worker(id));
 
 // `openManager()` opens the run manager when a tool needs one (spawn); `manager()` only reads whether it is open.
-function createCompose({ callCore, manager, openManager, dataDir = null, runId = null }) {
+function createCompose({ callCore, manager, openManager, dataDir = null, runId = null, onPolicy = null }) {
   // ADR 0054 amendment 1: a review task's answer carries the reviewer's real scratch folder, made now if the worker has none (a
   // worker of another type given a review), so the orchestrator never names one of its own; the delivered task names it too.
   function withScratch(raw, workerId) {
@@ -52,6 +52,7 @@ function createCompose({ callCore, manager, openManager, dataDir = null, runId =
     const raw = await callCore('task.assign', coreArgs);
     const out = withWarnings(withScratch(raw, coreArgs.worker_id), raw && overlapWarning(raw.overlaps));
     const not = (reason, extra) => ({ ...out, delivered: { sent: false, reason, ...extra } });
+    if (raw && raw.existing === true) return not('the assignment already stands (existing), so nothing was sent again'); // a policy step or an earlier call made it and told the worker (ADR 0072 decision 2)
     const r = manager();
     const rule = HB.rule(out, await HB.facts((id) => callCore('task.get', { task_id: id }), out)); // the hand-back rule for this task, sent below and kept for the worker
     if (launchedHere(r, coreArgs.worker_id) && typeof r.retask === 'function') r.retask({ worker_id: coreArgs.worker_id, task_id: coreArgs.task_id, spec: out && out.task && out.task.spec, review: out && out.review, rule }); // the worker's current task follows the assignment, delivered or not
@@ -110,6 +111,7 @@ function createCompose({ callCore, manager, openManager, dataDir = null, runId =
   // task_create (B4): the row as written, with a warning when it declares no check, since such a task can never be done, and
   // (ADR 0059) when it owns paths a task in another tree owns too.
   async function create(args) {
+    if (onPolicy && args && (args.policy != null || (Array.isArray(args.tasks) && args.tasks.some((t) => t && t.policy != null)))) onPolicy(); // a plan was stated: the policy executor reads from now on
     const out = await callCore('task.create', args);
     const warn = (row) => withWarnings(row, row && !hasCheck(row.acceptance) && NO_CHECK, row && overlapWarning(row.overlaps));
     return out && Array.isArray(out.tasks) ? { tasks: out.tasks.map(warn) } : warn(out); // ADR 0062: a batch answers every row it wrote

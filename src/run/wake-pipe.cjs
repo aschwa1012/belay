@@ -51,6 +51,7 @@ function startWakePublisher({
   const evalSeen = new Map(); // ADR 0058: release evaluations already carried by a wake
   const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId, enabled: !!notes }); // wave 4: a refuted note
   const callWatcher = require('./call-wake.cjs').createCallWatcher({ core, runId }); // a still_running integrate or task_evaluate
+  const policyWatcher = require('./policy-wakes.cjs').createPolicyWatcher({ core, runId }); // ADR 0073: the exceptions of a run under a plan
   let wasHeld = false;
   let stopped = false;
   let inFlight = false;
@@ -93,6 +94,7 @@ function startWakePublisher({
         for (const nw of await noteWatcher.poll()) queue.push({ id: nw.id, text: nw.text, worker_id: nw.worker_id, event: nw.event, paused_at: null, paused_by: null });
         for (const cw of await callWatcher.poll()) queue.push({ id: wakeId(runId, cw), text: cw.text, worker_id: cw.worker_id, event: cw.event, paused_at: null, paused_by: null });
         const enriched = await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), evalSeen, { holdMs: require('./release-eval.cjs').holdMs(), now, workers: list.workers || [] }); // ADR 0058 amendment 4: held for its evaluation
+        for (const pw of await policyWatcher.poll(evalSeen)) queue.push({ id: wakeId(runId, pw), text: pw.text, worker_id: pw.worker_id, event: pw.event, paused_at: null, paused_by: null }); // after enrichWakes, which hands it this poll's task rows
         for (const ev of enriched) {
           const r = byId.get(ev.worker_id) || {};
           // paused_at and paused_by are the row's own pair at derivation: what a resume matches a park against (equality, no clocks)

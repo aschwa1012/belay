@@ -7,6 +7,8 @@
 //   channel as the worker's own (a review grant's baseline reads the worker's calls), so the view holds exactly the calls the
 //   keep-alive makes, task.list, worker.get and lease.renew, and nothing else: no later write can slip through it unstamped.
 
+const { err } = require('./errors.cjs');
+
 const KEEPALIVE_METHODS = Object.freeze(['task.list', 'worker.get', 'lease.renew']);
 
 // `invoke(method, args, caller)` is the Core's own dispatch; `methods` the dotted names the view carries.
@@ -32,6 +34,13 @@ function harnessView(core, METHOD_NAMES, proto) {
     if (k !== 'constructor' && !k.startsWith('_') && k !== 'harness' && k !== 'keepalive' && k !== 'handle' && typeof core[k] === 'function') view[k] = core[k].bind(core);
   }
   view.handle = (method, args) => core._invoke(method, args, caller);
+  // ADR 0072 decision 3: the same calls, made for the policy claim `seq` (policy.claim's row). The core stamps every task, lease and integration
+  // row such a call writes with the claim's trigger and revision (policy-stamp.cjs), and a call whose claim is not open is refused.
+  view.policyAs = (seq) => {
+    if (!Number.isInteger(seq) || seq <= 0) throw err('E_ARGS', 'policyAs needs the seq of a policy claim', { policy_step: seq });
+    const c = Object.freeze({ ...caller, policy_step: seq });
+    return Object.freeze(build(c, METHOD_NAMES, invoke));
+  };
   return Object.freeze(view);
 }
 
