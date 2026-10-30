@@ -109,7 +109,11 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     // 5b fix round (review 2 finding 2): `wakesExpired` names a pendingWrites entry this run gave up
     // waiting on — see `expireStalePendingWrites` below.
     wakes: [], wakesSuppressed: [], wakesExpired: [], baseline: {}, pendingWrites: [],
+    stdinError: null,
   };
+  // A write to a pipe the child has already closed fails as an asynchronous 'error' event, not a throw;
+  // with no listener Node crashes this process. Record it; the exit handler still settles the run.
+  if (child.stdin) child.stdin.on('error', (e) => { state.stdinError = { code: e && e.code, message: e && e.message }; });
 
   const streamFd = fs.openSync(path.join(written.dir, 'stream.jsonl'), 'a');
   const stderrFd = fs.openSync(path.join(written.dir, 'stderr.txt'), 'a');
