@@ -284,6 +284,30 @@ test('receipts: a head follow-up does not land over a row written after the term
     assert.strictEqual(after.state, 'forgotten', `the follow-up must not restate dead over the forget: ${after.state}`);
   } finally { openGate(); await m.shutdown(); await releaseCore(op); await releaseCore(core); cleanup(sb.data); }
 });
+// ---------------------------------------------------------------- (r12b)
+test('receipts: an exit-code fill-in does not restate dead over an operator forget that landed first', async () => {
+  const sb = sandbox();
+  const core = await openRealCore(sb, 'run-r12b');
+  let op = null;
+  try {
+    const ctx = { core, runId: 'run-r12b', adapterPid: process.pid };
+    ctx.writeRow = createWriteRow(ctx, { closed: false });
+    const w = W.newWorkerRecord({ id: 'w-r12b', substrate: 'claude-code', worktree: sb.worktree, dataDir: sb.data, captureBase: false });
+    w.pid = process.pid; w.startedAt = Date.now();
+    await ctx.writeRow(w, 'starting');
+    await ctx.writeRow(w, 'running');
+    w.child = null;
+    EX.settle(w, null, null, 'pid-poll', ctx); // the pid poll settles first: dead, no code yet
+    await w.queue;
+    op = await openCore({ dataDir: `${sb.data}/.belay`, caller: { role: 'operator', run_id: 'cli', pid: process.pid } });
+    const forgot = await op.worker.forget({ worker_id: 'w-r12b' });
+    assert.strictEqual(forgot.row_after.state, 'forgotten', 'the forget succeeds');
+    EX.settle(w, 1, null, 'exit-event', ctx); // the exit event, held until the forget was sent, delivers the code now
+    await w.queue;
+    const after = await core.worker.get({ worker_id: 'w-r12b' });
+    assert.strictEqual(after.state, 'forgotten', `the fill-in must not restate dead over the forget: ${after.state} code=${after.exit_code}`);
+  } finally { await releaseCore(op); await releaseCore(core); cleanup(sb.data); }
+});
 
 // ---------------------------------------------------------------- (r13)
 test('receipts: an exit-code fill-in is not dropped by this adapter\'s own in-flight direct dead write', async () => {

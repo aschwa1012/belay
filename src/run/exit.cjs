@@ -57,7 +57,8 @@ function settle(w, code, signal, establishedBy, ctx) {
       w.deathEstablishedBy = w.deathEstablishedBy + '+' + establishedBy;
       // Fix round, should-fix finding: `w.settledState`, fixed at the first settle() call, not `w.state`
       // (which a queued write behind this one can still leave 'stopping'/'paused' racing settle's own).
-      lifeWrite(w, ctx, w.settledState, 'worker.write/exit-code');
+      // Guarded: a row someone else wrote since this record's last (an operator's forget) is never restated over.
+      lifeWrite(w, ctx, w.settledState, 'worker.write/exit-code', { guard: true, fillIn: true });
     }
     return;
   }
@@ -106,7 +107,7 @@ function settle(w, code, signal, establishedBy, ctx) {
 // launches (manager.cjs doRestart), so the previous life's row normally lands first and this is the backstop. A Codex turn's
 // message launches the next process without draining (one process per turn, message.cjs), so there the drop is the rule: its exit
 // facts are kept as `w.droppedRow` and the next turn's worker_wait answer carries them (wait.cjs).
-function lifeWrite(w, ctx, state, where) {
+function lifeWrite(w, ctx, state, where, opts) {
   const launches = w.launches;
   const facts = { state, exit_code: w.exitCode, exit_signal: w.exitSignal, established_by: w.deathEstablishedBy };
   w.queue = w.queue.then(() => {
@@ -115,7 +116,7 @@ function lifeWrite(w, ctx, state, where) {
       w.droppedRow = { ...facts, launch: w.launches };
       return null;
     }
-    return ctx.writeRow(w, state);
+    return ctx.writeRow(w, state, opts);
   }).catch((e) => {
     w.lastError = { where, code: e && e.code, message: e && e.message };
   });

@@ -85,6 +85,16 @@ function createWriteRow(ctx, flags) {
       }
       throw e;
     }
+    // The exit-code fill-in (opts.fillIn) follows this record's own direct terminal write whose response was still in flight
+    // when the fill-in was built: its basis seq is one behind. If the row now current is that same terminal state still lacking
+    // the code, it is this record's own and is restated once on the new basis; anything else (a forget) stands.
+    if (written && written.skipped && opts.fillIn) {
+      const cur = await ctx.core.worker.get({ worker_id: w.id });
+      if (cur && cur.state === state && cur.exit_code == null && cur.exit_signal == null && Number.isInteger(cur.seq)) {
+        w.lastWrittenSeq = cur.seq;
+        return writeRow(w, state, { guard: true });
+      }
+    }
     if (written && written.skipped) { // superseded: nothing was written, so nothing here moves; the skip stays visible
       w.lastError = { where: 'worker.write/superseded', state, reason: written.reason, current_seq: written.current_seq };
       return written;
