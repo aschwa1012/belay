@@ -92,7 +92,8 @@ test('review by spawn: the manager launches the plan\'s reviewer, the lease it h
     const row = e.raw("SELECT turn, cost_usd FROM usage WHERE worker_id = 'rev-1'");
     assert.deepStrictEqual([row.length, row[0].turn, row[0].cost_usd], [1, 1, log.steps[0].turn_cost_usd], 'the cost is the ledger row the manager wrote for turn 1');
     assert.match(require('../../src/core/policy-log.cjs').line(log.steps[0]), /\(turn 1 \$0\.\d+\)/, 'the printed step line carries the cost');
-    assert.deepStrictEqual((await x.tick()).steps, []);
+    await x.tick();
+    assert.strictEqual(stepRows(e).length, 1, 'the next pass finds the trigger taken');
     assert.strictEqual(e.raw('SELECT COUNT(*) AS n FROM worker WHERE id = ?', 'rev-1')[0].n > 0, true);
   } finally { await e.close(); }
 });

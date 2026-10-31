@@ -93,31 +93,30 @@ test('a pause in the manager\'s preface is a skipped claim; the retake of a gene
   } finally { await e.close(); }
 });
 
-test('a fixed spawn worker_id survives a pause in the preface: the retake takes a fresh id instead of meeting "already exists"', async () => {
+test('a fixed spawn worker_id survives a pause in the preface: the retake spawns the id the plan named, in place', async () => {
   const { e, m, out, again, firstId } = await prefacePause('review-preface-pause-fixed', { agent_type: 'reviewer', worker_id: 'rev-fx' });
   try {
     assert.deepStrictEqual(stepNames(out), [['review', 'skipped']]);
     assert.strictEqual(firstId, 'rev-fx', 'the first try used the plan\'s id');
     assert.deepStrictEqual(stepNames(again), [['review', 'done']]);
     const [row] = stepRows(e);
-    assert.match(row.worker_id, /^rev-[0-9a-f]{8}$/);
-    assert.ok(m._worker(row.worker_id));
+    assert.strictEqual(row.worker_id, 'rev-fx', 'belay used the id the plan named');
+    assert.ok(m._worker('rev-fx'));
     assert.deepStrictEqual((await wakesOf(e)).filter((w) => w.exception === 'E8'), []);
   } finally { await e.close(); }
 });
 
-test('two works under one plan with a fixed spawn worker_id: the first takes the id, the second a fresh one, and neither is an exception', async () => {
+test('two works under one plan with a fixed spawn worker_id: the second meets the live reviewer holding it, an exception that names review: { worker } (belay does not substitute an id)', async () => {
   const e = await env('review-two-works');
   try {
     await workDone(e, { review: { spawn: { agent_type: 'reviewer', worker_id: 'rev-shared' } }, ...REST }, { builder: 'b-1', label: 'w1' });
     await workDone(e, { review: { spawn: { agent_type: 'reviewer', worker_id: 'rev-shared' } }, ...REST }, { builder: 'b-2', label: 'w2' });
     const m = e.manager();
     const out = await e.exec({ spawnFor: STEPS.spawnFor(m) }).tick();
-    assert.deepStrictEqual(stepNames(out), [['review', 'done'], ['review', 'done']]);
-    const ids = stepRows(e).map((s) => s.worker_id);
-    assert.strictEqual(ids.filter((i) => i === 'rev-shared').length, 1, 'the plan\'s id served one work');
-    assert.strictEqual(new Set(ids).size, 2);
-    for (const id of ids) assert.ok(m._worker(id), `${id} was launched`);
+    assert.deepStrictEqual(stepNames(out), [['review', 'done'], ['review', 'exception']]);
+    assert.deepStrictEqual(stepRows(e).map((s) => s.worker_id), ['rev-shared', 'rev-shared'], 'the plan names one id, and belay uses no other');
+    assert.match(stepRows(e)[1].error, /already exists.*review: \{ worker: <id> \}/);
+    assert.ok(m._worker('rev-shared'));
   } finally { await e.close(); }
 });
 

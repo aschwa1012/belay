@@ -106,7 +106,7 @@ ${work.spec}` : ''}`,
   const ref = `task:${made.id}`;
   if (!spawn) return handOver(env, { task_id: made.id, worker_id: c.worker }, ref, true); // a pause between the gate above and this assignment is a retake, as it is for a spawn
   let row;
-  try { row = await env.spawn({ substrate: 'claude-code', worktree: tree, task_id: made.id, agent_type: spawn.agent_type, worker_id: c.worker }); } catch (e) { if (e && e.code === 'E_PAUSED') return paused(`the run was paused as the reviewer was spawned; review task ${made.id} stands unassigned and the retake assigns it`); return exception(`the reviewer could not be spawned: ${errText(e)}`, ref); }
+  try { row = await env.spawn({ substrate: 'claude-code', worktree: tree, task_id: made.id, agent_type: spawn.agent_type, worker_id: c.worker }); } catch (e) { if (e && e.code === 'E_PAUSED') return paused(`the run was paused as the reviewer was spawned; review task ${made.id} stands unassigned and the retake assigns it`); return exception(`the reviewer could not be spawned: ${errText(e)}${c.review.spawn.worker_id ? `; the plan names spawn.worker_id ${c.review.spawn.worker_id}, and a reviewer shared by several works is review: { worker: <id> }, not a spawn` : ''}`, ref); }
   const held = ((await env.core.task.get({ task_id: made.id })) || {}).lease;
   if (!held || held.holder !== (row && row.id)) return exception(`spawned ${row && row.id}, but it holds no lease on ${made.id}`, ref);
   return { outcome: 'done', row_ref: ref };

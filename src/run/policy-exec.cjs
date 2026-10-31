@@ -159,10 +159,9 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf 
     // The worker and the turn the step starts, known before the claim: a spawned reviewer's id is made here and its first turn is 1; a named
     // worker's next turn is the one its manager says. A turn the manager cannot say is left off (the log then prints no turn).
     const spawned = c0.step === 'review' && c0.review && c0.review.spawn;
-    // A plan's own worker_id serves the first work that uses it: an id already in the store (a second work under the same plan, or the dead
-    // row a pause left in the manager's preface) is replaced by a fresh one, so a retake or a second spawn never meets "already exists".
-    const idUsed = spawned && c0.worker && g.worker ? (((await g.worker.list({})) || {}).workers || []).some((w) => w.id === c0.worker) : false;
-    const c = spawned && (!c0.worker || idUsed) ? { ...c0, worker: `rev-${crypto.randomUUID().slice(0, 8)}` } : c0;
+    // belay never substitutes an id the plan named: a retake after a pause spawns it in place (spawn-args.cjs checkIdFree allows this run's own dead row),
+    // and an id a live worker holds is the spawn's refusal, an exception (E8).
+    const c = spawned && !c0.worker ? { ...c0, worker: `rev-${crypto.randomUUID().slice(0, 8)}` } : c0;
     let turn = spawned ? 1 : null;
     if (turn == null && c.worker && turnOf) { try { const t = await turnOf(c.worker); if (Number.isInteger(t) && t > 0) turn = t; } catch { turn = null; } }
     const me = await ownId();
