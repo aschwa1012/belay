@@ -64,6 +64,7 @@ type Resolved = { cli: string[] } | { error: string }
 let timer: Timer | null = null
 let inflight = false
 let lastFetchAt = 0
+let lastRunState: BelayPanelSnap['runState'] = null // the last run state any read gave, kept across failed reads
 let lastSettingsAt = 0
 let timeoutStreak = 0
 let backoffUntil = 0
@@ -120,7 +121,7 @@ async function fetchSnapshot($: Host, watch: BelayPanelWatch, prev: BelayPanelSn
   if ('error' in r) return { snap: fatalSnapshot(r.error, watch.runId, o.now), timedOut: false }
   const cli = r.cli
   const tail = o.open ? TRANSCRIPT_TAIL.pane : TRANSCRIPT_TAIL.band
-  const got = await runJson($, cli, ['panel-read', ...(watch.runId ? [watch.runId] : []), ...(watch.orchDir ? ['--dir', watch.orchDir] : []), ...(tail === null ? [] : ['--tail', String(tail)]), ...(watch.fixed ? ['--fixed'] : []), ...(prev?.mode ? ['--prev-mode', prev.mode] : []), ...(o.withSettings ? ['--settings'] : [])], watch.dataDir, null, ROUND_TIMEOUT_MS)
+  const got = await runJson($, cli, ['panel-read', ...(watch.runId ? [watch.runId] : []), ...(watch.orchDir ? ['--dir', watch.orchDir] : []), ...(tail === null ? [] : ['--tail', String(tail)]), ...(watch.fixed ? ['--fixed'] : []), ...(prev?.mode ? ['--prev-mode', prev.mode] : []), ...(prev?.runId ? ['--prev-run', prev.runId] : []), ...(o.withSettings ? ['--settings'] : [])], watch.dataDir, null, ROUND_TIMEOUT_MS)
   const { parts, slow } = roundParts(got)
   return { snap: buildSnapshot({ watch, prev, now: o.now, ...parts }), timedOut: slow }
 }
@@ -170,15 +171,17 @@ async function tick($: Host): Promise<void> {
     const now = await $.clock.now()
     const known = await read($, snapA)
     // 5 s with the pane open, 10 s for the band alone, 60 s once the run has ended or died: each refresh is one belay process.
-    if (!inflight && now >= backoffUntil && now - lastFetchAt >= refreshEvery(ui.open, known?.runState)) {
+    if (!inflight && now >= backoffUntil && now - lastFetchAt >= refreshEvery(ui.open, known?.runState ?? lastRunState)) {
       inflight = true
       try {
         const prev = known
         const settingsDue = !prev || now - lastSettingsAt >= SETTINGS_EVERY_MS
         const { snap, timedOut: slow } = await fetchSnapshot($, watch, prev, { withSettings: settingsDue, now, open: ui.open })
         // Back off while commands keep timing out: 10 s, doubling to 60 s; one success resets it.
-        timeoutStreak = slow ? timeoutStreak + 1 : 0
-        backoffUntil = slow ? (await $.clock.now()) + Math.min(BACKOFF_MAX_MS, BACKOFF_FIRST_MS * 2 ** (timeoutStreak - 1)) : 0
+        const backOff = slow || snap.stale // a failed agents read backs off like a timeout, so a store that keeps failing is not hammered
+        if (snap.runState) lastRunState = snap.runState // a failed read keeps the last known state: an ended run stays at the slow refresh
+        timeoutStreak = backOff ? timeoutStreak + 1 : 0
+        backoffUntil = backOff ? (await $.clock.now()) + Math.min(BACKOFF_MAX_MS, BACKOFF_FIRST_MS * 2 ** (timeoutStreak - 1)) : 0
         if (settingsDue) lastSettingsAt = now
         await update($, snapA, () => snap)
         // The Memory menu is read while it is open, after a write, and (for the badge) while the settings name a heavy profile or a routing.
@@ -241,6 +244,7 @@ async function watchRun($: Host, next: BelayPanelWatch): Promise<void> {
   }
   await update($, snapA, () => null)
   lastFetchAt = 0
+  lastRunState = null
   lastSettingsAt = 0
   lastMenuAt = 0
   menuForce = false

@@ -176,3 +176,61 @@ test('it is a read command, registered under its own name, and loading it import
   const src = require('node:fs').readFileSync(require.resolve('../../src/cli/cmd-panel-read.cjs'), 'utf8');
   assert.ok(!/^const .*require\(.*(core|embed)/m.test(src), 'no top-level require of the core or an embedder');
 });
+
+test('no option reaches a write: an unknown or write-shaped flag is a usage error before any read, and the known flags only select what is read', async () => {
+  const f = fakes({ agents: ok(AGENTS()), notices: ok({ events: [] }) });
+  for (const flag of ['--fix', '--set', '--start', '--out', '--review', '--project', '--reason', '--yes', '--force', '--settle', '--archive', '-f', '--follow']) {
+    const r = await mod.run({ argv: [flag, 'x'], cwd: 'C:/x', dataDir: 'C:/x/.belay', json: true, reads: f.reads });
+    assert.strictEqual(r.code, 2, flag);
+  }
+  assert.strictEqual(f.calls.length, 0, 'none of them read anything');
+  // Every flag the parser knows, and what each does: none of them is a verb or a path to write.
+  const known = ['--dir', '--tail', '--prev-mode', '--prev-run', '--fixed', '--settings'];
+  const src = require('node:fs').readFileSync(require.resolve('../../src/cli/cmd-panel-read.cjs'), 'utf8');
+  const named = [...src.matchAll(/a === '(--[a-z-]+)'/g)].map((m) => m[1]).sort();
+  assert.deepStrictEqual(named, [...known].sort(), 'the parser names exactly these flags');
+});
+
+test('every sub-read runs with fix:false, literal:null and json:true, and only the five fixed argvs', async () => {
+  const seen = [];
+  const load = (module) => ({ run: async (ctx) => { seen.push({ module, ctx }); return { code: 0, json: module.includes('agents') ? AGENTS() : module.includes('notices') ? { events: [HELD] } : {} }; } });
+  const base = { argv: ['r-1', '--tail', '10', '--settings', '--fix', '--json'].filter((x) => x !== '--fix' && x !== '--json'), cwd: 'C:/x', dataDir: 'C:/p/.belay', dataDirGiven: true, json: true, fix: true, literal: 3, emit: () => {}, command: 'panel-read' };
+  const r = await mod.run({ ...base, reads: mod.realReads(base, load), now: clock, bound: (p) => p });
+  assert.strictEqual(r.code, 0);
+  assert.deepStrictEqual(seen.map((s) => s.module), ['./cmd-agents.cjs', './cmd-notices.cjs', './cmd-memory.cjs', './cmd-transcript.cjs', './cmd-settings.cjs']);
+  for (const { ctx } of seen) {
+    assert.strictEqual(ctx.fix, false);
+    assert.strictEqual(ctx.literal, null);
+    assert.strictEqual(ctx.json, true);
+    assert.strictEqual(ctx.emit, undefined);
+  }
+  assert.deepStrictEqual(seen[2].ctx.argv, ['held', '--awaiting']);
+  assert.deepStrictEqual(seen[4].ctx.argv, []);
+  assert.deepStrictEqual(seen.map((s) => s.ctx.command), ['agents', 'notices', 'memory', 'transcript', 'settings']);
+});
+
+test('a round deadline inside the verb returns the parts done so far and marks the round partial', async () => {
+  let t = 0;
+  const f = fakes({ agents: ok(AGENTS()), notices: ok({ events: [] }) });
+  const slowClock = () => t; // each read costs 9 s of fake time
+  const reads = { ...f.reads, notices: async (a) => { t += 9000; return f.reads.notices(a); }, agents: async (a) => { t += 9000; return f.reads.agents(a); } };
+  const out = await mod.round({ opts: opts(['--settings']), reads, now: slowClock, bound: (p) => p, timeoutMs: 6000, deadlineMs: 15000 });
+  assert.strictEqual(out.partial, true);
+  assert.notStrictEqual(out.parts.agents, null);
+  assert.notStrictEqual(out.parts.notices, null);
+  assert.strictEqual(out.parts.transcript, null, 'the deadline passed, so the transcript was never started');
+  assert.strictEqual(out.parts.settings, null);
+  const quick = await go(['--settings'], fakes({ agents: ok(AGENTS()), notices: ok({ events: [] }) }));
+  assert.strictEqual(quick.partial, undefined);
+});
+
+test('when agents fails, the later reads name the run the panel saw last', async () => {
+  const f = fakes({ agents: { code: 1, json: { error: 'x' } }, notices: ok({ events: [] }) });
+  const out = await go(['--prev-run', 'r-prev', '--prev-mode', 'headless'], f);
+  assert.deepStrictEqual(f.calls.find((c) => c.name === 'notices').argv, ['r-prev']);
+  assert.deepStrictEqual(f.calls.find((c) => c.name === 'transcript').argv, ['r-prev']);
+  assert.strictEqual(out.run_id, 'r-prev');
+  const live = fakes({ agents: ok(AGENTS()), notices: ok({ events: [] }) });
+  await go(['--prev-run', 'r-old'], live);
+  assert.deepStrictEqual(live.calls.find((c) => c.name === 'notices').argv, ['r-1'], 'a good agents read wins over the remembered run');
+});

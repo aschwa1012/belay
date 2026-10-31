@@ -278,7 +278,7 @@ function analyze(files) {
   // The agents read may name the orchestrator's directory (`--dir`, so `belay agents` finds the launch marker of a run whose spec set
   // orchestrator_dir), and only the watch's own, from belay-run.json: exactly one `--dir` literal exists in the mod, it is in the one agents
   // call in fetchSnapshot, that call is the literal below, and inside fetchSnapshot `orchDir` is only ever `watch.orchDir`.
-  const AGENTS_CALL = "runJson($, cli, ['panel-read', ...(watch.runId ? [watch.runId] : []), ...(watch.orchDir ? ['--dir', watch.orchDir] : []), ...(tail === null ? [] : ['--tail', String(tail)]), ...(watch.fixed ? ['--fixed'] : []), ...(prev?.mode ? ['--prev-mode', prev.mode] : []), ...(o.withSettings ? ['--settings'] : [])], watch.dataDir, null, ROUND_TIMEOUT_MS)";
+  const AGENTS_CALL = "runJson($, cli, ['panel-read', ...(watch.runId ? [watch.runId] : []), ...(watch.orchDir ? ['--dir', watch.orchDir] : []), ...(tail === null ? [] : ['--tail', String(tail)]), ...(watch.fixed ? ['--fixed'] : []), ...(prev?.mode ? ['--prev-mode', prev.mode] : []), ...(prev?.runId ? ['--prev-run', prev.runId] : []), ...(o.withSettings ? ['--settings'] : [])], watch.dataDir, null, ROUND_TIMEOUT_MS)";
   const dirLits = [];
   for (const [f, o] of Object.entries(info)) for (const l of o.lits) if (l.text === '--dir') dirLits.push(`${f}:${ownerOf(o.its, l.at)}`);
   if (JSON.stringify(dirLits) !== JSON.stringify(['hooks/panel/index.tsx:fetchSnapshot'])) bad.push(`the string "--dir" appears in ${JSON.stringify(dirLits)}; it may appear once, in fetchSnapshot's agents read`);

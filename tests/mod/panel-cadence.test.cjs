@@ -69,3 +69,9 @@ test('a failing part keeps the previous value for that part and is reported, whi
   assert.deepStrictEqual(snap.readIssues.map((i) => [i.verb, i.timedOut]), [['notices', false]]);
   assert.strictEqual(snap.goodAt, good.goodAt, 'a round with a failed part is not "all fresh"');
 });
+
+test('roundParts: a round the verb cut at its own deadline is slow, so the panel backs off', () => {
+  const r = F.roundParts({ json: { partial: true, parts: { agents: { json: {} }, notices: { json: {} }, awaiting: null, transcript: null, settings: null } } });
+  assert.strictEqual(r.slow, true);
+  assert.strictEqual(r.parts.transcript, null);
+});

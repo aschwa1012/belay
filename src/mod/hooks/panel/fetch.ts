@@ -235,5 +235,5 @@ export function roundParts(r: Ran): { parts: RoundParts; slow: boolean } {
     return 'json' in o ? { json: o.json } : { error: 'belay panel-read: a part has neither json nor error' }
   }
   const parts: RoundParts = { agents: one(raw.agents) ?? { error: 'belay panel-read gave no agents part' }, notices: one(raw.notices), transcript: one(raw.transcript), settings: one(raw.settings), awaiting: one(raw.awaiting) }
-  return { parts, slow: Object.values(parts).some(x => x !== null && 'timedOut' in x) }
+  return { parts, slow: (r.json as { partial?: unknown }).partial === true || Object.values(parts).some(x => x !== null && 'timedOut' in x) }
 }

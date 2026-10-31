@@ -100,4 +100,15 @@ describe('a wedged belay', () => {
     expect(wd.ran.some(a => a.includes('--awaiting'))).toBe(true)
     expect(wd.ran.length).toBeGreaterThan(wd.rounds.length * 2) // several reads answered per process
   })
+  test('a failed agents read keeps the last known run state: an ended run stays at the slow refresh and backs off while the read keeps failing', async ($, on) => {
+    const wd = await boot($, on, { orchDisplay: 'done' })
+    wd.w.failAgents = true
+    await later(wd, 400000)
+    const ts = wd.rounds.map(r => r.t)
+    const gaps = ts.slice(1).map((t, i) => t - ts[i]!)
+    expect(gaps.length).toBeGreaterThan(3)
+    for (const g of gaps) expect(g).toBeGreaterThanOrEqual(60000) // never the 10 s band cadence, though the snapshot's own run state is now unknown
+    expect(wd.rounds.every(r => r.argv.includes('--prev-run'))).toBe(false) // the first round had no earlier run
+    expect(wd.rounds.slice(1).every(r => r.argv.includes('--prev-run'))).toBe(true) // the later ones name the run seen last
+  })
 })

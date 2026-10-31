@@ -274,7 +274,7 @@ export function world(on: any, w: World) {
     const first = a[at + 1]
     const dir = val('--dir')
     parts.agents = await part('agents', 'agents', [...(first && !first.startsWith('--') ? [first] : []), ...(dir ? ['--dir', dir] : [])], e.init?.cwd)
-    const runId: string | null = (first && !first.startsWith('--') ? first : null) ?? parts.agents.json?.run_id ?? null
+    const runId: string | null = (first && !first.startsWith('--') ? first : null) ?? parts.agents.json?.run_id ?? val('--prev-run') ?? null
     const runArg = runId ? [runId] : []
     const done = () => ({ value: { exitCode: 0, stdout: JSON.stringify({ v: 1, at: clock.now(), run_id: runId, parts }), stderr: '' } })
     if (parts.agents.timedOut) return done()

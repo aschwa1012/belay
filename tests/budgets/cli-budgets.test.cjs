@@ -298,13 +298,18 @@ test('budgets: status and receipts over a live run holding 500 policy steps and 
 });
 
 test('budgets: transcript, notices and agents (ADR 0036 U1) each add under 500 ms to the host floor, interleaved, on a dead store', () => {
+  // The panel_read row below is only the heaviest form if every part is read: prove agents, notices, the transcript and settings all came back.
+  const probe = spawnCli(['panel-read', 'run-budgets', '--dir', orchDir, '--tail', '10', '--prev-mode', 'headless', '--settings', '--data', dataDir, '--json']);
+  assert.strictEqual(probe.status, 0, probe.stderr);
+  const doc = JSON.parse(probe.stdout);
+  for (const k of ['agents', 'notices', 'transcript', 'settings']) assert.ok(doc.parts[k] && doc.parts[k].json, `panel-read read ${k}: ${JSON.stringify(doc.parts[k])}`);
   const result = interleaved({
     spawnFloor: makeSpawnFloor(),
     commands: {
       transcript: () => timedCli(['transcript', 'run-budgets', '--dir', orchDir, '--data', dataDir], {}, 0, dataDir),
       notices: () => timedCli(['notices', 'run-budgets', '--data', dataDir], {}, 0, dataDir),
       agents: () => timedCli(['agents', 'run-budgets', '--dir', orchDir, '--data', dataDir], {}, 0, dataDir),
-      panel_read: () => timedCli(['panel-read', '--dir', orchDir, '--tail', '10', '--settings', '--data', dataDir], {}, 0, dataDir), // the panel's one batched read: agents, notices and settings against this dead store
+      panel_read: () => timedCli(['panel-read', 'run-budgets', '--dir', orchDir, '--tail', '10', '--prev-mode', 'headless', '--settings', '--data', dataDir], {}, 0, dataDir), // the heaviest form: a run id, the transcript read for a headless run, and settings, against the same 500 ms bound as each read alone
       wake_stream: () => timedCli(['wake-stream', '--run', 'run-budgets', '--nonce', 'n', '--data', dataDir], {}, 1, dataDir), // no publisher: ENOENT at once, exit 1
     },
     n: N,

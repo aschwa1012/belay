@@ -18,14 +18,16 @@
 //                 from the project root that holds the data dir
 //   --prev-mode   the run mode the panel saw last round, used for the transcript only when the agents read fails
 //   --settings    read settings too (the panel asks every ten seconds)
+//   --prev-run    the run the panel saw last round, named to the later reads when the agents read fails
 
 const SUB_TIMEOUT_MS = 6000; // each part; the panel's own bound on this process is longer (index.tsx)
-const USAGE = 'usage: belay panel-read [run-id] [--dir <dir>] [--tail <n>] [--fixed] [--prev-mode <mode>] [--settings] [--data <dir>] [--json]\n';
+const ROUND_DEADLINE_MS = 20000; // the whole round, under the panel's 25 s bound: the parts done by then are returned and the rest stay null
+const USAGE = 'usage: belay panel-read [run-id] [--dir <dir>] [--tail <n>] [--fixed] [--prev-mode <mode>] [--prev-run <id>] [--settings] [--data <dir>] [--json]\n';
 
 const usageError = (message) => ({ code: 2, text: `belay panel-read: ${message}\n${USAGE}`, json: { error: message } });
 
 function parseArgs(argv) {
-  const out = { runId: null, dir: null, tail: null, fixed: false, prevMode: null, settings: false };
+  const out = { runId: null, dir: null, tail: null, fixed: false, prevMode: null, prevRun: null, settings: false };
   for (let i = 0; i < argv.length; i += 1) {
     const a = argv[i];
     const value = () => { i += 1; return argv[i]; };
@@ -36,6 +38,7 @@ function parseArgs(argv) {
       out.tail = v;
     }
     else if (a === '--prev-mode') { out.prevMode = value(); if (!out.prevMode) return { error: '--prev-mode needs a value' }; }
+    else if (a === '--prev-run') { out.prevRun = value(); if (!out.prevRun || out.prevRun.startsWith('-')) return { error: '--prev-run needs a run id' }; }
     else if (a === '--fixed') out.fixed = true;
     else if (a === '--settings') out.settings = true;
     else if (a.startsWith('-')) return { error: `unknown option ${a}` };
@@ -90,23 +93,33 @@ async function round(d) {
   const { opts, reads } = d;
   const parts = { agents: null, notices: null, awaiting: null, transcript: null, settings: null };
   const stop = (p) => !!(p && p.timedOut);
-  const read = (verb, argv, label = verb) => part([label, ...argv].join(' '), () => reads[verb](argv), d); // the label is the command as typed, like the panel's own error line
+  const t0 = d.now();
+  const deadlineMs = d.deadlineMs || ROUND_DEADLINE_MS;
+  let cut = false; // the round's own deadline passed: what is done is returned, the rest stays null
+  // Each read gets what is left of the round's time, never more than its own bound. The label is the command as typed, like the panel's own error line.
+  const read = async (verb, argv, label = verb) => {
+    const left = deadlineMs - (d.now() - t0);
+    if (left <= 0) { cut = true; return null; }
+    return part([label, ...argv].join(' '), () => reads[verb](argv), { ...d, timeoutMs: Math.min(d.timeoutMs, left) });
+  };
+  let runId = opts.runId || null;
+  const done = () => ({ v: 1, at: d.now(), run_id: runId, ...(cut ? { partial: true } : {}), parts });
   const agents = parts.agents = await read('agents', [...(opts.runId ? [opts.runId] : []), ...(opts.dir ? ['--dir', opts.dir] : [])]);
-  const seen = agents.json || null;
-  const runId = opts.runId || (seen && typeof seen.run_id === 'string' ? seen.run_id : null);
+  const seen = agents && agents.json ? agents.json : null;
+  // A failed agents read does not lose the run: the notices and transcript reads name the run the panel saw last.
+  runId = opts.runId || (seen && typeof seen.run_id === 'string' ? seen.run_id : null) || opts.prevRun || null;
   const runArg = runId ? [runId] : [];
-  const done = () => ({ v: 1, at: d.now(), run_id: runId, parts });
-  if (stop(agents)) return done();
+  if (cut || stop(agents)) return done();
   const notices = parts.notices = await read('notices', runArg);
-  if (stop(notices)) return done();
+  if (cut || stop(notices)) return done();
   if (notices.json && awaitingOf(notices.json) > 0) {
     parts.awaiting = await read('awaiting', ['held', '--awaiting'], 'memory');
-    if (stop(parts.awaiting)) return done();
+    if (cut || stop(parts.awaiting)) return done();
   }
   const mode = opts.fixed ? 'interactive' : seen ? seen.mode : opts.prevMode;
   if (mode === 'headless') {
     parts.transcript = await read('transcript', [...runArg, ...(opts.tail ? ['--tail', opts.tail] : [])]);
-    if (stop(parts.transcript)) return done();
+    if (cut || stop(parts.transcript)) return done();
   }
   if (opts.settings) parts.settings = await read('settings', []);
   return done();
@@ -118,8 +131,8 @@ function textOf(r) {
 }
 
 // The commands as the dispatcher would run them: the same ctx, each module loaded only when its part is read.
-function realReads(ctx) {
-  const sub = (module, command, argv, over = {}) => require(module).run({ ...ctx, argv, literal: null, command, json: true, fix: false, emit: undefined, now: undefined, reads: undefined, bound: undefined, timeoutMs: undefined, ...over });
+function realReads(ctx, load = require) {
+  const sub = (module, command, argv, over = {}) => load(module).run({ ...ctx, argv, literal: null, command, json: true, fix: false, emit: undefined, now: undefined, reads: undefined, bound: undefined, timeoutMs: undefined, deadlineMs: undefined, ...over });
   const root = ctx.dataDirGiven ? projectRootOf(ctx.dataDir) : ctx.cwd;
   return {
     agents: (argv) => sub('./cmd-agents.cjs', 'agents', argv),
@@ -133,8 +146,8 @@ function realReads(ctx) {
 async function run(ctx) {
   const opts = parseArgs(ctx.argv);
   if (opts.error) return usageError(opts.error);
-  const out = await round({ opts, reads: ctx.reads || realReads(ctx), now: ctx.now || (() => Date.now()), bound: ctx.bound || bound, timeoutMs: ctx.timeoutMs || SUB_TIMEOUT_MS });
+  const out = await round({ opts, reads: ctx.reads || realReads(ctx), now: ctx.now || (() => Date.now()), bound: ctx.bound || bound, timeoutMs: ctx.timeoutMs || SUB_TIMEOUT_MS, deadlineMs: ctx.deadlineMs });
   return { code: 0, text: textOf(out), json: out };
 }
 
-module.exports = { run, round, parseArgs, awaitingOf, projectRootOf, SUB_TIMEOUT_MS };
+module.exports = { run, round, realReads, parseArgs, awaitingOf, projectRootOf, SUB_TIMEOUT_MS };
