@@ -10,7 +10,15 @@ const GIT_TIMEOUT_MS = 120000; // a checkout of a large tree (this repository: a
 const LIST_TAIL = 4 * 1024 * 1024;
 
 // GIT_OPTIONAL_LOCKS=0: a `git status` takes no index lock and writes no refreshed index (reading never writes).
-const gitEnv = () => ({ ...readOnlyGitEnv(), GIT_TERMINAL_PROMPT: '0', GIT_EDITOR: 'true', GIT_SEQUENCE_EDITOR: 'true', GIT_MERGE_AUTOEDIT: 'no' });
+// The variables that name which repository, index or object store a call acts on are dropped: an owner born inside a git hook inherits
+// them, and a call that followed them would act on that hook's repository (git-safe.cjs drops every GIT_* variable for reads). A
+// caller that wants one (a temporary GIT_INDEX_FILE) passes it through `run`'s `env`.
+const LOCATING = /^GIT_(DIR|INDEX_FILE|WORK_TREE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|COMMON_DIR)$/i;
+const gitEnv = () => {
+  const out = {};
+  for (const [k, v] of Object.entries(readOnlyGitEnv())) if (!LOCATING.test(k)) out[k] = v;
+  return { ...out, GIT_TERMINAL_PROMPT: '0', GIT_EDITOR: 'true', GIT_SEQUENCE_EDITOR: 'true', GIT_MERGE_AUTOEDIT: 'no' };
+};
 
 const fwd = (p) => String(p).split('\\').join('/');
 
