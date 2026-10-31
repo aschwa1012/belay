@@ -34,7 +34,7 @@ async function landed(id, forecaster, evaluated = done(id)) {
 }
 
 test('a conflicting forecast that settled before the evaluation landed rides on the wake, within WAKE_TEXT_MAX', async () => {
-  const files = ['src/lib/registry.js', 'lib/timer.js', 'README.md', 'docs/a.md', 'docs/b.md'];
+  const files = ['src/lib/registry.js', 'lib/timer.js', 'README.md', 'notes/a.md', 'notes/b.md'];
   const { ev } = await landed('t1', async () => ({ files, against: 'abc', ms: 400 }));
   assert.match(ev.text, /task t1 evaluated at release: passed, done; forecast: conflicts with the integration branch in src\/lib\/registry\.js/);
   assert.ok(Buffer.byteLength(ev.text, 'utf8') <= RE.WAKE_TEXT_MAX, `${Buffer.byteLength(ev.text, 'utf8')} bytes: ${ev.text}`);
