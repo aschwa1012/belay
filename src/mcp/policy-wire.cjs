@@ -7,6 +7,7 @@
 
 const { createCompose } = require('./compose.cjs');
 const { createPolicyExecutor } = require('../run/policy-exec.cjs');
+const { spawnFor } = require('../run/policy-steps-run.cjs');
 
 const TICK_MS = Number(process.env.BELAY_POLICY_TICK_MS) > 0 ? Number(process.env.BELAY_POLICY_TICK_MS) : 2000;
 let current = null; let armEarly = false;
@@ -25,7 +26,7 @@ function start({ core, manager, opts, run = null, log = () => {} }) {
   const h = typeof core.harness === 'function' ? core.harness() : null;
   if (!h || typeof h.policyAs !== 'function') return null; // a fixture core has no policy channel
   const assignFor = (stepCore) => createCompose({ callCore: (d, a) => viaPath(stepCore, d, a), manager: () => manager, openManager: async () => manager, dataDir: opts.dataDir, runId: opts.runId }).assign;
-  const exec = createPolicyExecutor({ core: h, runId: opts.runId, assignFor, closing: () => manager._closing(), log });
+  const exec = createPolicyExecutor({ core: h, runId: opts.runId, assignFor, spawnFor: spawnFor(manager), turnOf: (id) => { const w = typeof manager._worker === 'function' ? manager._worker(id) : null; return w && Number.isInteger(w.turns) ? w.turns + 1 : null; }, closing: () => manager._closing(), log });
   current = exec;
   const waitEnd = new AbortController(); // aborted at the manager's shutdown: a wait in flight takes no step and returns cancelled
   // One task.list at start (an indexed read of the run's task rows, once per adapter life) arms the executor when any task already carries a plan, so a restart mid-run loses nothing. A run with no plan pays only this read.

@@ -63,6 +63,48 @@ async function reReview(c, env) {
   return handOver(env, { task_id: made.id, worker_id: c.worker }, ref);
 }
 
+// review: a done work with nothing reviewing it gets the verdict task, handed to the plan's worker (`review.worker`, live and idle) or to a
+// worker belay spawns with the plan's agent_type (`review.spawn`) through the run manager's own spawn (invariant 1). The spawn takes the task in its
+// first message, so no second message follows, and it assigns through the step's stamped view, so the lease carries the claim's stamp. The tree the
+// reviewer starts in is the work's own belay worktree, found before anything is written: a work without one writes nothing and is an exception.
+async function reviewTree(env, c) {
+  const w = (await env.core.task.get({ task_id: c.task_id })).worktree;
+  return w && w.path && !w.removed_at ? w.path : null;
+}
+async function review(c, env) {
+  const tasks = ((await env.core.task.list({})) || {}).tasks || [];
+  const there = tasks.find((t) => t.state !== 'cancelled' && t.acceptance && t.acceptance.verdict === true && (t.depends_on || []).includes(c.task_id));
+  if (there) return { outcome: 'superseded', row_ref: `task:${there.id}` }; // the orchestrator made the review first
+  const work = tasks.find((t) => t.id === c.task_id);
+  if (!work || work.state !== 'done') return { outcome: 'skipped', error: `${c.task_id} is no longer done` };
+  const spawn = c.review && c.review.spawn ? c.review.spawn : null;
+  let tree = null;
+  if (spawn) {
+    if (!env.spawn) return exception('the plan spawns its reviewer and this run has no spawn path');
+    tree = await reviewTree(env, c);
+    if (!tree) return exception(`the work ${c.task_id} has no belay worktree to start a reviewer in, so nothing was spawned`);
+  } else {
+    const why = await unavailable(env, c.worker, 'reviewer');
+    if (why) return exception(why);
+  }
+  const made = await env.core.task.create({
+    spec: `Review ${c.task_id}: judge whether its work meets its acceptance.${work.spec ? `
+
+${work.spec}` : ''}`,
+    acceptance: { verdict: true }, depends_on: [c.task_id],
+  });
+  const ref = `task:${made.id}`;
+  if (!spawn) return handOver(env, { task_id: made.id, worker_id: c.worker }, ref);
+  let row;
+  try { row = await env.spawn({ substrate: 'claude-code', worktree: tree, task_id: made.id, agent_type: spawn.agent_type, worker_id: c.worker }); } catch (e) { return exception(`the reviewer could not be spawned: ${errText(e)}`, ref); }
+  const held = ((await env.core.task.get({ task_id: made.id })) || {}).lease;
+  if (!held || held.holder !== (row && row.id)) return exception(`spawned ${row && row.id}, but it holds no lease on ${made.id}`, ref);
+  return { outcome: 'done', row_ref: ref };
+}
+
+// The run manager's spawn made over a step's stamped view: the task the spawn assigns is assigned under the claim.
+const spawnFor = (manager) => (stepCore) => (args) => manager.spawn({ ...args, assignCore: stepCore });
+
 // A policy merge names the work unit and nothing else: it goes to the run's own integration branch, never forced or approved.
 async function integrate(c, env) {
   const cur = await env.core.task.get({ task_id: c.task_id });
@@ -76,7 +118,7 @@ async function integrate(c, env) {
   return { outcome: 'done', row_ref: ref }; // a conflict is a finished step too: the integration row says so and the exception wake carries it
 }
 
-const RUNNERS = { fix, re_review: reReview, integrate };
+const RUNNERS = { review, fix, re_review: reReview, integrate };
 
 async function run(c, env) {
   const f = RUNNERS[c.step];
@@ -84,4 +126,4 @@ async function run(c, env) {
   try { return await f(c, env); } catch (e) { return exception(errText(e)); }
 }
 
-module.exports = { run, unavailable, RUNNERS };
+module.exports = { run, unavailable, spawnFor, RUNNERS };
