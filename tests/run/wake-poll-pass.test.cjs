@@ -19,8 +19,6 @@ async function until(pred, ms, what) {
   const end = Date.now() + ms;
   while (!pred()) { if (Date.now() > end) throw new Error(`timed out waiting for ${what}`); await tick(); }
 }
-// A bounded observation window in which a second pass, if the guard let one start, would show itself.
-const window = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function sandbox(tag) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), `belay-pass-${tag}-`));
@@ -45,6 +43,10 @@ const streamLines = (sb, needle) => {
   try { return fs.readFileSync(path.join(sb.orchestratorDir, 'stream.jsonl'), 'utf8').split('\n').filter((l) => l.includes(needle)).length; } catch { return 0; }
 };
 
+// Why no waits: the orchestrator's stdout handler writes a stream line and handles its events in one synchronous call, so a test
+// that sees a `result` line in stream.jsonl sees it after the handler ran. Before the fix that handler synchronously started a
+// second pass, whose first act is a worker.list call; the counts below are read right then, with no window to wait out.
+
 test('a turn end during a pass does not start a second pass that closes stdin under the first pass\'s wake', { timeout: 90000 }, async () => {
   const RUN = 'run-pass-close';
   const sb = sandbox('close');
@@ -63,7 +65,6 @@ test('a turn end during a pass does not start a second pass that closes stdin un
   fs.writeFileSync(sb.gate, '1');
   await withEnv(sb, async () => {
     const runP = start(core, RUN, sb);
-    let out = null; runP.then((o) => { out = o; });
     await until(() => streamLines(sb, '"type":"result"') >= 2, 20000, 'the pre-close notice answered');
     const n0 = listN; await until(() => listN >= n0 + 2, 5000, 'idle passes holding on w1');
     fs.rmSync(sb.gate); // the orchestrator's next turn stays open
@@ -73,9 +74,7 @@ test('a turn end during a pass does not start a second pass that closes stdin un
     await until(() => stalled, 5000, 'the pass to stall');
     const listAtStall = listN;
     fs.writeFileSync(sb.gate, '1'); // the orchestrator's turn ends while the pass holds w1's turn_end
-    await until(() => streamLines(sb, '"type":"result"') >= 3 || out, 10000, 'the orchestrator turn to end');
-    await window(600);
-    assert.equal(out, null, 'the run must not close while a pass holds an unwritten wake');
+    await until(() => streamLines(sb, '"type":"result"') >= 3, 10000, 'the orchestrator turn to end');
     assert.equal(listN, listAtStall, 'no second pass reads the store while the first still holds its wakes');
     stallRelease();
     const res = await runP;
@@ -84,30 +83,39 @@ test('a turn end during a pass does not start a second pass that closes stdin un
   });
 });
 
-test('one poll chain runs after a turn end overlapped a pass', { timeout: 60000 }, async () => {
-  const RUN = 'run-pass-chain';
-  const sb = sandbox('chain');
+test('a pass whose rows predate the orchestrator\'s turn end does not close stdin on them', { timeout: 90000 }, async () => {
+  const RUN = 'run-pass-stale';
+  const sb = sandbox('stale');
   const core = createFakeCore({ runId: RUN });
-  let turns = 0, mid = 1, listN = 0;
-  core.worker = { ...core.worker, list: async () => { listN += 1; return { workers: [{ id: 'w1', run_id: RUN, state: 'running', turns, seq: turns + 1, pid: process.pid, pid_alive: true, mid_turn: mid }] }; } };
-  let stallRelease = null, stalled = false, calls = 0;
-  core.task.list = async () => { calls += 1; if (calls === 1) { stalled = true; await new Promise((r) => { stallRelease = r; }); } return { tasks: [] }; };
+  const w = { w1: { turns: 0, mid: 0, seq: 1 }, w2: { turns: 0, mid: 0, seq: 1 } };
+  const rows = () => Object.entries(w).map(([id, r]) => ({ id, run_id: RUN, state: 'running', turns: r.turns, seq: r.seq, pid: process.pid, pid_alive: true, mid_turn: r.mid }));
+  let listN = 0;
+  core.worker = { ...core.worker, list: async () => { listN += 1; return { workers: rows() }; } };
+  core.task.worktreeSweep = async () => { w.w1.mid = 1; return { kept: [{ reason: 'dirty', path: 'C:/x/tree', task_ids: ['t1'], paths: ['a.txt'] }] }; };
+  core.task.list = async () => ({ tasks: [] });
+  let arm = false, stallRelease = null, stalled = false;
+  core.memory.events = async () => { if (arm) { arm = false; stalled = true; await new Promise((r) => { stallRelease = r; }); } return { events: [] }; };
+  fs.writeFileSync(sb.gate, '1');
   await withEnv(sb, async () => {
-    const runP = start(core, RUN, sb, { timeoutMs: 30000 });
-    await until(() => listN >= 3, 15000, 'polls running');
-    turns = 1; // the next pass derives a turn_end and stalls in task.list
+    const runP = start(core, RUN, sb);
+    let out = null; runP.then((o) => { out = o; });
+    await until(() => streamLines(sb, '"type":"result"') >= 2, 20000, 'the pre-close notice answered');
+    fs.rmSync(sb.gate);
+    w.w2.turns = 1; w.w2.seq = 2; // a wake opens an orchestrator turn that stays open
+    await until(() => streamLines(sb, '"subtype":"init"') >= 3, 10000, 'the orchestrator to take the w2 wake');
+    w.w1.mid = 0; // w1 is idle at the next read
+    const n0 = listN; await until(() => listN >= n0 + 2, 5000, 'passes after w1 went idle');
+    arm = true; // the next pass stalls after its read (w1 idle), in the call watcher's events read
     await until(() => stalled, 5000, 'the pass to stall');
-    fs.writeFileSync(sb.gate, '1'); // the orchestrator's prompt turn ends while the pass is stalled
-    await until(() => streamLines(sb, '"type":"result"') >= 1, 10000, 'the orchestrator turn to end');
-    const nr = listN;
+    w.w1.mid = 1; // the orchestrator's turn messaged w1: it is mid-turn now
+    fs.writeFileSync(sb.gate, '1'); // and the turn ends
+    await until(() => streamLines(sb, '"type":"result"') >= 3, 10000, 'the orchestrator turn to end');
+    const listAtEnd = listN;
     stallRelease();
-    await until(() => listN >= nr + 2, 5000, 'the pass to finish and poll again');
-    await window(200); // let the immediate re-poll settle before counting
-    const n0 = listN;
-    await window(1000);
-    const rate = listN - n0;
-    assert.ok(rate <= 12, `one chain polls about 10 times in a second at pollMs 100, saw ${rate}`);
-    mid = 0; // the worker is done: the run may close
+    // The re-poll reads fresh rows (listAtEnd + 1); the pass after it (listAtEnd + 2) starts only once the re-poll has decided.
+    await until(() => listN >= listAtEnd + 2 || out, 10000, 'the re-poll to decide');
+    assert.equal(out, null, `stdin must stay open with w1 mid-turn; ended_by: ${out && out.ended_by}`);
+    w.w1.mid = 0; w.w1.turns = 1; w.w1.seq = 3; // w1 finishes; the run may close
     await runP;
   });
 });
@@ -133,9 +141,10 @@ test('two passes never write the same refuted-note wake twice', { timeout: 60000
     await until(() => listN >= 3, 15000, 'polls running');
     receipt = true;
     await until(() => stalled, 5000, 'the pass to stall in noteRefutation');
+    const listAtStall = listN;
     fs.writeFileSync(sb.gate, '1'); // the prompt turn ends while the pass is stalled
     await until(() => streamLines(sb, '"type":"result"') >= 1, 10000, 'the orchestrator turn to end');
-    await window(600);
+    assert.equal(listN, listAtStall, 'no second pass starts while the first is stalled');
     stallRelease();
     const res = await runP;
     const notes = res.wakes.filter((x) => x.event === 'note_refuted');

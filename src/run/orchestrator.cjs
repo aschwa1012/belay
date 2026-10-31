@@ -166,11 +166,9 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   // tree-first. Used by step 9's timeout/interrupt path AND by the ordinary "no worker mid-turn, no
   // wake unanswered" close (`pollOnce`, below): an orchestrator that does not exit when its stdin closes must
   // not make `belay run` permanent, so the same bound applies regardless of which rule closed stdin.
-  // `reason` is recorded only the first time — whichever rule got here first owns `ended_by` — but the
-  // wait-then-kill bound always runs exactly once (`state.boundStarted` guards that), even when stdin
-  // was already closed and `state.finishing` was already set by another rule. `killed_after_close`
-  // (5a-2) names whether the bound had to act: a run whose orchestrator ignored its closed stdin
-  // returns a non-zero exit code even though `ended_by` is still the stdin rule's sentence.
+  // `reason` is recorded only the first time (the first rule here owns `ended_by`); the wait-then-kill bound runs
+  // exactly once (`state.boundStarted`). `killed_after_close` (5a-2) names whether the bound had to act: a run whose
+  // orchestrator ignored its closed stdin returns a non-zero exit code even though `ended_by` is the stdin rule's sentence.
   async function closeThenKillOnDeadline(reason) {
     if (!state.finishing) {
       state.finishing = true;
@@ -266,6 +264,8 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   // the snapshot): no worker of this run mid-turn (the store's own `mid_turn` column, every turn), no wake still unanswered, and (5b-4) no non-terminal row whose pid just died
   // still inside its detector grace.
   // The guard covers the whole pass, not only the read: a second pass could close stdin under the first's unwritten wakes.
+  // A turn end after the pass's read sets `pollAgain`: it skips its idle close (its rows predate the turn) and polls once more, on
+  // fresh rows, when it ends. Each core call is bounded by the client's 30 s timeout (call-limits.cjs): a stalled owner delays wakes, not wedges them.
   async function pollOnce(byTurnEnd = false) {
     if (state.finishing || pollInFlight) return;
     pollInFlight = true; pollReadDone = false; pollAgain = false;
@@ -276,8 +276,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   async function pollPass(byTurnEnd) {
     pollByTurnEnd = byTurnEnd;
     const turnAtStart = state.turns;
-    let list = null;
-    let failReason = null;
+    let list = null, failReason = null;
     try { list = await core.worker.list({}); }
     catch (e) { failReason = (e && (e.code || e.message)) || String(e); }
     state.polls += 1;
@@ -305,6 +304,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     for (const ev of (await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), state.evalSeen || (state.evalSeen = new Map()), { holdMs: require('./release-eval.cjs').holdMs(), workers: rows })).concat(await noteWatcher.poll(), await callWatcher.poll(), spec.budgetWake ? spec.budgetWake.takeWakes() : [])) writeWake(ev); // ADR 0058 amendment 4: a turn_end carries its release evaluation
     if (state.finishing) return; // a wake's own write may have found the child already gone
 
+    if (pollAgain) { pollHandle = setTimeout(pollOnce, pollMs); return; } // a turn ended after the read: decide on the re-poll's rows
     if (state.idle && await require('./orchestrator-idle-close.cjs').idleClose({ state, rows, runId, pending_deaths, turnAtCall, hold, awaitingWakeIds, callWatcher, recordHold, preClose, writeWake, closeThenKillOnDeadline })) return;
     pollHandle = setTimeout(pollOnce, pollMs);
   }
