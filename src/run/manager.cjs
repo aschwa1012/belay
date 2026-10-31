@@ -248,7 +248,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     await writeRow(w, 'starting');
     let first;
     try {
-      first = NR.isJob(w.id) ? prompt : (await MP.preface(w, ctx, prompt)) + require('./task-body.cjs').body(w.taskSpec, prompt) + require('./task-body.cjs').PROCESS_LINE + (scratch ? require('./review-scratch.cjs').firstLine(scratch) : '') + require('./review-scratch.cjs').treeLine(w.review) + (w.handbackRule || '') + (await MP.contractTail(ctx, w)) + (await NR.reviewTail(ctx, w)); // the resume line, then the memory index, against the `starting` row (ADR 0007 §2, 0042 §2)
+      first = NR.isJob(w.id) ? prompt : (await MP.preface(w, ctx, prompt)) + require('./task-body.cjs').body(w.taskSpec, prompt) + require('./task-body.cjs').PROCESS_LINE + (scratch ? require('./review-scratch.cjs').firstLine(scratch) : '') + require('./review-scratch.cjs').treeLine(w.review) + (w.handbackRule || '') + (await MP.contractTail(ctx, w)) + (await NR.reviewTail(ctx, w)); await LG.refuseIfPaused(ctx.core, ctx.runId); // the resume line, then the memory index, against the `starting` row (ADR 0007 §2, 0042 §2); then the paused gate once more: a run pause that landed meanwhile cannot park this pidless row, so the spawn is refused here (the catch drops it)
     } catch (e) {
       // The task refused the assignment (an open dependency, ADR 0013 §1; the operator's lease; no such
       // task). Nothing has launched, so the `starting` row is written `dead` before the refusal is handed
@@ -266,8 +266,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       }
       throw e;
     }
-    // The index's embedding is the harness's wait, not the worker's: it counts neither toward the startup window nor in ready_ms
-    // (Codex's verifyReady and the returned ready_ms run from here). Its own time is in the index_injected receipt.
+    // The index's embedding is the harness's wait, not the worker's: it counts neither toward the startup window nor in ready_ms (see index_injected).
     t0 += w.indexEmbedMs || 0;
     w.firstMessage = first; LG.abortIfStopped(w); // the last check before the launch, in the tick it starts: a stop after it finds the process
 
@@ -363,7 +362,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
         w.costBase = w.costUsd; // a fresh session's total_cost_usd starts at zero: what the earlier sessions reported stays in the row
         w.parser = createParser(w.substrate, MP.parserOpts(ctx));
       }
-      if (onFirstText) onFirstText(firstText);
+      if (onFirstText) onFirstText(firstText); if (!skipDeadPidKill) await LG.refuseIfPaused(ctx.core, ctx.runId); // a run pause landing during the awaits above; a resume (skipDeadPidKill) runs while the run is still paused
 
       const resume = d.branch === 'resume' ? w.sessionId : null;
       await launch(w, w.substrate === 'claude-code' ? { resume } : { resume, prompt: firstText });

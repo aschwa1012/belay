@@ -13,4 +13,8 @@ function abortIfStopped(w) {
   fail('E_SUBSTRATE', `worker ${w.id}: a stop arrived before the launch; the launch is abandoned and no process was started`, { worker_id: w.id, substrate: w.substrate, state: w.state, reason: 'stopped_during_launch', launched: false });
 }
 
-module.exports = { abortIfStopped };
+// The paused-run gate again, in the tick before a spawn's or a restart's launch: the entry check passed, a run pause then set the run
+// row, and its listing (live pids only) cannot name a worker that has no process yet. Refused E_PAUSED, as at the entry.
+const refuseIfPaused = (core, runId) => require('./paused-gate.cjs').refuseSpawnIfPaused(core, runId);
+
+module.exports = { abortIfStopped, refuseIfPaused };
