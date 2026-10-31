@@ -192,15 +192,15 @@ function createPermit({ openCore, caller, waitMs = 600000, log = () => {} }) {
     const entry = inFlight.get(rpcId);
     if (!entry || entry.answered) return;
     entry.cancelled = true;
+    let c;
     try {
-      const c = await openCore();
-      await c.permission.decide({ id: entry.id, verdict: 'expire', reason: 'cancelled by the substrate' });
-      entry.expired = true;
-      log('##', `permit ${entry.id} expired: cancelled by the substrate`);
+      c = await openCore();
     } catch (e) {
-      // E_NOT_FOUND here means the row is not written yet; call() applies the cancel once it is.
       log('!!', `permit ${entry.id} cancel failed: ${e.code || 'E_INTERNAL'}: ${e.message}`);
+      return;
     }
+    // A failure here (E_NOT_FOUND: the row is not written yet) is retried by call() once it can.
+    await expireCancelled(c, entry);
   }
 
   return { call, cancel, inFlight: () => inFlight, caller, waitMs };
