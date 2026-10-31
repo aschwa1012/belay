@@ -118,7 +118,7 @@ async function attach(E, caller, args) {
   // await adds nothing between that read and the write.
   const identity = await LA.prepare(rows.currentAll(E.store, 'worker').filter((w) => w.run_id === runId && ATTACH_SUSPECT.has(w.state)).map((w) => ({ pid: w.pid, created: w.pid_created })));
   const t = Date.now();
-  const prev = rows.current(E.store, 'run', runId);
+  let prev = rows.current(E.store, 'run', runId);
   // ADR 0041: the project is named by the spec and never derived, and it is named once. The run row's project column (what a caller's reach and the
   // `project` alias resolve through) and the resolved levers' project must be the same name, else the orchestrator would write to one project while its
   // levers describe another. Refused here, with nothing written.
@@ -146,6 +146,9 @@ async function attach(E, caller, args) {
     const a = await RL.adapterState(prev);
     if (a.state === 'live') throw err('E_RUN_LIVE', RL.liveMessage(runId, prev), { run_id: runId, adapter_pid: prev.adapter_pid, epoch: prev.epoch, adapter_state: a.state, detail: a.detail });
     if (a.state === 'unverifiable') warnings.push(RL.unverifiedWarning(runId, prev, a));
+    // The snapshot awaited above can take about a second; another writer of this row (a pause, a budget raise, the old life's
+    // run.end) may have committed meanwhile. Read the row again so the next epoch is built from it, with nothing awaited after.
+    prev = rows.current(E.store, 'run', runId);
   }
   const epoch = prev ? Number(prev.epoch || 0) + 1 : 1;
   const by = E.writtenBy(caller);
