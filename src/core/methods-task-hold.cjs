@@ -61,6 +61,10 @@ async function ensureHold(E, caller, args) {
     const task = rows.current(E.store, 'task', args.task_id);
     if (!task) throw err('E_NOT_FOUND', `no task row exists for ${args.task_id}`, { task_id: args.task_id });
     const base = { task_id: task.id, run_id: task.run_id, rehomed: false };
+    // A live run's task is that run's: another run's manager may not move it or its lease (the worker-run guard's rule, for tasks).
+    if (caller.run_id && task.run_id && task.run_id !== caller.run_id && rows.current(E.store, 'run', task.run_id) && holds.runLiveness(E.store)(task.run_id).live) {
+      throw err('E_ROLE', `task ${task.id} belongs to run ${task.run_id}, which is live, so the orchestrator of run ${caller.run_id} may not hold it for a launch`, { task_id: task.id, run_id: caller.run_id, task_run_id: task.run_id });
+    }
     // ADR 0026 amendment 2 (proposed): a worker whose death released its lease here gets it back, or is told it holds none.
     const death = require('./lease-holder-dead.cjs').reclaimForRestart(E, caller, task, args.worker_id, (t) => resolveOwner(E.store, t, caller.run_id, rows.current(E.store, 'worker', args.worker_id)));
     if (death) return { ...base, ...death };
