@@ -8,76 +8,13 @@ require('../helpers/tmp.cjs');
 
 const { test: nodeTest } = require('node:test');
 const assert = require('node:assert');
-const fs = require('node:fs');
-const path = require('node:path');
-const { core, sandbox, cleanup, callerFor } = require('../core/helpers.cjs');
-const { makeRepo, write, commit, guarded } = require('../core/worktree-helpers.cjs');
-const { createPolicyExecutor } = require('../../src/run/policy-exec.cjs');
-const { createRunManager } = require('../../src/run/index.cjs');
+const { guarded } = require('../core/worktree-helpers.cjs');
 const STEPS = require('../../src/run/policy-steps-run.cjs');
 const BUD = require('../../src/run/policy-budget.cjs');
 const PW = require('../../src/run/policy-wakes.cjs');
-const { wakeRecord } = require('../../src/run/wake-record.cjs');
-const wire = require('../../src/mcp/policy-wire.cjs');
+const { waitFor, taken, env, workDone, stepRows, latest, reviewsOf, tasksNow, wakesOf, wired, budgeted, RUN, REST, openCore } = require('./policy-review-env.cjs');
 
 const test = guarded(nodeTest);
-const { openCore } = core('index.cjs');
-const RUN = 'test-run';
-const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').split('\\').join('/');
-const USER_SETTINGS = path.join(__dirname, 'fixtures', 'user-settings.json').split('\\').join('/');
-const PASS = { commands: [{ argv: [process.execPath, '-e', 'process.exit(0)'], timeout_ms: 20000 }] };
-const REST = { fix: 'builder', re_review: 'refuter', integrate: 'on_hold' };
-
-async function env(label) {
-  const dir = sandbox();
-  const orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
-  await orch.run.attach({ adapter_pid: process.pid });
-  const op = await openCore({ dataDir: `${dir}/data`, caller: callerFor('operator'), embed: false });
-  const e = { dir, orch, op, h: orch.harness(), workers: new Map(), mgrs: [] };
-  e.raw = (sql, ...a) => orch.owner.engine.store.p(sql).all(...a);
-  e.worker = async (id, worktree = dir) => {
-    if (e.workers.has(id)) return e.workers.get(id);
-    await orch.worker.write({ id, substrate: 'claude-code', pid: process.pid, state: 'idle', session_id: `s-${id}`, last_event_at: Date.now(), worktree });
-    const c = await openCore({ dataDir: `${dir}/data`, caller: callerFor('worker', { worker_id: id }), embed: false });
-    e.workers.set(id, c);
-    return c;
-  };
-  e.manager = () => { const m = createRunManager({ core: orch, dataDir: `${dir}/data`, runId: RUN, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: USER_SETTINGS } }); e.mgrs.push(m); return m; };
-  // The executor with the adapter's assign reduced to the core call (no process is told), and the spawn over a real manager when one is given.
-  e.exec = (extra = {}, c = e.h) => { const x = createPolicyExecutor({ core: c, runId: RUN, assignFor: (stepCore) => async (a) => stepCore.task.assign(a), closeWaitMs: 0, identity: { pid: process.pid, created: 'own' }, ...extra }); x.arm(); return x; };
-  e.close = async () => {
-    // The wakes the rows owe, as the run receipt lists them, for the checkers (kept only under BELAY_KEEP_SANDBOX).
-    let receipt = null;
-    if (process.env.BELAY_KEEP_SANDBOX) { const ws = PW.derive({ runId: RUN, tasks: (await e.h.task.list({})).tasks, integrations: [], steps: (await e.h.policy.list({})).rows, failures: [] }).map(PW.wakeOf); receipt = { run_id: RUN, wakes: ws.map((w, i) => wakeRecord(w, w.text, 1000 + i, true)) }; }
-    for (const m of e.mgrs) await m.shutdown().catch(() => {});
-    for (const c of e.workers.values()) await c.close();
-    await op.close();
-    try { await orch.shutdownOwner(); } catch { /* the manager's shutdown stopped the owner already */ }
-    await orch.close();
-    if (receipt) { const to = `${process.env.BELAY_KEEP_SANDBOX}/${label}`; fs.cpSync(`${dir}/data`, to, { recursive: true }); fs.writeFileSync(`${to}/receipt.json`, JSON.stringify(receipt, null, 2)); }
-    cleanup(dir);
-  };
-  return e;
-}
-
-// A work task under `plan`, with a belay worktree (the tree a spawned reviewer starts in), handed back by `builder` and judged done by the release evaluation.
-async function workDone(e, plan, { builder = 'builder-1', label = 'w' } = {}) {
-  const repo = makeRepo(e.dir);
-  const t = await e.orch.task.create({ spec: `${label}: write a.txt`, acceptance: PASS, policy: plan });
-  const wt = (await e.op.task.worktreeCreate({ task_id: t.id, repo })).worktree;
-  write(wt.path, 'a.txt', 'a\n'); commit(wt.path, `task ${t.id}`);
-  const w = await e.worker(builder, wt.path);
-  const a = await e.orch.task.assign({ task_id: t.id, worker_id: builder });
-  await w.lease.release({ lease_id: a.new_lease.id, reason: 'done', result: { branch: 'b', head: 'h' } });
-  const done = await e.h.task.evaluate({ task_id: t.id, trigger: 'release' });
-  assert.strictEqual(done.state, 'done');
-  return { work: t, tree: wt.path, builder };
-}
-const stepRows = (e) => e.raw('SELECT * FROM policy_step ORDER BY seq');
-const latest = (e, table, id) => e.raw(`SELECT * FROM ${table} WHERE id = ? ORDER BY seq DESC LIMIT 1`, id)[0];
-const reviewsOf = (e, workId) => e.raw("SELECT DISTINCT id FROM task WHERE depends_on LIKE ? AND acceptance LIKE '%\"verdict\":true%'", `%${workId}%`);
-const tasksNow = async (e) => (await e.h.task.list({})).tasks;
-const wakesOf = async (e) => { const tasks = await tasksNow(e); return PW.derive({ runId: RUN, tasks, integrations: [], steps: (await e.h.policy.list({})).rows, failures: [] }); };
 
 test('review to a named worker: the verdict task is made under the claim and assigned to that worker; the claim names the worker and its next turn', async () => {
   const e = await env('review-assigned');
@@ -129,16 +66,13 @@ test('the orchestrator making the review between the claim and the step: the cla
   } finally { await e.close(); }
 });
 
-// The adapter's own wiring (policy-wire.cjs) over a real manager: the spawn is the manager's, the assign is compose's, and the turn is the manager's count.
-function wired(e, m) { const x = wire.start({ core: e.orch, manager: m, opts: { runId: RUN, dataDir: `${e.dir}/data` }, run: null }); x.arm(); return x; } // armed by the test: the wiring arms on its own read of the task rows, which is asynchronous
-
 test('review by spawn: the manager launches the plan\'s reviewer, the lease it holds is the step\'s, the claim names it and turn 1, and the log joins that turn\'s cost', async () => {
-  const e = await env('review-spawned');
+  const e = await env('review-spawned', { memory_levers: JSON.stringify({ capture: true, cost_ledger: true }) });
   try {
     const { work } = await workDone(e, { review: { spawn: { agent_type: 'reviewer', worker_id: 'rev-1' } }, ...REST });
     const m = e.manager();
     const x = wired(e, m);
-    const out = await x.tick();
+    await x.tick(); const out = taken(e);
     assert.deepStrictEqual(out.steps.map((s) => [s.step, s.outcome]), [['review', 'done']]);
     const made = out.steps[0].row_ref.replace('task:', '');
     const live = m._worker('rev-1');
@@ -151,12 +85,13 @@ test('review by spawn: the manager launches the plan\'s reviewer, the lease it h
     assert.deepStrictEqual(JSON.parse(lease.trigger), { table: 'task', id: work.id, seq: JSON.parse(lease.trigger).seq });
     const [step] = stepRows(e);
     assert.deepStrictEqual([step.worker_id, step.turn, step.outcome, step.row_ref], ['rev-1', 1, 'done', `task:${made}`]);
-    // The reviewer's first turn is turn 1: a usage row for it is what the log joins.
+    // The reviewer's first turn is turn 1, and the ledger row the run manager writes for that turn (cost_ledger lever, the fake's reported cost) is what the log joins.
     await m._waitTurn('rev-1', 20000);
-    await e.orch.usage.record({ worker_id: 'rev-1', turn: 1, cost_usd: 0.42, substrate: 'claude-code', cost_basis: 'delta-of-cumulative' });
-    const log = await e.orch.policy.log({});
-    assert.deepStrictEqual(log.steps.map((s) => [s.step, s.worker_id, s.turn, s.turn_cost_usd]), [['review', 'rev-1', 1, 0.42]]);
-    assert.match(require('../../src/core/policy-log.cjs').line(log.steps[0]), /\(turn 1 \$0\.42\)/, 'the printed step line carries the cost');
+    const log = await waitFor(async () => { const l = await e.orch.policy.log({}); return l.steps[0] && l.steps[0].turn_cost_usd != null ? l : null; });
+    assert.deepStrictEqual(log.steps.map((s) => [s.step, s.worker_id, s.turn, s.turn_cost_usd > 0]), [['review', 'rev-1', 1, true]]);
+    const row = e.raw("SELECT turn, cost_usd FROM usage WHERE worker_id = 'rev-1'");
+    assert.deepStrictEqual([row.length, row[0].turn, row[0].cost_usd], [1, 1, log.steps[0].turn_cost_usd], 'the cost is the ledger row the manager wrote for turn 1');
+    assert.match(require('../../src/core/policy-log.cjs').line(log.steps[0]), /\(turn 1 \$0\.\d+\)/, 'the printed step line carries the cost');
     assert.deepStrictEqual((await x.tick()).steps, []);
     assert.strictEqual(e.raw('SELECT COUNT(*) AS n FROM worker WHERE id = ?', 'rev-1')[0].n > 0, true);
   } finally { await e.close(); }
@@ -167,7 +102,7 @@ test('a spawn id made by belay is its own: a spawn with no worker_id gets rev-<h
   try {
     const { work } = await workDone(e, { review: { spawn: { agent_type: 'reviewer' } }, ...REST });
     const m = e.manager();
-    const out = await wired(e, m).tick();
+    await wired(e, m).tick(); const out = taken(e);
     assert.deepStrictEqual(out.steps.map((s) => s.outcome), ['done']);
     const [step] = stepRows(e);
     assert.match(step.worker_id, /^rev-[0-9a-f]{8}$/);
@@ -222,16 +157,14 @@ test('a pause that lands before the step\'s first write writes nothing; the reta
   } finally { await e.close(); }
 });
 
-test('a spawn that fails (the id is taken) is an exception that keeps the review task it made', async () => {
+test('a spawn that fails is an exception that keeps the review task it made', async () => {
   const e = await env('review-spawn-fails');
   try {
-    await workDone(e, { review: { spawn: { agent_type: 'reviewer', worker_id: 'taken' } }, ...REST });
-    await e.worker('taken');
-    const m = e.manager();
-    const out = await e.exec({ spawnFor: STEPS.spawnFor(m) }).tick();
+    const { work } = await workDone(e, { review: { spawn: { agent_type: 'reviewer', worker_id: 'rev-f' } }, ...REST });
+    const out = await e.exec({ spawnFor: () => async () => { throw Object.assign(new Error('no launcher'), { code: 'E_INTERNAL' }); } }).tick();
     assert.deepStrictEqual(out.steps.map((s) => s.outcome), ['exception']);
     assert.match(stepRows(e)[0].error, /could not be spawned/);
-    assert.strictEqual(m._worker('taken'), undefined);
+    assert.strictEqual(reviewsOf(e, work.id).length, 1, 'the review task it made stands');
   } finally { await e.close(); }
 });
 
@@ -255,21 +188,13 @@ test('spendForGuard: reported plus the orchestrator\'s counted cost, plus the in
   assert.match(await BUD.refusal(run(), readers(9.5)), /^E_BUDGET: the run budget is at its soft threshold \(\$9\.50 reported of \$10\.00, threshold 90%\)/);
 });
 
-async function budgeted(e, spendUsd, record = {}) {
-  const operator = await openCore({ dataDir: `${e.dir}/data`, caller: callerFor('operator'), embed: false });
-  try {
-    await operator.run.setBudget({ budget_usd: 10, budget: { soft_threshold: 0.9, counts_in_flight: false, events: [], ...record } });
-    if (spendUsd) await operator.usage.record({ worker_id: 'someone', turn: 1, cost_usd: spendUsd, substrate: 'claude-code', cost_basis: 'delta-of-cumulative' });
-  } finally { await operator.close(); }
-}
-
 test('at the soft threshold a review is not spawned: the claim ends exception E_BUDGET, no review task and no worker are made, and the wake is E9 (halting nothing)', async () => {
   const e = await env('review-budget');
   try {
     const { work } = await workDone(e, { review: { spawn: { agent_type: 'reviewer', worker_id: 'rev-b' } }, ...REST });
     await budgeted(e, 9.2);
     const m = e.manager();
-    const out = await wired(e, m).tick();
+    await wired(e, m).tick(); const out = taken(e);
     assert.deepStrictEqual(out.steps.map((s) => [s.step, s.outcome]), [['review', 'exception']]);
     const [step] = stepRows(e);
     assert.match(step.error, /^E_BUDGET: the run budget is at its soft threshold \(\$9\.20 reported of \$10\.00/);
@@ -320,7 +245,7 @@ test('through the adapter\'s wiring a review sent to a live worker is delivered 
     await m.spawn({ substrate: 'claude-code', worktree: tree, prompt: 'stand by', worker_id: 'rv', agent_type: 'reviewer' });
     await m._waitTurn('rv', 20000);
     const next = m._worker('rv').turns + 1;
-    const out = await wired(e, m).tick();
+    await wired(e, m).tick(); const out = taken(e);
     assert.deepStrictEqual(out.steps.map((s) => [s.step, s.outcome]), [['review', 'done']]);
     const [step] = stepRows(e);
     assert.deepStrictEqual([step.worker_id, step.turn], ['rv', next]);

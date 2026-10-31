@@ -26,7 +26,7 @@ const errText = (e) => `${(e && e.code) || 'E_INTERNAL'}: ${String((e && e.messa
 const keyOf = (step, t) => `${step}|${t.table}|${t.id}|${t.seq}`;
 const isRelease = (t) => !!(t && t.results && t.results.trigger === 'release');
 const SENDS = new Set(['review', 'fix', 're_review']); // the steps that send a worker work (the budget rule); integrate sends none
-const leftOver = (r) => !!r && r.policy_made === true && !r.lease; // a review a paused step made and did not hand over
+const leftOver = STEPS.leftOver; // a review a paused step made and did not hand over (never leased, never evaluated: policy-steps-run.cjs)
 const isReviewTask = (t) => !!(t.acceptance && t.acceptance.verdict === true);
 
 // The plan a task acts under and its revision. The plan is policy-wakes.cjs policyOf (one definition of who inherits); the revision is that of
@@ -133,13 +133,14 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf 
 
   // After the claim and just before the step's first write: the run is not paused or ended, and the step is still due on fresh rows at the plan
   // revision it was claimed at (the pass's snapshot can be minutes old after an integrate). -> a reason to skip, or null.
-  const seen = { run: null }; // the run row stillDue read, for the budget rule
+  const seen = { run: null, tasks: [] }; // the run row and the task rows stillDue read, for the budget rule
   async function stillDue(c) {
     const run = (await g.run.get({})).run;
     seen.run = run;
     if (!run || run.ended_at != null) return 'the run has ended after the step was claimed';
     if (run.paused_at != null) return 'E_PAUSED: the run was paused after the step was claimed; the claim is reopened and the step retaken after the resume';
     const tasks = await read(g.task.list, 'tasks', []);
+    seen.tasks = tasks;
     const integrations = c.step === 'integrate' ? await read(g.integration.list, 'integrations', []) : [];
     const same = due({ runId, tasks, integrations }).find((d) => keyOf(d.step, d.trigger) === keyOf(c.step, c.trigger));
     if (!same) return `the plan or the facts changed after the claim: ${c.step} on ${c.trigger.table}:${c.trigger.id} is no longer due`;
@@ -148,13 +149,20 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf 
   }
 
   // The budget rule (ADR 0075 decision 1): a step that sends work to a worker is not taken at the soft threshold. -> the refusal text or null.
-  const budgetRefusal = (c) => (SENDS.has(c.step) ? BUD.refusal(seen.run, { spend: (taskId) => g.usage.spend(taskId ? { task_id: taskId } : {}) }, c.task_id) : null);
+  const budgetRefusal = (c) => {
+    if (!SENDS.has(c.step)) return null;
+    const row = seen.tasks.find((t) => t.id === c.task_id); // the task row's own limit, read as the guard reads it (budget-guard.cjs loadAttach)
+    return BUD.refusal(seen.run, { spend: (taskId) => g.usage.spend(taskId ? { task_id: taskId } : {}) }, c.task_id, row ? row.budget_usd : null);
+  };
 
   async function take(c0, taken) {
     // The worker and the turn the step starts, known before the claim: a spawned reviewer's id is made here and its first turn is 1; a named
     // worker's next turn is the one its manager says. A turn the manager cannot say is left off (the log then prints no turn).
     const spawned = c0.step === 'review' && c0.review && c0.review.spawn;
-    const c = spawned && !c0.worker ? { ...c0, worker: `rev-${crypto.randomUUID().slice(0, 8)}` } : c0;
+    // A plan's own worker_id serves the first work that uses it: an id already in the store (a second work under the same plan, or the dead
+    // row a pause left in the manager's preface) is replaced by a fresh one, so a retake or a second spawn never meets "already exists".
+    const idUsed = spawned && c0.worker && g.worker ? (((await g.worker.list({})) || {}).workers || []).some((w) => w.id === c0.worker) : false;
+    const c = spawned && (!c0.worker || idUsed) ? { ...c0, worker: `rev-${crypto.randomUUID().slice(0, 8)}` } : c0;
     let turn = spawned ? 1 : null;
     if (turn == null && c.worker && turnOf) { try { const t = await turnOf(c.worker); if (Number.isInteger(t) && t > 0) turn = t; } catch { turn = null; } }
     const me = await ownId();
@@ -199,7 +207,7 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf 
       if (!now || now.ended_at != null || now.paused_at != null) { out.held = now && now.ended_at == null ? 'paused' : 'ended'; break; }
       const res = await take(c, out.steps);
       claimed.add(keyOf(c.step, c.trigger));
-      if (res && res.outcome === 'exception') for (const id of PW.haltScope(c.task_id, tasks)) halted.add(id);
+      if (res && res.outcome === 'exception' && !/^E_BUDGET/.test(res.error || '')) for (const id of PW.haltScope(c.task_id, tasks)) halted.add(id);
     }
     return out;
   }
