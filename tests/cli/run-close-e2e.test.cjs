@@ -13,7 +13,7 @@ const fs = require('node:fs');
 const { spawnSync } = require('node:child_process');
 
 const H = require('./stop-helpers.cjs');
-const P = require('../../src/run/process.cjs');
+const { survivors, describe, dropped } = require('./survivors.cjs');
 
 const { ROOT, sandbox, cleanup, makeSpec, runCli, receiptOf, waitForExit, readStoreCopy } = H;
 const FAKE_CLAUDE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
@@ -97,7 +97,9 @@ test('run close e2e: the real adapter terminated 350 ms after the orchestrator e
     assert.strictEqual(wc.marked_dead[0].worker_id, 'w-real');
     assert.strictEqual(wc.marked_dead[0].from_state, 'stopping');
     assert.strictEqual(wc.marked_dead[0].head_sha, ctx.head);
-    assert.ok(!P.pidAlive(adapterPid) && !P.pidAlive(last.pid), 'no adapter or worker process survives the run');
+    const left = survivors([adapterPid, last.pid], ctx.created);
+    assert.deepStrictEqual(left.survivors, [], `no adapter or worker process survives the run: ${describe(left.survivors)}; ${dropped(left)}`);
+    if (left.reused.length || left.gone.length) console.log(`run-close sweep: ${dropped(left)}`);
     const rr = runRows(ctx.dataDir);
     assert.ok(rr[rr.length - 1].ended_at != null);
   } finally { await finish(ctx); }
@@ -131,6 +133,8 @@ test('run close e2e: a graceful adapter at the default close_grace_ms is waited 
     const ended = receipt.store.ended.ended_at;
     assert.ok(last.written_at <= ended + 250, 'the adapter\'s row landed before run.end, not after (two processes, a quarter second of slack)');
     assert.ok(!rows.some((r) => r.death_established_by && /^run\.end/.test(r.death_established_by)), 'run.end closed nothing');
-    assert.ok(![...ctx.pids].some((p) => p !== ctx.run.proc.pid && P.pidAlive(p)), 'no adapter or worker process survives the run');
+    const left = survivors([...ctx.pids].filter((p) => p !== ctx.run.proc.pid), ctx.created); // by {pid, created} where the row recorded one: a reused pid is not a survivor
+    assert.deepStrictEqual(left.survivors, [], `no adapter or worker process survives the run: ${describe(left.survivors)}; ${dropped(left)}`);
+    if (left.reused.length || left.gone.length) console.log(`run-close sweep: ${dropped(left)}`);
   } finally { await finish(ctx); }
 });
