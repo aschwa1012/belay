@@ -117,6 +117,8 @@ test('a claim whose reply was never confirmed and whose adapter is gone is relea
   assert.deepStrictEqual(D.readDeliveries(dir, RUN).map((x) => x.task_id), ['K'], 'and its delivery');
   const again = await rw2.wait(args(c, { ms: 100 }));
   assert.deepStrictEqual(again.exceptions.map((e) => e.task_id), ['W'], 'the lost exception is offered again');
+  const third = await rw2.wait(args(c, { ms: 100 }));
+  assert.strictEqual(third.exceptions, undefined, 'and only once');
   assert.ok(kept);
   // A live adapter's unconfirmed claim is not touched.
   const live = createRunWait({ core: fakeCore([failed({ task_id: 'L' })]), runId: RUN, dataDir: dir, pollMs: 100, clock: c, claimant: me, alive: async () => true });
