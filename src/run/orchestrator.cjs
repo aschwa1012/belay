@@ -122,8 +122,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   let pollHandle = null;
   let pollInFlight = false; // 5a-2: at most one store read at a time, guard not a queue
   let pollByTurnEnd = false; // whether the read in flight was started by a turn end
-  let pollReadDone = false; // whether the pass in flight has finished its worker.list read
-  let pollAgain = false; // a turn end landed after the pass's read: poll once more as soon as the pass ends
+  let pollReadDone = false, pollAgain = false; // the pass's read is done; a turn end landed after it, so poll once more
   const deadPids = require('./dead-pids.cjs').createDeadPids({ graceMs: DEATH_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid) });
   const holdRecorder = createHoldRecorder(); // wake.cjs (design item 9): moved out of this file
   const leftovers = require('./orchestrator-leftovers.cjs').createLeftovers({ child, P, state, core, runId }); // ADR 0054 amendment 2
@@ -257,33 +256,21 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
 
   // 5b: one poll chain for the run's whole life, from the moment the ready check begins until the
   // run is finishing — not only while the orchestrator is idle, because a worker can finish a turn
-  // or die while the orchestrator is still mid-turn on its own, and that wake must still reach stdin
-  // the moment it is found (ADR 0015's evidence: a wake is cheaper precisely because it does not
-  // wait for an idle moment). Started synchronously from the `ready` event itself (`handleEvent`,
-  // below), after the synchronous `verifyClaudeReady` check has already run (S2 fix round 3), so that a worker's turn
+  // or die while the orchestrator is mid-turn, and that wake must reach stdin the moment it is found
+  // (ADR 0015's evidence: a wake does not wait for an idle moment). Started synchronously from the `ready` event itself (`handleEvent`), after the synchronous `verifyClaudeReady` check has already run (S2 fix round 3), so that a worker's turn
   // ending inside the orchestrator's own first stdout chunk — ready and its own first turn end can
   // arrive in the very same chunk — is still caught by a read that began before that chunk's later
   // events set the orchestrator busy or idle. 5a-2's guards still hold: at most one store read in
   // flight, and a failed read does not fail open. Every state is read (not just starting/running) so
   // a death is seen. The stdin-close decision is made only while idle (the freshest `state.idle`, not
-  // the snapshot): no worker of this run mid-turn (the store's own `mid_turn` column, every turn, not
-  // only the first), no wake still unanswered, and (5b-4) no non-terminal row whose pid just died
+  // the snapshot): no worker of this run mid-turn (the store's own `mid_turn` column, every turn), no wake still unanswered, and (5b-4) no non-terminal row whose pid just died
   // still inside its detector grace.
-  // The guard covers the whole pass (the read, the enrichment and watcher awaits, the writes, the idle close), not only the
-  // read: a second pass started by a turn end while the first still held derived, unwritten wakes could close stdin under
-  // them and leave two poll chains running. A turn end that lands after the read sets `pollAgain`, and the pass that holds
-  // the guard polls once more when it ends.
+  // The guard covers the whole pass, not only the read: a second pass could close stdin under the first's unwritten wakes.
   async function pollOnce(byTurnEnd = false) {
     if (state.finishing || pollInFlight) return;
-    pollInFlight = true;
-    pollReadDone = false;
-    pollAgain = false;
+    pollInFlight = true; pollReadDone = false; pollAgain = false;
     try { await pollPass(byTurnEnd); } finally { pollInFlight = false; }
-    if (pollAgain && !state.finishing) {
-      pollAgain = false;
-      if (pollHandle) { clearTimeout(pollHandle); pollHandle = null; }
-      pollOnce(true);
-    }
+    if (pollAgain && !state.finishing) { if (pollHandle) { clearTimeout(pollHandle); pollHandle = null; } pollOnce(true); }
   }
 
   async function pollPass(byTurnEnd) {
