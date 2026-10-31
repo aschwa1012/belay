@@ -68,6 +68,13 @@ const cleanRefutation = (r) => r.executable === true && failing(r).length > 0 &&
 // Whether review R judged the newest fix of the work (or the work itself, when no fix exists). The newest is by creation order, the seq of a fix's FIRST
 // version (`firstSeq`, from policy.revisions): a later row on an older fix (a sweep, a worktree record) must not make it look newer. Without the
 // versions read (a cut-off or failed read, or a fix missing from it) the order is unknown, and it fails toward waking: E2 is raised, never suppressed.
+// A fix round is left on this derived review: the hard cap allows one when there is a hard cap, else max_fix_rounds is not yet reached.
+// With a hard cap max_fix_rounds is a notice only: the fix past it is made with fix_notice, and the fix step wakes E2 on it.
+function fixRoundsLeft(rv) {
+  if (rv.rounds_left != null) return rv.rounds_left > 0;
+  return !(rv.max_fix_rounds != null && rv.fix_rounds_used >= rv.max_fix_rounds);
+}
+
 function finalFixJudged(work, R, tasks, byId, firstSeq) {
   const fixes = tasks.filter((t) => t.id !== work.id && t.repairs && rootOf(t, byId).id === work.id);
   if (!fixes.length || !fixes.every((t) => firstSeq.has(t.id))) return true;
@@ -157,7 +164,7 @@ function derive(snap) {
         if (!P.fix) add('E1', x, tref(R), 'fix', { review: R.id, titles }, fact);
         // E2 is a review REFUTED with no rounds left: the refute of the final allowed fix's re-review. While a newer fix than the one this review judged exists,
         // the last allowed round has not been reviewed yet, so the refute is not the cap.
-        else if (rv.rounds_left === 0 && finalFixJudged(x, R, tasks, byId, firstSeq)) add('E2', x, tref(R), 'fix', { review: R.id, titles, used: rv.fix_rounds_used, max: rv.max_fix_rounds }, fact);
+        else if (!fixRoundsLeft(rv) && finalFixJudged(x, R, tasks, byId, firstSeq)) add('E2', x, tref(R), 'fix', { review: R.id, titles, used: rv.fix_rounds_used, max: rv.max_fix_rounds }, fact);
       } else if (facts.should_fix.n > 0 && (!P.follow_up || P.follow_up === 'wake') && !(rv.follow_ups && rv.follow_ups.length) && !(x.integration && x.integration.state === 'merged')) {
         add('E7', x, tref(R), P.follow_up ? 'follow_up' : 'none', { review: R.id, n: facts.should_fix.n, titles: facts.should_fix.titles }, fact);
       }
@@ -296,4 +303,4 @@ function createPolicyWatcher({ core, runId, enabled = false }) {
   return { poll, active: () => last.slice() };
 }
 
-module.exports = { derive, readRevisions, familyIds, exceptionOf, policyOf, rootOf, haltScope, haltedIds, textOf, wakeOf, createPolicyWatcher, HALTING, HALT_SCOPE, WAKE_TEXT_MAX };
+module.exports = { fixRoundsLeft, derive, readRevisions, familyIds, exceptionOf, policyOf, rootOf, haltScope, haltedIds, textOf, wakeOf, createPolicyWatcher, HALTING, HALT_SCOPE, WAKE_TEXT_MAX };
