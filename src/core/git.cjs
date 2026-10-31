@@ -4,22 +4,17 @@
 // The environment is the owner's own with prompts and editors turned off, so no call can wait on a person.
 
 const { err } = require('./errors.cjs');
-const { safeGit } = require('./git-safe.cjs');
+const { safeGit, withoutInjected } = require('./git-safe.cjs');
 const { runCommand, parsePorcelainZ, readOnlyGitEnv } = require('./evaluate.cjs');
 
 const GIT_TIMEOUT_MS = 120000; // a checkout of a large tree (this repository: about 10,800 files) takes seconds
 const LIST_TAIL = 4 * 1024 * 1024;
 
 // GIT_OPTIONAL_LOCKS=0: a `git status` takes no index lock and writes no refreshed index (reading never writes).
-// The variables that name which repository, index or object store a call acts on are dropped: an owner born inside a git hook inherits
-// them, and a call that followed them would act on that hook's repository (git-safe.cjs drops every GIT_* variable for reads). A
-// caller that wants one (a temporary GIT_INDEX_FILE) passes it through `run`'s `env`.
-const LOCATING = /^GIT_(DIR|INDEX_FILE|WORK_TREE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|COMMON_DIR)$/i;
-const gitEnv = () => {
-  const out = {};
-  for (const [k, v] of Object.entries(readOnlyGitEnv())) if (!LOCATING.test(k)) out[k] = v;
-  return { ...out, GIT_TERMINAL_PROMPT: '0', GIT_EDITOR: 'true', GIT_SEQUENCE_EDITOR: 'true', GIT_MERGE_AUTOEDIT: 'no' };
-};
+// The variables that name which repository, index or object store a call acts on, or inject configuration, are dropped (git-safe's
+// withoutInjected): an owner born inside a git hook inherits them. A caller that wants one (a temporary GIT_INDEX_FILE) passes it
+// through `run`'s `env`.
+const gitEnv = () => ({ ...withoutInjected(readOnlyGitEnv()), GIT_TERMINAL_PROMPT: '0', GIT_EDITOR: 'true', GIT_SEQUENCE_EDITOR: 'true', GIT_MERGE_AUTOEDIT: 'no' });
 
 const fwd = (p) => String(p).split('\\').join('/');
 
@@ -32,7 +27,7 @@ async function run(cwd, args, { timeoutMs = GIT_TIMEOUT_MS, env = null } = {}) {
   const argv = ['git', ...args];
   const safe = !env && HARDENED.has(args[0]);
   const r = safe
-    ? await safeGit(args[0] === 'diff' ? ['diff', '--no-ext-diff', '--no-textconv', ...args.slice(1)] : args, cwd, timeoutMs, { tail: LIST_TAIL, env: process.env })
+    ? await safeGit(args[0] === 'diff' ? ['diff', '--no-ext-diff', '--no-textconv', ...args.slice(1)] : args, cwd, timeoutMs, { tail: LIST_TAIL, lineEndings: true })
     : await runCommand(argv, cwd, timeoutMs, { env: { ...gitEnv(), ...(env || {}) }, tail: LIST_TAIL });
   return {
     ok: r.executable && r.exit_code === 0 && !r.timed_out && !r.truncated, exit_code: r.exit_code, timed_out: r.timed_out,

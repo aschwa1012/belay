@@ -8,7 +8,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
-const { gitPath } = require('../core/git-safe.cjs');
+const { gitPath, PRE, withoutInjected } = require('../core/git-safe.cjs');
 
 const BUILTINS = ['Read', 'Glob', 'Grep'];
 const DIFF_MAX = 200 * 1024;
@@ -177,7 +177,7 @@ async function runChild({ manager, workerId, worktree, model, capUsd, wallMs, pr
 
 function git(worktree, args, opts = {}) {
   return new Promise((resolve) => {
-    execFile(gitPath(), ['-C', worktree, ...args], { maxBuffer: 16 * 1024 * 1024, timeout: GIT_BOUND_MS, windowsHide: true, encoding: 'utf8', ...opts }, (e, out) => resolve(e ? { error: e.killed ? 'git timed out' : 'git failed' } : { text: out }));
+    execFile(gitPath(), [...PRE, '-C', worktree, ...args], { maxBuffer: 16 * 1024 * 1024, timeout: GIT_BOUND_MS, windowsHide: true, encoding: 'utf8', env: withoutInjected(), ...opts }, (e, out) => resolve(e ? { error: e.killed ? 'git timed out' : 'git failed' } : { text: out }));
   });
 }
 async function diffText(worktree, base, head) {
