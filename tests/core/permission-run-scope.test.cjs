@@ -44,3 +44,15 @@ test("an orchestrator of run rb neither lists nor decides run ra's permission re
   await wa.permission.request({ id: 'tu2', tool: 'Bash', input: null });
   assert.strictEqual((await a.permission.decide({ id: 'tu2', verdict: 'allow' })).verdict.state, 'allowed');
 });
+
+test("a worker with the same id in another run can neither expire nor wait on this run's permission row", async () => {
+  const wb = await openCore({ dataDir: dir, caller: callerFor('worker', { run_id: 'rb', worker_id: 'X' }), embed: false });
+  try {
+    await wa.permission.request({ id: 'tu3', tool: 'Bash', input: null });
+    await assert.rejects(wb.permission.decide({ id: 'tu3', verdict: 'expire' }), (e) => { assert.strictEqual(e.code, 'E_ROLE'); return true; });
+    await assert.rejects(wb.permission.wait({ id: 'tu3', timeout_ms: 50 }), (e) => { assert.strictEqual(e.code, 'E_ROLE'); return true; });
+    const row = (await operator.permission.list({})).requests.find((r) => r.id === 'tu3');
+    assert.strictEqual(row.state, 'pending', 'the refused expire wrote nothing');
+    assert.strictEqual((await wa.permission.decide({ id: 'tu3', verdict: 'expire' })).verdict.state, 'expired', 'the owner worker still can');
+  } finally { await wb.close(); }
+});

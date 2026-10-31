@@ -78,8 +78,8 @@ function checkRole(caller, verdict, row) {
     if (verdict !== 'expire') {
       throw err('E_ROLE', `a worker may only expire its own permission row, and this call asked to ${verdict}`, { verdict, role: caller.role, allowed: ['expire'] });
     }
-    if (row && row.worker_id !== caller.worker_id) {
-      throw err('E_ROLE', `a worker may only expire its own permission row; ${row.id} belongs to worker ${row.worker_id}`, { verdict, role: caller.role, worker_id: row.worker_id });
+    if (row && (row.worker_id !== caller.worker_id || row.run_id !== caller.run_id)) {
+      throw err('E_ROLE', `a worker may only expire its own permission row; ${row.id} belongs to worker ${row.worker_id} of run ${row.run_id}`, { verdict, role: caller.role, worker_id: row.worker_id, run_id: row.run_id });
     }
     return;
   }
@@ -139,8 +139,8 @@ async function wait(E, caller, args) {
   if (typeof args.id !== 'string' || !args.id) throw err('E_ARGS', 'permission.wait needs id');
   const current = currentOf(E, args.id);
   if (!current) throw err('E_NOT_FOUND', `no permission row with id ${args.id}`, { id: args.id });
-  if (current.worker_id !== caller.worker_id) {
-    throw err('E_ROLE', `permission row ${args.id} belongs to worker ${current.worker_id}, not ${caller.worker_id}`, { id: args.id, worker_id: current.worker_id });
+  if (current.worker_id !== caller.worker_id || current.run_id !== caller.run_id) {
+    throw err('E_ROLE', `permission row ${args.id} belongs to worker ${current.worker_id} of run ${current.run_id}, not ${caller.worker_id} of run ${caller.run_id}`, { id: args.id, worker_id: current.worker_id, run_id: current.run_id });
   }
   if (current.state !== 'pending') {
     return { request: current, timed_out: false, already: true, waited_ms: 0 };
