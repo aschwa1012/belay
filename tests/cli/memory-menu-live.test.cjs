@@ -99,7 +99,7 @@ test('a paused run holds its pin whatever its pid says, and the refusal says how
   const r = await del(proj, data, R4);
   assert.strictEqual(r.code, 1);
   assert.match(r.text, /r-park \(paused\)/);
-  assert.match(r.text, /To clear a stale run: r-park \(paused\).*belay stop r-park/);
+  assert.match(r.text, /To clear a stale run: r-park \(paused\).*belay resume r-park/);
   assert.ok(fs.existsSync(dir));
 });
 
