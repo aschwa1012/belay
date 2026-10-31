@@ -262,6 +262,12 @@ test('memory usage errors exit 2 and name the problem; the core is never opened'
   }
 });
 
+test('memory resolve: the usage lists refines, which checkResolve accepts', async () => {
+  const r = await MEM.run({ argv: ['resolve'], cwd: ROOT, dataDir: `${ROOT}/.belay-none`, json: false, openCore: async () => fakeCore() });
+  assert.strictEqual(r.code, 2);
+  assert.match(r.text, /belay memory resolve <id> refines <of>/);
+});
+
 test('memory search: the warning is the first line of the text and the first key of the json; exit 0 when a mode ran, 1 when none did', async () => {
   const warning = 'semantic search did not run (E_NO_EMBEDDER); these are keyword matches only; no match here does not mean no such entry';
   const answer = {
