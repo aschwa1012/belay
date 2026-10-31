@@ -61,6 +61,7 @@ async function reReview(c, env) {
     acceptance: { verdict: true }, depends_on: [c.fix_id],
   });
   const ref = `task:${made.id}`;
+  if (made.existing === true) return { outcome: made.superseded === true ? 'superseded' : 'done', row_ref: ref }; // a review of the fix stands: it is not assigned again
   return handOver(env, { task_id: made.id, worker_id: c.worker }, ref);
 }
 
@@ -105,6 +106,7 @@ ${work.spec}` : ''}`,
     acceptance: { verdict: true }, depends_on: [c.task_id],
   });
   const ref = `task:${made.id}`;
+  if (made !== left && made.existing === true) return { outcome: made.superseded === true ? 'superseded' : 'done', row_ref: ref }; // a review of the work stands: it is not assigned or spawned for again
   if (!spawn) return handOver(env, { task_id: made.id, worker_id: c.worker }, ref, true); // a pause between the gate above and this assignment is a retake, as it is for a spawn
   let row;
   try { row = await env.spawn({ substrate: 'claude-code', worktree: tree, task_id: made.id, agent_type: spawn.agent_type, worker_id: c.worker }); } catch (e) { if (e && e.code === 'E_PAUSED') return paused(`the run was paused as the reviewer was spawned; review task ${made.id} stands unassigned and the retake assigns it`); return exception(`the reviewer could not be spawned: ${errText(e)}${c.review.spawn.worker_id ? `; the plan names spawn.worker_id ${c.review.spawn.worker_id}, and a reviewer shared by several works is review: { worker: <id> }, not a spawn` : ''}`, ref); }
