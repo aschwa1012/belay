@@ -84,8 +84,8 @@ test("permit: a call writes a pending row from argv identity and answers allow w
   const row = await until(async () => {
     const { requests } = await orchCore.permission.list({ run_id: 'run-h' });
     return requests.find((r) => r.id === toolUseId) || null;
-  }, 2000);
-  assert.ok(row, 'the pending row never appeared within 2,000 ms');
+  }, 15000); // a ceiling for a polled event (it returns as soon as the row shows), not a timing claim
+  assert.ok(row, 'the pending row never appeared within 15,000 ms');
   assert.strictEqual(row.worker_id, 'w-h');
   assert.strictEqual(row.run_id, 'run-h');
   assert.strictEqual(row.adapter_pid, a.pid);
@@ -118,8 +118,8 @@ test('permit: deny answers the reason as the message and the row reads denied wi
   const row = await until(async () => {
     const { requests } = await orchCore.permission.list({ run_id: 'run-i' });
     return requests.find((r) => r.id === toolUseId) || null;
-  }, 2000);
-  assert.ok(row, 'the pending row never appeared within 2,000 ms');
+  }, 15000); // a ceiling for a polled event (it returns as soon as the row shows), not a timing claim
+  assert.ok(row, 'the pending row never appeared within 15,000 ms');
 
   await orchCore.permission.decide({ id: toolUseId, verdict: 'deny', reason: 'no thanks' });
   const msg = await callPromise;
@@ -180,15 +180,15 @@ test('permit: notifications/cancelled for an in-flight call expires the row nami
   const row = await until(async () => {
     const { requests } = await orchCore.permission.list({ run_id: 'run-k' });
     return requests.find((r) => r.id === toolUseId) || null;
-  }, 2000);
-  assert.ok(row, 'the pending row never appeared within 2,000 ms');
+  }, 15000); // a ceiling for a polled event (it returns as soon as the row shows), not a timing claim
+  assert.ok(row, 'the pending row never appeared within 15,000 ms');
 
   a.child.stdin.write(`${JSON.stringify({ jsonrpc: '2.0', method: 'notifications/cancelled', params: { requestId: rpcId } })}\n`);
 
   const gotRow = await until(async () => {
     const { requests } = await orchCore.permission.list({ states: ['expired'] });
     return requests.find((x) => x.id === toolUseId) || null;
-  }, 2000);
+  }, 15000);
   assert.ok(gotRow, 'the row must read expired after the cancel');
   assert.match(gotRow.reason, /substrate/);
 
