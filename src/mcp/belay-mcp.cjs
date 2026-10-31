@@ -12,6 +12,7 @@
 'use strict';
 
 const fs = require('node:fs');
+const { StringDecoder } = require('node:string_decoder');
 const path = require('node:path');
 
 const { toolsFor, routeOf, allows, roleOf, validateArgs, PERMIT_TOOL } = require('./tools.cjs');
@@ -403,6 +404,7 @@ async function handle(msg) {
 const keepalive = opts.role !== 'worker' ? null : require('./lease-keepalive.cjs').createKeepalive({
   call: (m, a) => callCore(m, a, 'keepalive'), workerId: opts.workerId, log: wlog, tickMs: Number(process.env.BELAY_KEEPALIVE_TICK_MS) });
 let buf = '';
+const stdinDecoder = new StringDecoder('utf8'); // a multi-byte character can be split across two chunks
 wlog('##', `start role=${opts.role} run=${opts.runId} worker=${opts.workerId || '-'} data=${opts.dataDir}`);
 
 // ADR 0045 decision 2: with --bind the adapter claims its identity BEFORE it reads a byte of MCP, so `initialize` is answered only by a
@@ -411,7 +413,7 @@ wlog('##', `start role=${opts.role} run=${opts.runId} worker=${opts.workerId || 
 function startServing() {
   if (keepalive) keepalive.start();
   process.stdin.on('data', (d) => {
-    buf += d.toString('utf8');
+    buf += stdinDecoder.write(d);
     let i;
     // Each request is handled as its own promise and never awaited here, so a worker_spawn that takes
     // seconds cannot stop the loop from answering status (ADR 0010 consequences).
