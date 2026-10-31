@@ -36,7 +36,7 @@ function createWait({ workers, get, core = null, policyWait = () => null }) {
     // ADR 0058, the idle-workers amendment (proposed): every answer names the workers this manager launched that sit idle with no task.
     const idleOf = async () => { const v = await require('./idle-remind.cjs').idleRecords(core, workers.values()); return v.length ? { idle_without_task: v } : {}; };
     const runWait = policyWait();
-    if (runWait && runWait.active() && !(Array.isArray(worker_ids) && worker_ids.length)) return runWait.wait({ ms, capNote, t0, workers: [...workers.values()], idleOf });
+    if (runWait && !(Array.isArray(worker_ids) && worker_ids.length) && await runWait.active()) return runWait.wait({ ms, capNote, t0, workers: [...workers.values()], idleOf });
     const ids = Array.isArray(worker_ids) && worker_ids.length ? worker_ids : [...workers.keys()];
     if (!ids.length) fail('E_ARGS', 'wait needs a worker, and this run manager has launched none');
     const ws = ids.map(get);

@@ -43,7 +43,7 @@ const realClock = {
 
 
 // core: the harness core (task, integration, policy, memory reads). dataDir: where the claims live. armed(): whether the run has a plan.
-function createRunWait({ core, runId, dataDir, armed = () => true, signal: lifeSignal = null, clock = realClock, pollMs = POLL_MS, watcher = null, claimant = undefined, alive = null, hooks = {} }) {
+function createRunWait({ core, runId, dataDir, armed = () => true, settled = null, signal: lifeSignal = null, clock = realClock, pollMs = POLL_MS, watcher = null, claimant = undefined, alive = null, hooks = {} }) {
   const exceptions = watcher || PW.createPolicyWatcher({ core, runId, enabled: true });
   const pending = []; // exception wakes polled and not yet delivered, oldest first
   const reported = new Set(); // worker lives already named in a return
@@ -150,7 +150,11 @@ function createRunWait({ core, runId, dataDir, armed = () => true, signal: lifeS
   // watcher derives the exceptions again from the rows, and the steps are in no digest. The seam for any other "release on X" is `orphan`.
   const releaseOrphans = () => D.releaseUnconfirmed({ dataDir, runId, orphan: async (c) => c.pid !== process.pid && !(await isAlive(c.pid, c.created)) });
 
-  return { wait, active: () => !!armed(), pending: () => pending.slice(), releaseOrphans };
+  // The first look at whether the run is planned also waits for the sweep of a dead adapter's claims, so no wait claims before it is done.
+  let swept = null;
+  const active = async () => { if (settled) await settled; if (!armed()) return false; if (!swept) swept = releaseOrphans().catch(() => {}); await swept; return true; };
+
+  return { wait, active, pending: () => pending.slice(), releaseOrphans };
 }
 
 module.exports = { createRunWait, boundOf, POLICY_WAIT_DEFAULT_MS, POLL_MS };

@@ -65,7 +65,7 @@ test('a wait with no plan is unchanged: the policy wait is never asked, and noth
   assert.strictEqual(r.timed_out, false);
   const r2 = await wait({ timeout_ms: 1000 });
   assert.strictEqual(r2.event, 'turn_end', 'no worker named, no plan: the whole run manager is watched as before');
-  assert.strictEqual(asked, 2);
+  assert.strictEqual(asked, 1, 'asked only for the call that names no worker');
   assert.deepStrictEqual(core.calls, []);
   const none = createWait({ workers: new Map(), get: () => null, core: null });
   await assert.rejects(() => none({ timeout_ms: 10 }), (e) => e.code === 'E_ARGS' && /launched none/.test(e.message));
