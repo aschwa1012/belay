@@ -316,3 +316,47 @@ test('a turn end with no hand-back is kept under a plan: a worker still holding 
   const other = await RE.enrichWakes(coreOf([handed({ policy: PLAN })]), RUN, [turnEnd('w9')], new Map());
   assert.strictEqual(other.length, 1, 'another worker turn end is not the hand-back one');
 });
+
+test('E2 fires only when the re-review of the final allowed fix refutes: with a cap of 1, fix 1 runs and is re-reviewed first', () => {
+  const R1 = reviewTask('R1', 'W', 'refuted', [f('blocking', 'first')]);
+  const cap = (over) => ({ state: 'refuted', rounds_left: 0, fix_rounds_used: 1, max_fix_rounds: 1, ...over });
+  // Before any fix the cap is 1: a refute with a round left is the fix's to take (routine), not E2.
+  assert.deepStrictEqual(PW.derive(snap([work('W', { review: cap({ review_id: 'R1', rounds_left: 1, fix_rounds_used: 0 }) }), R1])), []);
+  // Fix 1 exists, the derived rounds_left is already 0, but the fix has not been handed back or re-reviewed: no E2, the last round is not lost.
+  const F1 = task('F1', { repairs: 'W', acted_by: 'policy', state: 'assigned' });
+  assert.deepStrictEqual(PW.derive(snap([work('W', { review: cap({ review_id: 'R1' }) }), R1, F1])), [], 'the review that refuted the work is not the cap');
+  // The re-review of fix 1 refutes: now E2, filed under the work.
+  const R2 = reviewTask('R2', 'F1', 'refuted', [f('blocking', 'still broken')]);
+  const e = PW.derive(snap([work('W', { review: cap({ review_id: 'R2' }) }), R1, F1, R2]));
+  assert.deepStrictEqual(kinds(e), ['E2:fix']);
+  assert.deepStrictEqual([e[0].task_id, e[0].trigger.id], ['W', 'R2']);
+  // A refused fix for the cap is still E2 (the other source), and with no fixes at all a cap of 0 is E2 at once.
+  assert.deepStrictEqual(kinds(PW.derive(snap([work('W', { review: cap({ review_id: 'R1', fix_rounds_used: 0 }) }), R1]))), ['E2:fix']);
+});
+
+test('a plan amend (a higher policy_rev in the task rows after the exception) lifts the halts of E1, E2, E5, E6 and E7, and a restart still sees it lifted', () => {
+  const rv = (state, id, extra = {}) => ({ state, review_id: id, rounds_left: 1, fix_rounds_used: 0, max_fix_rounds: 2, ...extra });
+  const cases = {
+    E1: (rev) => [work('W', { policy_rev: rev, policy: { ...PLAN, fix: undefined }, review: rv('refuted', 'R') }), reviewTask('R', 'W', 'refuted', [f('blocking', 'x')])],
+    E2: (rev) => [work('W', { policy_rev: rev, review: rv('refuted', 'R', { rounds_left: 0 }) }), reviewTask('R', 'W', 'refuted', [f('blocking', 'x')])],
+    E5: (rev) => [work('W', { policy_rev: rev, state: 'released', results: release({ passed: false, checks: [{ kind: 'command', argv: ['x'], passed: false, exit_code: 1 }] }) })],
+    E6: (rev) => [work('W', { policy_rev: rev, results: release({ flaky: true }) }), reviewTask('R', 'W', 'holds', [])],
+    E7: (rev) => [work('W', { policy_rev: rev, review: rv('holds', 'R') }), reviewTask('R', 'W', 'holds', [f('should-fix', 'a')])],
+  };
+  // The work's versions, as policy.revisions reads them: rev 1 written before the evaluations (evaluated_at 20), rev 2 by an amend after them.
+  const versions = (...revs) => revs.map(([policy_rev, written_at], i) => ({ id: 'W', seq: i + 1, written_at, policy_rev }));
+  for (const [E, mk] of Object.entries(cases)) {
+    const before = mk(1);
+    const first = PW.derive(snap(before, { revisions: versions([1, 5]) }));
+    assert.ok(first.some((x) => x.exception === E && !x.lifted), `${E} is active at rev 1`);
+    assert.ok([...PW.haltedIds(first, before)].includes('W'), `${E} halts the task`);
+    const after = mk(2).map((t) => ({ ...t, seq: t.seq + 1000 })); // the amend wrote a newer row; the facts (evaluations) are the same
+    for (let restart = 0; restart < 2; restart += 1) { // the second derive is a fresh process with no state: the answer is the same
+      const second = PW.derive(snap(after, { revisions: versions([1, 5], [2, 30]) }));
+      assert.ok(second.some((x) => x.exception === E && x.lifted), `${E} is lifted by the amend (derive ${restart + 1})`);
+      assert.deepStrictEqual([...PW.haltedIds(second, after)], [], `${E}: no halt after an amend`);
+    }
+    assert.ok(PW.derive(snap(after, { revisions: versions([2, 5]) })).every((x) => !x.lifted), `${E}: an amend before the fact is not a lift`);
+    assert.ok(PW.derive(snap(after)).every((x) => !x.lifted), `${E}: with no revisions read there is no amend lift`);
+  }
+});
