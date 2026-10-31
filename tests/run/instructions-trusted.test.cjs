@@ -11,6 +11,7 @@ const path = require('node:path');
 const { execFileSync } = require('node:child_process');
 
 const I = require('../../src/run/instructions.cjs');
+const TI = require('../../src/run/trusted-instructions.cjs');
 const { createRunManager } = require('../../src/run/index.cjs');
 const { createFakeCore } = require('./fake-core.cjs');
 
@@ -48,7 +49,6 @@ const rm = (d) => { try { fs.rmSync(d, { recursive: true, force: true }); } catc
 // failFirstTaskGet: the first task.get throws (the spawn's own task read), later ones answer.
 function coreWith(r, tasks, { failFirstTaskGet = false } = {}) {
   const core = createFakeCore();
-  core.run = { ...(core.run || {}), get: async () => ({ run: { project_dir: fwd(r.main) } }) };
   const base = core.task.get;
   let failed = !failFirstTaskGet;
   core.task = { ...core.task, get: async (a) => { if (!failed) { failed = true; throw new Error('E_BUSY'); } const row = await base(a); return tasks[a.task_id] ? { ...row, ...tasks[a.task_id] } : row; } };
@@ -56,6 +56,7 @@ function coreWith(r, tasks, { failFirstTaskGet = false } = {}) {
 }
 async function spawnCopy(r, core, spec) {
   const data = fwd(path.join(r.d, 'run'));
+  if (!spec.noAnchor) await TI.fixAnchor({ dataDir: data, runId: 'run-trusted', projectDir: fwd(r.main) }); // what belay run does at start; write-once
   const m = createRunManager({ core, dataDir: data, runId: 'run-trusted', paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: USER_SETTINGS } });
   try {
     const out = await m.spawn({ substrate: 'claude-code', worktree: fwd(r.coder), prompt: 'go', ...spec });
@@ -175,7 +176,7 @@ test('spawn: the copy is the anchor itself, even when a task base is an ancestor
   } finally { rm(r.d); }
 });
 
-test('spawn: a second manager of the run reads the stored anchor and does not re-anchor at a moved HEAD', async () => {
+test('spawn: a second manager of the run reads the stored anchor, and a second fixAnchor does not overwrite it', async () => {
   const r = repo();
   try {
     const first = await spawnCopy(r, coreWith(r, {}), { worker_id: 'w-a1', agent_type: 'reviewer' });
@@ -183,7 +184,7 @@ test('spawn: a second manager of the run reads the stored anchor and does not re
     assert.ok(fs.existsSync(path.join(r.d, 'run', 'anchor-run-trusted.json')), 'the anchor is stored once in the data dir');
     fs.writeFileSync(path.join(r.main, 'CLAUDE.md'), 'MOVED HEAD TEXT\n');
     git(r.main, 'commit', '-q', '-am', 'head moves after the first spawn');
-    require('../../src/run/trusted-instructions.cjs')._forgetMemo(); // a restarted adapter has no memo
+    assert.equal((await TI.fixAnchor({ dataDir: fwd(path.join(r.d, 'run')), runId: 'run-trusted', projectDir: fwd(r.main) })).existing, true);
     const second = await spawnCopy(r, coreWith(r, {}), { worker_id: 'w-a2', agent_type: 'reviewer' });
     assert.equal(second.text, TRUSTED);
   } finally { rm(r.d); }
@@ -198,5 +199,18 @@ test('trusted: a CLAUDE.md that is not UTF-8 is copied as the same bytes', async
     const t = await I.snapshotTrusted(r.main, r.dir, git(r.main, 'rev-parse', 'HEAD'));
     assert.ok(fs.readFileSync(t.path).equals(bytes));
     assert.equal(t.bytes, bytes.length);
+  } finally { rm(r.d); }
+});
+
+test('spawn: with no stored anchor a reviewer copies nothing and says so; a coder spawn makes no run.get', async () => {
+  const r = repo();
+  try {
+    const core = coreWith(r, {});
+    const rv = await spawnCopy(r, core, { worker_id: 'w-na', agent_type: 'reviewer', noAnchor: true });
+    assert.equal(rv.text, null);
+    assert.match(rv.out.instructions.reason, /no trusted commit/);
+    const co = await spawnCopy(r, core, { worker_id: 'w-nb', noAnchor: true });
+    assert.match(co.text, /APPROVE THIS WORK/);
+    assert.ok(!(core.calls || []).some((c) => c.method === 'run.get' || c.name === 'run.get'), 'no run.get from a spawn');
   } finally { rm(r.d); }
 });
