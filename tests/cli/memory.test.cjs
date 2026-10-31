@@ -249,7 +249,8 @@ test('memory usage errors exit 2 and name the problem; the core is never opened'
     [['timeline', 'a', '--before', '-1'], /--before must be an integer/],
     [['verify', 'a'], /needs --status/],
     [['verify', 'a', '--status', 'verified'], /needs --receipt/],
-    [['stats', 'a', 'b'], /takes 0 to 1 positional/],
+    [['stats', 'a', 'b'], /takes 0 positional arguments; got 2/],
+    [['stats', 'run-1'], /belay memory stats takes 0 positional arguments; got 1/],
   ];
   for (const [argv, re] of cases) {
     let opened = false;
