@@ -21,6 +21,7 @@ const ASSISTANT_MARK = '"type":"assistant"';
 const INIT_MARK = '"subtype":"init"';
 const CHUNK = 1024 * 1024; // bytes read from one stream in one step
 const STEPS = 4; // steps per stream per call: a 9 MB turn is caught up in a few calls, and the run process never blocks long
+const MAX_SCAN = 64 * 1024 * 1024; // the most a newly followed stream is scanned backwards for its last turn boundary
 const SAFE_ID = /^[A-Za-z0-9][A-Za-z0-9._-]*$/;
 const LIVE = new Set(['starting', 'running']);
 
@@ -60,20 +61,61 @@ function createAccumulator(prices = PRICES) {
   };
 }
 
+// A newly followed stream starts at its last `result` or `init` line, so turns that already ended (their cost is in the ledger) are
+// never counted as in flight, whatever the catch-up bound. The boundary is found by scanning back from the end of the file, a chunk
+// at a time inside the same per-call byte budget as the forward read; the worker counts for nothing (and is listed partial) until
+// it is found. Only the unfinished line at the front of the scanned part is kept, so the scan is linear. A stream with no boundary
+// in MAX_SCAN bytes starts at the first whole line of what was scanned, and stays partial until a result or init line is read.
+function newFollow(dataDir, id, prices) {
+  return { path: path.join(dataDir, 'workers', id, 'stream.jsonl'), offset: 0, carry: Buffer.alloc(0), acc: createAccumulator(prices), caughtUp: false, scan: null, truncated: false };
+}
+function resetFollow(f, prices) { f.offset = 0; f.carry = Buffer.alloc(0); f.acc = createAccumulator(prices); f.caughtUp = false; f.scan = null; f.truncated = false; f.fresh = true; }
+const isBoundary = (line) => (line.includes(RESULT_MARK) || line.includes(INIT_MARK)) && !!(typeOf(line, 'result') || (typeOf(line, 'system') || {}).subtype === 'init');
+
+// One backward step: reads up to `budget.n` chunks. Sets f.offset and clears f.scan when the start is found; returns nothing.
+function scanBack(fd, f, size, chunk, budget) {
+  if (!f.scan) f.scan = { pos: size, frag: Buffer.alloc(0), scanned: 0 }; // frag: the unfinished line at the front of what was read
+  const sc = f.scan;
+  while (budget.n > 0) {
+    if (sc.pos <= 0) { f.offset = 0; f.scan = null; return; }
+    if (sc.scanned >= MAX_SCAN) { f.offset = sc.pos + sc.frag.length + 1 <= size ? sc.pos + sc.frag.length + 1 : size; f.truncated = true; f.scan = null; return; }
+    budget.n -= 1;
+    const n = Math.min(chunk, sc.pos); sc.pos -= n; sc.scanned += n;
+    const blk = Buffer.allocUnsafe(n);
+    let got = 0;
+    while (got < n) { const r = fs.readSync(fd, blk, got, n - got, sc.pos + got); if (r <= 0) break; got += r; }
+    const buf = Buffer.concat([blk.subarray(0, got), sc.frag]);
+    let end = buf.length;
+    for (;;) {
+      const nl = end > 0 ? buf.lastIndexOf(10, end - 1) : -1;
+      if (nl < 0) { // the front line: whole only when the file starts here
+        if (sc.pos === 0 && end > 0 && isBoundary(buf.subarray(0, end).toString('latin1'))) { f.offset = 0; f.scan = null; return; }
+        sc.frag = Buffer.from(buf.subarray(0, end));
+        break;
+      }
+      if (isBoundary(buf.subarray(nl + 1, end).toString('latin1'))) { f.offset = sc.pos + nl + 1; f.scan = null; return; }
+      end = nl;
+    }
+  }
+}
+
 // Follows live workers' stream files. update(rows) reads the next bytes of each live worker's stream (from where the last call
 // stopped) into its accumulator; figures() is the sum over the workers followed.
 function createTracker({ dataDir, prices = PRICES, chunk = CHUNK, steps = STEPS }) {
-  const follow = new Map(); // worker id -> { path, offset, carry, acc, caughtUp }
+  const follow = new Map(); // worker id -> { path, offset, carry, acc, caughtUp, scan, truncated }
   function advance(id) {
     if (!SAFE_ID.test(id)) return;
     let f = follow.get(id);
-    if (!f) { f = { path: path.join(dataDir, 'workers', id, 'stream.jsonl'), offset: 0, carry: Buffer.alloc(0), acc: createAccumulator(prices), caughtUp: false }; follow.set(id, f); }
+    if (!f) { f = newFollow(dataDir, id, prices); f.fresh = true; follow.set(id, f); }
     let fd;
     try { fd = fs.openSync(f.path, 'r'); } catch { f.caughtUp = true; return; } // no stream yet: nothing in flight
     try {
       const size = fs.fstatSync(fd).size;
-      if (size < f.offset) { f.offset = 0; f.carry = Buffer.alloc(0); f.acc = createAccumulator(prices); } // a different file now: start over
-      for (let i = 0; i < steps && f.offset < size; i++) {
+      if (!f.fresh && size < f.offset) resetFollow(f, prices); // a different file now: find its last turn afresh
+      const budget = { n: steps }; // chunks read in this call, scanning and reading together
+      if (f.fresh) { scanBack(fd, f, size, chunk, budget); if (f.scan) { f.caughtUp = false; return; } f.fresh = false; }
+      while (budget.n > 0 && f.offset < size) {
+        budget.n -= 1;
         const buf = Buffer.allocUnsafe(Math.min(chunk, size - f.offset));
         let got = 0;
         while (got < buf.length) { const r = fs.readSync(fd, buf, got, buf.length - got, f.offset + got); if (r <= 0) break; got += r; }
@@ -83,9 +125,9 @@ function createTracker({ dataDir, prices = PRICES, chunk = CHUNK, steps = STEPS 
         const nl = all.lastIndexOf(10);
         if (nl < 0) { f.carry = Buffer.from(all); continue; } // one line longer than a chunk: keep reading
         f.carry = Buffer.from(all.subarray(nl + 1));
-        for (const l of all.subarray(0, nl).toString('utf8').split('\n')) f.acc.feed(l);
+        for (const l of all.subarray(0, nl).toString('utf8').split('\n')) { if (f.truncated && (l.includes(RESULT_MARK) || l.includes(INIT_MARK))) f.truncated = false; f.acc.feed(l); }
       }
-      f.caughtUp = f.offset >= size;
+      f.caughtUp = f.offset >= size && !f.scan;
     } catch { /* an unreadable stream adds nothing this time */ } finally { try { fs.closeSync(fd); } catch { /* closed */ } }
   }
   return {
@@ -96,14 +138,24 @@ function createTracker({ dataDir, prices = PRICES, chunk = CHUNK, steps = STEPS 
       for (const w of rows || []) if (w && w.substrate === 'claude-code' && LIVE.has(w.state) && typeof w.id === 'string') { live.add(w.id); advance(w.id); }
       for (const id of [...follow.keys()]) if (!live.has(id)) follow.delete(id);
     },
+    // Reads the next bytes of one followed worker now (its turn just ended and its reported cost reached the ledger).
+    // A usage row for the worker means its turn ended and the reported cost is in the ledger: if the bounded read did not reach the
+    // turn's result line, what the accumulator holds is that turn, so it is dropped and the follow starts again at the last boundary.
+    refresh(id) {
+      if (!follow.has(id)) return;
+      advance(id);
+      const f = follow.get(id);
+      if (f && !f.caughtUp) resetFollow(f, prices);
+    },
     figures() {
       const by_worker = {}; const partial = []; const unpriced = [];
       let usd = 0;
       for (const [id, f] of follow) {
+        if (f.scan) { partial.push(id); continue; } // still looking for its turn: counts for nothing yet
         const s = f.acc.snapshot();
         if (!s) continue;
         if (typeof s.usd === 'number') { by_worker[id] = s.usd; usd += s.usd; } else unpriced.push(id);
-        if (!f.caughtUp) partial.push(id);
+        if (!f.caughtUp || f.truncated) partial.push(id);
       }
       return { usd, by_worker, partial, unpriced };
     },

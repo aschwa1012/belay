@@ -88,8 +88,9 @@ test('the tracker is bounded per call: a long stream is read in steps and says p
   t.update(rows);
   let f = t.figures();
   assert.deepStrictEqual(f.partial, ['t2']);
-  assert.ok(f.usd > 0 && f.usd < 40);
-  for (let i = 0; i < 6; i++) t.update(rows);
+  assert.strictEqual(f.usd, 0); // a new follow counts nothing while it looks for its turn's start
+  for (let i = 0; i < 2; i++) { t.update(rows); assert.strictEqual(t.figures().usd, 0); } // 800 KB at 256 KB a call: still scanning
+  for (let i = 0; i < 14; i++) t.update(rows);
   f = t.figures();
   assert.deepStrictEqual(f.partial, []);
   near(f.usd, 40);
@@ -139,4 +140,42 @@ test('blockOf counts the estimate in spent only when the record says the lever i
   assert.deepStrictEqual([on.spent_usd, on.basis, on.in_flight.counted], [7, 'reported + in flight (estimate)', true]);
   assert.match(RB.textOf(on), /^\$7\.00 of \$10\.00 reported, \$1\.00 of it the orchestrator's \(under\); \$3\.00 of it in flight \(estimate\), counted$/);
   assert.strictEqual(RB.blockOf(row(true, { ended_at: 5 }), { usd: 3, unknown_turns: 0 }).in_flight.usd, 0, 'an ended run has no turn in flight');
+});
+
+// $1.00 messages (100,000 output tokens each) and free padding lines of about 1 KB.
+const padLine = (i) => msg(`pad${i}`, 0).replace('"content":[]', `"content":["${'x'.repeat(1000)}"]`);
+const reads = (fn) => { const real = fs.readSync; const per = []; fs.readSync = (...a) => { const r = real(...a); per.push(r); return r; }; try { fn(); } finally { fs.readSync = real; } return per.reduce((x, y) => x + y, 0); };
+
+test('a new follow behind a long reported history counts nothing for turns that ended, and no call reads more than steps x chunk', () => {
+  put('n1', [init, msg('old'), ...Array.from({ length: 400 }, (_, i) => padLine(i)), result(1), init, msg('cur'), ...Array.from({ length: 300 }, (_, i) => padLine(`c${i}`))]);
+  const t = IF.createTracker({ dataDir: dir, chunk: 16 * 1024, steps: 2 });
+  const rows = [live('n1')];
+  let sawScan = false;
+  for (let i = 0; i < 150; i++) {
+    const n = reads(() => t.update(rows));
+    assert.ok(n <= 2 * 16 * 1024, `call ${i} read ${n} bytes`);
+    if (t.figures().partial.length) { sawScan = true; if (!t.figures().by_worker.n1) assert.strictEqual(t.figures().usd, 0, 'nothing counted while the boundary is sought'); }
+  }
+  assert.ok(sawScan);
+  const f = t.figures();
+  assert.deepStrictEqual(f.partial, []);
+  near(f.usd, 1); // only the turn after the last init
+});
+
+test('a new follow whose last line is a result is never counted, however far behind it is', () => {
+  put('n2', [init, msg('old'), ...Array.from({ length: 400 }, (_, i) => padLine(i)), result(1)]);
+  const t = IF.createTracker({ dataDir: dir, chunk: 16 * 1024, steps: 1 });
+  for (let i = 0; i < 150; i++) { t.update([live('n2')]); assert.strictEqual(t.figures().usd, 0); }
+  assert.deepStrictEqual(t.figures().partial, []);
+});
+
+test('refresh after a turn ends drops a follow that is still behind, so the turn is not left counted', () => {
+  put('n3', [init, msg('done'), result(1), init, msg('cur'), ...Array.from({ length: 400 }, (_, i) => padLine(i))]);
+  const t = IF.createTracker({ dataDir: dir, chunk: 16 * 1024, steps: 1 });
+  for (let i = 0; i < 150; i++) t.update([live('n3')]);
+  near(t.figures().usd, 1);
+  for (let i = 0; i < 400; i++) add('n3', [padLine(1000 + i)]); // a backlog of many reads before the result is reached
+  add('n3', [result(3)]);
+  t.refresh('n3');
+  assert.strictEqual(t.figures().usd, 0, 'the ended turn is not left as an estimate');
 });
