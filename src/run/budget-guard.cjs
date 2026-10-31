@@ -142,7 +142,12 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
   }
 
   // The owner's usage.record hook: a row was written. Does nothing when no limit is set.
-  function onUsage(row) { return schedule(row && row.task_id ? row.task_id : null); }
+  // With the lever on, the worker's stream is read first: its turn just ended, so the `result` line must empty its estimate before the
+  // reported cost (now in the ledger) is compared, or the turn would be counted twice until the next tick.
+  function onUsage(row) {
+    if (countInFlight && !interactive && dataDir && row && typeof row.worker_id === 'string') workers.refresh(row.worker_id);
+    return schedule(row && row.task_id ? row.task_id : null);
+  }
   function onTaskBudget({ task_id: id, budget_usd: usdLimit }) {
     if (!id || !(usdLimit > 0)) return;
     taskLimits.set(id, usdLimit);

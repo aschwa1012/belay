@@ -96,6 +96,8 @@ function createTracker({ dataDir, prices = PRICES, chunk = CHUNK, steps = STEPS 
       for (const w of rows || []) if (w && w.substrate === 'claude-code' && LIVE.has(w.state) && typeof w.id === 'string') { live.add(w.id); advance(w.id); }
       for (const id of [...follow.keys()]) if (!live.has(id)) follow.delete(id);
     },
+    // Reads the next bytes of one followed worker now (its turn just ended and its reported cost reached the ledger).
+    refresh(id) { if (follow.has(id)) advance(id); },
     figures() {
       const by_worker = {}; const partial = []; const unpriced = [];
       let usd = 0;
