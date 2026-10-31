@@ -127,6 +127,11 @@ async function setStatus(E, caller, args) {
   if (!STATUSES.includes(status)) throw err('E_ARGS', `memory.setStatus status must be one of ${STATUSES.join(', ')}`, { field: 'status', value: status });
   const target = E.store.p('SELECT type FROM memory_entries WHERE id = ?').get(id);
   if (!target) throw err('E_NOT_FOUND', `no memory row ${id}`, { id });
+  if (caller.role === 'orchestrator') {
+    // A status change, and the project copy it makes, is a write: the orchestrator's reaches only its own run, project and summary (memory-reach.cjs).
+    const ns = E.store.p('SELECT namespace FROM memory_entries WHERE id = ?').get(id).namespace;
+    require('./memory-reach.cjs').checkOrchestratorWrite(E, caller, ns, ns.startsWith('summary/') ? 'summary' : undefined);
+  }
   // ADR 0047 amendment (2026-10-22), decision 5: in a notes run a note is disputed by a report, never by a status. Only the operator's own command sets
   // a note's status; the orchestrator's `refuted` becomes a report (below, once its receipt has passed), and its `unverified` is refused because a
   // reset could bring back a note an earlier verdict refuted.
