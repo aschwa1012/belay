@@ -40,7 +40,7 @@ const { createStartFail } = require('./start-fail.cjs');
 const PARK_SETTLE_WAIT_MS = INTERRUPT_TIMEOUT_MS + EXIT_TIMEOUT_MS;
 const LIST = require('./list.cjs');
 const { EARLY, createBudget } = require('./restart-budget.cjs');
-const RG = require('./relaunch-guard.cjs'); // ADR 0026 amendment 2: a death during a relaunch keeps its lease
+const LG = require('./launch-gate.cjs'); const RG = require('./relaunch-guard.cjs'); // ADR 0026 amendment 2: a death during a relaunch keeps its lease
 const { waitTurnOrLanded } = require('./turn-wait.cjs'); // a turn that ended before the wait began is answered
 
 const { POLL_MS } = require('./exit-hold.cjs');
@@ -244,7 +244,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
     // The worker row comes first, with no pid yet: `task.assign` refuses a worker with no row, and the
     // resume line needs the lease it creates. Only `running` is pid-checked, so this is legitimate.
-    let t0 = now();
+    LG.abortIfStopped(w); let t0 = now(); // a stop that overtook the awaits above has written `stopped`: nothing is written over it
     await writeRow(w, 'starting');
     let first;
     try {
@@ -269,7 +269,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     // The index's embedding is the harness's wait, not the worker's: it counts neither toward the startup window nor in ready_ms
     // (Codex's verifyReady and the returned ready_ms run from here). Its own time is in the index_injected receipt.
     t0 += w.indexEmbedMs || 0;
-    w.firstMessage = first;
+    w.firstMessage = first; LG.abortIfStopped(w); // the last check before the launch, in the tick it starts: a stop after it finds the process
 
     await launch(w, substrate === 'claude-code' ? {} : { prompt: first });
     return guarded(w, async () => {
