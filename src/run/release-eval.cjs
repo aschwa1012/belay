@@ -56,7 +56,7 @@ async function workOf(core, row) {
 function summaryOf(row, byId, forecasts) {
   const r = row.results || {};
   const fr = fixRoundsOf(row, byId);
-  const fc = forecasts && forecasts.get(`${row.id}:${row.handoff && row.handoff.at}`);
+  const fc = forecasts && typeof forecasts.get === 'function' && forecasts.get(`${row.id}:${row.handoff && row.handoff.at}`);
   const review = reviewWake.reviewOf(row); // a review whose verdict check was executable: its facts ride on the wake (review-wake.cjs)
   return { task_id: row.id, state: row.state, passed: !!r.passed, executable: !!r.executable, checks: ((r.checks) || []).length, failing: failedKinds(row), ...(review ? { review } : {}), ...(r.flaky ? { flaky: true } : {}), ...(r.uncommitted ? { uncommitted: true } : {}), ...(r.queued ? { queued: r.queued } : {}), ...(fr ? { fix_rounds: fr } : {}), ...(fc ? { forecast: fc } : {}) };
 }
