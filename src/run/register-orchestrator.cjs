@@ -16,9 +16,10 @@ function registerOrchestrator(h, { dataDir, proc = process, register = SR, stamp
   // The stamp follows the hook's own exit facts. A hook without them would stamp nothing, and the record would then close at the spawn
   // (a fail-open): refuse, so a renamed key cannot silently stop the stamping.
   if (typeof h.exited !== 'function') throw new Error(`the orchestrator hook (pid ${pid}) has no exited() function, so its spawn register record could not be stamped while it lives`);
-  register.registerProcess({ pid, kind: 'orchestrator', dataDir, spawnedAt: Date.now() }, 'the headless orchestrator');
+  const spawnedAt = Date.now();
+  register.registerProcess({ pid, kind: 'orchestrator', dataDir, spawnedAt }, 'the headless orchestrator');
   const stamper = stamp(() => typeof h.exited === 'function' && !h.exited(), pid, stampOpts);
-  proc.once('exit', () => { stamper.stop(); register.unregister(pid); });
+  proc.once('exit', () => { stamper.stop(); register.unregister(pid, { kind: 'orchestrator', dataDir, spawnedAt }); });
   return stamper;
 }
 

@@ -34,7 +34,7 @@ function newWorkerRecord({ id, substrate, worktree, dataDir, taskId, model, allo
   const dir = L.workerDir(dataDir, id);
   fs.mkdirSync(dir, { recursive: true });
   const w = {
-    id, substrate, worktree: L.fwd(path.resolve(worktree)), dir, taskId: taskId || null,
+    id, substrate, dataDir, worktree: L.fwd(path.resolve(worktree)), dir, taskId: taskId || null,
     model: model || null, effort: effort || null, agentType: agentType || null, maxBudgetUsd, nativeMemory: nativeMemory == null ? null : trustRecord ? nativeMemory : require('./surface.cjs').checkNativeMemory(nativeMemory), nativeMemoryAuth, tools: narrowed, allowedTools: allowedTools || L.DEFAULT_ALLOWED_TOOLS,
     permissionMode: permissionMode || L.DEFAULT_PERMISSION_MODE, sandbox: sandbox || L.DEFAULT_CODEX_SANDBOX,
     // ADR 0021 decisions 3-4: what the last launch's system/init said it started with (noteInit); null
