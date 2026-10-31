@@ -120,6 +120,42 @@ test('a pass whose rows predate the orchestrator\'s turn end does not close stdi
   });
 });
 
+test('a pass whose rows predate the orchestrator\'s turn end does not close stdin on them', { timeout: 90000 }, async () => {
+  const RUN = 'run-pass-stale-read';
+  const sb = sandbox('staleread');
+  const core = createFakeCore({ runId: RUN });
+  const w = { w1: { turns: 0, mid: 0, seq: 1 }, w2: { turns: 0, mid: 0, seq: 1 } };
+  const rows = () => Object.entries(w).map(([id, r]) => ({ id, run_id: RUN, state: 'running', turns: r.turns, seq: r.seq, pid: process.pid, pid_alive: true, mid_turn: r.mid }));
+  let listN = 0;
+  let armList = false, listStalled = false, listRelease = null;
+  core.worker = { ...core.worker, list: async () => { listN += 1; const snap = rows(); if (armList) { armList = false; listStalled = true; await new Promise((r) => { listRelease = r; }); } return { workers: snap }; } };
+  core.task.worktreeSweep = async () => { w.w1.mid = 1; return { kept: [{ reason: 'dirty', path: 'C:/x/tree', task_ids: ['t1'], paths: ['a.txt'] }] }; };
+  core.task.list = async () => ({ tasks: [] });
+    fs.writeFileSync(sb.gate, '1');
+  await withEnv(sb, async () => {
+    const runP = start(core, RUN, sb);
+    let out = null; runP.then((o) => { out = o; });
+    await until(() => streamLines(sb, '"type":"result"') >= 2, 20000, 'the pre-close notice answered');
+    fs.rmSync(sb.gate);
+    w.w2.turns = 1; w.w2.seq = 2; // a wake opens an orchestrator turn that stays open
+    await until(() => streamLines(sb, '"subtype":"init"') >= 3, 10000, 'the orchestrator to take the w2 wake');
+    w.w1.mid = 0; // w1 is idle at the next read
+    const n0 = listN; await until(() => listN >= n0 + 2, 5000, 'passes after w1 went idle');
+    armList = true; // the next read is answered with the rows of its call time (w1 idle), then stalls
+    await until(() => listStalled, 5000, 'the read to stall');
+    w.w1.mid = 1; // the orchestrator's turn messaged w1: it is mid-turn now
+    fs.writeFileSync(sb.gate, '1'); // and the turn ends
+    await until(() => streamLines(sb, '"type":"result"') >= 3, 10000, 'the orchestrator turn to end');
+    const listAtEnd = listN;
+    listRelease();
+    // The re-poll reads fresh rows (listAtEnd + 1); the pass after it (listAtEnd + 2) starts only once the re-poll has decided.
+    await until(() => listN >= listAtEnd + 2 || out, 10000, 'the re-poll to decide');
+    assert.equal(out, null, `stdin must stay open with w1 mid-turn; ended_by: ${out && out.ended_by}`);
+    w.w1.mid = 0; w.w1.turns = 1; w.w1.seq = 3; // w1 finishes; the run may close
+    await runP;
+  });
+});
+
 test('two passes never write the same refuted-note wake twice', { timeout: 60000 }, async () => {
   const RUN = 'run-pass-note';
   const sb = sandbox('note');

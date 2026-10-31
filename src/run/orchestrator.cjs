@@ -264,7 +264,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   // the snapshot): no worker of this run mid-turn (the store's own `mid_turn` column, every turn), no wake still unanswered, and (5b-4) no non-terminal row whose pid just died
   // still inside its detector grace.
   // The guard covers the whole pass, not only the read: a second pass could close stdin under the first's unwritten wakes.
-  // A turn end after the pass's read sets `pollAgain`: it skips its idle close (its rows predate the turn) and polls once more, on
+  // A turn end during the pass sets `pollAgain`: it skips its idle close (its rows predate the turn) and polls once more, on
   // fresh rows, when it ends. Each core call is bounded by the client's 30 s timeout (call-limits.cjs): a stalled owner delays wakes, not wedges them.
   async function pollOnce(byTurnEnd = false) {
     if (state.finishing || pollInFlight) return;
@@ -284,7 +284,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     // A turn end whose poll was skipped because a read the ready event or the timer started was in flight is the turn a hold from
     // this read names, not the turn the read started at (stale). A later turn end in the same chunk as the end that started this read is neither.
     const turnAtCall = state.skippedTurn == null ? turnAtStart : state.skippedTurn;
-    state.skippedTurn = null;
+    state.skippedTurn = pollAgain ? turnAtCall : null; // a turn end during the read keeps its turn for the re-poll
     if (state.finishing) return; // the run ended while this read was in flight
 
     if (failReason !== null) {
@@ -372,7 +372,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       holdRecorder.reset();
       if (pollHandle) { clearTimeout(pollHandle); pollHandle = null; }
       if (pollInFlight && !pollReadDone && !pollByTurnEnd && state.skippedTurn == null) state.skippedTurn = state.turns;
-      if (pollInFlight && pollReadDone) pollAgain = true;
+      if (pollInFlight) pollAgain = true;
       pollOnce(true);
       return;
     }
