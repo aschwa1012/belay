@@ -344,6 +344,7 @@ async function handle(msg) {
     return undefined;
   }
   if (method === 'notifications/initialized') { ownCreatedNow(); return undefined; }
+  if (method === 'notifications/cancelled') { require('../run/call-signal.cjs').cancel(params && params.requestId); return undefined; } // a worker_wait in flight under that id (call-signal.cjs)
   if (typeof method === 'string' && method.startsWith('notifications/')) return undefined;
   if (method === 'ping') return send({ jsonrpc: '2.0', id, result: {} });
   if (method === 'tools/list') {
@@ -363,7 +364,9 @@ async function handle(msg) {
       return send({ jsonrpc: '2.0', id, result });
     }
     try {
-      const row = await require('./call-budget.cjs').withinBudget(name, args, (async () => opts.role === 'orchestrator' && require('./views.cjs').isViewed(name) ? await require('./views.cjs').viewed(name, args, (a) => callTool(name, a)) : (opts.role === 'worker' && name === 'lease_release' ? require('./views.cjs').leaseRelease(await callTool(name, args), args) : await callTool(name, args)))(), process.env, opts.role === 'orchestrator' ? require('./call-hooks.cjs').callHooks(callCore) : null); // ADR 0058 amendment 3: compact unless view debug; a worker's lease_release answer is compact too // call-budget.cjs: integrate and task_evaluate answer before the client's tool timeout
+      const tracked = await require('../run/call-signal.cjs').run(id, name, () => require('./call-budget.cjs').withinBudget(name, args, (async () => opts.role === 'orchestrator' && require('./views.cjs').isViewed(name) ? await require('./views.cjs').viewed(name, args, (a) => callTool(name, a)) : (opts.role === 'worker' && name === 'lease_release' ? require('./views.cjs').leaseRelease(await callTool(name, args), args) : await callTool(name, args)))(), process.env, opts.role === 'orchestrator' ? require('./call-hooks.cjs').callHooks(callCore) : null)); // a cancelled worker_wait claims nothing and is not answered (call-signal.cjs) // ADR 0058 amendment 3: compact unless view debug; a worker's lease_release answer is compact too // call-budget.cjs: integrate and task_evaluate answer before the client's tool timeout
+      if (tracked.cancelled) return undefined;
+      const row = tracked.value;
       return send({ jsonrpc: '2.0', id, result: okResult(row) });
     } catch (e) {
       return send({ jsonrpc: '2.0', id, result: errResult(e) });
