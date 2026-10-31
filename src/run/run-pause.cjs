@@ -40,11 +40,12 @@ function createRunPauseControl({ runId, core, hook, pauseWorker, resumeWorker, s
 
   async function currentRun() { return (await core.run.get()).run; }
 
-  // Every row of this run reading `starting`/`running` with a live pid, any substrate — decision 4.4:
+  // Every row of this run reading `starting`/`running` with a live pid, or `starting` with no pid yet (a spawn or restart before its
+  // launch: its adapter holds the pause until it is up, launch-gate.cjs), any substrate — decision 4.4:
   // only a Claude Code one is actually paused; a Codex one is named `not_paused` with `E_SUBSTRATE`.
   async function liveRows() {
     const { workers } = await core.worker.list({});
-    return workers.filter((w) => w.run_id === runId && (w.state === 'starting' || w.state === 'running') && w.pid_alive === true);
+    return workers.filter((w) => w.run_id === runId && ((w.state === 'starting' && w.pid == null) || ((w.state === 'starting' || w.state === 'running') && w.pid_alive === true)));
   }
   async function pausedRows() {
     const { workers } = await core.worker.list({});
