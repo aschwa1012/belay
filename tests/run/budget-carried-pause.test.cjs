@@ -48,3 +48,10 @@ test('a carried run pause still resumes as a run pause', async () => {
   const ev = await g.authorizeResume({ paused_by: 'operator:1 [budget (run, $95.00 of $100.00 reported)]' }, { over_budget: true });
   assert.strictEqual(ev.scope, 'run'); assert.strictEqual(g.state().overrides.run, true);
 });
+
+test('a stale, resolved task pause event does not outrank a row that says the run reached its budget', async () => {
+  const { g } = mk(100);
+  await g.loadAttach({ budget_usd: 100, budget: { events: [{ type: 'pause', scope: 'task', task_id: 't1', limit: 3, spent: 2.8 }, { type: 'raise', scope: 'task', task_id: 't1', old: 3, new: 5 }], tasks: { t1: 5 } } });
+  const ev = await g.authorizeResume({ paused_by: 'operator:1 [budget (run, $95.00 of $100.00 reported)]' }, { over_budget: true });
+  assert.strictEqual(ev.scope, 'run'); assert.deepStrictEqual(g.state().overrides, { run: true, tasks: [] });
+});
