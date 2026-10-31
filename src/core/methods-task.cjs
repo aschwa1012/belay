@@ -203,6 +203,7 @@ async function evaluate(E, caller, args, queued = null) {
   // final: a re-run would overwrite its passing evidence, or keep `done` over failing results. An open dependency is refused
   // rather than evaluated without `done`, because a task is not done while its dependency is open (ADR 0013 section 1).
   const gate = (t) => {
+    require('./worker-run-guard.cjs').refuseOtherRunTask(E, caller, t); // a live run's task is that run's
     if (t.state === 'done') throw err('E_TASK_DONE', `task ${t.id} is already done${t.results && t.results.evaluated_at ? ` (evaluated at ${t.results.evaluated_at})` : ''}; its results are in task_list with task_ids. To redo the work, create a new task`, { task_id: t.id, state: 'done' });
     if (t.state === 'cancelled') throw err('E_ARGS', `task ${t.id} was cancelled, which is final; there is nothing to evaluate`, { task_id: t.id, state: 'cancelled' });
     assertDependenciesDone(E, t);

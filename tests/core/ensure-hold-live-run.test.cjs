@@ -65,3 +65,23 @@ test('task.assign from another live run is refused and writes nothing (check_onl
   assert.strictEqual(t1.seq, t0.seq, 'the task row was not written');
   assert.deepStrictEqual(await leaseOf(), l0, 'the lease row was not written');
 });
+
+test('task.cancel, amend and evaluate from another live run are refused and write nothing', async () => {
+  const a = await live('eh-a3');
+  const b = await live('eh-b3');
+  await taskFor(a, 'T-eh4', 'w-eh4');
+  const leaseOf = async () => ((await a.task.list({})).tasks.find((t) => t.id === 'T-eh4') || {}).lease;
+  const t0 = await a.task.get({ task_id: 'T-eh4' }); const l0 = await leaseOf();
+  const refusals = [
+    b.task.cancel({ task_id: 'T-eh4' }),
+    b.task.create({ id: 'T-eh4', amend: true, acceptance: { files_within_owned: true } }),
+    b.task.evaluate({ task_id: 'T-eh4' }),
+  ];
+  for (const p of refusals) await assert.rejects(p, (e) => { assert.strictEqual(e.code, 'E_ROLE', e.message); assert.strictEqual(e.detail.task_run_id, 'eh-a3'); return true; });
+  const t1 = await a.task.get({ task_id: 'T-eh4' });
+  assert.strictEqual(t1.seq, t0.seq, 'the task row was not written');
+  assert.strictEqual(t1.state, 'assigned');
+  assert.deepStrictEqual(await leaseOf(), l0, 'the lease was not released');
+  const own = await a.task.cancel({ task_id: 'T-eh4' });
+  assert.strictEqual(own.task.state, 'cancelled', 'its own run still cancels it');
+});
