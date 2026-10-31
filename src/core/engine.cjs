@@ -210,6 +210,7 @@ const METHODS = {
   'policy.claim': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./policy-steps.cjs', 'claim') },
   'policy.finish': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./policy-steps.cjs', 'finish') },
   'policy.list': { roles: ALL, kind: 'read', fn: lazy('./policy-steps.cjs', 'list') },
+  'policy.log': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./policy-log.cjs', 'list') }, // the step log with each turn's cost, newest N
 };
 
 // The methods that read or write memory rows and are refused when the run's memory is off.
