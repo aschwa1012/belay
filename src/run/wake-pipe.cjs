@@ -37,7 +37,7 @@ function wakePipeName(dataDir, runId, nonce) {
 const wakeId = (runId, ev) => `${runId}:${ev.worker_id}:${ev.event}:${ev.turn}:${ev.seq}`;
 
 function startWakePublisher({
-  core, runId, notes = false, budgetWake = null, pipeName, pollMs = 1000, isHeld = () => false, onRelease = null, heartbeatMs = HEARTBEAT_MS, now = () => Date.now(),
+  core, runId, notes = false, budgetWake = null, dataDir = null, pipeName, pollMs = 1000, isHeld = () => false, onRelease = null, heartbeatMs = HEARTBEAT_MS, now = () => Date.now(),
 }) {
   if (!core || !core.worker || typeof core.worker.list !== 'function') throw new Error('startWakePublisher: core.worker.list is required');
   if (!runId) throw new Error('startWakePublisher: runId is required');
@@ -62,7 +62,12 @@ function startWakePublisher({
 
   const send = (sock, line) => { try { sock.write(line); } catch { clients.delete(sock); } };
 
+  // ADR 0074 decision 4: a policy exception the run wait (worker_wait) already returned is not published again, and the reverse: the claim
+  // (run-digest.cjs claimException) is taken at the instant of publishing. Without a data dir there is no wait to share it with.
+  const claimed = (w) => !(dataDir && w.ev && w.ev.exception && w.ev.key && !require('./run-digest.cjs').claimException({ dataDir, runId, uid: `${w.worker_id}:${w.ev.key}` }));
+
   function publish(w) {
+    if (w.policy_claim && !claimed(w)) return;
     if (receipt.length < RECEIPT_MAX) receipt.push(require('./wake-record.cjs').wakeRecord({ ...(w.ev || {}), event: w.event || (w.ev && w.ev.event), worker_id: w.worker_id }, w.text, now() - t0, null)); // the run receipt's wakes[], as headless fills it
     const line = `${JSON.stringify({ id: w.id, text: w.text })}\n`;
     retained.push(line);
@@ -81,6 +86,17 @@ function startWakePublisher({
   });
   server.on('error', (e) => { stats.errors += 1; stats.last_error = `server: ${(e && e.code) || e}`; });
 
+  // The digest rides the next wake as one more wake line (run-digest.cjs): claimed, so the run wait never returns a step this line showed.
+  async function rideDigest() {
+    try {
+      const d = await require('./run-digest.cjs').wakeDigest({ core, dataDir, runId, now });
+      if (!d) return;
+      const line = `${JSON.stringify({ id: d.id, text: d.text })}\n`;
+      retained.push(line); if (retained.length > RETAIN_MAX) retained.shift();
+      for (const c of clients) send(c, line);
+    } catch (e) { stats.errors += 1; stats.last_error = `digest: ${(e && (e.code || e.message)) || e}`; }
+  }
+
   async function pollOnce() {
     if (stopped || inFlight) return;
     inFlight = true;
@@ -97,7 +113,7 @@ function startWakePublisher({
         for (const nw of await noteWatcher.poll()) queue.push({ id: nw.id, text: nw.text, worker_id: nw.worker_id, event: nw.event, paused_at: null, paused_by: null, ev: nw });
         for (const cw of await callWatcher.poll()) queue.push({ id: wakeId(runId, cw), text: cw.text, worker_id: cw.worker_id, event: cw.event, paused_at: null, paused_by: null, ev: cw });
         const enriched = await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), evalSeen, { holdMs: require('./release-eval.cjs').holdMs(), now, workers: list.workers || [] }); // ADR 0058 amendment 4: held for its evaluation
-        for (const pw of await policyWatcher.poll(evalSeen)) queue.push({ id: wakeId(runId, pw), text: pw.text, worker_id: pw.worker_id, event: pw.event, paused_at: null, paused_by: null, ev: pw }); // after enrichWakes, which hands it this poll's task rows
+        for (const pw of await policyWatcher.poll(evalSeen)) queue.push({ id: wakeId(runId, pw), text: pw.text, worker_id: pw.worker_id, event: pw.event, paused_at: null, paused_by: null, ev: pw, policy_claim: true }); // after enrichWakes, which hands it this poll's task rows
         for (const ev of enriched) {
           const r = byId.get(ev.worker_id) || {};
           // paused_at and paused_by are the row's own pair at derivation: what a resume matches a park against (equality, no clocks)
@@ -128,7 +144,9 @@ function startWakePublisher({
             publish({ id: info.id, text: info.text(queue.length) });
           }
         }
-        while (queue.length) publish(queue.shift());
+        let out = 0;
+        while (queue.length) { publish(queue.shift()); out += 1; }
+        if (out && dataDir && evalSeen.policyArmed) await rideDigest(); // ADR 0074 decision 4: the steps belay took since the last wake follow the wake
       }
     } finally {
       inFlight = false;
