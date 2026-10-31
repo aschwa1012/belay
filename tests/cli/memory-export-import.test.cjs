@@ -21,6 +21,7 @@ const { spawnSync } = require('node:child_process');
 const memory = require('../../src/cli/cmd-memory.cjs');
 const R = require('../../src/cli/memory-render.cjs');
 const { openCore } = require('../../src/core/index.cjs');
+const { SCHEMA_VERSION } = require('../../src/core/schema-stamp.cjs');
 const { ROOT, CLI, sandbox, cleanup, listRecursive } = require('./stop-helpers.cjs');
 
 const REAL_WRITE_PATH = /redact/i.test(fs.readFileSync(`${ROOT}/src/core/methods-memory.cjs`, 'utf8'));
@@ -93,7 +94,7 @@ test('export: a header line, then the full rows oldest first, no vectors; the sa
     const a = await run(dir, ['export', '--namespace', 'run/r1'], core);
     assert.strictEqual(a.code, 0);
     const [header, ...rows] = lines(a.text);
-    assert.deepStrictEqual(header, { export: 1, written_by: 'operator', schema_version: 2, rows: 'live', count: 3 });
+    assert.deepStrictEqual(header, { export: 1, written_by: 'operator', schema_version: SCHEMA_VERSION, rows: 'live', count: 3 });
     assert.deepStrictEqual(rows.map(r => r.id), ['a1', 'a2', 'a3']);
     assert.strictEqual(rows[0].text, 'src/dates.cjs reads TZ at module load');
     assert.deepStrictEqual(rows[0].body, { file: 'src/dates.cjs' });
@@ -249,7 +250,7 @@ test('import: a missing file, an empty file, an unsupported header and a newer s
       [['import', 'empty.jsonl'], /holds no rows/, ''],
       [['import', 'only-header.jsonl'], /holds no rows/, `${JSON.stringify({ export: 1, written_by: 'operator', schema_version: 1, count: 0 })}\n`],
       [['import', 'v2.jsonl'], /unsupported export version 2/, `${JSON.stringify({ export: 2, schema_version: 1 })}\n${JSON.stringify({ text: 'a', namespace: 'n' })}\n`],
-      [['import', 'new.jsonl'], /schema 9, newer than this build's 2/, `${JSON.stringify({ export: 1, schema_version: 9 })}\n${JSON.stringify({ text: 'a', namespace: 'n' })}\n`],
+      [['import', 'new.jsonl'], new RegExp(`schema 9, newer than this build's ${SCHEMA_VERSION};`), `${JSON.stringify({ export: 1, schema_version: 9 })}\n${JSON.stringify({ text: 'a', namespace: 'n' })}\n`],
     ];
     for (const [argv, re, content] of cases) {
       if (content !== null) fs.writeFileSync(`${dir}/${argv[1]}`, content);
