@@ -12,7 +12,7 @@
 
 const path = require('node:path');
 const { CoreError, err, isTransport } = require('./errors.cjs');
-const { pipeName, pidAlive, readOwnerLock, resolveDataDir, lockPath } = require('./lock.cjs');
+const { pipeName, pidAlive, readOwnerLock, resolveDataDir, lockPath, waitOwnerGone } = require('./lock.cjs');
 const fs = require('node:fs');
 const { METHODS, METHOD_NAMES, Engine, validateCaller } = require('./engine.cjs');
 const { Client } = require('./client.cjs');
@@ -183,7 +183,7 @@ class Core {
     const lock = readOwnerLock(this.dataDir);
     if (!lock || !pidAlive(lock.pid) || lock.listening === false) return;
     const first = await ping(this.dataDir, PING_BEFORE_VECTOR_MS);
-    if (first.ok) return;
+    if (first.ok || first.code === 'E_OWNER_STOPPING') return; // a stopping owner refuses the call unsent, and the write path re-runs it on the next owner
     // E2: still a bounded request and response (invariant 7), asked twice. A busy owner (a CreateProcess on
     // its loop) answers the second; a wedged one does not, and is then reported lost naming both pings.
     const p = pidAlive(lock.pid) ? await ping(this.dataDir, REPING_BEFORE_LOST_MS) : first;
@@ -291,6 +291,9 @@ class Core {
           throw err('E_OWNER_LOST', `the owner was lost after ${method} was sent; too little of its limit was left to re-run it, so re-read before retrying`, { method, sent: true, may_have_committed: true, outcome: 'unknown', rerun: 'skipped', left_ms: left });
         }
       }
+      // A stopping owner keeps its pipe open until its teardown ends, so a dial now would reach it again: wait for it to go first.
+      const held = e.detail && e.detail.owner_stopping ? readOwnerLock(this.dataDir) : null;
+      if (held) await waitOwnerGone(this.dataDir, held);
       await this._ensureWriter(method);
       let result;
       try {
