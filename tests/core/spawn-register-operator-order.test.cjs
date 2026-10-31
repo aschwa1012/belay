@@ -12,6 +12,9 @@ const os = require('node:os');
 const path = require('node:path');
 const { core, deadPid } = require('./helpers.cjs');
 
+// The product derives the boot time from os.uptime(); pin it so the dated records below never depend on how long the host has been up.
+os.uptime = () => 30 * 86400;
+
 const OC = core('operator-check.cjs');
 const SR = core('spawn-register.cjs');
 const Prov = core('spawn-provenance.cjs');

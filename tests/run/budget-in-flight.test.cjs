@@ -139,18 +139,23 @@ test('a new run process does not carry the earlier in-flight figure', async () =
 
 test('a steady stream of orchestrator lines does not starve the worker read: the worker figure keeps growing', async () => {
   const w = withWorker(1); // $2.00
+  const realNow = Date.now;
   try {
     const o = spy({ run: 0 });
+    // A stubbed clock: every orchestrator line takes the tick slot at the same instant as the poll tick that follows it, so the
+    // poll's worker read can only happen if it has a slot of its own. No wall clock, no sleep.
+    let clock = 1000;
+    Date.now = () => clock;
     const g = mk(o, { dataDir: w.dataDir, tickMs: 20 });
     g.tick(w.rows);
-    const t0 = Date.now(); let n = 0;
-    while (Date.now() - t0 < 60) { g.noteOrchestratorLine(msg(`o${n++}`, 10)); await new Promise((r) => setTimeout(r, 2)); } // lines inside every slot
+    let n = 0;
+    for (let i = 0; i < 3; i++) { clock += 21; g.noteOrchestratorLine(msg(`o${n++}`, 10)); } // lines inside every slot
     fs.appendFileSync(`${w.dataDir}/workers/w1/stream.jsonl`, msg('late') + '\n'); // the worker turn grows by $2.00
-    const t1 = Date.now();
-    while (Date.now() - t1 < 80) { g.noteOrchestratorLine(msg(`p${n++}`, 10)); g.tick(w.rows); await new Promise((r) => setTimeout(r, 2)); }
+    for (let i = 0; i < 4; i++) { clock += 21; g.noteOrchestratorLine(msg(`p${n++}`, 10)); g.tick(w.rows); } // the line first, the poll in the same instant
+    Date.now = realNow;
     await settle(g);
     assert.strictEqual(g.state().record.in_flight_workers.by_worker.w1, 4);
-  } finally { w.done(); }
+  } finally { Date.now = realNow; w.done(); }
 });
 
 test('the in-flight check is throttled: lines inside one tick cost one check', async () => {

@@ -110,3 +110,29 @@ test('restart during the hold gives the old life its dead row before the relaunc
     assert.ok(rows.some((r) => r.state === 'dead' && r.pid === oldPid), JSON.stringify(rows.map((r) => [r.state, r.pid])));
   } finally { await m.shutdown(); cleanup(sb.data); }
 });
+
+// A worker that has not yet said ready (FAKE_HANG: no output at all) is held for its exit event too. Otherwise the poll
+// settles its death by pid-poll with a null code before the late event arrives, and the wake is built from that row.
+test('a starting worker killed by exact pid, its exit event late: the first dead row carries the integer exit code', async () => {
+  const sb = sandbox(); const core = createFakeCore(); const m = mgr(sb, core);
+  try {
+    process.env.FAKE_HANG = '1';
+    m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'hold5', first_turn_timeout_ms: 30000 }).catch(() => {});
+    let w;
+    const t0 = Date.now();
+    while (!((w = m._worker('hold5')) && w.child && w.pid)) { assert.ok(Date.now() - t0 < 20000, 'no child'); await sleep(10); }
+    delete process.env.FAKE_HANG;
+    assert.ok(!w.readyAt, 'premise: the worker is not ready');
+    const emit = w.child.emit;
+    w.child.emit = function (ev, ...a) {
+      if (ev !== 'exit') return emit.call(this, ev, ...a);
+      setTimeout(() => emit.call(this, ev, ...a), 2500); // the OS exit notice is late; the 1 s poll sees the death first
+      return true;
+    };
+    process.kill(w.pid); // exact pid
+    let dead;
+    while (!(dead = core.rowsFor('hold5').find((r) => r.state === 'dead'))) { assert.ok(Date.now() - t0 < 30000, 'no dead row'); await sleep(25); }
+    assert.ok(Number.isInteger(dead.exit_code) || typeof dead.exit_signal === 'string', JSON.stringify([dead.exit_code, dead.exit_signal, dead.death_established_by]));
+    assert.match(dead.death_established_by, /exit-event/);
+  } finally { delete process.env.FAKE_HANG; await m.shutdown(); cleanup(sb.data); }
+});

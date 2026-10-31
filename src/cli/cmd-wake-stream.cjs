@@ -7,6 +7,7 @@
 // answers). The belay mod spawns this verb and reads its stdout.
 
 const net = require('node:net');
+const { StringDecoder } = require('node:string_decoder');
 
 const HEARTBEAT_TIMEOUT_MS = 15000;
 const USAGE = 'usage: belay wake-stream --run <id> --nonce <n> [--heartbeat-timeout-ms <n>] [--data <dir>]\n';
@@ -58,9 +59,10 @@ async function run(ctx) {
       timer = setTimeout(() => finish(1, `belay wake-stream: no line from ${pipe} for ${parsed.timeoutMs} ms\n`, 'no heartbeat'), parsed.timeoutMs);
     };
     arm();
+    const dec = new StringDecoder('utf8');
     sock.on('data', (d) => {
       arm();
-      buf += d.toString('utf8');
+      buf += dec.write(d);
       let i;
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i);

@@ -35,7 +35,7 @@ function createStartFail({ core, writeRow }) {
     }
     // The exit code is the most useful field the failure carries, and a pid check can establish the death before the exit event
     // delivers one (by seconds under load). Wait, bounded, for it.
-    if (exitCode && W.deathByPidCheck(w)) await W.awaitExitCode(w, W.EXIT_CODE_WAIT_MS);
+    if (exitCode && W.deathByPidCheck(w)) await W.awaitExitCode(w, W.exitCodeBudgetMs(w));
     await step(() => w.queue);
     if (w.state !== 'dead' && !park) await step(() => writeRow(w, 'dead'));
     return bind;

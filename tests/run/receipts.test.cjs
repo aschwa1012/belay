@@ -284,6 +284,30 @@ test('receipts: a head follow-up does not land over a row written after the term
     assert.strictEqual(after.state, 'forgotten', `the follow-up must not restate dead over the forget: ${after.state}`);
   } finally { openGate(); await m.shutdown(); await releaseCore(op); await releaseCore(core); cleanup(sb.data); }
 });
+// ---------------------------------------------------------------- (r12b)
+test('receipts: an exit-code fill-in does not restate dead over an operator forget that landed first', async () => {
+  const sb = sandbox();
+  const core = await openRealCore(sb, 'run-r12b');
+  let op = null;
+  try {
+    const ctx = { core, runId: 'run-r12b', adapterPid: process.pid };
+    ctx.writeRow = createWriteRow(ctx, { closed: false });
+    const w = W.newWorkerRecord({ id: 'w-r12b', substrate: 'claude-code', worktree: sb.worktree, dataDir: sb.data, captureBase: false });
+    w.pid = process.pid; w.startedAt = Date.now();
+    await ctx.writeRow(w, 'starting');
+    await ctx.writeRow(w, 'running');
+    w.child = null;
+    EX.settle(w, null, null, 'pid-poll', ctx); // the pid poll settles first: dead, no code yet
+    await w.queue;
+    op = await openCore({ dataDir: `${sb.data}/.belay`, caller: { role: 'operator', run_id: 'cli', pid: process.pid } });
+    const forgot = await op.worker.forget({ worker_id: 'w-r12b' });
+    assert.strictEqual(forgot.row_after.state, 'forgotten', 'the forget succeeds');
+    EX.settle(w, 1, null, 'exit-event', ctx); // the exit event, held until the forget was sent, delivers the code now
+    await w.queue;
+    const after = await core.worker.get({ worker_id: 'w-r12b' });
+    assert.strictEqual(after.state, 'forgotten', `the fill-in must not restate dead over the forget: ${after.state} code=${after.exit_code}`);
+  } finally { await releaseCore(op); await releaseCore(core); cleanup(sb.data); }
+});
 
 // ---------------------------------------------------------------- (r13)
 test('receipts: an exit-code fill-in is not dropped by this adapter\'s own in-flight direct dead write', async () => {
@@ -314,6 +338,35 @@ test('receipts: an exit-code fill-in is not dropped by this adapter\'s own in-fl
     const cur = await pollUntil(async () => { const r = await core.worker.get({ worker_id: 'w-r13' }); return r.exit_code === 1 ? r : null; }, 3000);
     assert.ok(cur, `the code never reached the row: ${JSON.stringify(await core.worker.get({ worker_id: 'w-r13' }))}`);
     assert.match(cur.death_established_by, /\+exit-event/);
+  } finally { await releaseCore(core); cleanup(sb.data); }
+});
+
+// ---------------------------------------------------------------- (r13b)
+test('receipts: an exit-code fill-in is not restated when a relaunch moved the record to a new life between its awaits', async () => {
+  const sb = sandbox();
+  const core = await openRealCore(sb, 'run-r13b');
+  try {
+    let delayNext = false; let relaunchOnGet = false; let w = null;
+    const wrapped = { ...core, worker: { ...core.worker,
+      write: async (row) => { const d = delayNext; delayNext = false; const r = await core.worker.write(row); if (d) await sleep(300); return r; },
+      get: async (a) => { const r = await core.worker.get(a); if (relaunchOnGet) { relaunchOnGet = false; w.launches++; w.pid = 4242; } return r; },
+    } };
+    const ctx = { core: wrapped, runId: 'run-r13b', adapterPid: process.pid };
+    ctx.writeRow = createWriteRow(ctx, { closed: false });
+    w = W.newWorkerRecord({ id: 'w-r13b', substrate: 'claude-code', worktree: sb.worktree, dataDir: sb.data, captureBase: false });
+    w.pid = process.pid; w.startedAt = Date.now();
+    await ctx.writeRow(w, 'starting');
+    await ctx.writeRow(w, 'running');
+    w.child = null;
+    EX.settle(w, null, null, 'pid-poll', ctx);
+    await w.queue;
+    delayNext = true; relaunchOnGet = true;
+    const direct = ctx.writeRow(w, 'dead'); // the direct terminal write, response in flight
+    await sleep(50);
+    EX.settle(w, 1, null, 'exit-event', ctx); // the fill-in is skipped (one seq behind); the seam relaunches while it reads the current row
+    await direct; await w.queue;
+    const cur = await core.worker.get({ worker_id: 'w-r13b' });
+    assert.strictEqual(cur.exit_code, null, `the old life's code was written onto the new life's record: ${JSON.stringify(cur)}`);
   } finally { await releaseCore(core); cleanup(sb.data); }
 });
 

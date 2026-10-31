@@ -96,3 +96,34 @@ test('an adopted Codex reviewer record gets its scratch folder back from the dat
     assert.ok(resume.some((a) => a === `sandbox_workspace_write.writable_roots=["${data}/scratch/run-ad/rev1"]`));
   } finally { cleanup(data); }
 });
+
+// A Codex turn that finishes and exits 0 before the running row is written: the null write must wait for the exit event, not
+// fail the start (E_NO_READY) on the state it still has. The exit event is held back by a seam; the running write comes back null.
+test('a Codex worker whose turn exits 0 before the running row is written starts idle, not E_NO_READY', async () => {
+  const data = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-cx-quick-')).split(path.sep).join('/');
+  const worktree = `${data}/wt`;
+  fs.mkdirSync(worktree, { recursive: true });
+  const m = createRunManager({ core: createFakeCore(), dataDir: data, runId: 'run-cxq', paths: { claudeExe: FAKE, codexExe: FAKE_CODEX, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
+  process.env.FAKE_CODEX_TURN_MS = '60';
+  const { ChildProcess } = require('node:child_process');
+  const emit = ChildProcess.prototype.emit;
+  ChildProcess.prototype.emit = function (ev, ...a) { // the exit notice trails the pid's death, as on a loaded host
+    if (ev !== 'exit' || !(this.spawnargs || []).join(' ').includes('fake-codex')) return emit.call(this, ev, ...a);
+    setTimeout(() => emit.call(this, ev, ...a), 2000);
+    return true;
+  };
+  // The running row is written straight after noteInit: parked here until the pid is really gone (a sleeping wait, bounded), so the
+  // write meets a dead pid with its exit event still owed, whatever the machine's speed.
+  const W = require('../../src/run/worker.cjs');
+  const P = require('../../src/run/process.cjs');
+  const noteInit = W.noteInit;
+  W.noteInit = (w, ready) => {
+    const gate = new Int32Array(new SharedArrayBuffer(4));
+    for (let i = 0; i < 500 && P.pidAlive(w.pid); i++) Atomics.wait(gate, 0, 0, 10);
+    return noteInit(w, ready);
+  };
+  try {
+    const row = await m.spawn({ substrate: 'codex', worktree, prompt: 'one', worker_id: 'cq1', first_turn_timeout_ms: 20000 });
+    assert.strictEqual(row.state, 'idle', JSON.stringify(row));
+  } finally { ChildProcess.prototype.emit = emit; W.noteInit = noteInit; delete process.env.FAKE_CODEX_TURN_MS; await m.shutdown().catch(() => {}); cleanup(data); }
+});
