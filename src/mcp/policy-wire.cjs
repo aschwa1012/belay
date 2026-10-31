@@ -27,13 +27,21 @@ function start({ core, manager, opts, run = null, log = () => {} }) {
   const assignFor = (stepCore) => createCompose({ callCore: (d, a) => viaPath(stepCore, d, a), manager: () => manager, openManager: async () => manager, dataDir: opts.dataDir, runId: opts.runId }).assign;
   const exec = createPolicyExecutor({ core: h, runId: opts.runId, assignFor, closing: () => manager._closing(), log });
   current = exec;
-  if (armEarly || (run && run.policy_default)) exec.arm();
+  const waitEnd = new AbortController(); // aborted at the manager's shutdown: a wait in flight takes no step and returns cancelled
   // One task.list at start (an indexed read of the run's task rows, once per adapter life) arms the executor when any task already carries a plan, so a restart mid-run loses nothing. A run with no plan pays only this read.
-  else h.task.list({}).then((r) => { if (((r && r.tasks) || []).some((t) => t.run_id === opts.runId && t.policy)) exec.arm(); }, () => {});
+  // A worker_wait that arrives before it has finished waits for it (`settled`), so a first wait is never answered as if the run had no plan.
+  let settled = Promise.resolve();
+  if (armEarly || (run && run.policy_default)) exec.arm();
+  else settled = h.task.list({}).then((r) => { if (((r && r.tasks) || []).some((t) => t.run_id === opts.runId && t.policy)) exec.arm(); }, () => {});
+  // ADR 0074: a worker_wait that names no worker waits for the run once a plan is in force (the run manager asks `active()` at each call).
+  if (typeof manager.setPolicyWait === 'function') {
+    const rw = require('../run/run-wait.cjs').createRunWait({ core: h, runId: opts.runId, dataDir: opts.dataDir, armed: () => exec.isArmed(), settled, signal: waitEnd.signal });
+    manager.setPolicyWait(rw);
+  }
   const timer = setInterval(() => { exec.tick().catch((e) => log(`policy tick: ${e && e.code}: ${e && e.message}`)); }, TICK_MS);
   if (timer.unref) timer.unref();
   const shutdown = manager.shutdown;
-  manager.shutdown = async (...a) => { clearInterval(timer); await exec.close(); current = null; return shutdown.apply(manager, a); };
+  manager.shutdown = async (...a) => { waitEnd.abort(); clearInterval(timer); await exec.close(); current = null; return shutdown.apply(manager, a); };
   return exec;
 }
 

@@ -18,7 +18,7 @@ test('first sight of a running row that already finished a turn is news (the con
 test('first sight of a dead row of this run announces the turn it finished and the death', () => {
   const { events, next, pending_deaths } = diffWorkers({ prev: {}, rows: [dead({ exited_at: 6000 })], runId: 'run-x', nowMs: 1000, graceMs: 2000, sinceAt: 5000 });
   assert.deepEqual(events.map((e) => e.event), ['turn_end', 'death']);
-  assert.deepEqual(events[1], { worker_id: 'w1', event: 'death', turn: 1, seq: 7, exit_code: 1, exit_signal: null, death_established_by: 'exit-event' });
+  assert.deepEqual(events[1], { worker_id: 'w1', event: 'death', turn: 1, seq: 7, life: '4242:0', exit_code: 1, exit_signal: null, death_established_by: 'exit-event' });
   assert.deepEqual(pending_deaths, []);
   assert.deepEqual(next.w1, { turns: 1, state: 'dead' });
   const again = diffWorkers({ prev: next, rows: [dead({ exited_at: 6000 })], runId: 'run-x', nowMs: 2000, graceMs: 2000, sinceAt: 5000 });
