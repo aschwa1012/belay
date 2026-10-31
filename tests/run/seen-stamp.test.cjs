@@ -20,10 +20,10 @@ function withRegistry(fn) {
   process.env.BELAY_SPAWN_REGISTRY = dir;
   return Promise.resolve().then(() => fn(dir)).finally(() => { SS.stopAdopted(); process.env.BELAY_SPAWN_REGISTRY = keep; fs.rmSync(dir, { recursive: true, force: true }); });
 }
-const put = (dir, pid) => fs.writeFileSync(path.join(dir, `${pid}.json`), JSON.stringify({ pid, created: T0, kind: 'worker', data_dir: null, worker_id: 'w', spawned_at: T0, by_pid: 1, at: T0 }));
+const put = (dir, pid) => fs.writeFileSync(path.join(dir, `${pid}.json`), JSON.stringify({ pid, created: T0, kind: 'worker', data_dir: 'A:/store', worker_id: 'w-' + pid, spawned_at: T0, by_pid: 1, at: T0 }));
 const seen = (dir, pid) => JSON.parse(fs.readFileSync(path.join(dir, `${pid}.json`), 'utf8')).seen_at;
 const snapOf = (o) => new Map(Object.entries(o).map(([pid, v]) => [Number(pid), v]));
-const adopt = (pid, o = {}) => ({ pid, pidCreated: T0, state: 'running', ...o });
+const adopt = (pid, o = {}) => ({ id: 'w-' + pid, dataDir: 'A:/store', pid, pidCreated: T0, state: 'running', ...o });
 
 test('stampWhile stamps while the observer says the process lives, whatever a pid check would say', () => {
   let tick = null; let cleared = false; let alive = true; const stamped = [];

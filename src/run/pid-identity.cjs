@@ -21,8 +21,8 @@ const exitedYet = (child) => child.exitCode !== null && child.exitCode !== undef
 // The register record is written at spawn without a creation time (conservative: its window opens at the spawn call), so a failed update
 // costs precision, not safety. It must never reject a promise nothing awaits (that ends the adapter and skips every worker's cleanup):
 // the failure is kept on the record, where status reads it, and the conservative record stays.
-function updateRegister(w, pid, created) {
-  try { SR.update(pid, created); }
+function updateRegister(w, pid, created, spawnedAt = null) {
+  try { SR.update(pid, created, { workerId: w.id, dataDir: w.dataDir, spawnedAt }); }
   catch (e) { w.lastError = { where: 'spawn-register.update', code: e && e.code, message: (e && e.message) || String(e) }; }
 }
 const restate = (w, force) => { if (w.ctx && w.ctx.writeRow) require('./write-row.cjs').restatePidCreated(w, w.ctx, force); };
@@ -63,7 +63,7 @@ function registerSpawn(w, child, dataDir, kind = 'worker') {
     Object.defineProperty(refusal, 'teardown', { value: endUnregistered(child, refusal).catch(() => null), enumerable: false });
     throw refusal;
   }
-  child.once('exit', () => SR.unregister(child.pid));
+  child.once('exit', () => SR.unregister(child.pid, { workerId: w.id, dataDir, spawnedAt: child.belaySpawnStartedAt }));
   stampWhileAlive(child);
 }
 
@@ -80,7 +80,7 @@ function noteSpawn(w, child, { createdOf = P.createdOf, gate = ID.gate, schedule
   const setPending = (why) => { w.pidCreatedError = `${why}; retrying while the worker runs (try ${tries})`; };
   const accept = (e) => { // the three conditions of decision 3, checked where the reading is taken
     if (!pending || !mine() || exitedYet(child) || !e || !Number.isFinite(e.created) || e.created < spawnedAt - SPAWN_SLACK_MS) return false;
-    w.pidCreated = e.created; w.pidCreatedError = null; stop(); updateRegister(w, pid, e.created); restate(w, true);
+    w.pidCreated = e.created; w.pidCreatedError = null; stop(); updateRegister(w, pid, e.created, child.belaySpawnStartedAt); restate(w, true);
     return true;
   };
   const scheduleNext = () => {
@@ -105,7 +105,7 @@ function noteSpawn(w, child, { createdOf = P.createdOf, gate = ID.gate, schedule
     if (mine()) w.pidCreatedError = `the process snapshot failed: ${(e && e.message) || e}`;
   }).then(() => {
     // The first rows went out before the read finished: restate the current state once with it.
-    if (mine()) { if (w.pidCreated != null) updateRegister(w, pid, w.pidCreated); restate(w, false); }
+    if (mine()) { if (w.pidCreated != null) updateRegister(w, pid, w.pidCreated, child.belaySpawnStartedAt); restate(w, false); }
   });
   return w.pidCreatedPromise;
 }

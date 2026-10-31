@@ -59,7 +59,7 @@ async function closeEpochWorkers(E, runId, by, lifeClaiming) {
     const { released } = appendDead(E, values, by, t);
     // The adapter that would have unregistered this pid never saw it exit (it died with the run), so its spawn register record is
     // retired here, at the last moment it was seen alive; left, it would cover whatever started after the worker as its descendants.
-    const registerRetired = Number.isInteger(cur.pid) && require('./spawn-register.cjs').retire(cur.pid, t, cur.last_event_at, { checked: true });
+    const registerRetired = Number.isInteger(cur.pid) && require('./spawn-register.cjs').retire(cur.pid, t, cur.last_event_at, { checked: true, expect: { workerId: cur.id, dataDir: E.dataDir, created: cur.pid_created } });
     marked.push({ worker_id: w.id, from_state: w.state, head_sha: headSha, ...(head.error ? { head_error: head.error } : {}), ...(released.length ? { leases_released: released } : {}), ...(registerRetired ? { register_retired: true } : {}) });
   }
   return marked;
