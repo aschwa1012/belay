@@ -324,10 +324,11 @@ test('E2 fires only when the re-review of the final allowed fix refutes: with a 
   assert.deepStrictEqual(PW.derive(snap([work('W', { review: cap({ review_id: 'R1', rounds_left: 1, fix_rounds_used: 0 }) }), R1])), []);
   // Fix 1 exists, the derived rounds_left is already 0, but the fix has not been handed back or re-reviewed: no E2, the last round is not lost.
   const F1 = task('F1', { repairs: 'W', acted_by: 'policy', state: 'assigned' });
-  assert.deepStrictEqual(PW.derive(snap([work('W', { review: cap({ review_id: 'R1' }) }), R1, F1])), [], 'the review that refuted the work is not the cap');
+  const vs = [{ id: 'F1', seq: 100, written_at: 1, policy_rev: null, evaluated_at: null }];
+  assert.deepStrictEqual(PW.derive(snap([work('W', { review: cap({ review_id: 'R1' }) }), R1, F1], { revisions: vs })), [], 'the review that refuted the work is not the cap');
   // The re-review of fix 1 refutes: now E2, filed under the work.
   const R2 = reviewTask('R2', 'F1', 'refuted', [f('blocking', 'still broken')]);
-  const e = PW.derive(snap([work('W', { review: cap({ review_id: 'R2' }) }), R1, F1, R2]));
+  const e = PW.derive(snap([work('W', { review: cap({ review_id: 'R2' }) }), R1, F1, R2], { revisions: vs }));
   assert.deepStrictEqual(kinds(e), ['E2:fix']);
   assert.deepStrictEqual([e[0].task_id, e[0].trigger.id], ['W', 'R2']);
   // A refused fix for the cap is still E2 (the other source), and with no fixes at all a cap of 0 is E2 at once.
@@ -374,7 +375,8 @@ test('the fix order is creation order: a later row on an older fix does not make
   const W = work('W', { review: { state: 'refuted', review_id: 'R2', rounds_left: 0, fix_rounds_used: 2, max_fix_rounds: 2 } });
   const born = [{ id: 'F1', seq: 100, written_at: 1, policy_rev: null }, { id: 'F2', seq: 110, written_at: 2, policy_rev: null }, { id: 'F1', seq: 500, written_at: 3, policy_rev: null }, { id: 'W', seq: 5, written_at: 0, policy_rev: 1 }];
   assert.deepStrictEqual(kinds(PW.derive(snap([W, R1, F1, F2, R2], { revisions: born }))), ['E2:fix'], 'F2 was made last, and R2 judged it');
-  assert.deepStrictEqual(kinds(PW.derive(snap([W, R1, F1, F2, R2]))), [], 'without the versions the latest row decides (the fallback)');
+  assert.deepStrictEqual(kinds(PW.derive(snap([W, R1, F1, F2, R2]))), ['E2:fix'], 'the fix order is unknown without the versions (a cut-off or failed read): it fails toward waking');
+  assert.deepStrictEqual(kinds(PW.derive(snap([W, R1, F1, F2, R2], { revisions: born.filter((v) => v.id !== 'F2') }))), ['E2:fix'], 'a fix missing from the versions is unknown too');
 });
 
 test('readRevisions asks for the family of each plan only and treats a cut-off or failed answer as no answer', async () => {
@@ -389,4 +391,25 @@ test('readRevisions asks for the family of each plan only and treats a cut-off o
   assert.strictEqual(await PW.readRevisions({ revisions: async () => { throw new Error('x'); } }, RUN, [W]), undefined);
   assert.strictEqual(await PW.readRevisions({}, RUN, [W]), undefined);
   assert.strictEqual(await PW.readRevisions(ok, RUN, [other]), undefined, 'no plan, nothing asked');
+});
+
+test('a release_failed event records its task row seq, and the amend is found by that seq, not the clock (a clock stepped back)', async () => {
+  const W = (rev) => work('W', { policy_rev: rev, state: 'released', results: null, handoff: { by: 'w1', at: 10 } });
+  const ev = (message) => ({ id: 'ev1', seq: 7, kind: 'release_failed', task_id: 'W', code: 'E_BUSY', written_at: 500, message });
+  const ver = (seq, rev, written_at) => ({ id: 'W', seq, written_at, policy_rev: rev, evaluated_at: null });
+  // The failure was written against row 25 (rev 1); the amend is row 30 (rev 2) but its clock reads 100, EARLIER than the event's 500.
+  const versions = [ver(10, 1, 50), ver(25, 1, 60), ver(30, 2, 100)];
+  const withSeq = PW.derive(snap([W(2)], { failures: [ev(JSON.stringify({ turn: 1, by: 'x', seq: 25 }))], revisions: versions }));
+  assert.deepStrictEqual(withSeq.map((x) => [x.exception, !!x.lifted]), [['E5', true]], 'by seq: the amend came after the failure');
+  // An event from before the seq was recorded keeps the time comparison (which a stepped-back clock gets wrong, by design).
+  const old = PW.derive(snap([W(2)], { failures: [ev(JSON.stringify({ turn: 1, by: 'x' }))], revisions: versions }));
+  assert.deepStrictEqual(old.map((x) => [x.exception, !!x.lifted]), [['E5', false]]);
+  // The writer: the event's message carries the task's current row seq.
+  const written = [];
+  const core = { memory: { recordEvent: async (e) => { written.push(e); } }, task: { get: async () => ({ id: 'W', seq: 25 }) } };
+  const ctx = { core };
+  await RE.__recordFailure(ctx, { id: 'w1' }, 'W', 'E_BUSY', 'queue refused', 3);
+  assert.deepStrictEqual([written.length, JSON.parse(written[0].message).seq, JSON.parse(written[0].message).turn], [1, 25, 3]);
+  await RE.__recordFailure({ core: { memory: { recordEvent: async (e) => { written.push(e); } }, task: { get: async () => { throw new Error('gone'); } } } }, { id: 'w1' }, 'W', 'E_BUSY', 'x', 3);
+  assert.strictEqual(JSON.parse(written[1].message).seq, undefined, 'no seq when the row cannot be read: the time comparison stands in');
 });
