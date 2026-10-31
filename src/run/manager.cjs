@@ -44,7 +44,7 @@ const LG = require('./launch-gate.cjs'); const RG = require('./relaunch-guard.cj
 const { waitTurnOrLanded } = require('./turn-wait.cjs'); // a turn that ended before the wait began is answered
 
 const { POLL_MS } = require('./exit-hold.cjs');
-const now = () => Date.now();
+const AL = require('./argv-limit.cjs'); const now = () => Date.now(); // AL: the Windows command-line limit, and a spawn that throws
 
 // `memoryLevers`: the run's levers when the caller holds the run row (ADR 0041); `worktree`: the run's (ADR 0043).
 function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = null, memoryLevers = null, worktree = null, agentDefaults = null, stopIdleOnDone = false, permissionPrompt = false }) {
@@ -145,7 +145,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       });
     }
     const { command, prefixArgs } = L.resolveExe(exeFor(w.substrate));
-    const spec = { exe: command, args: [...prefixArgs, ...args], cwd: w.worktree };
+    const spec = { exe: command, args: [...prefixArgs, ...args], cwd: w.worktree }; if (w.substrate === 'codex') AL.checkCommandLine(spec.exe, spec.args, { workerId: w.id }); // before any state change: an oversized text is refused, not thrown by spawn
     w.argvHash = L.writeArgvJson(w.dir, spec);
     w.settled = false; w.pidGoneAt = null; w.pidGonePid = null; w.settleWaitedMs = 0; // the exit-event hold is per launch
     w.settledState = null; // the last process's end; a restatement of this one's row must never carry it
@@ -158,7 +158,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     if (w.adapterLogPath) rotateWireLog(w.adapterLogPath);
     w.adapterLogBytes = w.adapterLogPath ? (fs.statSync(w.adapterLogPath, { throwIfNoEntry: false }) || { size: 0 }).size : 0;
     w.parser = createParser(w.substrate, MP.parserOpts(ctx));
-    const child = P.spawnWorker({
+    const child = AL.guardSpawn(w.id, () => P.spawnWorker({
       // ADR 0016: `cwd` goes to `buildEnv` too, so `PWD` agrees with the real working directory. 6d:
       // MCP_TOOL_TIMEOUT is set only with permission_prompt, always outside permit_wait_ms's own bound.
       exe: spec.exe, args: spec.args, cwd: w.worktree,
@@ -167,7 +167,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
         mcpToolTimeoutMs: w.permissionPrompt ? w.permitWaitMs + 60000 : null,
       }),
       stdin: w.substrate === 'claude-code' ? 'pipe' : 'ignore',
-    });
+    }));
     w.launches += 1;
     w.launchedAt = now();
     try { W.attach(w, child, ctx); }
