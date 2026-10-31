@@ -82,10 +82,11 @@ function registerProcess(rec, what) {
   catch (e) { throw new Error(`${what} (pid ${rec.pid}) could not be recorded in the spawn register (${(e && e.message) || e}); another store on this machine could not tell its children from an operator`); }
 }
 
-function update(pid, created) {
+function update(pid, created, expect = null) {
   if (!Number.isFinite(created)) return false;
   let rec;
   try { rec = readJson(fileOf(pid)); } catch { return false; }
+  if (!matches(rec, expect)) return false;
   if (rec.created === created) return true;
   register({ pid, kind: rec.kind, dataDir: rec.data_dir, workerId: rec.worker_id, created, spawnedAt: rec.spawned_at, seenAt: rec.seen_at });
   return true;
@@ -121,7 +122,8 @@ function sameProcess(rec, snap) {
 }
 
 // Is the record the one the caller means? `expect` names the identity the caller judged: any of kind, workerId, dataDir (compared as
-// paths) and created (compared only when both sides know one). A field left out is not checked; no `expect` matches any record. A pid
+// paths), spawnedAt and created (each compared only when both sides know one; spawnedAt is the caller's own clock reading at the spawn,
+// which update() preserves, so it tells two spawns of one id or one store apart before the creation time is read). A field left out is not checked; no `expect` matches any record. A pid
 // number alone is not an identity: Windows reuses it, and another store's spawn may hold the number by the time the caller acts.
 const samePath = (a, b) => {
   const n = (p) => path.resolve(String(p)).split(String.fromCharCode(92)).join('/');
@@ -132,6 +134,7 @@ function matches(rec, expect) {
   if (expect.kind != null && (rec.kind || 'worker') !== expect.kind) return false;
   if (expect.workerId != null && rec.worker_id !== expect.workerId) return false;
   if (expect.dataDir != null && !(rec.data_dir != null && samePath(rec.data_dir, expect.dataDir))) return false;
+  if (Number.isFinite(expect.spawnedAt) && Number.isFinite(rec.spawned_at) && rec.spawned_at !== expect.spawnedAt) return false;
   if (Number.isFinite(expect.created) && Number.isFinite(rec.created) && rec.created !== expect.created) return false;
   return true;
 }

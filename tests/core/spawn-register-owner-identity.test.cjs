@@ -61,7 +61,7 @@ test('tickAdopted: a mismatch leaves a record another spawn wrote at the pid, an
   const reg = H.ownSpawnRegistry();
   try {
     const snapAt = (created) => new Map([[4242, { pid: 4242, ppid: 1, created, image: 'claude.exe' }]]);
-    const w = { id: 'w-adopted', pid: 4242, pidCreated: 1000, state: 'running' };
+    const w = { id: 'w-adopted', dataDir: 'A:/store', pid: 4242, pidCreated: 1000, state: 'running' };
     assert.ok(SS.stampAdopted(w, { every: 3600000 }));
     SR.register({ pid: 4242, kind: 'worker', workerId: 'other', dataDir: 'B:/store', created: 2000 });
     await SS.tickAdopted({ snapshot: async () => snapAt(2000), touch: () => {} });
@@ -113,3 +113,47 @@ test('matches: identity fields compared only when given, creation time only when
   assert.ok(SR.matches({ ...rec, created: null }, { created: 6 }));
   assert.ok(!SR.matches(rec, { kind: 'orchestrator' }));
 });
+
+test('registerOrchestrator: a later orchestrator of the same store at the reused pid keeps its record', () => {
+  const reg = H.ownSpawnRegistry();
+  try {
+    const proc = new EventEmitter();
+    registerOrchestrator({ pid: 5151, exited: () => true }, { dataDir: 'A:/store', proc, stampOpts: { every: 3600000 } });
+    SR.register({ pid: 5151, kind: 'orchestrator', dataDir: 'A:/store', spawnedAt: Date.now() + 1 }); // run B, same store
+    proc.emit('exit');
+    assert.ok(fs.existsSync(recFile(reg, 5151)), 'run B orchestrator record stays');
+  } finally { reg.remove(); }
+});
+
+test('tickAdopted: another store worker with the same id and no creation time yet keeps its record', async () => {
+  const reg = H.ownSpawnRegistry();
+  try {
+    const w = { id: 'coder-1', dataDir: 'A:/store', pid: 4242, pidCreated: 1000, state: 'running' };
+    assert.ok(SS.stampAdopted(w, { every: 3600000 }));
+    SR.register({ pid: 4242, kind: 'worker', workerId: 'coder-1', dataDir: 'B:/store', created: null, spawnedAt: Date.now() });
+    await SS.tickAdopted({ snapshot: async () => new Map([[4242, { pid: 4242, ppid: 1, created: 2000, image: 'claude.exe' }]]), touch: () => {} });
+    assert.ok(fs.existsSync(recFile(reg, 4242)), 'store B record stays');
+  } finally { SS.stopAdopted(); reg.remove(); }
+});
+
+test('spawnedAt tells two spawns of one worker id in one store apart; update and unregister both honour it', () => {
+  const reg = H.ownSpawnRegistry();
+  try {
+    SR.register({ pid: 7001, kind: 'worker', workerId: 'w', dataDir: 'A:/store', spawnedAt: 200 }); // the later life
+    assert.strictEqual(SR.update(7001, 99, { workerId: 'w', dataDir: 'A:/store', spawnedAt: 100 }), false);
+    assert.strictEqual(JSON.parse(fs.readFileSync(recFile(reg, 7001), 'utf8')).created, null, 'created not written');
+    SR.unregister(7001, { workerId: 'w', dataDir: 'A:/store', spawnedAt: 100 });
+    assert.ok(fs.existsSync(recFile(reg, 7001)), 'the later life record stays');
+    assert.strictEqual(SR.update(7001, 99, { workerId: 'w', dataDir: 'A:/store', spawnedAt: 200 }), true);
+    SR.unregister(7001, { workerId: 'w', dataDir: 'A:/store', spawnedAt: 200 });
+    assert.ok(!fs.existsSync(recFile(reg, 7001)));
+  } finally { reg.remove(); }
+});
+
+test('same worker id in another store at the reused pid: run.end leaves it', () => withRun(async ({ reg, dir, orch, b }) => {
+  await orch.worker.write({ id: 'coder-1', substrate: 'codex', pid: b.pid, state: 'starting', worktree: dir, started_at: Date.now() - 5000 });
+  await orch.worker.write({ id: 'coder-1', substrate: 'codex', pid: b.pid, state: 'idle', worktree: dir, started_at: Date.now() - 5000 });
+  SR.register({ pid: b.pid, kind: 'worker', workerId: 'coder-1', dataDir: 'B:/store', created: null });
+  await orch.run.end({ exit_reason: 'test' });
+  assert.ok(fs.existsSync(recFile(reg, b.pid)), 'store B record stays');
+}));

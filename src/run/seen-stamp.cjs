@@ -33,7 +33,7 @@ async function tickAdopted({ snapshot = (o) => ID.processSnapshot(o), touch = (p
   for (const [pid, a] of [...adopted]) {
     const v = ID.checkIdentity(pid, { created: a.created }, snap);
     if (v.ok) touch(pid, now);
-    else if (v.kind === 'mismatch' || v.kind === 'absent') { adopted.delete(pid); retire(pid, now, { workerId: a.w.id, created: a.created }); }
+    else if (v.kind === 'mismatch' || v.kind === 'absent') { adopted.delete(pid); if (a.w.dataDir) retire(pid, now, { workerId: a.w.id, dataDir: a.w.dataDir, created: a.created }); }
   }
 }
 
