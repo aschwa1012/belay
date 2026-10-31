@@ -132,9 +132,11 @@ async function createWithTrees(E, caller, args, own) {
   }
 
   // 1. every check, with no git: the real writes in a transaction that is rolled back.
+  let collapsed = list.map(() => false); // an item answered with a standing review makes no tree: a tree would be an effect with no row
   try {
-    E.store.tx(() => { E.assertRunOpen(caller, 'task.create'); writeAll(E, caller, list, list.map((it) => (it.tree ? planned(top, it) : null)), top, own); throw DRY; });
+    E.store.tx(() => { E.assertRunOpen(caller, 'task.create'); collapsed = writeAll(E, caller, list, list.map((it) => (it.tree ? planned(top, it) : null)), top, own).map((r) => r.existing === true); throw DRY; });
   } catch (e) { if (e !== DRY) throw e; }
+  const treeFor = list.map((it, i) => (it.tree && !collapsed[i] ? it : null));
 
   // 2. the lock for every new id, then 3. the trees.
   const started = clock();
@@ -142,11 +144,11 @@ async function createWithTrees(E, caller, args, own) {
     const made = [], undone = [];
     try {
       const trees = list.map(() => null), checked = list.map(() => null);
-      for (let i = 0; i < list.length; i++) if (list[i].tree) checked[i] = await checkTree(top, list[i]); // 3a. every git-only check, before any tree
+      for (let i = 0; i < list.length; i++) if (treeFor[i]) checked[i] = await checkTree(top, list[i]); // 3a. every git-only check, before any tree
       const limit = budget();
       let slowest = 0;
       for (let i = 0; i < list.length; i++) {
-        if (!list[i].tree) continue;
+        if (!treeFor[i]) continue;
         const at = clock(), elapsed = at - started, margin = Math.max(MARGIN_MS, slowest);
         if (made.length && elapsed + margin > limit) {
           throw err('E_TIMEOUT', `task.create stopped before the tree for ${list[i].id}: ${elapsed} ms spent, a further tree needs about ${margin} ms and the call has ${limit} ms; ${made.length} tree${made.length === 1 ? '' : 's'} made so far ${made.length === 1 ? 'is' : 'are'} removed and nothing was written. Create fewer tasks with trees in one call`,
@@ -161,7 +163,15 @@ async function createWithTrees(E, caller, args, own) {
         if (src) await W.assertTreeListed(src);
       }
       // 4. every row, one transaction, every check again on the store as it now is.
-      const out = E.store.tx(() => { E.assertRunOpen(caller, 'task.create'); return writeAll(E, caller, list, trees, top, own); });
+      const out = E.store.tx(() => {
+        E.assertRunOpen(caller, 'task.create');
+        const w = writeAll(E, caller, list, trees, top, own);
+        // a standing review that ended between the dry run and now: this item wanted a tree and has none, so nothing is written
+        // and one that began to stand while its tree was made would leave the tree with no row: the tree is removed, nothing is written
+        w.forEach((r, i) => { if (trees[i] && r.existing === true) throw err('E_BUSY', `task.create: a review now stands for ${list[i].id}, so its tree was removed and nothing was written. Call again`, { op: 'create', task_id: list[i].id }); });
+        w.forEach((r, i) => { if (collapsed[i] && r.existing !== true) throw err('E_BUSY', `task.create: the review that stood for ${list[i].id} ended while the call ran; nothing was written. Call again`, { op: 'create', task_id: list[i].id }); });
+        return w;
+      });
       E.noteWrite(); require('./run-budget.cjs').noteRows(E, caller, out);
       return shape(out);
     } catch (e) {
