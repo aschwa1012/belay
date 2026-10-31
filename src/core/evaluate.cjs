@@ -99,7 +99,11 @@ function runCommand(argvGiven, cwd, timeoutMs, { env, tail = TAIL, onChild, keep
     if (onChild) onChild(child);
     const out = capture(keep, tail), errText = capture(keep);
     let settled = false, timedOut = false, killing = null, pipesDropped = false;
-    const timer = setTimeout(() => { timedOut = true; killing = killTree(child); }, timeoutMs);
+    const timer = setTimeout(() => {
+      timedOut = true; killing = killTree(child);
+      // A refused or failed tree kill leaves the child, and whatever holds its pipes, running: our ends are dropped either way.
+      Promise.resolve(killing).then(k => { if (!k || k.ok === false) { try { child.stdout.destroy(); child.stderr.destroy(); } catch { /* closed */ } } });
+    }, timeoutMs);
     timer.unref();
     // ADR 0039: the exit, not the later close, ends the kill's right to fire (the pid may be reused from here on).
     // A grandchild that outlives its parent and holds our pipes would keep `close` from ever firing, and nothing

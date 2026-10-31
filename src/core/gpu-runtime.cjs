@@ -254,7 +254,7 @@ function defaultInstaller(dir, { env = process.env, boundMs = INSTALL_BOUND_MS }
     c.stdout.on('data', take); c.stderr.on('data', take);
     const timer = setTimeout(() => { killPid(c); out += `\nnpm ci did not finish within ${boundMs} ms and was stopped`; }, boundMs);
     c.on('error', (x) => { clearTimeout(timer); reject(err('E_MODEL_ABSENT', `npm could not be started: ${x.message}`, { gpu: true, cause: 'absent' })); });
-    c.on('exit', (code, signal) => { clearTimeout(timer); resolve({ code: code === null ? -1 : code, signal, ms: Date.now() - t0, tail: out.trim() }); });
+    c.on('exit', (code, signal) => { clearTimeout(timer); const drop = setTimeout(() => { try { c.stdout.destroy(); c.stderr.destroy(); } catch { /* closed */ } }, 2000); drop.unref(); c.once('close', () => clearTimeout(drop)); resolve({ code: code === null ? -1 : code, signal, ms: Date.now() - t0, tail: out.trim() }); });
   });
 }
 
