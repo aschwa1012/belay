@@ -143,11 +143,13 @@ test('run(): a round is code 0 with the document as its json, and bad arguments 
   assert.strictEqual(r.code, 0);
   assert.strictEqual(r.json.parts.agents.json.run_id, 'r-1');
   assert.match(r.text, /panel-read r-1 at \d+/);
+  const afterRound = f.calls.length; // agents, notices and (the run is headless) the transcript
   for (const argv of [['--tail'], ['--tail', 'x'], ['--tail', '0'], ['--dir'], ['--nope'], ['a', 'b']]) {
     const bad = await mod.run({ argv, cwd: 'C:/x', dataDir: 'C:/x/.belay', json: true, reads: f.reads });
     assert.strictEqual(bad.code, 2, argv.join(' '));
   }
-  assert.strictEqual(f.calls.length, 2, 'the usage errors read nothing');
+  assert.strictEqual(afterRound, 3);
+  assert.strictEqual(f.calls.length, afterRound, 'the usage errors read nothing');
 });
 
 test('the real bound: a read that never answers is abandoned at its time', async () => {
