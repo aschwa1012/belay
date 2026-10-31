@@ -5,8 +5,8 @@
 //
 // The store is machine-wide. Without a reach, a worker of one run could read another run's or another project's
 // memory, or plant a row there. A worker reaches its own run's namespace and its run's project, and nothing else;
-// the orchestrator and the operator are not restricted (the run manager writes project copies as the orchestrator,
-// and the CLI is the operator's window onto every namespace).
+// the operator is not restricted (the CLI is its window onto every namespace), and the orchestrator reads anywhere but, on the tool channel,
+// writes, deletes and verifies only within its own run and project (checkOrchestratorWrite; the run manager's harness channel is unrestricted).
 
 const { err } = require('./errors.cjs');
 const { checkNamespaces } = require('./memory-note-gate.cjs');
@@ -80,8 +80,9 @@ function resolveNamespace(E, caller, ns) {
   return p ? `${ns}/${p}` : ns;
 }
 
-// A WRITE by the orchestrator on the tool channel (its reads stay unlimited): not another project's notes, and not `summary/` except through the
-// alias, which names its own project's. The harness channel is not restricted (the run manager writes summaries and project copies).
+// A WRITE by the orchestrator on the tool channel (its reads stay unlimited), whether a store, a delete or a status change (and so a verified copy):
+// only its own run's namespace, its own project, and `summary/` through the alias, which names its own project's. A run with no project reaches no
+// project/ or summary/ namespace. The harness channel is not restricted (the run manager writes summaries and project copies).
 function checkOrchestratorWrite(E, caller, ns, named) {
   if (!caller || caller.role !== 'orchestrator' || caller.channel === 'harness' || typeof ns !== 'string') return;
   // Another run's scratch is that run's: its workers read it as their own memory, so a row planted there is injected data (invariant 8).
@@ -89,7 +90,15 @@ function checkOrchestratorWrite(E, caller, ns, named) {
     throw err('E_ROLE', `the orchestrator writes only its own run's namespace (run/${caller.run_id}); ${ns} is another run's`, { namespace: ns, role: caller.role });
   }
   const p = projectOf(E, caller);
-  if (!p) return; // a run with no project has no notes and no alias to hold it to: the literal namespaces it has always had
+  // A run with no project has no project of its own: it writes its own run's namespace (and a summary only through the alias, which needs a project).
+  // Another project's rows, operator-verified ones included, are not its to store, delete or verify.
+  if (!p && ns.startsWith('project/')) {
+    throw err('E_ROLE', `the orchestrator of a run with no project writes only its own run's namespace (run/${caller.run_id}); ${ns} is a project's`, { namespace: ns, role: caller.role });
+  }
+  if (!p && ns.startsWith('summary/')) {
+    throw err('E_ROLE', `the orchestrator of a run with no project has no summary namespace; ${ns} is refused`, { namespace: ns, role: caller.role });
+  }
+  if (!p) return;
   if (ns.startsWith('project/') && ns !== `project/${p}`) {
     throw err('E_ROLE', `the orchestrator writes only its own run's project (project/${p}); ${ns} is another`, { namespace: ns, role: caller.role });
   }

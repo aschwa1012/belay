@@ -78,3 +78,16 @@ test('briefing tool: the schema is closed, so a model cannot pass namespace', ()
   assert.doesNotThrow(() => tools.validateArgs('briefing', { task_id: 't' }, { role: 'worker' }));
   assert.throws(() => tools.validateArgs('briefing', { task_id: 't', namespace: 'run/ra' }, { role: 'worker' }), (e) => e.code === 'E_ARGS' && e.detail && e.detail.field === 'namespace');
 });
+
+test('a run with no project reaches no project row: store, delete and verify are refused, its own run namespace is not', async () => {
+  await call(O('rn'), 'run.attach', { adapter_pid: process.pid, memory_levers: JSON.stringify({ notes: false }) });
+  const w = await call(OP, 'memory.store', { namespace: 'project/pa', text: 'operator verified lesson, seen by a no-project run', embed: false });
+  await call(OP, 'memory.setStatus', { id: w.id, status: 'verified', receipt: 'test:op-check' });
+  assert.strictEqual(await code(call(O('rn'), 'memory.store', { namespace: 'project/pa', text: 'planted', embed: false })), 'E_ROLE');
+  assert.strictEqual(await code(call(O('rn'), 'memory.delete', { id: w.id })), 'E_ROLE');
+  assert.strictEqual(await code(call(O('rn'), 'memory.setStatus', { id: w.id, status: 'refuted', receipt: 'test:x' })), 'E_ROLE');
+  assert.ok(exists(w.id));
+  assert.strictEqual(store.p('SELECT status FROM memory_entries WHERE id = ?').get(w.id).status, 'verified');
+  const own = await call(O('rn'), 'memory.store', { namespace: 'run/rn', text: 'rn scratch', embed: false });
+  assert.strictEqual((await call(O('rn'), 'memory.delete', { id: own.id })).deleted, true);
+});
