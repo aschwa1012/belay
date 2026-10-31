@@ -174,3 +174,21 @@ test('the receipt field asks for this run\'s steps by name', async () => {
   await D.receiptField(core, dirOf(), RUN);
   assert.strictEqual(core.calls.find((a) => a.limit === 1).run_id, RUN);
 });
+
+test('a wait that goes on after losing its items counts the whole call in waited_ms', async () => {
+  const dir = dirOf(); const c = clock();
+  const steps = [];
+  const core = fakeCore(steps);
+  let polls = 0; let probe = null; let taken = false;
+  const rw = createRunWait({ core, runId: RUN, dataDir: dir, pollMs: 100, clock: Object.assign(c, { sleep: async (ms) => { c.t += ms; c.sleeps += 1; if (++polls === 2) steps.push(failed({ task_id: 'W' })); } }), claimant: me,
+    hooks: { afterRows: async () => {
+      if (taken) return;
+      taken = true;
+      probe = (await require('../../src/run/policy-wakes.cjs').createPolicyWatcher({ core, runId: RUN, enabled: true }).poll())[0];
+      D.claimException({ dataDir: dir, runId: RUN, uid: `${probe.worker_id}:${probe.key}` }); // another path takes it after the poll, before the claim
+    } } });
+  const r = await rw.wait(args(c));
+  assert.strictEqual(r.exceptions, undefined);
+  assert.strictEqual(r.timed_out, true);
+  assert.ok(r.waited_ms >= 400 && r.waited_ms < 600, `waited ${r.waited_ms}`);
+});

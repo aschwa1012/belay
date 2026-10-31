@@ -119,7 +119,7 @@ function createRunWait({ core, runId, dataDir, armed = () => true, settled = nul
     const wakes = pending.splice(0).filter((w) => claimOne(uidOf(w), recordOf(w)));
     deaths = fresh.filter((d) => claimOne(d.uid, recordOf({ worker_id: d.worker_id, event: 'death', turn: d.turn, exit_code: d.exit_code, exit_signal: d.exit_signal, death_established_by: d.established_by, text: `belay: worker ${d.worker_id} ${d.event}.` })));
     // Everything polled lost its claim to another path between the look and the claim, and nothing is owed: the wait is not over, it goes on to its deadline.
-    if (candidates && !wakes.length && !deaths.length && clock.now() < deadline) return wait({ ms: deadline - clock.now(), capNote, t0: clock.now(), workers, idleOf, signal });
+    if (candidates && !wakes.length && !deaths.length && clock.now() < deadline) return wait({ ms, capNote, t0, workers, idleOf, signal }); // the same deadline and the same start: waited_ms counts the whole call
     let digest = null;
     if (!digestError) {
       try { digest = D.claimDigest({ dataDir, runId, rows, via: 'wait', now: clock.now, claimant: me, hooks }); } catch (e) { digestError = (e && e.code) || 'E_INTERNAL'; }

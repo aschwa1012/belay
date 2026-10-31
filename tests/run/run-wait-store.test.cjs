@@ -47,14 +47,21 @@ test('a planned task, a refuted review, the policy fix, then the run wait: the s
     exec.arm();
     assert.deepStrictEqual((await exec.tick()).steps.map((s) => [s.step, s.outcome]), [['fix', 'done']]);
 
+    // A second planned task whose evaluation fails: an E5 exception, derived from the rows, which the wait delivers.
+    const FAIL = { commands: [{ argv: [process.execPath, '-e', 'process.exit(1)'], timeout_ms: 20000 }] };
+    const bad = await orch.task.create({ spec: 'bad', acceptance: FAIL, policy: { fix: 'builder' } });
+    assert.strictEqual((await handBack('builder-2', bad, { branch: 'b2', head: 'h2' })).state, 'released');
+
     const c = { t: 0, now: () => c.t, sleep: async (ms) => { c.t += ms; } };
     const rw = createRunWait({ core: h, runId: RUN, dataDir: `${dir}/data`, pollMs: 100, clock: c, claimant: { pid: process.pid, created: 'own' } });
     const first = await rw.wait({ ms: 300, t0: 0, workers: [] });
+    assert.deepStrictEqual(first.exceptions.map((e) => [e.exception, e.task_id]), [['E5', bad.id]], JSON.stringify(first));
     assert.strictEqual(first.digest.steps, 1, JSON.stringify(first));
     assert.match(first.digest.text, /fix .* done -> task:/);
     const second = await rw.wait({ ms: 300, t0: c.t, workers: [] });
     assert.strictEqual(second.digest, undefined, 'the step is shown once');
 
+    assert.deepStrictEqual(D.readDeliveries(`${dir}/data`, RUN, 0).map((w) => [w.via, w.exception, w.task_id]), [['wait', 'E5', bad.id]], 'the delivery is in the receipt');
     const receipt = { run_id: RUN, wakes: D.readDeliveries(`${dir}/data`, RUN, 0), ...(await D.receiptField(h, `${dir}/data`, RUN)) };
     const steps = orch.owner.engine.store.p('SELECT seq FROM policy_step').all().map((r) => r.seq);
     const shown = receipt.digests.flatMap((d) => d.lines.map((l) => l.step_seq));

@@ -176,3 +176,22 @@ test('a death is claimed on the pipe when the store shows a plan, with no turn e
     assert.deepStrictEqual(p.lines.filter((l) => l.text && /w2/.test(l.text) && !/finished turn/.test(l.text)), [], 'the death is not published');
   } finally { await p.done(); }
 });
+
+test('an exception the wait claimed and then released is published on the pipe after all', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-rw-wake-')).split(path.sep).join('/');
+  const core = coreOf([]);
+  const policyWakes = require('../../src/run/policy-wakes.cjs');
+  const probe = (await policyWakes.createPolicyWatcher({ core, runId: RUN, enabled: true }).poll({ policyTasks: [W], policyArmed: true }))[0];
+  const uid = `${probe.worker_id}:${probe.key}`;
+  assert.ok(D.claimException({ dataDir, runId: RUN, uid }), 'the wait holds it');
+  const p = await publisher(core, dataDir);
+  try {
+    core.rows[0] = { ...core.rows[0], turns: 1, seq: 2 };
+    const polls = p.pub.stats().polls;
+    assert.ok(await p.until(() => p.pub.stats().polls >= polls + 4));
+    assert.deepStrictEqual(p.lines.filter((l) => l.text && /exception E1/.test(l.text)), [], 'held back while the wait has it');
+    D.release({ dataDir, runId: RUN, uids: [uid] }); // the wait's reply was lost: its claim is released
+    assert.ok(await p.until(() => p.lines.some((l) => l.text && /exception E1,/.test(l.text))), JSON.stringify(p.lines));
+    assert.strictEqual(p.lines.filter((l) => l.text && /exception E1,/.test(l.text)).length, 1, 'once');
+  } finally { await p.done(); }
+});

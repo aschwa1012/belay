@@ -69,8 +69,12 @@ function startWakePublisher({
     const D = dataDir ? require('./run-digest.cjs') : null;
     const uid = D ? D.wakeUid({ ...(w.ev || {}), worker_id: w.worker_id }) : null;
     if (!uid || (!(w.ev && w.ev.exception) && !planned.value())) return true; // a death is claimed only once a plan is in force
-    try { return D.claimException({ dataDir, runId, uid }); } catch { return true; } // a claim that cannot be made delivers: never lose a wake for want of a file
+    let won = true;
+    try { won = D.claimException({ dataDir, runId, uid }); } catch { won = true; } // a claim that cannot be made delivers: never lose a wake for want of a file
+    if (!won) lost.set(uid, w); // kept: if worker_wait's claim is released (its reply was lost), this wake is published after all
+    return won;
   };
+  const lost = new Map(); // uid -> the wake another path's claim kept this one from publishing
 
   function publish(w) {
     if (!claimed(w)) return;
@@ -127,6 +131,7 @@ function startWakePublisher({
         }
       }
       if (budgetWake) for (const bw of budgetWake.takeWakes()) publish({ id: bw.id, text: bw.text, event: 'budget_pause', ev: bw }); // the budget pause's own wake is the one a hold does not keep back
+      if (lost.size) for (const [uid, w] of lost) if (!require('./run-digest.cjs').isClaimed({ dataDir, runId, uid })) { lost.delete(uid); queue.push(w); } // a released claim: publish what it had held back
       if (dataDir && queue.some((q) => q.event === 'death')) await planned.check(); // a death has a second delivery path once the store shows a plan
       stats.held_max = Math.max(stats.held_max, queue.length);
       let held = false;
