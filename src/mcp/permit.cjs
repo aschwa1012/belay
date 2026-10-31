@@ -7,6 +7,7 @@
 // measured cost of a channel that outlives MCP_TOOL_TIMEOUT, ADR 0020 §Context).
 
 const WAIT_SLICE_MS = 25000;
+const RECONCILE_MAX_MS = 20000; // the most an unknown-outcome reconcile may spend, inside the substrate's margin
 
 function verdictAnswer(state, input, reason) {
   if (state === 'allowed') {
@@ -43,10 +44,24 @@ function createPermit({ openCore, caller, waitMs = 600000, log = () => {} }) {
   async function unknownAnswer(c, e, toolUseId, toolName, input) {
     const reason = `belay: the permission request outcome is unknown (${e.code}: ${e.message}); it was expired`;
     let last = null;
+    // The whole reconcile stays inside the substrate's own limit (MCP_TOOL_TIMEOUT is waitMs + 60000):
+    // no attempt starts, and none is waited on, past this deadline.
+    const deadline = Date.now() + Math.min(waitMs, RECONCILE_MAX_MS);
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      if (attempt > 0) await sleep(250);
+      if (attempt > 0) {
+        if (deadline - Date.now() <= 250) break;
+        await sleep(250);
+      }
       try {
-        const decided = await c.permission.decide({ id: toolUseId, verdict: 'expire', reason });
+        const left = Math.max(1, deadline - Date.now());
+        let timer;
+        const cutoff = new Promise((_, reject) => {
+          timer = setTimeout(() => reject(Object.assign(new Error(`no answer within the ${left} ms left for reconciling`), { code: 'E_TIMEOUT' })), left);
+          if (timer.unref) timer.unref();
+        });
+        let decided;
+        try { decided = await Promise.race([c.permission.decide({ id: toolUseId, verdict: 'expire', reason }), cutoff]); }
+        finally { clearTimeout(timer); }
         log('##', `permit ${toolUseId} ${toolName} expired after an unknown request outcome`);
         return verdictAnswer(decided.verdict.state, input, decided.verdict.reason);
       } catch (e2) {
@@ -61,6 +76,7 @@ function createPermit({ openCore, caller, waitMs = 600000, log = () => {} }) {
         }
       }
     }
+    last = last || { code: 'E_TIMEOUT', message: 'no time left to reconcile' };
     log('!!', `permit ${toolUseId} reconcile failed: ${last.code}: ${last.message}`);
     return verdictAnswer('denied', input, `belay: the permission request outcome is unknown and could not be reconciled (${e.code}: ${e.message}; ${last.code}: ${last.message})`);
   }
@@ -72,6 +88,7 @@ function createPermit({ openCore, caller, waitMs = 600000, log = () => {} }) {
       entry.expired = true;
       log('##', `permit ${entry.id} expired: cancelled by the substrate`);
     } catch (e) {
+      if (e.code === 'E_ARGS' && e.detail && e.detail.state === 'expired') { entry.expired = true; return; } // a racing expire already landed
       log('!!', `permit ${entry.id} cancel failed: ${e.code || 'E_INTERNAL'}: ${e.message}`);
     }
   }
@@ -107,7 +124,7 @@ function createPermit({ openCore, caller, waitMs = 600000, log = () => {} }) {
     let verdictRow = requestRow;
     let waitFault = null; // the last permission.wait failure, if the real clock is still what ends this
     for (;;) {
-      if (entry.cancelled) return null; // cancel() already answered (or dropped) this call
+      if (entry.cancelled) { await expireCancelled(c, entry); return null; } // cancel() may have failed to expire the row
       const remaining = waitMs - (Date.now() - startedAt);
       if (remaining <= 0) break;
       const slice = Math.max(1, Math.min(WAIT_SLICE_MS, remaining));
@@ -130,7 +147,7 @@ function createPermit({ openCore, caller, waitMs = 600000, log = () => {} }) {
       verdictRow = w.request || verdictRow;
       if (!w.timed_out) break;
     }
-    if (entry.cancelled) return null;
+    if (entry.cancelled) { await expireCancelled(c, entry); return null; }
 
     if (verdictRow && verdictRow.state !== 'pending') {
       entry.answered = true;

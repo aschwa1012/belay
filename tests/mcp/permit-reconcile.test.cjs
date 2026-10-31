@@ -77,6 +77,60 @@ test('an unknown request outcome is reconciled: a committed row is expired, not 
   assert.match(body.message, /unknown/);
 });
 
+test('a cancel whose own expire failed after the row existed is retried when the wait returns', async () => {
+  let releaseWait;
+  const waitGate = new Promise((r) => { releaseWait = r; });
+  let waiting;
+  const inWait = new Promise((r) => { waiting = r; });
+  const core = fakeCore();
+  const realDecide = core.permission.decide;
+  let failed = false;
+  core.permission.decide = async (a) => {
+    if (!failed) { failed = true; throw coded('E_OWNER_LOST', 'owner gone', { sent: false }); }
+    return realDecide(a);
+  };
+  core.permission.wait = async ({ id }) => { waiting(); await waitGate; return { request: { ...core.rows.get(id) }, timed_out: true }; };
+  const permit = createPermit({ openCore: async () => core, waitMs: 3000 });
+  const called = permit.call({ tool_name: 'Bash', tool_use_id: 'tu-b', input: {} }, 13);
+  await inWait;
+  await permit.cancel(13); // its expire fails once
+  assert.strictEqual(core.rows.get('tu-b').state, 'pending');
+  releaseWait();
+  assert.strictEqual(await called, null);
+  assert.strictEqual(core.rows.get('tu-b').state, 'expired', 'the row must not be left pending');
+});
+
+test('a racing expire that already landed is not logged as a failed cancel', async () => {
+  const core = fakeCore();
+  core.permission.decide = async ({ id }) => { core.rows.get(id).state = 'expired'; throw coded('E_ARGS', 'already decided', { state: 'expired' }); };
+  let releaseWait;
+  const waitGate = new Promise((r) => { releaseWait = r; });
+  let waiting;
+  const inWait = new Promise((r) => { waiting = r; });
+  core.permission.wait = async ({ id }) => { waiting(); await waitGate; return { request: { ...core.rows.get(id) }, timed_out: true }; };
+  const logs = [];
+  const permit = createPermit({ openCore: async () => core, waitMs: 3000, log: (k, m) => logs.push(`${k} ${m}`) });
+  const called = permit.call({ tool_name: 'Bash', tool_use_id: 'tu-s', input: {} }, 14);
+  await inWait;
+  await permit.cancel(14);
+  releaseWait();
+  await called;
+  assert.ok(!logs.some((l) => /cancel failed/.test(l)), logs.join('\n'));
+});
+
+test('the unknown-outcome reconcile is bounded by the adapter wait bound when the owner never answers', async () => {
+  const core = fakeCore({
+    afterRequest: () => { throw coded('E_OWNER_LOST', 'lost', { sent: true, may_have_committed: true, outcome: 'unknown' }); },
+  });
+  core.permission.decide = () => new Promise(() => {}); // wedged owner
+  const permit = createPermit({ openCore: async () => core, waitMs: 200 });
+  const t0 = Date.now();
+  const a = JSON.parse((await permit.call({ tool_name: 'Bash', tool_use_id: 'tu-w', input: {} }, 15)).content[0].text);
+  assert.ok(Date.now() - t0 < 5000, 'the reconcile must not wait on a wedged owner');
+  assert.strictEqual(a.behavior, 'deny');
+  assert.match(a.message, /could not be reconciled/);
+});
+
 test('an unknown request outcome whose row was never written is still a plain deny', async () => {
   const core = fakeCore({
     beforeRequest: () => { throw coded('E_TIMEOUT', 'the owner did not answer', { may_have_committed: true }); },
