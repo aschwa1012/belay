@@ -84,7 +84,7 @@ function resolveWindowsShim(argv, platform = process.platform, execPath = proces
 // `keep: 'ends'` keeps the head and the tail of each stream (an acceptance command; capture above).
 // `register: 'check'` records the child in the machine-wide spawn register the moment it exists (ADR 0045 decision 4): the command is code a
 // worker wrote, and a process that descends from it must not be taken for the operator. A record that cannot be written ends the child
-// and the command does not run (fail closed); the record is retired when the child exits, leaving the tombstone that covers its orphans.
+// and the child is ended at once (fail closed; it may have run for an instant before the kill). check-register.cjs keeps the record stamped and retires it at exit.
 function runCommand(argvGiven, cwd, timeoutMs, { env, tail = TAIL, onChild, keep = 'head', register = null } = {}) {
   return new Promise(resolve => {
     const t0 = Date.now();
@@ -94,21 +94,19 @@ function runCommand(argvGiven, cwd, timeoutMs, { env, tail = TAIL, onChild, keep
     }
     const argv = resolveWindowsShim(argvGiven);
     let child;
+    const spawnedAt = Date.now(); // before the spawn call: the earliest moment the child can exist
     try {
       child = spawn(argv[0], argv.slice(1), { cwd, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], ...(env ? { env } : {}) });
     } catch (e) {
       return resolve({ executable: false, exit_code: null, ms: Date.now() - t0, timed_out: false, stdout: '', stderr: '', spawn_error: e.code || e.message });
     }
+    if (onChild) onChild(child);
     let unregister = () => {};
     if (register && child.pid) {
-      const SR = require('./spawn-register.cjs'), spawnedAt = Date.now() - 1, rec = { kind: register, spawnedAt };
-      try { SR.registerProcess({ pid: child.pid, ...rec }, 'a worker-controlled check command'); } catch (e) {
-        const gone = killTree(child);
-        return Promise.resolve(gone).then(() => resolve({ executable: false, exit_code: null, ms: Date.now() - t0, timed_out: false, stdout: '', stderr: '', spawn_error: `not run: ${(e && e.message) || e}` }));
+      try { unregister = require('./check-register.cjs').begin(child, register, spawnedAt, 'a worker-controlled command'); } catch (e) {
+        return Promise.resolve(killTree(child)).then(() => resolve({ executable: false, exit_code: null, ms: Date.now() - t0, timed_out: false, stdout: '', stderr: '', spawn_error: `ended at once, not run to completion: ${(e && e.message) || e}` }));
       }
-      unregister = () => SR.unregister(child.pid, rec);
     }
-    if (onChild) onChild(child);
     const out = capture(keep, tail), errText = capture(keep);
     let settled = false, timedOut = false, killing = null, pipesDropped = false;
     const timer = setTimeout(() => { timedOut = true; killing = killTree(child); }, timeoutMs);

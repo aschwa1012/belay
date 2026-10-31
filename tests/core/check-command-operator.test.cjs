@@ -4,13 +4,15 @@
 // called the owner passed as the operator. runCommand now records a check command in the spawn register (`register: 'check'`),
 // which task.evaluate and the integration checks pass. Here a real bound owner is called by a check command that claims the
 // operator: it is refused; the same command run by an unregistered parent is vouched for (the control); the record is retired when
-// the command exits; and a register that cannot be written means the command does not run.
+// the command exits; a register that cannot be written ends the command at once; a harness that ends mid-check retires the record
+// with its lifetime closed at that moment, and the record is stamped while the check lives.
 
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { spawn } = require('node:child_process');
 const { core, sandbox, cleanup, ownSpawnRegistry } = require('./helpers.cjs');
 
 const SR = core('spawn-register.cjs');
@@ -57,17 +59,49 @@ test('a check command is retired from the register when it exits, and its tombst
   assert.ok(SR.tombstones().some((t) => t.pid === seen[0] && t.kind === 'check'), 'the tombstone names the check');
 });
 
-test('a register that cannot be written means the check command does not run', { timeout: 60000 }, async () => {
+test('a register that cannot be written ends the check command at once', { timeout: 60000 }, async () => {
   const reg = ownSpawnRegistry();
   const asFile = path.join(os.tmpdir(), `belay-check-register-not-a-dir-${process.pid}`);
   fs.writeFileSync(asFile, 'x');
   process.env.BELAY_SPAWN_REGISTRY = path.join(asFile, 'registry'); // a directory under a file: no record can be written
   const marker = path.join(os.tmpdir(), `belay-check-ran-${process.pid}`);
+  let child = null;
   try {
-    const r = await runCommand([process.execPath, '-e', `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran'), 1500)`], os.tmpdir(), 30000, { register: 'check' });
+    const t0 = Date.now();
+    const r = await runCommand([process.execPath, '-e', `setTimeout(() => require('fs').writeFileSync(${JSON.stringify(marker)}, 'ran'), 20000)`], os.tmpdir(), 30000, { register: 'check', onChild: (c) => { child = c; } });
     assert.strictEqual(r.executable, false, JSON.stringify(r));
-    assert.match(r.spawn_error, /^not run: .*could not be recorded in the spawn register/);
-    await new Promise((res) => setTimeout(res, 2000)); // the child would have written by now had it survived
-    assert.ok(!fs.existsSync(marker), 'the command ran without a record');
+    assert.match(r.spawn_error, /^ended at once.*could not be recorded in the spawn register/);
+    assert.ok(child.exitCode !== null || child.signalCode !== null, 'the child was ended before the result came back');
+    assert.ok(Date.now() - t0 < 20000 && !fs.existsSync(marker), 'it ended long before its own timer');
   } finally { try { fs.unlinkSync(asFile); } catch { /* gone */ } try { fs.unlinkSync(marker); } catch { /* never written */ } reg.remove(); }
+});
+
+test('a harness that exits mid-check retires the record at that moment, so the tombstone covers an orphan started late', { timeout: 60000 }, async () => {
+  ownSpawnRegistry();
+  const harness = spawn(process.execPath, [path.join(__dirname, '..', 'helpers', 'check-harness.cjs')], { env: process.env, windowsHide: true, stdio: ['ignore', 'pipe', 'inherit'] });
+  let out = '';
+  harness.stdout.on('data', (d) => { out += d; });
+  await new Promise((res) => harness.once('close', res));
+  const [pidText, aliveAt] = out.trim().split(' ');
+  const pid = Number(pidText);
+  try {
+    assert.ok(pid > 0, `the harness named no check pid: ${out}`);
+    assert.deepStrictEqual(SR.list({ persist: false }).filter((r) => r.pid === pid), [], 'no live record is left for the check');
+    const tomb = SR.tombstones().find((t) => t.pid === pid);
+    assert.ok(tomb, 'a tombstone names the check');
+    assert.strictEqual(tomb.kind, 'check');
+    assert.ok(tomb.until >= Number(aliveAt), `the lifetime closed at ${tomb.until}, before the check was seen alive at ${aliveAt}`);
+  } finally { try { process.kill(pid); } catch { /* gone */ } } // the check child, by its exact pid
+});
+
+test('a live check record is stamped on the timer', { timeout: 60000 }, async () => {
+  ownSpawnRegistry();
+  const CR = core('check-register.cjs');
+  let child = null;
+  const run = runCommand([process.execPath, '-e', 'setTimeout(() => {}, 400)'], os.tmpdir(), 30000, { register: 'check', onChild: (c) => { child = c; } });
+  const file = path.join(SR.dir(), `${child.pid}.json`);
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).seen_at, undefined, 'not stamped at the spawn');
+  CR.stamp(Date.now() + CR.STAMP_MS + 1000);
+  assert.ok(Number.isFinite(JSON.parse(fs.readFileSync(file, 'utf8')).seen_at), 'stamped');
+  await run;
 });
