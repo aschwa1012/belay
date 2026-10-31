@@ -1,24 +1,34 @@
 'use strict';
-// A command that times out while the tree kill is refused: runCommand drops its ends of the pipes rather than holding them.
-// The kill is stubbed (the seam is PROC.killTree, read at call time); the child is stopped by its own handle.
+// A command that times out while a process outside the killed tree holds its pipes. The tree kill is stubbed (the seam is
+// PROC.killTree, read at call time): it stops the direct child by its handle and reports ok, as a real kill does when the
+// holder was reparented away from the tree. runCommand must still resolve, with its ends of the pipes dropped. The holder lives
+// only while a flag file exists and is never signalled.
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const fs = require('node:fs');
+const os = require('node:os');
+const path = require('node:path');
 const PROC = require('../../src/core/process.cjs');
 const { core } = require('./helpers.cjs');
 const { runCommand } = core('evaluate.cjs');
 
-test('a timeout whose tree kill is refused destroys the child pipes', async (t) => {
-  const real = PROC.killTree;
-  let child = null;
-  PROC.killTree = async (c) => { return { ok: false, error: 'refused (test)' }; };
-  t.after(() => { PROC.killTree = real; });
-  const done = runCommand([process.execPath, '-e', 'setTimeout(() => {}, 120000)'], undefined, 200, { onChild: (c) => { child = c; } });
-  // the stub has answered once both streams are destroyed; wait on that event, then stop the child by its handle
-  await new Promise((resolve) => { const i = setInterval(() => { if (child && child.stdout.destroyed && child.stderr.destroyed) { clearInterval(i); resolve(); } }, 20); t.after(() => clearInterval(i)); });
-  assert.strictEqual(child.stdout.destroyed, true);
-  assert.strictEqual(child.stderr.destroyed, true);
-  child.kill();
-  const r = await done;
-  assert.strictEqual(r.timed_out, true);
-});
+const FIXTURE = path.join(__dirname, '..', 'run', 'fixtures', 'leak-parent.cjs');
+
+for (const kill of [{ ok: true }, { ok: false, error: 'refused (test)' }]) {
+  test(`a timeout whose tree kill reports ok=${kill.ok} still resolves and drops the pipes of a holder outside the tree`, async (t) => {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-eval-pipes-'));
+    const flag = path.join(dir, 'alive');
+    fs.writeFileSync(flag, '');
+    const real = PROC.killTree;
+    let child = null, up = null;
+    PROC.killTree = async (c) => { await up; c.kill(); return kill; }; // by handle; waits until the holder exists
+    t.after(() => { PROC.killTree = real; fs.rmSync(flag, { force: true }); fs.rmSync(dir, { recursive: true, force: true }); });
+    const r = await runCommand([process.execPath, FIXTURE, flag, 'hold'], undefined, 100, {
+      onChild: (c) => { child = c; up = new Promise((res) => c.stdout.on('data', (d) => { if (String(d).includes('up')) res(); })); },
+    });
+    assert.strictEqual(r.timed_out, true);
+    assert.strictEqual(child.stdout.destroyed, true, 'stdout dropped');
+    assert.strictEqual(child.stderr.destroyed, true, 'stderr dropped');
+  });
+}

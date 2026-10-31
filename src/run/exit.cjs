@@ -45,7 +45,7 @@ const EXIT_CLOSE_BOUND_MS = 2000;
 
 // A descendant that inherited the worker's stdout or stderr (a background shell, an MCP server) keeps those pipes open after the
 // worker is gone, and the adapter that spawned it is long-lived: our ends are dropped once the worker is settled. The survivor
-// itself is not touched (nothing may kill it by a bare pid).
+// itself is not touched (nothing may kill it by a bare pid); its later writes to the dropped pipes fail with a broken pipe.
 function dropPipes(child) {
   for (const s of [child.stdout, child.stderr, child.stdin]) { try { if (s && !s.destroyed) s.destroy(); } catch { /* closed */ } }
 }
@@ -97,7 +97,7 @@ function settle(w, code, signal, establishedBy, ctx) {
     // launch) names the launch this close-wait was armed for; a record no test ever relaunches keeps it
     // unchanged, so this resolves exactly as before.
     const stillCurrent = () => w.settledChild === child;
-    const timer = setTimeout(() => { dropPipes(child); if (!done) { done = true; if (stillCurrent()) resolveExitedWaiters(w, code, signal, establishedBy); } }, EXIT_CLOSE_BOUND_MS);
+    const timer = setTimeout(() => { setImmediate(() => dropPipes(child)); /* after a poll phase, so a read already pending is ingested first */ if (!done) { done = true; if (stillCurrent()) resolveExitedWaiters(w, code, signal, establishedBy); } }, EXIT_CLOSE_BOUND_MS);
     if (timer.unref) timer.unref();
     child.once('close', () => { dropPipes(child); if (done) return; done = true; clearTimeout(timer); if (stillCurrent()) resolveExitedWaiters(w, code, signal, establishedBy); });
   } else {
