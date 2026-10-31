@@ -163,4 +163,13 @@ async function killWorker(w) {
   return P.killProcess(targetOf(w)).catch((e) => ({ tree: null, pidKill: { signalled: false, error: 'EIDENTITY' }, identity: null, refused: { refused: 'identity', kind: 'unverifiable', detail: (e && e.message) || String(e) } }));
 }
 
-module.exports = { RETRY_SCHEDULE_MS, RETRY_EVERY_MS, killWorker, noteSpawn, registerSpawn, stampWhileAlive, adoptFromRow, rowFields, targetOf, noProcess, pidLive, verifiedLive };
+// A kill refused as 'unverifiable' proves nothing: the old process may still be running. A relaunch on the same session then
+// would put a second process on it (invariant 1, ADR 0039), so the caller refuses and launches nothing. 'mismatch' and 'absent'
+// prove the worker is not at that pid and go on.
+function refuseIfMaybeLive(w, kr, verb) {
+  const r = kr && kr.refused;
+  if (!r || r.kind !== 'unverifiable' || !P.pidAlive(w.pid)) return;
+  throw err('E_PRECONDITION', `worker ${w.id}: ${verb} refused, nothing was launched: pid ${w.pid} is still running and could not be proven to be this worker's old process (${r.detail}), so it was not killed and a second process on session ${w.sessionId || 'none'} would race it. ${r.manual || `End pid ${w.pid} by hand once you have checked it is the worker (belay worker kill ${w.id}), then run ${verb} again.`}`, { worker_id: w.id, pid: w.pid, refused: r.refused, kind: r.kind, detail: r.detail, ...(r.manual ? { manual: r.manual } : {}), old_process_may_be_live: true });
+}
+
+module.exports = { RETRY_SCHEDULE_MS, RETRY_EVERY_MS, refuseIfMaybeLive, killWorker, noteSpawn, registerSpawn, stampWhileAlive, adoptFromRow, rowFields, targetOf, noProcess, pidLive, verifiedLive };
