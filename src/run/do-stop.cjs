@@ -44,8 +44,13 @@ function createDoStop({ ctx, writeRow }) {
       const tb = now();
       bgStops = await BG.stopTasks(w, { boundMs: Math.min(BG_STOP_MS, Math.floor(timeout_ms / 2)) }).catch(() => []);
       const bgMs = now() - tb;
-      const g = await P.gracefulStop(w.child, Math.max(1, timeout_ms - bgMs));
-      graceful = g.graceful; if (!graceful) gracefulTimedOutMs = bgMs + g.ms; // the total spent
+      // The worker may have exited inside that await (its exit settles the record and drops the child): then there is nothing to close
+      // and no exit left to wait for, and the receipt is the settled record's.
+      if (!w.child) graceful = true;
+      else {
+        const g = await P.gracefulStop(w.child, Math.max(1, timeout_ms - bgMs));
+        graceful = g.graceful; if (!graceful) gracefulTimedOutMs = bgMs + g.ms; // the total spent
+      }
     }
     if (!graceful) {
       if (gracefulTimedOutMs != null) blockedBy = BG.runningTasks(w).map((t) => ({ task_id: t.task_id, description: t.description })); // what still held the worker open when the wait ran out
