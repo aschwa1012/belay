@@ -64,7 +64,7 @@ function createDoStop({ ctx, writeRow }) {
     const maybeLive = refused && refused.kind === 'unverifiable' && P.pidAlive(pid);
     if (!w.child && !maybeLive && w.state !== W.terminalState(w)) await writeRow(w, W.terminalState(w));
     // A refused stop is not a stop: a later death must not be written `stopped`, and the row goes back to the state it had (the receipt carries the refusal), since `stopping` claims a stop is under way.
-    if (maybeLive) { w.stopRequested = false; if (priorState !== 'stopping') await writeRow(w, priorState); }
+    if (maybeLive) { w.stopRequested = false; if (priorState !== 'stopping') { try { await ctx.core.worker.write(W.rowOf(w, priorState, ctx)); w.state = priorState; } catch (e) { w.lastError = { where: 'worker.write/stop-refused', code: e && e.code, message: e && e.message }; } } } // writeRow would refuse a settled adopted record's live state
     return {
       worker_id, pid, exit_code: w.exitCode, exit_signal: w.exitSignal,
       ms_to_exit: Math.max(0, (w.exitedAt || now()) - t0), graceful, killed, session_id: w.sessionId, // 0 when the exit came before the stop (an adopted row's old exited_at)
