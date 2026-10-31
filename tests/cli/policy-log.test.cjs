@@ -100,3 +100,36 @@ test('no CLI command or status path requires the executor, the embedder or a run
   for (const f of ['src/core/policy-log.cjs', 'src/core/status.cjs', 'src/cli/cmd-status.cjs', 'src/cli/cmd-receipts.cjs']) assert.ok(!bad.test(read(f)), `${f} reaches a forbidden module`);
   for (const f of fs.readdirSync(path.join(ROOT, 'src/cli'))) if (f.endsWith('.cjs')) assert.ok(!/require\([^)]*policy-exec/.test(read(`src/cli/${f}`)), `${f} requires policy-exec`);
 });
+
+test('ids and errors holding a double s print as they are, and the text matches the json', async () => {
+  const dir = sandbox(), dataDir = `${dir}/.belay`;
+  try {
+    await plant(dataDir, [{ seq: 1, task: 't-class', step: 'fix', outcome: 'exception', error: 'E_ARGS: passed, missing', turn: 1 }], []);
+    const j = JSON.parse(cli(dataDir, 'receipts', 'run-p', '--json').stdout).policy_log.steps[0];
+    assert.deepStrictEqual([j.task_id, j.error], ['t-class', 'E_ARGS: passed, missing']);
+    for (const a of ['receipts', 'status']) assert.match(cli(dataDir, a, 'run-p').stdout.replace(/\r?\n {4}/g, ' '), /step 1 fix t-class on task:t-class:3 rev 1 at \d\d:\d\d:\d\d: exception error: E_ARGS: passed, missing \(turn 1 cost not yet recorded\)/);
+  } finally { cleanup(dir); }
+});
+
+test('steps with no turn, as the executor writes them today, print (no turn) in both commands', async () => {
+  const dir = sandbox(), dataDir = `${dir}/.belay`;
+  try {
+    await plant(dataDir, [{ seq: 1, task: 't1', step: 'fix', outcome: 'done', ref: 'task:f1' }, { seq: 2, task: 't1', step: 're_review', outcome: 'done', ref: 'task:r1' }], USAGE);
+    for (const a of ['receipts', 'status']) assert.strictEqual((cli(dataDir, a, 'run-p').stdout.match(/\(no turn\)/g) || []).length, 2);
+    const j = JSON.parse(cli(dataDir, 'status', 'run-p', '--json').stdout).policy_log.steps;
+    assert.deepStrictEqual(j.map((s) => [s.turn, s.turn_cost_usd, s.turn_cost_rows]), [[null, null, 0], [null, null, 0]]);
+  } finally { cleanup(dir); }
+});
+
+test('status.get leaves policy_log out for a worker caller and keeps it for an operator', async () => {
+  const dir = sandbox(), dataDir = `${dir}/.belay`;
+  try {
+    await plant(dataDir, STEPS, USAGE);
+    const get = async (role) => {
+      const c = await openCore({ dataDir, caller: { role, run_id: 'run-p', pid: process.pid, ...(role === 'worker' ? { worker_id: 'w1' } : {}) }, embed: false });
+      try { return await c.status.get({ run_id: 'run-p' }); } finally { await c.close(); }
+    };
+    assert.strictEqual((await get('operator')).policy_log.total, 4);
+    assert.ok(!('policy_log' in await get('worker')));
+  } finally { cleanup(dir); }
+});

@@ -9,7 +9,7 @@ const { err } = require('./errors.cjs');
 const DEFAULT_LIMIT = 50;
 const MAX_LIMIT = 500;
 
-const missing = (e) => /no such (table|column)/i.test(String(e && e.message));
+const missing = (e) => /no such table/i.test(String(e && e.message)); // only a store from before the tables reads as empty; a missing column or a busy read is an error
 
 function view(r, cost) {
   const c = r.turn != null ? cost.get(`${r.worker_id == null ? '' : r.worker_id}|${r.turn}`) : null;
@@ -54,7 +54,7 @@ const usd = (x) => { let t = Number(x).toFixed(4); if (Number(t) !== 0) t = t.re
 
 // Control characters and bidi marks become spaces and the string is capped, so nothing a row holds starts a line of its own.
 const CONTROL = new RegExp('[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u2060\u202a-\u202e\u2066-\u2069\ufeff]', 'g');
-const clean = (x, cap = 80) => Array.from(String(x).replace(CONTROL, ' ').replace(/s{2,}/g, ' ')).slice(0, cap).join('');
+const clean = (x, cap = 80) => Array.from(String(x).replace(CONTROL, ' ').replace(new RegExp(String.fromCharCode(92) + 's{2,}', 'g'), ' ')).slice(0, cap).join('');
 
 // One line per step: facts only.
 function line(s) {

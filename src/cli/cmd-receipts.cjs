@@ -306,7 +306,7 @@ async function run(ctx) {
       unassigned_tasks: tasks.filter(t => !assigned.has(t.id)).map((t) => taskView(t, chosen.started_at, tasksById)),
       integrate_checks: RCK.integrateChecksOf(await core.integration.list({ run_id: chosen.id }).then((r) => r.integrations, () => []), chosen.id), // a read that fails leaves the block empty
       ...(await core.check.flake({ limit: 10 }).then((f) => ({ flaky_checks: f.keys, flaky_checks_total: f.total }))),
-      ...(await core.policy.log({ run_id: chosen.id, limit: 200 }).then((l) => (l.total ? { policy_log: l } : {}), () => ({}))), // 0.4.0: the step log with each turn's cost; no key for a run with none
+      ...(await core.policy.log({ run_id: chosen.id, limit: 200 }).then((l) => (l.total ? { policy_log: l } : {}))), // 0.4.0: the step log with each turn's cost; no key for a run with none
       totals: totalsOf(orchestrator, workers), owner,
     };
     return { code: 0, text: renderText(receipt), json: receipt };
