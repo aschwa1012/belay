@@ -34,7 +34,9 @@ test('an unchanged CRLF file with a new mtime is clean through G.dirtyPaths when
     fs.writeFileSync(`${dir}/c.txt`, 'one\ntwo\n'); // LF in the blob
     sh('-c', 'core.autocrlf=false', 'add', 'c.txt');
     sh('-c', 'core.autocrlf=false', 'commit', '-q', '-m', 'c');
-    fs.writeFileSync(`${dir}/c.txt`, 'one\r\ntwo\r\n'); // the CRLF working copy autocrlf=true makes
+    fs.rmSync(`${dir}/c.txt`); // git itself writes the CRLF copy, so the index records its size and a size mismatch is not what makes it dirty
+    sh("-c", "core.autocrlf=true", "checkout", "--", "c.txt");
+    assert.strictEqual(fs.readFileSync(`${dir}/c.txt`, 'utf8'), 'one\r\ntwo\r\n', 'checked out with CRLF');
     const later = new Date(Date.now() + 5000);
     fs.utimesSync(`${dir}/c.txt`, later, later); // a stat change with no content change
     assert.deepStrictEqual(await G.dirtyPaths(dir), [], 'git reads it clean');
