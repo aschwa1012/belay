@@ -84,6 +84,10 @@ function resolveNamespace(E, caller, ns) {
 // alias, which names its own project's. The harness channel is not restricted (the run manager writes summaries and project copies).
 function checkOrchestratorWrite(E, caller, ns, named) {
   if (!caller || caller.role !== 'orchestrator' || caller.channel === 'harness' || typeof ns !== 'string') return;
+  // Another run's scratch is that run's: its workers read it as their own memory, so a row planted there is injected data (invariant 8).
+  if (ns.startsWith('run/') && ns !== `run/${caller.run_id}`) {
+    throw err('E_ROLE', `the orchestrator writes only its own run's namespace (run/${caller.run_id}); ${ns} is another run's`, { namespace: ns, role: caller.role });
+  }
   const p = projectOf(E, caller);
   if (!p) return; // a run with no project has no notes and no alias to hold it to: the literal namespaces it has always had
   if (ns.startsWith('project/') && ns !== `project/${p}`) {
