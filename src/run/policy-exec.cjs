@@ -143,8 +143,8 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf 
     seen.tasks = tasks;
     const integrations = c.step === 'integrate' ? await read(g.integration.list, 'integrations', []) : [];
     const same = due({ runId, tasks, integrations }).find((d) => keyOf(d.step, d.trigger) === keyOf(c.step, c.trigger));
-    if (!same) return `the plan or the facts changed after the claim: ${c.step} on ${c.trigger.table}:${c.trigger.id} is no longer due`;
-    if ((same.policy_rev ?? null) !== (c.policy_rev ?? null)) return `the plan moved from rev ${c.policy_rev} to rev ${same.policy_rev} after the claim`;
+    if (!same) return `E_NOT_NOW: the plan or the facts changed after the claim: ${c.step} on ${c.trigger.table}:${c.trigger.id} is no longer due; the claim is reopened and the step retaken if it is due again`;
+    if ((same.policy_rev ?? null) !== (c.policy_rev ?? null)) return `E_NOT_NOW: the plan moved from rev ${c.policy_rev} to rev ${same.policy_rev} after the claim; the claim is reopened and the step retaken`;
     return null;
   }
 
@@ -198,7 +198,7 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf 
     const integrations = await read(g.integration.list, 'integrations', []);
     const revisions = await PW.readRevisions(g.policy, runId, tasks); // an amend lifts a halt, and the fixes' creation order (policy-wakes derive)
     const halted = PW.haltedIds(PW.derive({ runId, tasks, integrations, steps, failures: [], revisions }), tasks);
-    const claimed = new Set(steps.filter((s) => !(s.outcome === 'skipped' && /^E_PAUSED/.test(s.error || ''))).map((s) => keyOf(s.step, { table: s.trigger_table, id: s.trigger_id, seq: Number(s.trigger_seq) || 0 })));
+    const claimed = new Set(steps.filter((s) => !(s.outcome === 'skipped' && /^E_(PAUSED|NOT_NOW)/.test(s.error || ''))).map((s) => keyOf(s.step, { table: s.trigger_table, id: s.trigger_id, seq: Number(s.trigger_seq) || 0 })));
     for (const c of due({ runId, tasks, integrations })) {
       if (stopped()) break;
       if (halted.has(c.task_id) || claimed.has(keyOf(c.step, c.trigger))) continue;

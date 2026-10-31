@@ -220,6 +220,14 @@ test('two askers for one digest: the claim that loses the number builds again fr
   assert.strictEqual(D.claimDigest({ dataDir: dir, runId: RUN, rows }), null);
 });
 
+test('a skip the executor reopens is not in a digest; the retake that finishes the same seq is', () => {
+  const dir = sandbox();
+  const skipped = step({ outcome: 'skipped', row_ref: null, error: 'E_NOT_NOW: the plan moved from rev 1 to rev 2 after the claim' });
+  assert.strictEqual(D.claimDigest({ dataDir: dir, runId: RUN, rows: [skipped] }), null, 'a reopenable skip is not a finished step');
+  const retaken = { ...skipped, outcome: 'done', row_ref: 'task:F', error: null };
+  assert.deepStrictEqual(D.claimDigest({ dataDir: dir, runId: RUN, rows: [retaken] }).lines.map((l) => l.step_seq), [skipped.seq]);
+});
+
 test('an exception delivered by one path is not delivered by the other', async () => {
   const dir = sandbox(); const c = clock();
   const core = fakeCore([failed({ task_id: 'W' })]);
