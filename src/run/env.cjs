@@ -53,7 +53,30 @@ const ALLOW_EXACT = new Set([
   'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS',
   // Claude Code and Codex configuration belay relies on (ADR 0024: the config dir the surface gate and the settings copy read)
   'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_GIT_BASH_PATH', 'CODEX_HOME', 'RUST_LOG', 'DISABLE_AUTOUPDATER',
+  // CLAUDE_CODE_OAUTH_TOKEN (from `claude setup-token`) is a subscription credential, not billing: a user who signs in that way
+  // could not launch at all without it, so it is kept on purpose. The apiKeySource gate still refuses any non-subscription source.
+  'CLAUDE_CODE_OAUTH_TOKEN',
+  // belay's own powershell calls (process identity checks) and a Restricted-policy host need these; they hold no secret
+  'PSMODULEPATH', 'PSEXECUTIONPOLICYPREFERENCE',
+  // git: the key agent socket, and the config redirects a test (or an operator) uses to keep git hermetic; belay sets neither itself
+  'SSH_AUTH_SOCK', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM',
 ]);
+// Added for an interactive orchestrator only: Claude Code reads them to detect the terminal (key handling, rendering).
+const INTERACTIVE_EXACT = new Set(['WT_SESSION', 'TERM_PROGRAM_VERSION']);
+// BELAY_ENV_ALLOW (comma-separated names, in belay's own environment) passes extra operator variables (JAVA_HOME, VIRTUAL_ENV, GOPATH
+// and the like) to every launch. Billing, credential and redirect names are refused, loudly, whatever the list says.
+const ENV_ALLOW_REFUSED = [/^ANTHROPIC_/i, /^OPENAI_/i, /^CLAUDE_CODE_USE_/i, /_API_KEY$/i, /_TOKEN$/i, /_BASE_URL$/i, /_SECRET$/i, /_PASSWORD$/i, /^GH_/i, /^GITHUB_/i, /^VSCODE_/i, /^GIT_ASKPASS$/i];
+function parseEnvAllow(src) {
+  const raw = src && src.BELAY_ENV_ALLOW;
+  const names = typeof raw === 'string' ? raw.split(',').map((s) => s.trim()).filter(Boolean) : [];
+  const bad = names.filter((n) => ENV_ALLOW_REFUSED.some((re) => re.test(n)));
+  if (bad.length) {
+    const e = new Error(`BELAY_ENV_ALLOW names ${bad.join(', ')}, which are credential, billing or redirect variables and are never passed to a launch; remove them from the list`);
+    e.code = 'E_ARGS';
+    throw e;
+  }
+  return new Set(names.map((n) => n.toUpperCase()));
+}
 // `BELAY_` carries belay's own settings (BELAY_FAKE_ is scrubbed first); `FAKE_` is the test fakes' knobs, which the test
 // processes put in their own environment and the fake executables read.
 const ALLOW_PREFIXES = ['BELAY_', 'FAKE_', 'LC_'];
@@ -73,17 +96,21 @@ const CODEX_RUST_LOG = 'codex_core=debug,codex_rmcp_client=debug,rmcp=info';
 // the two variables that trail it are dropped. Called without a `cwd` the three are scrubbed, which
 // is wrong for a spawn and right for everything else: better a worker with no `PWD` than one holding
 // the parent's.
-function buildEnv(base, { substrate = 'claude-code', cwd = null, mcpToolTimeoutMs = null, workerId = null } = {}) {
+function buildEnv(base, { substrate = 'claude-code', cwd = null, mcpToolTimeoutMs = null, workerId = null, interactive = false } = {}) {
   const src = base || process.env;
+  const extra = parseEnvAllow(src);
   const out = {};
   for (const [k, v] of Object.entries(src)) {
     if (SCRUB_EXACT.includes(k)) continue;
     if (SCRUB_CWD.includes(k)) continue;
     if (SCRUB_ENV_EXTRA.includes(k)) continue;
     if (SCRUB_PREFIXES.some((p) => k.startsWith(p))) continue;
-    if (!allowed(k)) continue;
+    if (!allowed(k) && !extra.has(k.toUpperCase()) && !(interactive && INTERACTIVE_EXACT.has(k.toUpperCase()))) continue;
     out[k] = v;
   }
+  // A git credential prompt in a headless child waits on an invisible console forever; make it fail instead.
+  out.GIT_TERMINAL_PROMPT = '0';
+  out.GCM_INTERACTIVE = 'never';
   if (cwd) out.PWD = fwd(path.resolve(cwd));
   if (typeof workerId === 'string' && workerId) out[WORKER_MARKER] = workerId;
   out.CLAUDE_CODE_PROMPT_CACHE_TTL = '1h';
@@ -106,4 +133,4 @@ function buildEnv(base, { substrate = 'claude-code', cwd = null, mcpToolTimeoutM
   return out;
 }
 
-module.exports = { ALLOW_EXACT, ALLOW_PREFIXES, WORKER_MARKER, SCRUB_EXACT, SCRUB_PREFIXES, SCRUB_CWD, SCRUB_ENV_EXTRA, CODEX_RUST_LOG, buildEnv, fwd };
+module.exports = { parseEnvAllow, ALLOW_EXACT, ALLOW_PREFIXES, WORKER_MARKER, SCRUB_EXACT, SCRUB_PREFIXES, SCRUB_CWD, SCRUB_ENV_EXTRA, CODEX_RUST_LOG, buildEnv, fwd };

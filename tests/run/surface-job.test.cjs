@@ -54,7 +54,7 @@ for (const prefix of PREFIXES) {
 
 test('the ready gate: a job id passes with no belay tool, an ordinary worker id with the same init fails', () => {
   const R = require('../../src/run/ready.cjs');
-  const init = { claude_code_version: '2.1.290', mcp_servers: [{ name: 'belay', status: 'connected' }], ...ready(JOB_TOOLS) };
+  const init = { claude_code_version: '2.1.290', api_key_source: 'none', mcp_servers: [{ name: 'belay', status: 'connected' }], ...ready(JOB_TOOLS) };
   assert.ok(R.verifyClaudeReady({ substrate: 'claude-code', id: 'notereview-x', tools: JOB_TOOLS }, init).ok);
   const plain = R.verifyClaudeReady({ substrate: 'claude-code', id: 'w-plain', tools: JOB_TOOLS }, init);
   assert.ok(!plain.ok && /no mcp__belay__\* tool is listed/.test(plain.reason), plain.reason);

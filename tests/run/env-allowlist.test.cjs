@@ -58,6 +58,45 @@ test('buildEnv still scrubs CLAUDE_CODE_EFFORT_LEVEL and BELAY_FAKE_ (the allowl
   assert.equal(env.BELAY_CLAUDE_EXE, 'e');
 });
 
+test('buildEnv keeps the PowerShell and git/ssh plumbing and the subscription OAuth token, and turns git prompts off', () => {
+  const env = L.buildEnv({
+    PATH: 'x', PSModulePath: 'C:/ps', PSExecutionPolicyPreference: 'Bypass', SSH_AUTH_SOCK: '/s', GIT_CONFIG_GLOBAL: 'C:/g', CLAUDE_CODE_OAUTH_TOKEN: 'synthetic-sub',
+    GIT_TERMINAL_PROMPT: '1', GCM_INTERACTIVE: 'always',
+  });
+  assert.equal(env.PSModulePath, 'C:/ps');
+  assert.equal(env.PSExecutionPolicyPreference, 'Bypass');
+  assert.equal(env.SSH_AUTH_SOCK, '/s');
+  assert.equal(env.GIT_CONFIG_GLOBAL, 'C:/g');
+  assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, 'synthetic-sub', 'a subscription credential is kept on purpose');
+  assert.equal(env.GIT_TERMINAL_PROMPT, '0');
+  assert.equal(env.GCM_INTERACTIVE, 'never');
+});
+
+test('WT_SESSION and TERM_PROGRAM_VERSION reach an interactive launch only', () => {
+  const base = { PATH: 'x', WT_SESSION: 'w', TERM_PROGRAM_VERSION: '1.2' };
+  assert.ok(!('WT_SESSION' in L.buildEnv(base)));
+  assert.ok(!('TERM_PROGRAM_VERSION' in L.buildEnv(base, { workerId: 'w1' })));
+  const env = L.buildEnv(base, { interactive: true });
+  assert.equal(env.WT_SESSION, 'w');
+  assert.equal(env.TERM_PROGRAM_VERSION, '1.2');
+});
+
+test('BELAY_ENV_ALLOW passes the named variables and refuses billing, credential and redirect names loudly', () => {
+  const env = L.buildEnv({ PATH: 'x', JAVA_HOME: 'C:/jdk', virtual_env: 'C:/v', GOPATH: 'C:/go', BELAY_ENV_ALLOW: 'JAVA_HOME, VIRTUAL_ENV' });
+  assert.equal(env.JAVA_HOME, 'C:/jdk');
+  assert.equal(env.virtual_env, 'C:/v', 'matched case-insensitively');
+  assert.ok(!('GOPATH' in env), 'only the named variables are added');
+  for (const bad of ['ANTHROPIC_API_KEY', 'OPENAI_API_KEY', 'MY_API_KEY', 'GH_TOKEN', 'SOME_TOKEN', 'X_BASE_URL', 'ANTHROPIC_FOO', 'VSCODE_GIT_IPC_HANDLE']) {
+    assert.throws(() => L.buildEnv({ PATH: 'x', [bad]: 'v', BELAY_ENV_ALLOW: `JAVA_HOME,${bad}` }), (e) => e.code === 'E_ARGS' && e.message.includes(bad), bad);
+  }
+});
+
+test('verifyClaudeReady refuses an init with no apiKeySource (fail closed)', () => {
+  const r = verifyClaudeReady({ id: 'w' }, { claude_code_version: '2.1.290', mcp_servers: [{ name: 'belay', status: 'connected' }] });
+  assert.equal(r.ok, false);
+  assert.match(r.reason, /no apiKeySource/);
+});
+
 test('the Claude Code ready event carries the init apiKeySource', () => {
   const p = createParser('claude-code');
   const [ev] = p.pushLine(JSON.stringify({ type: 'system', subtype: 'init', session_id: 's1', apiKeySource: 'ANTHROPIC_API_KEY', mcp_servers: [] }));

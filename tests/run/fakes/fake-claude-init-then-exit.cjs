@@ -35,6 +35,7 @@ if (process.argv.includes('--emit')) {
         subtype: 'init',
         session_id: SESSION,
         tools: surfaceTools(),
+        apiKeySource: 'none',
         plugins: [{ name: 'agents-md', path: 'builtin', source: 'agents-md@builtin' }],
         mcp_servers: [{ name: 'belay', status: 'connected' }],
       }) + '\n'

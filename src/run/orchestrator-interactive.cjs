@@ -198,7 +198,7 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
   const { command, prefixArgs } = L.resolveExe(L.claudeExe());
   const fullArgs = [...prefixArgs, ...argv];
   const argvHash = L.writeArgvJson(written.dir, { exe: command, args: fullArgs, cwd: worktree });
-  const env = L.buildEnv(process.env, { substrate: 'claude-code', cwd: worktree, mcpToolTimeoutMs });
+  const env = L.buildEnv(process.env, { substrate: 'claude-code', cwd: worktree, mcpToolTimeoutMs, interactive: true });
   // `--setting-sources=` skips the path that turns fullscreen on, so it is forced here, for this session only (workers
   // are headless). An explicit CLAUDE_CODE_NO_FLICKER in belay's own environment wins.
   // buildEnv scrubs the variable (a worker must not inherit it from claude's env), so an explicit value is put back here.
