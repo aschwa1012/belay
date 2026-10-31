@@ -60,6 +60,7 @@ async function reReview(c, env) {
     acceptance: { verdict: true }, depends_on: [c.fix_id],
   });
   const ref = `task:${made.id}`;
+  if (made.existing === true) return { outcome: made.superseded === true ? 'superseded' : 'done', row_ref: ref }; // a review of the fix stands: it is not assigned again
   return handOver(env, { task_id: made.id, worker_id: c.worker }, ref);
 }
 
