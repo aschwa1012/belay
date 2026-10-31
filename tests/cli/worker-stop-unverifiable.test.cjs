@@ -58,17 +58,18 @@ test('worker stop of an adopted row whose pid cannot be proven exits non-zero, s
     assert.strictEqual(j.receipt.may_be_live, true);
     assert.strictEqual(j.receipt.kind, 'unverifiable');
     assert.ok(j.receipt.manual && j.receipt.manual.includes(String(s.pid)), 'manual step names the pid');
-    assert.strictEqual(j.receipt.row_state, 'stopping');
+    assert.strictEqual(j.receipt.row_state, 'running', 'the refused stop restates the prior state');
     const t = await cli(['worker', 'stop', 'w-p'], dataDir, home, false);
     assert.notStrictEqual(t.status, 0);
     const text = t.stdout + t.stderr;
     assert.match(text, /NOT stopped/);
     assert.match(text, /could not be proven/);
-    assert.match(text, /stopping/);
+    assert.match(text, /its row is running/);
     assert.doesNotMatch(text, /already gone/);
     const row = readStoreCopy(dataDir, (db) => db.prepare('SELECT state FROM worker WHERE id = ? ORDER BY seq DESC LIMIT 1').get('w-p'));
     await sleep(100);
     assert.strictEqual(running(s), true, 'the unproven process was not killed');
-    assert.strictEqual(row.state, 'stopping');
+    assert.strictEqual(row.state, 'running', 'no stopping row is left behind a stop that did not happen');
+    assert.strictEqual(ctx.m._worker('w-p').stopRequested, false, 'a later death is not credited to a stop that never happened');
   } finally { s.kill(); await teardown({ ...ctx, dir }); }
 });

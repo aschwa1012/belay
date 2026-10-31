@@ -32,6 +32,7 @@ function createDoStop({ ctx, writeRow }) {
         ...(treatPidAsDead ? {} : { already_exited: true, state_before: stateBefore, ...(w.launching ? { launch_abandoned: true } : {}), note: `worker ${worker_id} ${w.launching && !pid ? 'had no process yet: its launch in flight is abandoned, and no process will start' : `had already exited${!pid ? ' (it has no process)' : P.pidAlive(pid) ? ` (its process ended; pid ${pid} now belongs to another process)` : ` (pid ${pid} is not running)`}; nothing was stopped`}` }) };
     }
     // Fix round (6f-2): pause.cjs's own step 1b already wrote this row `stopping` — never repeated here.
+    const priorState = w.state;
     if (w.state !== 'stopping') await writeRow(w, 'stopping');
     let graceful = false;
     let bgStops = []; let gracefulTimedOutMs = null; let blockedBy = null;
@@ -62,12 +63,14 @@ function createDoStop({ ctx, writeRow }) {
     // 'absent' proves the worker is not at that pid, so its terminal row is true).
     const maybeLive = refused && refused.kind === 'unverifiable' && P.pidAlive(pid);
     if (!w.child && !maybeLive && w.state !== W.terminalState(w)) await writeRow(w, W.terminalState(w));
+    // A refused stop is not a stop: a later death must not be written `stopped`, and the row goes back to the state it had (the receipt carries the refusal), since `stopping` claims a stop is under way.
+    if (maybeLive) { w.stopRequested = false; if (priorState !== 'stopping') await writeRow(w, priorState); }
     return {
       worker_id, pid, exit_code: w.exitCode, exit_signal: w.exitSignal,
       ms_to_exit: Math.max(0, (w.exitedAt || now()) - t0), graceful, killed, session_id: w.sessionId, // 0 when the exit came before the stop (an adopted row's old exited_at)
       ...(bgStops.length ? { background_tasks_stopped: bgStops.map((s) => ({ task_id: s.task_id, description: s.description, status_after: s.status_after })) } : {}),
       ...(gracefulTimedOutMs != null ? { graceful_timed_out_ms: gracefulTimedOutMs, ...(blockedBy && blockedBy.length ? { blocked_by: blockedBy } : {}) } : {}),
-      ...(maybeLive ? { not_stopped: true, may_be_live: true, row_state: w.state, manual: refused.manual || `pid ${pid} may still be running; check it is the worker's process, then end it by hand (belay worker kill ${worker_id})`, note: `worker ${worker_id}: pid ${pid} could not be proven to be this worker's process, so it was NOT stopped and may still be running; its row stays ${w.state}` } : {}),
+      ...(maybeLive ? { not_stopped: true, may_be_live: true, row_state: w.state, manual: refused.manual || `pid ${pid} may still be running; check it is the worker's process, then end it by hand (belay worker kill ${worker_id})`, note: `worker ${worker_id}: pid ${pid} could not be proven to be this worker's process, so it was NOT stopped and may still be running; its row is ${w.state}` } : {}),
       tree_kill: tree || null, ...(tree && tree.killed_processes ? { killed_processes: tree.killed_processes } : {}), ...(refused ? { refused: refused.refused, kind: refused.kind, detail: refused.detail } : {}), ...(notKilled ? { descendants_not_killed: notKilled } : {}),
     };
   };
