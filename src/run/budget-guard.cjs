@@ -210,12 +210,21 @@ function createBudgetGuard({ core, runId, runLimit = null, source = null, pauseR
   // instead of running free. No timer: nothing outlives the run, and the check joins the guard's own chain (settled() waits for it).
   function recheck() { for (const id of [null, ...taskLimits.keys()]) schedule(id); }
 
+  // A pause carried over a re-attach (a new run process) has no `open` here: its scope is what the last pause event recorded, or else what the
+  // row's reason names, never assumed to be the run's.
+  function carriedPause(row) {
+    const ev = [...rec.events].reverse().find((e) => e.type === 'pause');
+    if (ev && (ev.scope === 'task' || ev.scope === 'run')) return { scope: ev.scope, task_id: ev.scope === 'task' ? ev.task_id || null : null };
+    const m = /\[budget \(task ([^,)]+)[,)]/.exec(String((row && row.paused_by) || ''));
+    return m ? { scope: 'task', task_id: m[1] } : null;
+  }
+
   // run-pause's beforeResume: a budget pause resumes only with a raised limit for what was breached, or an override. Recorded on the row.
   async function authorizeResume(row, params) {
     if (!ownPause(row)) { open = null; lastAuth = null; return null; }
     const p = params || {};
     const who = `${(p.caller && p.caller.role) || 'operator'}:${(p.caller && p.caller.pid) || '?'}`;
-    const b = open || lastAuth || { scope: 'run', task_id: null };
+    const b = open || lastAuth || carriedPause(row) || { scope: 'run', task_id: null };
     const sameScope = (e) => e.scope === b.scope && (e.task_id || null) === (b.task_id || null);
     const hint = b.scope === 'task' ? `belay resume ${runId} --task-budget ${b.task_id} <usd>` : `belay resume ${runId} --budget <usd>`;
     const given = [p.budget != null, p.task_budget != null, p.over_budget === true].filter(Boolean).length;
