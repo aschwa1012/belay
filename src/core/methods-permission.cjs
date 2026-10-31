@@ -54,10 +54,15 @@ async function list(E, caller, args) {
   for (const s of states) {
     if (!PERMISSION_STATES.includes(s)) throw err('E_ARGS', `permission.list states named ${JSON.stringify(s)}, and must be one of ${PERMISSION_STATES.join(', ')}`);
   }
+  // An orchestrator sees its own run's requests only; the run is its process argument, not the call's.
+  if (caller.role === 'orchestrator' && args.run_id && args.run_id !== caller.run_id) {
+    throw err('E_ROLE', `an orchestrator lists the permission requests of its own run ${caller.run_id}, and this call named run ${args.run_id}`, { run_id: caller.run_id, named_run_id: args.run_id });
+  }
+  const runScope = caller.role === 'orchestrator' ? caller.run_id : args.run_id;
   const set = new Set(states);
   const now = Date.now();
   const all = rows.currentAll(E.store, 'permission')
-    .filter((r) => (args.run_id ? r.run_id === args.run_id : true))
+    .filter((r) => (caller.role === 'orchestrator' ? r.run_id === runScope : (runScope ? r.run_id === runScope : true)))
     .filter((r) => set.has(r.state))
     .sort((a, b) => a.requested_at - b.requested_at)
     .map((r) => decorateRequest(r, now));
@@ -100,6 +105,10 @@ async function decide(E, caller, args) {
     if (caller.role === 'worker') checkRole(caller, verdict, current);
     // Only the operator decides a request belay itself raised (a merge into the user's branch): the orchestrator that asked cannot answer it.
     if (current.kind === 'merge' && caller.role !== 'operator') throw err('E_ROLE', `permission row ${args.id} asks for a merge into the user's branch; only the operator decides it`, { id: args.id, kind: 'merge', role: caller.role });
+    // An orchestrator decides the requests of its own run only (invariant 8); the operator decides across runs.
+    if (caller.role === 'orchestrator' && current.run_id !== caller.run_id) {
+      throw err('E_ROLE', `permission row ${args.id} belongs to run ${current.run_id}, and an orchestrator decides the requests of its own run ${caller.run_id} only`, { id: args.id, run_id: caller.run_id, row_run_id: current.run_id });
+    }
     if (current.state !== 'pending') {
       throw err('E_ARGS', `permission row ${args.id} is already ${current.state}, not pending`, { id: args.id, state: current.state, seq: current.seq });
     }
