@@ -248,6 +248,7 @@ async function worktreeCreate(E, caller, args) {
   const junctions = junctionList(args.junction);
   return exclusive(`task:${args.task_id}`, `a worktree call for task ${args.task_id}`, async () => {
     const task = requireTask(E, args.task_id, 'task.worktreeCreate');
+    require('./worker-run-guard.cjs').refuseOtherRunTask(E, caller, task); // a live run's task is that run's: no tree or branch cut onto it
     if (task.state === 'done') throw err('E_TASK_DONE', `task ${task.id} is done, so it gets no new worktree`, { task_id: task.id, state: 'done' });
     assertNotLeased(E, task);
     const had = active(task);
@@ -290,6 +291,7 @@ async function worktreeRemove(E, caller, args) {
   for (const k of ['force', 'delete_branch']) if (args[k] !== undefined && typeof args[k] !== 'boolean') throw err('E_ARGS', `task.worktreeRemove: ${k} must be a boolean`, { field: k });
   return exclusive(`task:${args.task_id}`, `a worktree call for task ${args.task_id}`, async () => {
     let task = requireTask(E, args.task_id, 'task.worktreeRemove');
+    require('./worker-run-guard.cjs').refuseOtherRunTask(E, caller, task); // nor its tree removed, forced or not
     const key = G.fwd(task.worktree && task.worktree.path ? task.worktree.path : '').toLowerCase();
     // A sharer's removal of this same tree in flight is waited for: this call then reports it already removed, never a second git.
     if (active(task) && removing.has(key)) {
