@@ -22,7 +22,8 @@ const dirOf = (dataDir, runId) => path.join(dataDir, 'run-wait', String(runId)).
 const ownFile = (dir, n) => `${dir}/d${n}.json`;
 const markerFile = (dir, uid) => `${dir}/x-${crypto.createHash('sha1').update(String(uid)).digest('hex').slice(0, 24)}`;
 
-const finished = (r) => !!r && Number.isInteger(Number(r.seq)) && !!r.outcome && r.outcome !== 'started';
+// A skip the executor reopens (E_PAUSED, E_NOT_NOW) is not finished for the digest: the retake reuses its seq, and a covered seq would hide the retake's outcome.
+const finished = (r) => !!r && Number.isInteger(Number(r.seq)) && !!r.outcome && r.outcome !== 'started' && !(r.outcome === 'skipped' && /^E_(PAUSED|NOT_NOW)/.test(r.error || ''));
 
 // One step as one line: ids, states and counts. The error is belay's own text (an E_ code and its message), cut short.
 function lineOf(r, short = false) {

@@ -98,10 +98,10 @@ async function claim(E, caller, args) {
     const info = E.store.p('INSERT OR IGNORE INTO policy_step(run_id, task_id, step, trigger_table, trigger_id, trigger_seq, policy_rev, outcome, worker_id, turn, at, claimant_pid, claimant_created) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)')
       .run(run_id, a.task_id || null, a.step, trig.table, trig.id, trig.seq, a.policy_rev === undefined ? null : a.policy_rev, 'started', a.worker_id || null, a.turn === undefined ? null : a.turn, Date.now(), a.claimant_pid || null, a.claimant_created || null);
     let existing = Number(info.changes) === 0;
-    // A step the executor skipped because the run was paused (error E_PAUSED) took nothing, so its claim is reopened for the retake after the resume.
+    // A step the executor skipped because the run was paused (error E_PAUSED) or because it was not due at that moment (E_NOT_NOW: another merge in flight, the plan re-stated) took nothing, so its claim is reopened for the retake after the resume.
     const there = existing ? byKey(E, run_id, trig, a.step) : null;
-    if (there && there.outcome === 'skipped' && /^E_PAUSED/.test(there.error || '')) {
-      E.store.p("UPDATE policy_step SET outcome = 'started', error = NULL, row_ref = NULL, finished_at = NULL, at = ?, claimant_pid = ?, claimant_created = ?, worker_id = ?, turn = ? WHERE seq = ? AND outcome = 'skipped'").run(Date.now(), a.claimant_pid || null, a.claimant_created || null, a.worker_id || null, a.turn === undefined ? null : a.turn, there.seq); // a pause-skipped claim took nothing: the retake's worker and turn are the step's, so the log joins the cost to the worker that ran
+    if (there && there.outcome === 'skipped' && /^E_(PAUSED|NOT_NOW)/.test(there.error || '')) {
+      E.store.p("UPDATE policy_step SET outcome = 'started', error = NULL, row_ref = NULL, finished_at = NULL, at = ?, claimant_pid = ?, claimant_created = ?, worker_id = ?, turn = ?, task_id = ?, policy_rev = ? WHERE seq = ? AND outcome = 'skipped'").run(Date.now(), a.claimant_pid || null, a.claimant_created || null, a.worker_id || null, a.turn === undefined ? null : a.turn, a.task_id || null, a.policy_rev === undefined ? null : a.policy_rev, there.seq); // a skipped claim took nothing: the retake's worker, turn, task and plan revision are the step's, so the log joins the cost to the worker that ran
       existing = false;
     }
     const row = existing ? byKey(E, run_id, trig, a.step) : E.store.p('SELECT * FROM policy_step WHERE seq = ?').get(there && !existing ? there.seq : Number(info.lastInsertRowid));

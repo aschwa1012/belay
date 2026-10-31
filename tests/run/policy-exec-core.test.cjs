@@ -236,6 +236,68 @@ test('a plan revision that moved between the claim and the effect skips the step
   } finally { await e.close(); }
 });
 
+test('a plan revision that moved to the same plan leaves the step claimable: the next pass takes it once', async () => {
+  const e = await env();
+  try {
+    const { work } = await judged(e, 'r', 'refuted');
+    const amend = wrap(e.h, { policy: (p) => ({ ...p, claim: async (a) => { const r = await p.claim(a); await e.orch.task.create({ id: work.id, amend: true, policy: PLAN }); return r; } }) });
+    assert.deepStrictEqual((await e.exec({}, amend).tick()).steps.map((s) => s.outcome), ['skipped']);
+    const second = await e.exec().tick();
+    assert.deepStrictEqual(second.steps.map((s) => [s.step, s.outcome]), [['fix', 'done']], 'a not-now skip is retaken');
+    assert.strictEqual(stepsOf(e).length, 1, 'the same claim row, reopened');
+    assert.strictEqual(fixesOf(e, work.id).length, 1);
+    assert.deepStrictEqual((await e.exec().tick()).steps, [], 'and not again');
+  } finally { await e.close(); }
+});
+
+test('an integrate skipped because another integration was merging is taken once that merge is over', async () => {
+  const e = await env();
+  try {
+    const repo = makeRepo(e.dir);
+    const t = await e.orch.task.create({ spec: 'write a.txt', acceptance: PASS, policy: PLAN });
+    const wt = (await e.op.task.worktreeCreate({ task_id: t.id, repo })).worktree;
+    write(wt.path, 'a.txt', 'a\n'); commit(wt.path, `task ${t.id}`);
+    const { work } = await judged(e, 'g', 'holds', { work: t, tree: wt.path });
+    let calls = 0;
+    const merging = wrap(e.h, { integration: (i) => ({ ...i, list: async (a) => { calls++; const r = await i.list(a); return calls === 2 ? { integrations: [{ id: 'other', run_id: RUN, state: 'merging', task_ids: ['x'] }] } : r; } }) });
+    assert.deepStrictEqual((await e.exec({}, merging).tick()).steps.map((s) => [s.step, s.outcome]), [['integrate', 'skipped']]);
+    const second = await e.exec().tick();
+    assert.deepStrictEqual(second.steps.map((s) => [s.step, s.outcome]), [['integrate', 'done']]);
+    assert.strictEqual(latest(e, 'task', work.id).state, 'done');
+    assert.deepStrictEqual((await e.exec().tick()).steps, []);
+  } finally { await e.close(); }
+});
+
+test('a retake after the plan moved runs under the new revision: the claim and the lease carry it, and a failed retake halts the task', async () => {
+  const e = await env();
+  try {
+    const a = await judged(e, 'v', 'refuted');
+    const amendOnce = (work) => wrap(e.h, { policy: (p) => ({ ...p, claim: async (x) => { const r = await p.claim(x); await e.orch.task.create({ id: work.id, amend: true, policy: PLAN }); return r; } }) });
+    assert.deepStrictEqual((await e.exec({}, amendOnce(a.work)).tick()).steps.map((s) => s.outcome), ['skipped']);
+    const rev = latest(e, 'task', a.work.id).policy_rev;
+    assert.strictEqual(rev, 2);
+    assert.deepStrictEqual((await e.exec().tick()).steps.map((s) => s.outcome), ['done']);
+    assert.strictEqual(e.raw('SELECT policy_rev FROM policy_step')[0].policy_rev, rev, 'the claim carries the revision the step ran under');
+    const fx = fixesOf(e, a.work.id)[0];
+    assert.strictEqual(e.raw('SELECT policy_rev FROM lease WHERE task_id = ? ORDER BY seq', fx.id)[0].policy_rev, rev, 'and so does the lease');
+  } finally { await e.close(); }
+});
+
+test('a retake that fails after the plan moved is an E8 that is not lifted, and halts the task', async () => {
+  const e = await env();
+  try {
+    const { work, builder } = await judged(e, 'u', 'refuted');
+    const amend = wrap(e.h, { policy: (p) => ({ ...p, claim: async (x) => { const r = await p.claim(x); await e.orch.task.create({ id: work.id, amend: true, policy: PLAN }); return r; } }) });
+    assert.deepStrictEqual((await e.exec({}, amend).tick()).steps.map((s) => s.outcome), ['skipped']);
+    await e.orch.worker.write({ id: builder, substrate: 'claude-code', pid: process.pid, state: 'dead', session_id: `s-${builder}`, last_event_at: Date.now(), worktree: e.dir });
+    assert.deepStrictEqual((await e.exec().tick()).steps.map((s) => s.outcome), ['exception']);
+    const tasks = (await e.h.task.list({})).tasks; const steps = (await e.h.policy.list({})).rows;
+    const ex = PW.derive({ runId: RUN, tasks, integrations: [], steps, failures: [], revisions: await PW.readRevisions(e.h.policy, RUN, tasks) });
+    assert.deepStrictEqual(ex.map((x) => [x.exception, !!x.lifted]), [['E8', false]]);
+    assert.ok(PW.haltedIds(ex, tasks).has(work.id));
+  } finally { await e.close(); }
+});
+
 test('a pause between the claim and the first write skips the step as paused; the resume reopens the claim and the step completes once', async () => {
   const e = await env();
   try {
