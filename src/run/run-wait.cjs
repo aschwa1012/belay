@@ -46,6 +46,7 @@ const realClock = {
 function createRunWait({ core, runId, dataDir, armed = () => true, settled = null, signal: lifeSignal = null, clock = realClock, pollMs = POLL_MS, watcher = null, claimant = undefined, alive = null, hooks = {} }) {
   const exceptions = watcher || PW.createPolicyWatcher({ core, runId, enabled: true });
   const pending = []; // exception wakes polled and not yet delivered, oldest first
+  const held = []; // exception wakes another path has claimed: kept, and re-offered if that claim is given back (the wake pipe's, undelivered)
   const reported = new Set(); // worker lives already named in a return
   // The adapter that claims: pid and creation time. A claim made by an adapter that is gone is released at the next one's start (releaseOrphans).
   let me = claimant === undefined ? null : claimant;
@@ -69,9 +70,10 @@ function createRunWait({ core, runId, dataDir, armed = () => true, settled = nul
 
   // Whatever another path already delivered is not waited on: only an item no one has claimed ends the wait.
   const unclaimed = (workers) => {
-    for (let i = pending.length - 1; i >= 0; i -= 1) if (D.isClaimed({ dataDir, runId, uid: uidOf(pending[i]) })) pending.splice(i, 1);
+    for (let i = held.length - 1; i >= 0; i -= 1) if (!D.isClaimed({ dataDir, runId, uid: uidOf(held[i]) })) pending.push(...held.splice(i, 1)); // a claim given back
+    for (let i = pending.length - 1; i >= 0; i -= 1) if (D.isClaimed({ dataDir, runId, uid: uidOf(pending[i]) })) held.push(...pending.splice(i, 1));
     const out = [];
-    for (const d of deathsOf(workers)) { if (D.isClaimed({ dataDir, runId, uid: d.uid })) reported.add(d.key); else out.push(d); }
+    for (const d of deathsOf(workers)) if (!D.isClaimed({ dataDir, runId, uid: d.uid })) out.push(d); // a claimed death is not marked reported: the claim may be given back
     return out;
   };
 
@@ -113,11 +115,11 @@ function createRunWait({ core, runId, dataDir, armed = () => true, settled = nul
     await meP;
     // From here to the reply there is no await: what is claimed is what is returned.
     if (aborted()) return { worker_id: null, event: null, timed_out: false, cancelled: true, waited_ms: clock.now() - t0, watched: [], ...(capNote || {}) };
-    const fresh = deathsOf(workers);
+    const fresh = deathsOf(workers).filter((d) => !D.isClaimed({ dataDir, runId, uid: d.uid }));
     const candidates = pending.length + fresh.length;
-    for (const d of fresh) reported.add(d.key); // named once whoever delivers it
-    const wakes = pending.splice(0).filter((w) => claimOne(uidOf(w), recordOf(w)));
+    const wakes = pending.splice(0).filter((w) => claimOne(uidOf(w), recordOf(w)) || (held.push(w), false)); // one that lost the claim is kept, not dropped
     deaths = fresh.filter((d) => claimOne(d.uid, recordOf({ worker_id: d.worker_id, event: 'death', turn: d.turn, exit_code: d.exit_code, exit_signal: d.exit_signal, death_established_by: d.established_by, text: `belay: worker ${d.worker_id} ${d.event}.` })));
+    for (const d of deaths) reported.add(d.key); // named once whoever delivers it: only a death this wait claimed
     // Everything polled lost its claim to another path between the look and the claim, and nothing is owed: the wait is not over, it goes on to its deadline.
     if (candidates && !wakes.length && !deaths.length && clock.now() < deadline) return wait({ ms, capNote, t0, workers, idleOf, signal }); // the same deadline and the same start: waited_ms counts the whole call
     let digest = null;
@@ -134,8 +136,8 @@ function createRunWait({ core, runId, dataDir, armed = () => true, settled = nul
       };
     }
     const list = [
-      ...wakes.map((w) => ({ exception: w.exception, task_id: w.task_id, trigger: w.trigger, field: w.field, text: w.text })),
-      ...deaths.map(({ key, uid, ...d }) => d),
+      ...wakes.map((w) => ({ exception: w.exception, task_id: w.task_id, trigger: w.trigger, field: w.field, text: w.text, ref: uidOf(w) })),
+      ...deaths.map(({ key, uid, ...d }) => ({ ...d, ref: uid })), // ref: the delivery key, the same one a wake line carries as `(ref ...)`
     ];
     return {
       worker_id: null, event: list.length ? 'exception' : null, timed_out: !list.length, waited_ms: clock.now() - t0, watched: [],
@@ -154,7 +156,7 @@ function createRunWait({ core, runId, dataDir, armed = () => true, settled = nul
   let swept = null;
   const active = async () => { if (settled) await settled; if (!armed()) return false; if (!swept) swept = releaseOrphans().catch(() => {}); await swept; return true; };
 
-  return { wait, active, pending: () => pending.slice(), releaseOrphans };
+  return { wait, active, pending: () => pending.slice(), held: () => held.slice(), releaseOrphans };
 }
 
 module.exports = { createRunWait, boundOf, POLICY_WAIT_DEFAULT_MS, POLL_MS };

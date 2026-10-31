@@ -48,7 +48,7 @@ function startWakePublisher({
   const retained = []; // published lines, oldest first
   const receipt = []; // wakeRecord entries of every published wake, in order
   const queue = []; // derived while held
-  const stats = { polls: 0, errors: 0, published: 0, held_max: 0, last_error: null };
+  const stats = { polls: 0, errors: 0, published: 0, held_max: 0, last_error: null, released: [] }; // released: claims given back undelivered, for the receipt
   let baseline = {};
   const deadPids = require('./dead-pids.cjs').createDeadPids({ graceMs: DEATH_GRACE_MS, adapterAlive: (pid) => !!pid && require('../core/lock.cjs').pidAlive(pid) });
   const evalSeen = new Map(); // ADR 0058: release evaluations already carried by a wake
@@ -72,10 +72,12 @@ function startWakePublisher({
     if (!uid || (!(w.ev && w.ev.exception) && !planned.value())) return true; // a death is claimed only once a plan is in force
     let won = true;
     try { won = D.claimException({ dataDir, runId, uid }); } catch { won = true; } // a claim that cannot be made delivers: never lose a wake for want of a file
+    if (won) owedRef.set(w.id, uid);
     if (won && deliveredFile) owed.set(uid, { id: w.id, at: now() }); // claimed at publish, not yet delivered: swept by sweepOwed
     if (!won) lost.set(uid, w); // kept: if worker_wait's claim is released (its reply was lost), this wake is published after all
     return won;
   };
+  const owedRef = new Map(); // wake id -> delivery key, for the claims this publisher took
   const owed = new Map(); // uid -> { id, at }: wakes this publisher claimed that the mod's delivered file has not yet named
   // The claim is taken before the mod has the line, so it must not outlive a delivery that never happened (a failed submit or write, a hooks
   // module that did not load, a line pushed out of the retained set). A wake the delivered file does not name within the bound is released,
@@ -93,6 +95,7 @@ function startWakePublisher({
       if (named.has(o.id)) { owed.delete(uid); continue; } // delivered: the claim stands for good
       if (!all && now() - o.at < deliveryBoundMs) continue;
       owed.delete(uid);
+      stats.released.push({ uid, wake_id: o.id, after_ms: now() - o.at, at_stop: all });
       try { D.release({ dataDir, runId, uids: [uid] }); } catch { stats.errors += 1; stats.last_error = 'release'; }
     }
   }
@@ -101,7 +104,8 @@ function startWakePublisher({
   function publish(w) {
     if (!claimed(w)) return;
     if (receipt.length < RECEIPT_MAX) receipt.push(require('./wake-record.cjs').wakeRecord({ ...(w.ev || {}), event: w.event || (w.ev && w.ev.event), worker_id: w.worker_id }, w.text, now() - t0, null)); // the run receipt's wakes[], as headless fills it
-    const line = `${JSON.stringify({ id: w.id, text: w.text })}\n`;
+    const ref = owedRef.get(w.id); // a claimed wake carries its delivery key, so a repeat after a release is recognisable (worker_wait names the same key)
+    const line = `${JSON.stringify({ id: w.id, text: ref ? `${w.text} (ref ${ref})` : w.text })}\n`;
     retained.push(line);
     if (retained.length > RETAIN_MAX) retained.shift();
     stats.published += 1;

@@ -39,7 +39,9 @@ async function setup() {
   await pub.listening;
   assert.ok(await until(() => pub.stats().published >= 1), 'the death was published');
   const uid = D.deathUid(WID, 'death', D.lifeOf(PID, CREATED));
-  const wait = () => createRunWait({ core, runId, dataDir, claimant: { pid: process.pid, created: 'x' }, watcher: { poll: async () => [] }, pollMs: 10 }).wait({ ms: 60, workers: workersRec });
+  // ONE run wait for the whole test, as the adapter keeps one for its life (a fresh one per call would hide what a wait remembers)
+  const rw = createRunWait({ core, runId, dataDir, claimant: { pid: process.pid, created: 'x' }, watcher: { poll: async () => [] }, pollMs: 10 });
+  const wait = () => rw.wait({ ms: 60, workers: workersRec });
   return { base, dataDir, deliveredFile, clock, pub, uid, wait };
 }
 
@@ -53,6 +55,15 @@ test('a claimed wake the mod never delivered is released after the bound, and wo
     const r = await s.wait();
     assert.strictEqual(r.event, 'exception');
     assert.strictEqual(r.exceptions[0].worker_id, WID);
+    assert.strictEqual(r.exceptions[0].ref, s.uid, 'the entry names the delivery key, so a repeat is recognisable');
+    assert.strictEqual(s.pub.stats().released.length, 1, 'the release is recorded for the receipt');
+    assert.strictEqual(s.pub.stats().released[0].uid, s.uid);
+    const net = require('node:net');
+    const line = await new Promise((resolve) => {
+      const c = net.connect(wakePipeName(s.dataDir, runId, 'n-claim')); let buf = '';
+      c.on('data', (d) => { buf += d; const l = buf.split(NL).find((x) => x.includes('(ref ')); if (l) { c.destroy(); resolve(l); } });
+    });
+    assert.ok(JSON.parse(line).text.endsWith(`(ref ${s.uid})`), 'the wake line carries the same key');
   } finally { await s.pub.stop(); fs.rmSync(s.base, { recursive: true, force: true }); }
 });
 
@@ -72,10 +83,29 @@ test('a wake the delivered file names stays claimed past the bound', async () =>
     });
     fs.writeFileSync(s.deliveredFile, ids.map((id) => `${JSON.stringify({ id, at: 1 })}${NL}`).join(''));
     s.clock.skew = BOUND + 500;
-    await new Promise((r) => setTimeout(r, 150)); // several polls past the bound
+    const p0 = s.pub.stats().polls;
+    assert.ok(await until(() => s.pub.stats().polls >= p0 + 3), 'three polls ran past the bound');
     assert.strictEqual(D.isClaimed({ dataDir: s.dataDir, runId, uid: s.uid }), true);
     assert.strictEqual((await s.wait()).event, null, 'delivered by the wake: worker_wait does not repeat it');
   } finally { await s.pub.stop(); fs.rmSync(s.base, { recursive: true, force: true }); }
+});
+
+test('an exception another path claimed is offered again by the same wait once that claim is given back', async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'wclaim-x-'));
+  const dataDir = path.join(base, 'data').replaceAll(path.sep, '/'); fs.mkdirSync(dataDir);
+  try {
+    const exc = { exception: 'E2', worker_id: 'rev-1', key: 'fixcap:t-9', task_id: 't-9', trigger: 'review_refuted', field: null, text: 'belay: fix cap reached for t-9. Halted.' };
+    const sent = new Set(); // like policy-wakes.cjs: each exception is yielded once
+    const watcher = { poll: async () => { if (sent.has(exc.key)) return []; sent.add(exc.key); return [exc]; } };
+    const uid = `${exc.worker_id}:${exc.key}`;
+    D.claimException({ dataDir, runId, uid }); // as the publisher claims at publish
+    const rw = createRunWait({ core: fakeCore(Date.now()), runId, dataDir, claimant: { pid: process.pid, created: 'z' }, watcher, pollMs: 10 });
+    assert.strictEqual((await rw.wait({ ms: 60, workers: [] })).event, null);
+    D.release({ dataDir, runId, uids: [uid] });
+    const r = await rw.wait({ ms: 60, workers: [] });
+    assert.strictEqual(r.event, 'exception');
+    assert.strictEqual(r.exceptions[0].ref, uid);
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 
 test('stopping the publisher releases what the mod never delivered', async () => {
