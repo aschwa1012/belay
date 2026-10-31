@@ -88,7 +88,8 @@ test('the tracker is bounded per call: a long stream is read in steps and says p
   t.update(rows);
   let f = t.figures();
   assert.deepStrictEqual(f.partial, ['t2']);
-  assert.ok(f.usd < 40); // a new follow counts nothing while it looks for its turn's start
+  assert.strictEqual(f.usd, 0); // a new follow counts nothing while it looks for its turn's start
+  for (let i = 0; i < 2; i++) { t.update(rows); assert.strictEqual(t.figures().usd, 0); } // 800 KB at 256 KB a call: still scanning
   for (let i = 0; i < 14; i++) t.update(rows);
   f = t.figures();
   assert.deepStrictEqual(f.partial, []);
