@@ -37,6 +37,8 @@ test('a stop before the launch: the spawn is refused, no process starts, the row
     assert.ok(r.err, 'the spawn a stop overtook is refused');
     assert.strictEqual(r.err.code, 'E_SUBSTRATE', `${r.err.code}: ${r.err.message}`);
     assert.strictEqual(r.err.detail.reason, 'stopped_during_launch');
+    assert.strictEqual(r.err.detail.task_id, 't1', 'the refusal names the task whose lease the worker still holds');
+    assert.match(r.err.message, /lease/);
     assert.ok(!m._worker('w1').child, 'no process was started');
     assert.ok(!m._worker('w1').pid);
     assert.deepStrictEqual(core.rowsFor('w1').map((x) => x.state), ['starting', 'stopped'], 'nothing is written over the stopped row');
