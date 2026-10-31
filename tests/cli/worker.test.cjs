@@ -340,7 +340,7 @@ test('worker rm: refuses a live pid, an unknown id and an already forgotten row'
     assert.strictEqual(r1.receipt.forgotten, false);
     assert.strictEqual(r1.receipt.error.code, 'E_WORKER_LIVE');
     assert.strictEqual(r1.receipt.error.detail.pid_alive, true);
-    assert.match(r1.receipt.reason, /kill it first/);
+    assert.match(r1.receipt.reason, /belay worker kill .* first .*another process/);
 
     const r2 = cliSync(['worker', 'rm', 'no-such-worker'], dataDir);
     assert.strictEqual(r2.status, 1, `${r2.stdout} / ${r2.stderr}`);

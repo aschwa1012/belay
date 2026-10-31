@@ -118,7 +118,7 @@ test('delete confirms a live adapter pid against one process snapshot: a reused 
     embedderExtra.seams.snapshot = async () => null;
     const unread = await del(proj, data, R4);
     assert.strictEqual(unread.code, 1);
-    assert.match(unread.text, /r-reused \(adapter pid .* could not be verified\): if it is dead, end it with belay stop r-reused/);
+    assert.match(unread.text, /r-reused \(adapter pid .* could not be verified\): if it is live, end it with belay stop r-reused; if belay stop says "no live run", it is dead/);
     embedderExtra.seams.snapshot = async () => new Map([[process.pid, { created: 222, image: 'node' }]]);
     const reused = await del(proj, data, R4);
     assert.strictEqual(reused.code, 0, reused.text);
