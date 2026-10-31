@@ -130,4 +130,13 @@ async function safeGit(args, cwd, timeoutMs, { tail, env = process.env, prepared
   return runCommand([p.git, ...PRE, ...p.filters, ...args], cwd, timeoutMs, { env: p.env, ...(tail ? { tail } : {}) });
 }
 
-module.exports = { PRE, NO_HOOKS, gitEnv, findGit, filterOverrides, prepare, safeGit };
+// The absolute git every belay spawn uses, found once per PATH value: a bare 'git' is searched in the child's cwd first on Windows, so a
+// git.exe committed into a worker's tree would run. Falls back to the bare name only when PATH holds no git.
+let pathKey = null, pathGit = null;
+function gitPath() {
+  const key = String(process.env.PATH || process.env.Path || '');
+  if (key !== pathKey) { pathKey = key; pathGit = findGit(); }
+  return pathGit || 'git';
+}
+
+module.exports = { PRE, NO_HOOKS, gitEnv, findGit, gitPath, filterOverrides, prepare, safeGit };

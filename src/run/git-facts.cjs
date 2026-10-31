@@ -8,6 +8,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
+const { gitPath } = require('../core/git-safe.cjs');
 
 const SHA = /^[0-9a-f]{40,64}$/;
 const NO_REPO = 'not in a git repository';
@@ -40,7 +41,7 @@ function revParseHeadResult(cwd, { timeoutMs = 5000 } = {}) {
     const finish = (sha, reason, retry) => { if (!done) { done = true; resolve({ sha, reason: sha ? null : reason, retry: !sha && retry }); } };
     if (typeof cwd === 'string' && !maybeInRepo(cwd)) return finish(null, NO_REPO, false);
     try {
-      const child = execFile('git', ['rev-parse', 'HEAD'], { cwd, timeout: timeoutMs, windowsHide: true, encoding: 'utf8', maxBuffer: 1024 * 64 },
+      const child = execFile(gitPath(), ['rev-parse', 'HEAD'], { cwd, timeout: timeoutMs, windowsHide: true, encoding: 'utf8', maxBuffer: 1024 * 64 },
         (error, stdout) => {
           const sha = String(stdout || '').trim();
           if (!error && SHA.test(sha)) return finish(sha, null, false);

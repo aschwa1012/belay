@@ -89,7 +89,7 @@ function runCommand(argvGiven, cwd, timeoutMs, { env, tail = TAIL, onChild, keep
     if (cwd && !fs.existsSync(cwd)) {
       return resolve({ executable: false, exit_code: null, ms: Date.now() - t0, timed_out: false, stdout: '', stderr: '', spawn_error: `cwd does not exist: ${cwd}` });
     }
-    const argv = resolveWindowsShim(argvGiven);
+    const argv = resolveWindowsShim(argvGiven[0] === 'git' ? [require('./git-safe.cjs').gitPath(), ...argvGiven.slice(1)] : argvGiven); // never the bare name: the cwd is searched first on Windows
     let child;
     try {
       child = spawn(argv[0], argv.slice(1), { cwd, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], ...(env ? { env } : {}) });
