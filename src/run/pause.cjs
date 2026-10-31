@@ -155,7 +155,7 @@ function createPause({ core, forWorker, doStop, doRestart, runOp, adapterPid = p
     // Only while the handle shows the worker still running: a worker that ended in step 2's window may have lost its pid to another
     // process, whose children are not ours. The root's creation time is checked in the same snapshot.
     const live = require('../core/proc-identity.cjs').handleLive(w.child) && w.child.pid === w.pid;
-    const descendantTargets = live ? await P.descendantTargets(w.pid, { expectCreated: w.pidCreated }).catch(() => []) : [];
+    const descendantTargets = live ? await P.descendantTargets(w.pid, { expectCreated: w.pidCreated, handle: w.child }).catch(() => []) : [];
     const descendantsSnapshotMs = now() - dt0;
     const descendants_before_close = descendantTargets.map((d) => d.pid);
 

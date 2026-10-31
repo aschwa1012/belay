@@ -30,6 +30,7 @@ function createLeftovers({ child, P, state, core, runId, owned = (snap) => owned
   async function take() {
     if (!IDENTITY.handleLive(child)) return; // an exit already seen: its pid may belong to another process now
     const { snap } = await P.snapshotShared({ kind: 'orchestrator-leftovers' }).catch(() => ({ snap: null }));
+    if (!IDENTITY.handleLive(child)) return; // exited while the snapshot was read: the pid may now be another process's, with its own children
     const root = snap && snap.get(child.pid);
     if (!root || root.created == null) { why = 'the orchestrator\'s own identity could not be read'; return; }
     let own;
@@ -42,6 +43,7 @@ function createLeftovers({ child, P, state, core, runId, owned = (snap) => owned
       skip.add(o.pid);
       for (const d of IDENTITY.descendantsOf(o.pid, snap).leavesFirst) skip.add(d.pid);
     }
+    if (!IDENTITY.handleLive(child)) return; // the same, across the owned-process read
     targets = IDENTITY.descendantsOf(child.pid, snap).leavesFirst.filter((t) => !skip.has(t.pid));
   }
   return {

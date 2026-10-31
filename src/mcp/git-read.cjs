@@ -168,18 +168,26 @@ function run(git, argv, { cwd, env, timeoutMs, maxOut, system = false }) {
 // creation time, the handle kills git, the named descendants are killed top-down by identity, and a second snapshot
 // catches any child a killed process started before it died (parent pid a killed one's, created after it), with that
 // child's own tree.
-async function killGitTree(child) {
+// The handle proves the root only while git has not exited, and the snapshot is awaited (an exit during it may hand the pid to
+// another process): so no handle live before the first snapshot, or none after it, names no descendants. The kills are
+// checked against a snapshot taken after the one that named them. `deps` is a test seam: `snapshot` and `kill`.
+async function killGitTree(child, deps = {}) {
   const pid = child.pid;
-  const snap1 = await ID.processSnapshot({ kind: 'kill' });
+  const snapshot = deps.snapshot || (() => ID.processSnapshot({ kind: 'kill' }));
+  const kopts = { ...(deps.kill ? { kill: deps.kill } : {}), snapshot: async () => snapshot() }; // a fresh read per killMany
+  if (!ID.handleLive(child)) return { ok: false, killed: [], error: `git (pid ${pid}) had already exited: its descendants cannot be named by a pid that may be reused` };
+  const snap1 = await snapshot();
   const root = snap1 && snap1.get(pid);
+  if (!ID.handleLive(child)) return { ok: false, killed: [], error: `git (pid ${pid}) exited while the process snapshot was read: descendants not killed` };
   const first = snap1 ? ID.descendantsOf(pid, snap1).leavesFirst.reverse() : []; // top-down
-  if (ID.handleLive(child)) child.kill();
+  child.kill();
   const killed = [pid];
-  const a = await PROC.killMany(first, { snapshot: async () => snap1 }); // identities checked against the snapshot that named them
+  const a = await PROC.killMany(first, kopts); // identities checked against a snapshot taken after the one that named them
   for (const r of a) if (r.killed) killed.push(r.pid);
   if (!root || root.created == null) return { ok: !!snap1, killed, ...(snap1 ? {} : { error: 'process snapshot unreadable: descendants not killed' }) };
-  const snap2 = await ID.processSnapshot({ kind: 'kill' });
-  const created = new Map([[pid, root.created], ...first.map((t) => [t.pid, t.created])]);
+  const snap2 = await snapshot();
+  if (!snap2) return { ok: false, killed, error: 'process snapshot unreadable: late children not killed' };
+  const created = new Map([[pid, root.created], ...first.map((t) => [t.pid, t.created])].filter(([p, c]) => { const e = snap2.get(p); return !e || e.created === c; })); // a pid another process now holds names no children of ours
   const late = [];
   const seen = new Set(created.keys());
   for (const [p, c] of created) {
@@ -191,7 +199,7 @@ async function killGitTree(child) {
       for (const d of ID.descendantsOf(k, snap2).leavesFirst.reverse()) if (!seen.has(d.pid)) { seen.add(d.pid); late.push(d); }
     }
   }
-  const b = await PROC.killMany(late, { snapshot: async () => snap2 });
+  const b = await PROC.killMany(late, kopts);
   for (const r of b) if (r.killed) killed.push(r.pid);
   const refused = [...a, ...b].filter((r) => r.refused);
   return { ok: refused.length === 0, killed, ...(refused.length ? { refused: refused.map((r) => ({ pid: r.pid, kind: r.kind })) } : {}) };
@@ -238,4 +246,4 @@ async function gitRead(args, { runWorktree = null, taskWorktree = null, env = pr
   return { op: a.op, worktree, worktree_from: from, argv: ['git', ...argv], exit_code: 0, ms: Date.now() - t0, bytes: r.total, truncated, out };
 }
 
-module.exports = { taskWorktreeVia, gitRead, gitArgs, gitEnv, findGit, resolveWorktree, OPS, MAX_OUT, TIMEOUT_MS };
+module.exports = { killGitTree, taskWorktreeVia, gitRead, gitArgs, gitEnv, findGit, resolveWorktree, OPS, MAX_OUT, TIMEOUT_MS };
