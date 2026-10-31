@@ -14,6 +14,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const G = require('../core/git.cjs');
+const { execFile } = require('node:child_process');
 
 // Deliberately not CLAUDE.md: nothing that walks a directory for instruction files should find it.
 const INSTRUCTIONS_FILE = 'instructions.md';
@@ -52,9 +53,18 @@ function writeCopy(bytes, dir) {
   return { path: target.replace(/\\/g, '/'), bytes: bytes.length, sha256: sha256(bytes) };
 }
 
-// Git for a trusted read: in the repository's own top (never a worker's tree), replace refs off, no system config.
-const SAFE_ENV = { GIT_NO_REPLACE_OBJECTS: '1', GIT_CONFIG_NOSYSTEM: '1' };
+// Git for a trusted read: in the repository's own top (never a worker's tree), replace refs off.
+const SAFE_ENV = { GIT_NO_REPLACE_OBJECTS: '1' };
 const git = (cwd, args) => G.run(cwd, ['--no-replace-objects', ...args], { timeoutMs: 10000, env: SAFE_ENV });
+const firstLine = (r) => String((r && (r.stderr || r.spawn_error)) || 'no message').split('\n')[0].slice(0, 160);
+
+// A blob as bytes (G.run answers text, which would re-encode a file that is not UTF-8). Async; a timeout kills the child.
+function catBlob(top, id) {
+  return new Promise((resolve) => {
+    execFile('git', ['--no-replace-objects', 'cat-file', 'blob', id], { cwd: top, encoding: 'buffer', timeout: 10000, windowsHide: true, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, ...SAFE_ENV, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' } },
+      (e, stdout, stderr) => resolve(e ? { ok: false, stderr: String(stderr || e.message) } : { ok: true, bytes: stdout }));
+  });
+}
 
 // The instructions of a worker that reads another worker's tree (a reviewer): never the working copy, which the reviewed
 // coder can edit to address its reviewer. They are CLAUDE.md as committed at `commit` (a full commit id the caller has shown
@@ -67,15 +77,15 @@ async function snapshotTrusted(top, dir, commit) {
   const none = (reason) => ({ path: null, reason, source });
   if (!top || !/^[0-9a-f]{40,64}$/i.test(String(commit))) return none('no trusted commit is known, so no instructions were copied');
   const ls = await git(top, ['ls-tree', '-z', commit, '--', 'CLAUDE.md']);
-  if (!ls.ok) return none('trusted CLAUDE.md unreadable: git ls-tree failed');
+  if (!ls.ok) return none(`trusted CLAUDE.md unreadable: git ls-tree failed: ${firstLine(ls)}`);
   const entry = ls.stdout.split('\0')[0];
   if (!entry) return none('no CLAUDE.md in the trusted commit');
   const m = /^(\d+) (\w+) ([0-9a-f]+)\t/.exec(entry);
   if (!m || m[2] !== 'blob') return none('CLAUDE.md in the trusted commit is not a regular file');
   if (m[1] === '120000') return none('CLAUDE.md in the trusted commit is a symbolic link, so it was not copied');
-  const blob = await git(top, ['cat-file', 'blob', m[3]]);
-  if (!blob.ok) return none('trusted CLAUDE.md unreadable: git cat-file failed');
-  return { ...writeCopy(Buffer.from(blob.stdout, 'utf8'), dir), source };
+  const blob = await catBlob(top, m[3]);
+  if (!blob.ok) return none(`trusted CLAUDE.md unreadable: git cat-file failed: ${firstLine(blob)}`);
+  return { ...writeCopy(blob.bytes, dir), source };
 }
 
 // Adoption: what an earlier spawn left in the data dir. Never reads the worktree; a worker spawned

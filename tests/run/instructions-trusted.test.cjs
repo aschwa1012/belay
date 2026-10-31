@@ -137,10 +137,10 @@ test('spawn: a reviewer copy lacks the coder injected line; the coder own spawn 
   } finally { rm(r.d); }
 });
 
-test('spawn: a review task without agent_type walks its dependency to the recorded base and flags a CLAUDE.md change', async () => {
+test('spawn: a review task without agent_type copies the anchor and flags a CLAUDE.md change', async () => {
   const r = repo();
   try {
-    const tasks = { A: { worktree: { base_sha: r.base, path: fwd(r.coder) } }, R: { acceptance: { verdict: true }, depends_on: ['A'] } };
+    const tasks = { A: { worktree: { base_sha: r.base, path: fwd(r.coder), branch: 'coder' } }, R: { acceptance: { verdict: true }, depends_on: ['A'] } };
     const rv = await spawnCopy(r, coreWith(r, tasks), { worker_id: 'w-rt', task_id: 'R' });
     assert.equal(rv.text, TRUSTED);
     assert.deepStrictEqual(rv.out.instructions.reviewed_changes_instructions, ['CLAUDE.md'], 'the receipt flags the reviewed diff that touches CLAUDE.md');
@@ -150,9 +150,9 @@ test('spawn: a review task without agent_type walks its dependency to the record
 test('spawn: a follow-up cut from the coder commit does not make that commit the reviewer instructions', async () => {
   const r = repo();
   try {
-    const tasks = { F: { worktree: { base_sha: r.head, path: fwd(r.coder) } }, R: { acceptance: { verdict: true }, depends_on: ['F'] } };
+    const tasks = { F: { worktree: { base_sha: r.head, path: fwd(r.coder), branch: 'coder' } }, R: { acceptance: { verdict: true }, depends_on: ['F'] } };
     const rv = await spawnCopy(r, coreWith(r, tasks), { worker_id: 'w-fu', task_id: 'R' });
-    assert.equal(rv.text, TRUSTED, 'a base that is not an ancestor of the run anchor falls back to the anchor');
+    assert.equal(rv.text, TRUSTED, 'a base that is not an ancestor of the run anchor is not used, the anchor is');
   } finally { rm(r.d); }
 });
 
@@ -161,5 +161,42 @@ test('spawn: a failed task read is treated as a review, not as a coder spawn', a
   try {
     const rv = await spawnCopy(r, coreWith(r, {}, { failFirstTaskGet: true }), { worker_id: 'w-ff', task_id: 'R' });
     assert.equal(rv.text, TRUSTED);
+  } finally { rm(r.d); }
+});
+
+test('spawn: the copy is the anchor itself, even when a task base is an ancestor that carried other text', async () => {
+  const r = repo();
+  try {
+    fs.writeFileSync(path.join(r.main, 'CLAUDE.md'), TRUSTED + 'newer project rule\n');
+    git(r.main, 'commit', '-q', '-am', 'newer rules');
+    const tasks = { A: { worktree: { base_sha: r.base, path: fwd(r.coder), branch: 'coder' } }, R: { acceptance: { verdict: true }, depends_on: ['A'] } };
+    const rv = await spawnCopy(r, coreWith(r, tasks), { worker_id: 'w-an', task_id: 'R' });
+    assert.equal(rv.text, TRUSTED + 'newer project rule\n', 'an ancestor base is not trusted over the anchor');
+  } finally { rm(r.d); }
+});
+
+test('spawn: a second manager of the run reads the stored anchor and does not re-anchor at a moved HEAD', async () => {
+  const r = repo();
+  try {
+    const first = await spawnCopy(r, coreWith(r, {}), { worker_id: 'w-a1', agent_type: 'reviewer' });
+    assert.equal(first.text, TRUSTED);
+    assert.ok(fs.existsSync(path.join(r.d, 'run', 'anchor-run-trusted.json')), 'the anchor is stored once in the data dir');
+    fs.writeFileSync(path.join(r.main, 'CLAUDE.md'), 'MOVED HEAD TEXT\n');
+    git(r.main, 'commit', '-q', '-am', 'head moves after the first spawn');
+    require('../../src/run/trusted-instructions.cjs')._forgetMemo(); // a restarted adapter has no memo
+    const second = await spawnCopy(r, coreWith(r, {}), { worker_id: 'w-a2', agent_type: 'reviewer' });
+    assert.equal(second.text, TRUSTED);
+  } finally { rm(r.d); }
+});
+
+test('trusted: a CLAUDE.md that is not UTF-8 is copied as the same bytes', async () => {
+  const r = repo();
+  try {
+    const bytes = Buffer.concat([Buffer.from('# rules '), Buffer.from([0xff, 0xfe, 0x80]), Buffer.from('\n')]);
+    fs.writeFileSync(path.join(r.main, 'CLAUDE.md'), bytes);
+    git(r.main, 'commit', '-q', '-am', 'binary rules');
+    const t = await I.snapshotTrusted(r.main, r.dir, git(r.main, 'rev-parse', 'HEAD'));
+    assert.ok(fs.readFileSync(t.path).equals(bytes));
+    assert.equal(t.bytes, bytes.length);
   } finally { rm(r.d); }
 });
