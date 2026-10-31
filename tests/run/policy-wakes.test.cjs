@@ -334,29 +334,59 @@ test('E2 fires only when the re-review of the final allowed fix refutes: with a 
   assert.deepStrictEqual(kinds(PW.derive(snap([work('W', { review: cap({ review_id: 'R1', fix_rounds_used: 0 }) }), R1]))), ['E2:fix']);
 });
 
-test('a plan amend (a higher policy_rev in the task rows after the exception) lifts the halts of E1, E2, E5, E6 and E7, and a restart still sees it lifted', () => {
+test('a plan amend (a higher policy_rev in a later version of the work) lifts the halts of E1, E2, E5, E6 and E7, and a restart still sees it lifted', () => {
   const rv = (state, id, extra = {}) => ({ state, review_id: id, rounds_left: 1, fix_rounds_used: 0, max_fix_rounds: 2, ...extra });
   const cases = {
-    E1: (rev) => [work('W', { policy_rev: rev, policy: { ...PLAN, fix: undefined }, review: rv('refuted', 'R') }), reviewTask('R', 'W', 'refuted', [f('blocking', 'x')])],
-    E2: (rev) => [work('W', { policy_rev: rev, review: rv('refuted', 'R', { rounds_left: 0 }) }), reviewTask('R', 'W', 'refuted', [f('blocking', 'x')])],
-    E5: (rev) => [work('W', { policy_rev: rev, state: 'released', results: release({ passed: false, checks: [{ kind: 'command', argv: ['x'], passed: false, exit_code: 1 }] }) })],
-    E6: (rev) => [work('W', { policy_rev: rev, results: release({ flaky: true }) }), reviewTask('R', 'W', 'holds', [])],
-    E7: (rev) => [work('W', { policy_rev: rev, review: rv('holds', 'R') }), reviewTask('R', 'W', 'holds', [f('should-fix', 'a')])],
+    E1: [(rev) => [work('W', { policy_rev: rev, policy: { ...PLAN, fix: undefined }, review: rv('refuted', 'R') }), reviewTask('R', 'W', 'refuted', [f('blocking', 'x')])], 'R'],
+    E2: [(rev) => [work('W', { policy_rev: rev, review: rv('refuted', 'R', { rounds_left: 0 }) }), reviewTask('R', 'W', 'refuted', [f('blocking', 'x')])], 'R'],
+    E5: [(rev) => [work('W', { policy_rev: rev, state: 'released', results: release({ passed: false, checks: [{ kind: 'command', argv: ['x'], passed: false, exit_code: 1 }] }) })], 'W'],
+    E6: [(rev) => [work('W', { policy_rev: rev, results: release({ flaky: true }) }), reviewTask('R', 'W', 'holds', [])], 'W'],
+    E7: [(rev) => [work('W', { policy_rev: rev, review: rv('holds', 'R') }), reviewTask('R', 'W', 'holds', [f('should-fix', 'a')])], 'R'],
   };
-  // The work's versions, as policy.revisions reads them: rev 1 written before the evaluations (evaluated_at 20), rev 2 by an amend after them.
-  const versions = (...revs) => revs.map(([policy_rev, written_at], i) => ({ id: 'W', seq: i + 1, written_at, policy_rev }));
-  for (const [E, mk] of Object.entries(cases)) {
+  // The versions as policy.revisions reads them (one global seq): W's plan versions, and the version of the fact's task that holds the evaluation (20).
+  const ver = (id, seq, policy_rev, evaluated_at = null) => ({ id, seq, written_at: 1000 - seq, policy_rev, evaluated_at }); // written_at runs backwards: a clock is not what is read
+  for (const [E, [mk, factTask]] of Object.entries(cases)) {
+    const fact = ver(factTask, 20, factTask === 'W' ? 1 : null, 20);
     const before = mk(1);
-    const first = PW.derive(snap(before, { revisions: versions([1, 5]) }));
+    const first = PW.derive(snap(before, { revisions: [ver('W', 10, 1), fact] }));
     assert.ok(first.some((x) => x.exception === E && !x.lifted), `${E} is active at rev 1`);
     assert.ok([...PW.haltedIds(first, before)].includes('W'), `${E} halts the task`);
     const after = mk(2).map((t) => ({ ...t, seq: t.seq + 1000 })); // the amend wrote a newer row; the facts (evaluations) are the same
+    const amended = [ver('W', 10, 1), fact, ver('W', 30, 2)];
     for (let restart = 0; restart < 2; restart += 1) { // the second derive is a fresh process with no state: the answer is the same
-      const second = PW.derive(snap(after, { revisions: versions([1, 5], [2, 30]) }));
+      const second = PW.derive(snap(after, { revisions: amended }));
       assert.ok(second.some((x) => x.exception === E && x.lifted), `${E} is lifted by the amend (derive ${restart + 1})`);
       assert.deepStrictEqual([...PW.haltedIds(second, after)], [], `${E}: no halt after an amend`);
     }
-    assert.ok(PW.derive(snap(after, { revisions: versions([2, 5]) })).every((x) => !x.lifted), `${E}: an amend before the fact is not a lift`);
+    // An amend written BEFORE the fact's row is the plan the fact happened under: no lift.
+    const early = PW.derive(snap(after, { revisions: [ver('W', 10, 1), ver('W', 15, 2), { ...fact, policy_rev: factTask === 'W' ? 2 : null }] }));
+    assert.ok(early.some((x) => x.exception === E) && early.every((x) => !x.lifted), `${E}: an amend before the fact is not a lift`);
     assert.ok(PW.derive(snap(after)).every((x) => !x.lifted), `${E}: with no revisions read there is no amend lift`);
+    assert.ok(PW.derive(snap(after, { revisions: [ver('W', 10, 1), ver('W', 30, 2)] })).every((x) => !x.lifted), `${E}: a fact whose row is not in the versions has no baseline`);
   }
+});
+
+test('the fix order is creation order: a later row on an older fix does not make it the newest, so E2 is not hidden', () => {
+  const R1 = reviewTask('R1', 'W', 'refuted', [f('blocking', 'first')]);
+  const F1 = task('F1', { repairs: 'W', acted_by: 'policy', seq: 500, state: 'done' }); // swept after F2 was made: its LATEST row is the newest seq
+  const F2 = task('F2', { repairs: 'W', acted_by: 'policy', seq: 110, state: 'released' });
+  const R2 = reviewTask('R2', 'F2', 'refuted', [f('blocking', 'still broken')]);
+  const W = work('W', { review: { state: 'refuted', review_id: 'R2', rounds_left: 0, fix_rounds_used: 2, max_fix_rounds: 2 } });
+  const born = [{ id: 'F1', seq: 100, written_at: 1, policy_rev: null }, { id: 'F2', seq: 110, written_at: 2, policy_rev: null }, { id: 'F1', seq: 500, written_at: 3, policy_rev: null }, { id: 'W', seq: 5, written_at: 0, policy_rev: 1 }];
+  assert.deepStrictEqual(kinds(PW.derive(snap([W, R1, F1, F2, R2], { revisions: born }))), ['E2:fix'], 'F2 was made last, and R2 judged it');
+  assert.deepStrictEqual(kinds(PW.derive(snap([W, R1, F1, F2, R2]))), [], 'without the versions the latest row decides (the fallback)');
+});
+
+test('readRevisions asks for the family of each plan only and treats a cut-off or failed answer as no answer', async () => {
+  const W = work('W'); const R = reviewTask('R', 'W', 'holds', []); const F = task('F', { repairs: 'W', acted_by: 'policy' });
+  const other = task('X'); const stranger = work('S', { run_id: 'r2' });
+  assert.deepStrictEqual(PW.familyIds(RUN, [W, R, F, other, stranger]).sort(), ['F', 'R', 'W'], 'the run\'s planned work, its fixes and its reviews; a task with no plan is not');
+  const asked = [];
+  const ok = { revisions: async (a) => { asked.push(a); return { revisions: [{ id: 'W', seq: 1, written_at: 1, policy_rev: 1, evaluated_at: null }], truncated: false }; } };
+  assert.strictEqual((await PW.readRevisions(ok, RUN, [W, R, F, other])).length, 1);
+  assert.deepStrictEqual(asked[0].task_ids.sort(), ['F', 'R', 'W']);
+  assert.strictEqual(await PW.readRevisions({ revisions: async () => ({ revisions: [], truncated: true }) }, RUN, [W]), undefined, 'a truncated history is no history');
+  assert.strictEqual(await PW.readRevisions({ revisions: async () => { throw new Error('x'); } }, RUN, [W]), undefined);
+  assert.strictEqual(await PW.readRevisions({}, RUN, [W]), undefined);
+  assert.strictEqual(await PW.readRevisions(ok, RUN, [other]), undefined, 'no plan, nothing asked');
 });
