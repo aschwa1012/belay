@@ -58,3 +58,25 @@ test('core refuses the running write for a process that died in flight: the deat
   assert.strictEqual(dead.exit_code, 3);
 });
 
+test('restateBase writes nothing for an unsettled worker whose pid is gone', async () => {
+  const dead = H.deadPid();
+  const { w, dataDir } = record(dead);
+  w.state = 'starting'; w.settled = false; w.lastRowHadBase = false; w.lastWrittenSeq = 1; w.baseSha = 'a'.repeat(40);
+  const written = [];
+  const ctx = { runId: 'r1', adapterPid: process.pid, dataDir, core: { worker: { write: async (row) => { written.push(row.state); return { seq: 10 }; } } } };
+  ctx.writeRow = WR.createWriteRow(ctx, { closed: false }); w.ctx = ctx;
+  WR.restateBase(w, ctx);
+  await w.queue;
+  assert.deepStrictEqual(written, []);
+});
+
+test('restateBase still restates for a live pid', async () => {
+  const { w, dataDir } = record(process.pid);
+  w.state = 'starting'; w.settled = false; w.readyAt = Date.now(); w.lastRowHadBase = false; w.lastWrittenSeq = 1; w.baseSha = 'a'.repeat(40);
+  const written = [];
+  const ctx = { runId: 'r1', adapterPid: process.pid, dataDir, core: { worker: { write: async (row) => { written.push(row.state); return { seq: 10 }; } } } };
+  ctx.writeRow = WR.createWriteRow(ctx, { closed: false }); w.ctx = ctx;
+  WR.restateBase(w, ctx);
+  await w.queue;
+  assert.deepStrictEqual(written, ['starting']);
+});
