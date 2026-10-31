@@ -10,6 +10,7 @@
 // that held them fail E_UNBOUND on their next call, never a quiet fall back to a claim.
 
 const net = require('node:net');
+const { StringDecoder } = require('node:string_decoder');
 const crypto = require('node:crypto');
 const { err } = require('./errors.cjs');
 const { bindPipeName } = require('./lock.cjs');
@@ -118,7 +119,8 @@ function claimBind(name, { timeoutMs = 5000 } = {}) {
     const timer = setTimeout(() => fail(`no answer in ${timeoutMs} ms`, { timeout_ms: timeoutMs }), timeoutMs);
     timer.unref();
     sock.on('error', (e) => { clearTimeout(timer); fail(e.message, { raw_code: e.code || null }); });
-    sock.on('data', (d) => { buf += d.toString('utf8'); });
+    const dec = new StringDecoder('utf8');
+    sock.on('data', (d) => { buf += dec.write(d); });
     sock.on('end', () => {
       clearTimeout(timer);
       let msg;

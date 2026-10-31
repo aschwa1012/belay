@@ -17,6 +17,7 @@
 // budget. Without `--deep` this command spawns nothing and creates nothing.
 
 const fs = require('node:fs');
+const { StringDecoder } = require('node:string_decoder');
 const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
@@ -162,9 +163,10 @@ function probe(adapterPath, dataDir) {
 
     child.on('error', (e) => finish({ ok: false, reason: `the adapter failed to start: ${e.message}` }));
     child.on('exit', (code) => finish({ ok: false, reason: `the adapter exited with code ${code} before answering` }));
-    child.stderr.on('data', (d) => { stderr += d.toString('utf8'); });
+    const errDec = new StringDecoder('utf8'), outDec = new StringDecoder('utf8');
+    child.stderr.on('data', (d) => { stderr += errDec.write(d); });
     child.stdout.on('data', (d) => {
-      buf += d.toString('utf8');
+      buf += outDec.write(d);
       let i;
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i);

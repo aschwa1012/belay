@@ -12,6 +12,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const net = require('node:net');
+const { StringDecoder } = require('node:string_decoder');
 const { err } = require('./errors.cjs');
 const { pipeName, readOwnerLock, pidAlive, holderReused } = require('./lock.cjs');
 const { WRITE_METHODS, METHODS } = require('./engine.cjs'); // the method table only; nothing here opens a store
@@ -202,13 +203,14 @@ class Client {
       this._viaPort = !!target.port; this._opChecked = false; this._opVerifying = null;
       const s = target.port ? net.connect({ host: target.host, port: target.port }) : net.connect(target.pipe);
       let buf = '', settled = false;
+      const dec = new StringDecoder('utf8'); // a multi-byte character can be split across two chunks
       const timer = setTimeout(() => { if (!settled) { settled = true; try { s.unref(); } catch { /* best effort */ } s.destroy(); reject(err('E_TIMEOUT', `connecting to ${this.pipe} took longer than ${timeoutMs} ms`)); } }, timeoutMs);
       timer.unref();
       s.once('connect', () => { if (settled) return; settled = true; clearTimeout(timer); this.sock = s; resolve(); });
       s.once('error', e => { clearTimeout(timer); if (!settled) { settled = true; reject(e); } else this._lost(e); });
       s.on('close', () => { if (settled && this.sock === s) this._lost(new Error('the owner closed the pipe')); });
       s.on('data', d => {
-        buf += d.toString('utf8');
+        buf += dec.write(d);
         let i;
         while ((i = buf.indexOf('\n')) >= 0) {
           const line = buf.slice(0, i);

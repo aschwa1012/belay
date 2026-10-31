@@ -20,6 +20,7 @@
 // child by its own handle. Not imported by any read path of the CLI (invariant 9).
 
 const fs = require('node:fs');
+const { StringDecoder } = require('node:string_decoder');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 const PROC = require('../core/process.cjs'); // killMany: verified targets from one snapshot (ADR 0039)
@@ -149,7 +150,8 @@ function run(git, argv, { cwd, env, timeoutMs, maxOut, system = false }) {
       total += b.length;
       if (keptBytes < maxOut) { const part = b.subarray(0, maxOut - keptBytes); kept.push(part); keptBytes += part.length; }
     });
-    child.stderr.on('data', (b) => { errTail = (errTail + b.toString('utf8')).slice(-STDERR_TAIL); });
+    const errDec = new StringDecoder('utf8');
+    child.stderr.on('data', (b) => { errTail = (errTail + errDec.write(b)).slice(-STDERR_TAIL); });
     child.on('error', (e) => { clearTimeout(timer); if (!settled) { settled = true; reject(spawnFail(e)); } });
     child.on('close', (code, signal) => {
       clearTimeout(timer);
