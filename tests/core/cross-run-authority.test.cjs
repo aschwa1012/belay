@@ -69,6 +69,16 @@ test('task_worktree create and remove on a task of live run ra, from rb, are ref
   assert.ok(own.worktree.removed_at, 'its own run still removes it');
 });
 
+test('worktreeRemove by an orchestrator is refused for a tree in a repository that is not its run repository', { timeout: 240000 }, async () => {
+  const other = WH.makeRepo(dir);
+  await call(O('rc'), 'run.attach', { adapter_pid: process.pid, project_dir: other });
+  const tc = await call(O('rc'), 'task.create', { spec: 'rc work', acceptance: PASS, files_owned: ['src/c.cjs'] });
+  // the operator may name another repository for the task's tree; rc's orchestrator then may not remove it
+  const made = await call({ role: 'operator', run_id: 'cli', pid: process.pid }, 'task.worktreeCreate', { task_id: tc.id, repo });
+  await assert.rejects(call(O('rc'), 'task.worktreeRemove', { task_id: tc.id }), code('E_ROLE'));
+  assert.ok(fs.existsSync(made.worktree.path), 'the tree is intact');
+});
+
 test('fixFromReview and tree_of on another live run work are refused', { timeout: 240000 }, async () => {
   let w = await call(O('ra'), 'task.create', { spec: 'ra work', acceptance: PASS, files_owned: ['src/w.cjs'] });
   w = await call(O('ra'), 'task.worktreeCreate', { task_id: w.id });
