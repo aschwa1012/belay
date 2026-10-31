@@ -97,7 +97,8 @@ const PLUGINS = [{ name: 'agents-md', path: 'builtin', source: 'agents-md@builti
 function initEvent() {
   const isResume = process.argv.includes('--resume');
   const ev = { type: 'system', subtype: 'init', session_id: SESSION, tools: surfaceTools(),
-    permissionMode: PERMISSION_MODE, claude_code_version: VERSION, plugins: PLUGINS, model: MODEL };
+    permissionMode: PERMISSION_MODE, claude_code_version: VERSION, plugins: PLUGINS, model: MODEL,
+    apiKeySource: process.env.FAKE_API_KEY_SOURCE || 'none' };
   // ADR 0024 amendment 3: FAKE_MEMORY_AUTO=echo reports the autoMemoryDirectory the launch's --settings file names (as Claude Code does
   // when it honours it); any other value is reported as is; unset reports no memory_paths.
   if (process.env.FAKE_MEMORY_AUTO) {

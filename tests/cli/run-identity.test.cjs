@@ -33,9 +33,9 @@ test('run: a worker\'s child cannot claim the operator on the run\'s owner, and 
     core = await connectOrchestratorCore(dataDir, runId);
     m = createRunManager({ core, dataDir, runId, paths: { claudeExe: FAKE_CLAUDE, userSettings: USER_SETTINGS } });
     const wt = `${dir}/w1-wt`; fs.mkdirSync(wt, { recursive: true });
-    Object.assign(process.env, { FAKE_SPAWN_SCRIPT: FORGE, FORGE_DATA_DIR: dataDir, FORGE_RUN_ID: runId, FORGE_WORKER_ID: 'w1', FORGE_OUT: out });
+    Object.assign(process.env, { FAKE_SPAWN_SCRIPT: FORGE, FAKE_FORGE_DATA_DIR: dataDir, FAKE_FORGE_RUN_ID: runId, FAKE_FORGE_WORKER_ID: 'w1', FAKE_FORGE_OUT: out });
     try { worker = await m.spawn({ substrate: 'claude-code', worktree: wt, prompt: 'hello', worker_id: 'w1' }); }
-    finally { for (const k of ['FAKE_SPAWN_SCRIPT', 'FORGE_DATA_DIR', 'FORGE_RUN_ID', 'FORGE_WORKER_ID', 'FORGE_OUT']) delete process.env[k]; }
+    finally { for (const k of ['FAKE_SPAWN_SCRIPT', 'FAKE_FORGE_DATA_DIR', 'FAKE_FORGE_RUN_ID', 'FAKE_FORGE_WORKER_ID', 'FAKE_FORGE_OUT']) delete process.env[k]; }
 
     const done = await waitUntil(() => (fs.existsSync(out) ? true : null), 120000, 200);
     assert.ok(done, 'the worker\'s child never finished its attempts');
