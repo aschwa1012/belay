@@ -35,6 +35,7 @@ for (const variant of ['pid_created_error', 'pid_created_null_wrong_image']) {
       try { r = await m.restart({ worker_id: 'w-p', first_turn_timeout_ms: 8000 }); } catch (e) { err = e; }
       assert.strictEqual(r, null, `restart must not return a receipt: ${JSON.stringify(r && { old_pid: r.old_pid, new_pid: r.new_pid })}`);
       assert.ok(err, 'restart must refuse');
+      assert.strictEqual(err.code, 'E_PRECONDITION');
       assert.match(err.message, new RegExp(`pid ${s.pid}`));
       assert.match(err.message, /could not be proven/);
       assert.match(err.message, /nothing was launched/);
@@ -47,3 +48,30 @@ for (const variant of ['pid_created_error', 'pid_created_null_wrong_image']) {
     } finally { s.kill(); await m.shutdown(); cleanup(sb.data); }
   });
 }
+
+test('restart of an adopted worker whose kill was sent but did not end the process refuses and launches nothing', async () => {
+  const PI = require('../../src/run/pid-identity.cjs');
+  const P = require('../../src/run/process.cjs');
+  const sb = sandbox(); const core = createFakeCore();
+  const m = createRunManager({ core, dataDir: sb.data, runId: 'run-unv', paths: { claudeExe: FAKE, userSettings: USER_SETTINGS } });
+  const s = sleeper();
+  const realKill = PI.killWorker; const realWait = P.waitPidGone;
+  // The kill seam ignores the kill: the answer is "not refused", and the sleeper stays alive. The wait is cut to its deadline.
+  PI.killWorker = async () => ({ tree: null, pidKill: { signalled: true }, identity: null, refused: null });
+  P.waitPidGone = async () => null;
+  try {
+    await core.worker.write({ id: 'w-p', run_id: 'run-unv', substrate: 'claude-code', pid: s.pid, state: 'running', session_id: 'sess-1', worktree: sb.worktree, started_at: Date.now(), turns: 1, last_event_at: Date.now(), pid_created: null });
+    let err = null; let r = null;
+    try { r = await m.restart({ worker_id: 'w-p', first_turn_timeout_ms: 8000 }); } catch (e) { err = e; }
+    assert.strictEqual(r, null, 'restart must not return a receipt');
+    assert.ok(err, 'restart must refuse');
+    assert.strictEqual(err.code, 'E_PRECONDITION');
+    assert.match(err.message, /did not end after the kill was sent/);
+    assert.match(err.message, /nothing was launched/);
+    assert.strictEqual(err.detail.kill_sent, true);
+    assert.strictEqual(err.detail.old_process_may_be_live, true);
+    assert.ok(!m._worker('w-p').child, 'no new process was launched');
+    await sleep(100);
+    assert.strictEqual(running(s), true);
+  } finally { PI.killWorker = realKill; P.waitPidGone = realWait; s.kill(); await m.shutdown(); cleanup(sb.data); }
+});

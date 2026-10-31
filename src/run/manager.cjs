@@ -350,8 +350,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       // Fix round, should-fix finding: `skipDeadPidKill` (resume, pause.cjs) skips this branch — a park's own
       // pid is dead by construction, so treating it as a still-alive orphan risks killing a bystander that reused it.
       else if (!skipDeadPidKill && !w.child && PI.pidLive(w)) { // a record with no process by construction is never killed by its pid number
-        const kr = await PI.killWorker(w); w.adoptedKill = kr.tree; PI.refuseIfMaybeLive(w, kr, 'restart');
-        if (!kr.refused) await P.waitPidGone(w.pid, { timeoutMs: 5000 });
+        const kr = await PI.killWorker(w); w.adoptedKill = kr.tree; await PI.settleAdoptedKill(w, kr, 'restart', hold);
       }
       w.stopRequested = false;
 
