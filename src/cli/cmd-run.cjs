@@ -400,7 +400,9 @@ async function run(ctx) {
     : crashedBy;
   const holds = partial ? partial.holds : [];
   const polls = partial ? partial.polls : 0;
-  const wakes = partial ? partial.wakes : [];
+  // ADR 0074: the wakes a worker_wait delivered are in the receipt too (via: 'wait'); the same fact is in wakes_suppressed only as a note of the duplicate.
+  const waitWakes = require('../run/run-digest.cjs').readDeliveries(dataDir, parsed.runId, t0);
+  const wakes = (partial ? partial.wakes : []).concat(waitWakes).sort((a, b) => a.at_ms - b.at_ms);
   const wakesSuppressed = partial ? partial.wakes_suppressed : [];
   const wakesExpired = partial ? partial.wakes_expired : []; // 5b fix round, finding 2
   // Fix round (6f finding 4): runOrchestrator already returns these (orchestrator.cjs's own `settle`);
@@ -432,7 +434,7 @@ async function run(ctx) {
     review_rounds: reviewRounds.value, review_rounds_reason: reviewRounds.reason,
     workers_closed: closed ? workersClosedBlock(closed, endedRow ? (endedRow.workers_marked_dead || []) : null) : null,
     ...(closeStages ? { close_stages: closeStages } : {}), ...(await require('./run-prepared.cjs').left(core, parsed.runId)), // close_stages only with notes on; prepared_left: merges kept for the user
-    ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), ...(treesClosed ? { worktrees_closed: treesClosed } : {}), ...(taskChecks || {}), ...require('../run/review-scratch.cjs').closeRun(dataDir, parsed.runId, parsed.levers), // the run-end memory jobs; the reviewers' scratch removed (ADR 0054 amendment 1)
+    ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), ...(treesClosed ? { worktrees_closed: treesClosed } : {}), ...(taskChecks || {}), ...(await require('../run/run-digest.cjs').receiptField(core, dataDir, parsed.runId)), ...require('../run/review-scratch.cjs').closeRun(dataDir, parsed.runId, parsed.levers), // the run-end memory jobs; the reviewers' scratch removed (ADR 0054 amendment 1)
   };
   try {
     fs.writeFileSync(receiptPath, `${JSON.stringify({ ...receipt, receipt_path: receiptPath }, null, 2)}\n`);

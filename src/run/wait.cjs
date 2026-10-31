@@ -9,6 +9,7 @@
 const W = require('./worker.cjs');
 const P = require('./process.cjs');
 const { fail } = require('./errors.cjs');
+const { boundOf } = require('./run-wait.cjs');
 const EV = require('./wait-eval.cjs'); // gap 9: a later wait holds for a release evaluation in flight
 
 const now = () => Date.now();
@@ -17,7 +18,7 @@ const dropped = (w) => (w.queuedDropped && w.queuedDropped.length ? { queued_dro
 // The previous process's terminal row a relaunch overtook (exit.cjs lifeWrite): its exit facts, on the answers about this life only.
 const priorRow = (w) => (w.droppedRow && w.droppedRow.launch === w.launches ? { previous_row_dropped: w.droppedRow } : {});
 
-function createWait({ workers, get, core = null }) {
+function createWait({ workers, get, core = null, policyWait = () => null }) {
   // ADR 0015 §1. Blocks until one of the named workers (or any worker this manager launched)
   // finishes a turn or dies, or the timeout passes. It is the same shape as `spawn`'s wait for the ready
   // event, pointed at the next event instead: a tool call that has not returned holds the orchestrator's
@@ -27,19 +28,18 @@ function createWait({ workers, get, core = null }) {
   // harness has its own tool timeout and this one has to come back under it.
   return async function wait({ worker_ids = null, timeout_ms = 110000 } = {}) {
     const t0 = now();
+    // ADR 0029 decision 5: the adapter inherits the client's tool timeout (MCP_TOOL_TIMEOUT, read at call
+    // time); a wait longer than that fails at the client, so it is capped at that value less 10,000 ms (at
+    // least 1,000 ms) and the answer says so (run-wait.cjs boundOf). Absent, empty, non-numeric or non-positive: unchanged.
+    const { ms, capNote } = boundOf(timeout_ms);
+    // ADR 0074 decision 2: in a run with a policy, a wait that names no worker waits for the run (run-wait.cjs). Naming workers is as before.
+    // ADR 0058, the idle-workers amendment (proposed): every answer names the workers this manager launched that sit idle with no task.
+    const idleOf = async () => { const v = await require('./idle-remind.cjs').idleRecords(core, workers.values()); return v.length ? { idle_without_task: v } : {}; };
+    const runWait = policyWait();
+    if (runWait && !(Array.isArray(worker_ids) && worker_ids.length) && await runWait.active()) return runWait.wait({ ms, capNote, t0, workers: [...workers.values()], idleOf });
     const ids = Array.isArray(worker_ids) && worker_ids.length ? worker_ids : [...workers.keys()];
     if (!ids.length) fail('E_ARGS', 'wait needs a worker, and this run manager has launched none');
     const ws = ids.map(get);
-    const requested = Math.max(1, Number(timeout_ms) || 110000);
-    // ADR 0029 decision 5: the adapter inherits the client's tool timeout (MCP_TOOL_TIMEOUT, read at call
-    // time); a wait longer than that fails at the client, so it is capped at that value less 10,000 ms (at
-    // least 1,000 ms) and the answer says so. Absent, empty, non-numeric or non-positive: unchanged.
-    const envTmo = /^\d+$/.test(String(process.env.MCP_TOOL_TIMEOUT || '').trim()) ? Number(String(process.env.MCP_TOOL_TIMEOUT).trim()) : 0;
-    const limit = envTmo > 0 ? Math.max(1000, envTmo - 10000) : Infinity;
-    const ms = Math.min(requested, limit);
-    const capNote = ms < requested
-      ? { timeout_capped: { requested_ms: requested, used_ms: ms, by: `MCP_TOOL_TIMEOUT ${envTmo} ms less a 10,000 ms margin` } }
-      : null;
     // The state settle() wrote once, fixed at the death; w.state is the fallback for a record adopt()
     // built and never ran settle() on (invariant 4: no affirmative dead this adapter never established).
     // 6e-5 item 2 (review 1/2 notes, wait.cjs:33/:34): `w.parkRequested`, not `w.paused` — it is set
@@ -67,8 +67,6 @@ function createWait({ workers, get, core = null }) {
         usage: (v && v.usage) || w.lastTurnUsage || null, ...dropped(w), ...priorRow(w), ...require('./release-eval.cjs').evalOf(w), // ADR 0058: evaluated once it lands, evaluating while it runs
       };
     };
-    // ADR 0058, the idle-workers amendment (proposed): every answer names the workers this manager launched that sit idle with no task.
-    const idleOf = async () => { const v = await require('./idle-remind.cjs').idleRecords(core, workers.values()); return v.length ? { idle_without_task: v } : {}; };
     const done = async (r) => ({ ...r, waited_ms: now() - t0, timed_out: false, watched: ids, ...capNote, ...(await idleOf()) });
     // build step 6e-6 item 4 (carried item 4, wait.cjs:37): once clearParkForStop or checkNotStale
     // (pause.cjs) has found this record's own park belongs to a row another adapter now holds, every wait

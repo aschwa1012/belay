@@ -51,7 +51,7 @@ test('diffWorkers: a running to dead transition wakes a death carrying the row\'
   }];
   const { events } = diffWorkers({ prev, rows, runId: RUN });
   assert.deepEqual(events, [{
-    worker_id: 'w6', event: 'death', turn: 2, seq: 20,
+    worker_id: 'w6', event: 'death', turn: 2, seq: 20, life: '0:0',
     exit_code: 137, exit_signal: null, death_established_by: 'pid-poll',
   }]);
 });
@@ -97,7 +97,7 @@ test('diffWorkers: a pending death past the grace is no longer pending, and a de
   };
   const settled = diffWorkers({ prev: baseline, rows: [deadRow], runId: RUN, nowMs: 1300, graceMs: 1500 });
   assert.deepEqual(settled.events, [{
-    worker_id: 'w10', event: 'death', turn: 0, seq: 32,
+    worker_id: 'w10', event: 'death', turn: 0, seq: 32, life: '0:0',
     exit_code: null, exit_signal: 'SIGKILL', death_established_by: 'exit-event',
   }]);
   assert.deepEqual(settled.pending_deaths, []);
