@@ -33,6 +33,49 @@ function sleep(ms) {
 function createPermit({ openCore, caller, waitMs = 600000, log = () => {} }) {
   const inFlight = new Map(); // rpcId -> { id, answered }
 
+  // A request that was sent and not answered may be committed. Reconcile it, so no live-looking
+  // pending row survives a deny the worker has already acted on: expire it (E_NOT_FOUND means it was
+  // never written; an already-decided row is answered from its verdict).
+  function unknownOutcome(e) {
+    return !!(e && (e.code === 'E_OWNER_LOST' || e.code === 'E_TIMEOUT') && e.detail && e.detail.may_have_committed);
+  }
+
+  async function unknownAnswer(c, e, toolUseId, toolName, input) {
+    const reason = `belay: the permission request outcome is unknown (${e.code}: ${e.message}); it was expired`;
+    let last = null;
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (attempt > 0) await sleep(250);
+      try {
+        const decided = await c.permission.decide({ id: toolUseId, verdict: 'expire', reason });
+        log('##', `permit ${toolUseId} ${toolName} expired after an unknown request outcome`);
+        return verdictAnswer(decided.verdict.state, input, decided.verdict.reason);
+      } catch (e2) {
+        last = e2;
+        if (e2.code === 'E_NOT_FOUND') {
+          return verdictAnswer('denied', input, `belay: the permission request could not be written (${e.code}: ${e.message})`);
+        }
+        if (e2.code === 'E_ARGS' && e2.detail) {
+          const rows = await c.permission.list({ states: ['allowed', 'denied', 'expired'] }).catch(() => null);
+          const landed = rows && rows.requests.find((r) => r.id === toolUseId);
+          if (landed) return verdictAnswer(landed.state, input, landed.reason);
+        }
+      }
+    }
+    log('!!', `permit ${toolUseId} reconcile failed: ${last.code}: ${last.message}`);
+    return verdictAnswer('denied', input, `belay: the permission request outcome is unknown and could not be reconciled (${e.code}: ${e.message}; ${last.code}: ${last.message})`);
+  }
+
+  async function expireCancelled(c, entry) {
+    if (entry.expired) return;
+    try {
+      await c.permission.decide({ id: entry.id, verdict: 'expire', reason: 'cancelled by the substrate' });
+      entry.expired = true;
+      log('##', `permit ${entry.id} expired: cancelled by the substrate`);
+    } catch (e) {
+      log('!!', `permit ${entry.id} cancel failed: ${e.code || 'E_INTERNAL'}: ${e.message}`);
+    }
+  }
+
   async function call(args, rpcId) {
     const toolName = args && args.tool_name;
     const toolUseId = args && args.tool_use_id;
@@ -50,9 +93,15 @@ function createPermit({ openCore, caller, waitMs = 600000, log = () => {} }) {
       // A request nobody can see must not hold a worker: deny at once, naming the code and message.
       log('##', `permit ${toolUseId} ${toolName} request failed: ${e.code}: ${e.message}`);
       entry.answered = true;
+      if (unknownOutcome(e)) return unknownAnswer(c, e, toolUseId, toolName, input);
       return verdictAnswer('denied', input, `belay: the permission request could not be written (${e.code}: ${e.message})`);
     }
     log('##', `permit ${toolUseId} ${toolName} requested`);
+    if (entry.cancelled) {
+      // A cancel that landed before the row existed found nothing to expire: apply it now.
+      await expireCancelled(c, entry);
+      return null;
+    }
 
     const startedAt = Date.now();
     let verdictRow = requestRow;
@@ -129,8 +178,10 @@ function createPermit({ openCore, caller, waitMs = 600000, log = () => {} }) {
     try {
       const c = await openCore();
       await c.permission.decide({ id: entry.id, verdict: 'expire', reason: 'cancelled by the substrate' });
+      entry.expired = true;
       log('##', `permit ${entry.id} expired: cancelled by the substrate`);
     } catch (e) {
+      // E_NOT_FOUND here means the row is not written yet; call() applies the cancel once it is.
       log('!!', `permit ${entry.id} cancel failed: ${e.code || 'E_INTERNAL'}: ${e.message}`);
     }
   }
