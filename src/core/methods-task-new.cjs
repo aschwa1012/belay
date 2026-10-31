@@ -8,20 +8,20 @@ const rows = require('./rows.cjs');
 const holds = require('./task-holds.cjs');
 const { filesOverlap, treeHint } = require('./methods-task-hold.cjs');
 
-// ADR 0072 decision 2: a verdict review of one fix, where a policy step and the orchestrator both make one, leaves a single review in
-// either order. The new row is a verdict review depending on exactly one task that repairs another, and a review of that task already
-// stands, not cancelled and not yet judged (done), made by a policy step or being made now by one. It is answered with the standing row,
-// `existing: true` (a policy step after the orchestrator's is PS.duplicate's tie-break). This runs in the same synchronous turn as the append.
+// ADR 0072 decision 2: a verdict review of a task, where a policy step and the orchestrator both make one, leaves a single review in
+// either order. The new row is a verdict review depending on exactly one task, and a review of that task already stands: not cancelled,
+// not done, and not yet evaluated (an evaluated review that did not pass is a refuted verdict, a finished round, not a standing review, so
+// a second opinion on it is a new review), made by a policy step or being made now by one. It is answered with the standing row,
+// `existing: true` and a `reason` saying nothing of this call was written (a policy step after the orchestrator's is PS.duplicate's
+// tie-break). This runs in the same synchronous turn as the append.
 function standingReview(E, caller, acceptance, deps) {
   if (!acceptance || acceptance.verdict !== true || !deps || deps.length !== 1) return null;
   const PS = require('./policy-stamp.cjs');
-  const target = rows.current(E.store, 'task', deps[0]);
-  if (!target || !target.repairs) return null;
   const policyCaller = PS.stepOf(caller) !== null;
-  const there = rows.currentAll(E.store, 'task').find((t) => t.run_id === caller.run_id && t.state !== 'cancelled' && t.state !== 'done'
+  const there = rows.currentAll(E.store, 'task').find((t) => t.run_id === caller.run_id && t.state !== 'cancelled' && t.state !== 'done' && t.results == null
     && t.acceptance && t.acceptance.verdict === true && Array.isArray(t.depends_on) && t.depends_on.length === 1 && t.depends_on[0] === deps[0]
     && (policyCaller || PS.byPolicy(E.store, 'task', t.id)));
-  return there ? PS.duplicate(E, caller, 'task', there.id, { ...there, existing: true }) : null;
+  return there ? PS.duplicate(E, caller, 'task', there.id, { ...there, existing: true, reason: `a verdict review of ${deps[0]} already stands as ${there.id}; the spec, files and budget of this call were not written. To get another opinion, cancel it or wait for its verdict` }) : null;
 }
 
 // `runTop` is the run's repository, read by the caller when tree_of is given. `own.worktree` is a tree the caller made or inherited.
