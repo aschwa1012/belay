@@ -8,7 +8,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { spawn } = require('node:child_process');
 const ID = require('../../src/core/proc-identity.cjs');
-const { survivors, describe } = require('./survivors.cjs');
+const { survivors, describe, dropped } = require('./survivors.cjs');
 const crash = require('../crash.cjs');
 
 const snapOf = (entries) => () => new Map(entries);
@@ -23,6 +23,16 @@ test('survivors: a pid held by another creation time is reused, not a survivor; 
   assert.strictEqual(t.survivors.length, 1);
   assert.deepStrictEqual(t.reused, []);
   assert.match(describe(t.survivors), /pid 4242 image node\.exe created 1000 \(row recorded 1000\)/);
+});
+
+test('survivors: a holder whose creation time cannot be read is a survivor, not a reused pid; dropped pids are reported', () => {
+  const alive = () => true;
+  const a = survivors([5], new Map([[5, 1000]]), { alive, snapshot: snapOf([[5, { ppid: 1, created: null, image: 'x.exe' }]]) });
+  assert.strictEqual(a.survivors.length, 1);
+  assert.deepStrictEqual(a.reused, []);
+  const b = survivors([5, 6], new Map([[5, 1], [6, 2]]), { alive, snapshot: snapOf([[5, { ppid: 1, created: 9, image: 'y.exe' }]]) });
+  const text = dropped(b);
+  assert.ok(text.includes("dropped as reused: [pid 5 image y.exe created 9 (row recorded 1)]") && text.includes("not listed: [pid 6") && text.includes("[not listed]"), text);
 });
 
 test('survivors: a pid with no recorded creation time keeps the bare check; an unreadable snapshot or a pid no longer listed', () => {

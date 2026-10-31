@@ -21,20 +21,23 @@ function snapshotSync() {
 // `alive` and `snapshot` are test seams. Returns { survivors, reused }: each { pid, want, created, image }.
 function survivors(pids, created, { alive = P.pidAlive, snapshot = snapshotSync } = {}) {
   const held = [...pids].filter((p) => alive(p));
-  if (!held.length) return { survivors: [], reused: [] };
+  if (!held.length) return { survivors: [], reused: [], gone: [] };
   const snap = snapshot();
-  const out = { survivors: [], reused: [] };
+  const out = { survivors: [], reused: [], gone: [] };
   for (const pid of held) {
     const want = created.has(pid) ? created.get(pid) : null;
     if (!snap) { out.survivors.push({ pid, want, created: null, image: null, note: 'snapshot unreadable' }); continue; }
     const e = snap.get(pid);
-    if (!e) continue; // gone between the signal and the snapshot
+    if (!e) { out.gone.push({ pid, want, created: null, image: null, note: 'not listed' }); continue; } // gone between the signal and the snapshot
     const rec = { pid, want, created: e.created, image: e.image };
+    if (e.created == null) { out.survivors.push({ ...rec, note: 'creation time unreadable' }); continue; } // unverifiable, as the product treats it: not a reused pid
     if (want != null && e.created !== want) out.reused.push(rec); else out.survivors.push(rec);
   }
   return out;
 }
 
-const describe = (list) => list.map((s) => `pid ${s.pid} image ${s.image} created ${s.created} (row recorded ${s.want})${s.note ? ` [${s.note}]` : ''}`).join('; ');
+// Every pid the check dropped is printed with the times it compared, so a failure shows whether it was pid reuse.
+const dropped = (r) => `dropped as reused: [${describe(r.reused)}]; not listed: [${describe(r.gone)}]`;
+function describe(list) { return list.map((s) => `pid ${s.pid} image ${s.image} created ${s.created} (row recorded ${s.want})${s.note ? ` [${s.note}]` : ''}`).join('; '); }
 
-module.exports = { survivors, describe };
+module.exports = { survivors, describe, dropped };
