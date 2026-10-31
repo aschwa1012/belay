@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // review-tree.test.cjs — ADR 0054 amendment 1. A reviewer can write (Edit, Write, Bash). belay snapshots the
 // reviewer's worktree at the review lease's grant, again at the hand-back, and stores the comparison in the handoff, which
 // the verdict check shows (detail.tree, detail.tree_changed) without failing the verdict. Only a change made while the

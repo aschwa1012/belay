@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // receipts.test.cjs — build step W2-3, S4a: a worker's row
 // carries its own receipt — the model system/init reported, summed cache tokens, an uncapped tool_use
 // count, and the worktree's HEAD at spawn (base_sha) and at settle (head_sha). Every assertion reads the
