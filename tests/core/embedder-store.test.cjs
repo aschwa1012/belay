@@ -145,36 +145,28 @@ test('embedder: the identity is one transaction, and only the exact legacy MiniL
 // warm-up does this), and the core re-pings a live owner once with a 2,000 ms bound before calling it lost.
 // An UNWARMED owner (a CLI-elected one) still pays the fork stall at its first vector call; the core's 2,000 ms
 // re-ping covers it (embedder-wait.test.cjs). This test models a run that has warmed: the fork stall happens in the warm call, the load that follows is
-// what this test watches. The assertion is the product's claim and is unchanged.
-test('embedder: the owner answers its pipe within 250 ms while the model loads, and the thread ends with the owner (m10)', async t => {
+// what this test watches. The 250 ms bounds on the owner's event-loop gap and on the slowest ping are timing claims and
+// live in tests/budgets/embedder-budgets.test.cjs, which runs alone; this test keeps the claims that do not depend on time.
+test('embedder: the owner answers every ping while the model loads, and the thread ends with the owner (m10)', async t => {
   if (noVoyage) return t.skip(noVoyage);
   await withCore({}, async (c, dir) => {
-    // The owner shares this process's event loop, so a stall anywhere in the load shows up as a gap
-    // between ticks of this timer, whether or not a ping happened to be in flight during it.
-    let last = Date.now(), gap = 0;
-    const beat = setInterval(() => { const now = Date.now(); gap = Math.max(gap, now - last); last = now; }, 20);
-    t.after(() => clearInterval(beat)); // a failed assertion below must not leave the timer holding the process open
     await c.memory.warm({}); // the run's warm-up: elects the owner and forks the child here, then returns
     await new Promise(r => setTimeout(r, 600)); // the fork's own stall is over before the watch begins; the load itself continues
-    last = Date.now(); gap = 0;
     const first = c.memory.store({ namespace: 'm10', text: 'a row that makes the owner load the model' });
     let done = false;
     first.then(() => { done = true; }, () => { done = true; });
-    let n = 0, max = 0, seen = false;
+    let n = 0, seen = false;
     const bad = [];
     while (!done) {
       const r = await ping(dir, 2000);
       // The very first ping can land before the owner's pipe is listening; count from the first answer.
       if (r.ok) seen = true;
-      if (!done && seen) { n += 1; max = Math.max(max, r.ms); if (!r.ok) bad.push(r.reason); }
+      if (!done && seen) { n += 1; if (!r.ok) bad.push(r.reason); }
       await new Promise(res => setTimeout(res, 20));
     }
     await first;
-    clearInterval(beat);
-    assert.ok(gap < 250, `the owner's event loop stalled for ${gap} ms during the load`);
     assert.deepStrictEqual(bad, [], 'every ping during the load was answered');
     assert.ok(n >= 3, `only ${n} pings landed during the load; it was not in flight long enough to prove anything`);
-    assert.ok(max < 250, `the slowest ping during the load took ${max} ms`);
     assert.ok(c.owner.embedderObj.child, 'the embedder runs in a child process');
   });
   // shutdownOwner ended the thread.
