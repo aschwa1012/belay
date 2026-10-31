@@ -122,6 +122,8 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   let pollHandle = null;
   let pollInFlight = false; // 5a-2: at most one store read at a time, guard not a queue
   let pollByTurnEnd = false; // whether the read in flight was started by a turn end
+  let pollReadDone = false; // whether the pass in flight has finished its worker.list read
+  let pollAgain = false; // a turn end landed after the pass's read: poll once more as soon as the pass ends
   const deadPids = require('./dead-pids.cjs').createDeadPids({ graceMs: DEATH_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid) });
   const holdRecorder = createHoldRecorder(); // wake.cjs (design item 9): moved out of this file
   const leftovers = require('./orchestrator-leftovers.cjs').createLeftovers({ child, P, state, core, runId }); // ADR 0054 amendment 2
@@ -267,9 +269,24 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   // the snapshot): no worker of this run mid-turn (the store's own `mid_turn` column, every turn, not
   // only the first), no wake still unanswered, and (5b-4) no non-terminal row whose pid just died
   // still inside its detector grace.
+  // The guard covers the whole pass (the read, the enrichment and watcher awaits, the writes, the idle close), not only the
+  // read: a second pass started by a turn end while the first still held derived, unwritten wakes could close stdin under
+  // them and leave two poll chains running. A turn end that lands after the read sets `pollAgain`, and the pass that holds
+  // the guard polls once more when it ends.
   async function pollOnce(byTurnEnd = false) {
     if (state.finishing || pollInFlight) return;
     pollInFlight = true;
+    pollReadDone = false;
+    pollAgain = false;
+    try { await pollPass(byTurnEnd); } finally { pollInFlight = false; }
+    if (pollAgain && !state.finishing) {
+      pollAgain = false;
+      if (pollHandle) { clearTimeout(pollHandle); pollHandle = null; }
+      pollOnce(true);
+    }
+  }
+
+  async function pollPass(byTurnEnd) {
     pollByTurnEnd = byTurnEnd;
     const turnAtStart = state.turns;
     let list = null;
@@ -277,7 +294,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     try { list = await core.worker.list({}); }
     catch (e) { failReason = (e && (e.code || e.message)) || String(e); }
     state.polls += 1;
-    pollInFlight = false;
+    pollReadDone = true;
     // A turn end whose poll was skipped because a read the ready event or the timer started was in flight is the turn a hold from
     // this read names, not the turn the read started at (stale). A later turn end in the same chunk as the end that started this read is neither.
     const turnAtCall = state.skippedTurn == null ? turnAtStart : state.skippedTurn;
@@ -367,7 +384,8 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       // idle period, not to the whole run (ADR 0015's evidence table counts a hold at each turn end).
       holdRecorder.reset();
       if (pollHandle) { clearTimeout(pollHandle); pollHandle = null; }
-      if (pollInFlight && !pollByTurnEnd && state.skippedTurn == null) state.skippedTurn = state.turns;
+      if (pollInFlight && !pollReadDone && !pollByTurnEnd && state.skippedTurn == null) state.skippedTurn = state.turns;
+      if (pollInFlight && pollReadDone) pollAgain = true;
       pollOnce(true);
       return;
     }
