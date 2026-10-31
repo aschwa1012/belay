@@ -177,20 +177,48 @@ test('a spawn id made by belay is its own: a spawn with no worker_id gets rev-<h
   } finally { await e.close(); }
 });
 
-test('a spawn the manager refuses (the run paused just before it) is an exception naming the review task it left and the pause; no worker is launched', async () => {
+test('a pause as the reviewer is spawned is a skipped claim, not an exception; after the resume the retake hands the same review task over and there is one review', async () => {
   const e = await env('review-paused');
   try {
     const { work } = await workDone(e, { review: { spawn: { agent_type: 'reviewer', worker_id: 'rev-p' } }, ...REST });
     const m = e.manager();
-    const spawnFor = (stepCore) => async (a) => { await e.orch.run.setPaused({ paused: true }); return STEPS.spawnFor(m)(stepCore)(a); };
-    const out = await e.exec({ spawnFor }).tick();
-    assert.deepStrictEqual(out.steps.map((s) => [s.step, s.outcome]), [['review', 'exception']]);
-    assert.match(stepRows(e)[0].error, /could not be spawned: E_PAUSED/);
-    assert.match(stepRows(e)[0].row_ref, /^task:/, 'the review task it made stays named');
+    let pauseOnce = true;
+    const spawnFor = (stepCore) => async (a) => { if (pauseOnce) { pauseOnce = false; await e.orch.run.setPaused({ paused: true }); } return STEPS.spawnFor(m)(stepCore)(a); };
+    const x = e.exec({ spawnFor });
+    const out = await x.tick();
+    assert.deepStrictEqual(out.steps.map((s) => [s.step, s.outcome]), [['review', 'skipped']]);
+    assert.match(stepRows(e)[0].error, /^E_PAUSED/);
     assert.strictEqual(m._worker('rev-p'), undefined, 'no worker was launched');
     assert.strictEqual(e.raw("SELECT COUNT(*) AS n FROM worker WHERE id = 'rev-p'")[0].n, 0, 'and no worker row written');
-    const w = (await wakesOf(e)).filter((x) => x.exception === 'E8');
-    assert.deepStrictEqual(w.map((x) => x.task_id), [work.id]);
+    assert.strictEqual(reviewsOf(e, work.id).length, 1, 'the review task stands, unassigned');
+    assert.deepStrictEqual((await wakesOf(e)).filter((w) => w.exception === 'E8'), [], 'a pause is no exception');
+    assert.strictEqual((await x.tick()).held, 'paused');
+    await e.orch.run.setPaused({ paused: false });
+    const again = await x.tick();
+    assert.deepStrictEqual(again.steps.map((s) => [s.step, s.outcome]), [['review', 'done']]);
+    assert.strictEqual(reviewsOf(e, work.id).length, 1, 'one review task, made once');
+    assert.strictEqual(e.raw("SELECT holder FROM lease WHERE task_id = ? ORDER BY seq", again.steps[0].row_ref.replace('task:', ''))[0].holder, 'rev-p');
+    assert.strictEqual(stepRows(e).length, 1, 'the one claim was reopened, not doubled');
+    assert.ok(m._worker('rev-p'));
+  } finally { await e.close(); }
+});
+
+test('a pause that lands before the step\'s first write writes nothing; the retake after the resume makes the one review', async () => {
+  const e = await env('review-paused-early');
+  try {
+    const { work } = await workDone(e, { review: { worker: 'rv' }, ...REST });
+    await e.worker('rv');
+    let once = true;
+    // policyAs(seq) is built after the claim and its re-check; the pause lands on the step's first read.
+    const seam = { ...e.h, policyAs: (seq) => { const v = e.h.policyAs(seq); return { ...v, task: { ...v.task, list: async (a) => { if (once) { once = false; await e.orch.run.setPaused({ paused: true }); } return v.task.list(a); } } }; } };
+    const x = e.exec({}, seam);
+    const out = await x.tick();
+    assert.deepStrictEqual(out.steps.map((s) => s.outcome), ['skipped']);
+    assert.match(stepRows(e)[0].error, /^E_PAUSED/);
+    assert.strictEqual(reviewsOf(e, work.id).length, 0, 'nothing was written');
+    await e.orch.run.setPaused({ paused: false });
+    assert.deepStrictEqual((await x.tick()).steps.map((s) => s.outcome), ['done']);
+    assert.strictEqual(reviewsOf(e, work.id).length, 1);
   } finally { await e.close(); }
 });
 

@@ -71,9 +71,14 @@ async function reviewTree(env, c) {
   const w = (await env.core.task.get({ task_id: c.task_id })).worktree;
   return w && w.path && !w.removed_at ? w.path : null;
 }
+// A pause is not a failure: the step is skipped with E_PAUSED, which policy.claim reopens at the resume (nothing is assigned or launched).
+const paused = (why) => ({ outcome: 'skipped', error: `E_PAUSED: ${why}; the claim is reopened and the step retaken after the resume` });
+const unassigned = (t) => t.policy_made === true && !t.lease && t.state !== 'done' && t.state !== 'cancelled';
 async function review(c, env) {
   const tasks = ((await env.core.task.list({})) || {}).tasks || [];
-  const there = tasks.find((t) => t.state !== 'cancelled' && t.acceptance && t.acceptance.verdict === true && (t.depends_on || []).includes(c.task_id));
+  const reviews = tasks.filter((t) => t.state !== 'cancelled' && t.acceptance && t.acceptance.verdict === true && (t.depends_on || []).includes(c.task_id));
+  const left = reviews.find((t) => unassigned(t)); // a review an earlier try of this step made and a pause kept from being handed over
+  const there = left ? null : reviews[0];
   if (there) return { outcome: 'superseded', row_ref: `task:${there.id}` }; // the orchestrator made the review first
   const work = tasks.find((t) => t.id === c.task_id);
   if (!work || work.state !== 'done') return { outcome: 'skipped', error: `${c.task_id} is no longer done` };
@@ -87,7 +92,10 @@ async function review(c, env) {
     const why = await unavailable(env, c.worker, 'reviewer');
     if (why) return exception(why);
   }
-  const made = await env.core.task.create({
+  // The pause gate comes before the first write: a refusal writes nothing, and the claim is reopened at the resume.
+  const run = env.core.run ? ((await env.core.run.get({})) || {}).run : null;
+  if (run && run.paused_at != null) return paused('the run is paused');
+  const made = left || await env.core.task.create({
     spec: `Review ${c.task_id}: judge whether its work meets its acceptance.${work.spec ? `
 
 ${work.spec}` : ''}`,
@@ -96,7 +104,7 @@ ${work.spec}` : ''}`,
   const ref = `task:${made.id}`;
   if (!spawn) return handOver(env, { task_id: made.id, worker_id: c.worker }, ref);
   let row;
-  try { row = await env.spawn({ substrate: 'claude-code', worktree: tree, task_id: made.id, agent_type: spawn.agent_type, worker_id: c.worker }); } catch (e) { return exception(`the reviewer could not be spawned: ${errText(e)}`, ref); }
+  try { row = await env.spawn({ substrate: 'claude-code', worktree: tree, task_id: made.id, agent_type: spawn.agent_type, worker_id: c.worker }); } catch (e) { if (e && e.code === 'E_PAUSED') return paused(`the run was paused as the reviewer was spawned; review task ${made.id} stands unassigned and the retake assigns it`); return exception(`the reviewer could not be spawned: ${errText(e)}`, ref); }
   const held = ((await env.core.task.get({ task_id: made.id })) || {}).lease;
   if (!held || held.holder !== (row && row.id)) return exception(`spawned ${row && row.id}, but it holds no lease on ${made.id}`, ref);
   return { outcome: 'done', row_ref: ref };

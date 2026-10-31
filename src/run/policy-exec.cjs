@@ -26,6 +26,7 @@ const errText = (e) => `${(e && e.code) || 'E_INTERNAL'}: ${String((e && e.messa
 const keyOf = (step, t) => `${step}|${t.table}|${t.id}|${t.seq}`;
 const isRelease = (t) => !!(t && t.results && t.results.trigger === 'release');
 const SENDS = new Set(['review', 'fix', 're_review']); // the steps that send a worker work (the budget rule); integrate sends none
+const leftOver = (r) => !!r && r.policy_made === true && !r.lease; // a review a paused step made and did not hand over
 const isReviewTask = (t) => !!(t.acceptance && t.acceptance.verdict === true);
 
 // The plan a task acts under and its revision. The plan is policy-wakes.cjs policyOf (one definition of who inherits); the revision is that of
@@ -59,7 +60,7 @@ function due(snap) {
     const { plan, rev } = p;
     const root = PW.rootOf(x, byId);
     // review: the work is done on a release evaluation, nothing reviews it, and the plan names who does (a worker, or a spawn).
-    if (!x.repairs && plan.review && x.state === 'done' && isRelease(x) && !(reviewsOf.get(x.id) || []).length && !(x.review && x.review.review_id)) {
+    if (!x.repairs && plan.review && x.state === 'done' && isRelease(x) && !(reviewsOf.get(x.id) || []).filter((r) => !leftOver(r)).length && !(x.review && x.review.review_id && !leftOver(byId.get(x.review.review_id)))) { // a review a paused step made and did not hand over does not count: the retake hands it over
       out.push({ step: 'review', task_id: x.id, trigger: tref(x), policy_rev: rev, review: plan.review, worker: plan.review.worker || (plan.review.spawn && plan.review.spawn.worker_id) || null });
     }
     // fix: the work's review is refuted (belay's own evaluation) and a round is left; the fix goes to the one who built what was judged.
