@@ -211,6 +211,7 @@ const METHODS = {
   'policy.finish': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./policy-steps.cjs', 'finish') },
   'policy.list': { roles: ALL, kind: 'read', fn: lazy('./policy-steps.cjs', 'list') },
   'policy.log': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./policy-log.cjs', 'list') }, // the step log with each turn's cost, newest N
+  'policy.revisions': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./policy-revisions.cjs', 'revisions') }, // ADR 0073: the plan revision of each task version, for an amend's lift of a halt
 };
 
 // The methods that read or write memory rows and are refused when the run's memory is off.
