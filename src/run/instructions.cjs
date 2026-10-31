@@ -13,7 +13,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const { execFileSync } = require('node:child_process');
+const G = require('../core/git.cjs');
 
 // Deliberately not CLAUDE.md: nothing that walks a directory for instruction files should find it.
 const INSTRUCTIONS_FILE = 'instructions.md';
@@ -52,32 +52,30 @@ function writeCopy(bytes, dir) {
   return { path: target.replace(/\\/g, '/'), bytes: bytes.length, sha256: sha256(bytes) };
 }
 
-const git = (cwd, args) => execFileSync('git', args, { cwd, timeout: 10000, windowsHide: true, maxBuffer: 4 * 1024 * 1024, stdio: ['ignore', 'pipe', 'ignore'] });
+// Git for a trusted read: in the repository's own top (never a worker's tree), replace refs off, no system config.
+const SAFE_ENV = { GIT_NO_REPLACE_OBJECTS: '1', GIT_CONFIG_NOSYSTEM: '1' };
+const git = (cwd, args) => G.run(cwd, ['--no-replace-objects', ...args], { timeoutMs: 10000, env: SAFE_ENV });
 
 // The instructions of a worker that reads another worker's tree (a reviewer): never the working copy, which the reviewed
-// coder can edit to address its reviewer. They are CLAUDE.md as committed at `ref` (the reviewed task's base commit), or, with
-// no ref, at HEAD of the repository's main checkout (the parent of the shared git dir). Read from the object database
-// (ls-tree and cat-file: no checkout, no write). A symbolic link, a missing file or a git failure copies nothing and names
-// why. `dir` is the worker's data dir, as for snapshotInstructions.
-function snapshotTrusted(worktree, dir, ref) {
+// coder can edit to address its reviewer. They are CLAUDE.md as committed at `commit` (a full commit id the caller has shown
+// no worker authored), read from the object database of `top` (the repository's main checkout) with ls-tree and cat-file:
+// no checkout, no write. A symbolic link, a missing file or a git failure copies nothing and names why. `dir` is the
+// worker's data dir, as for snapshotInstructions.
+async function snapshotTrusted(top, dir, commit) {
   fs.rmSync(path.join(dir, INSTRUCTIONS_FILE), { force: true });
-  const at = ref || 'HEAD';
-  const none = (reason) => ({ path: null, reason, source: `git:${at}:CLAUDE.md` });
-  try {
-    let cwd = worktree;
-    if (!ref) {
-      const common = git(worktree, ['rev-parse', '--path-format=absolute', '--git-common-dir']).toString().trim();
-      if (path.basename(common) === '.git') cwd = path.dirname(common);
-    }
-    const entry = git(cwd, ['ls-tree', '-z', at, '--', 'CLAUDE.md']).toString().split('\0')[0];
-    if (!entry) return none('no CLAUDE.md in the trusted commit');
-    const m = /^(\d+) (\w+) ([0-9a-f]+)\t/.exec(entry);
-    if (!m || m[2] !== 'blob') return none('CLAUDE.md in the trusted commit is not a regular file');
-    if (m[1] === '120000') return none('CLAUDE.md in the trusted commit is a symbolic link, so it was not copied');
-    return { ...writeCopy(git(cwd, ['cat-file', 'blob', m[3]]), dir), source: `git:${at}:CLAUDE.md` };
-  } catch (e) {
-    return none(`trusted CLAUDE.md unreadable: ${e && e.code ? e.code : 'git failed'}`);
-  }
+  const source = `git:${commit || 'none'}:CLAUDE.md`;
+  const none = (reason) => ({ path: null, reason, source });
+  if (!top || !/^[0-9a-f]{40,64}$/i.test(String(commit))) return none('no trusted commit is known, so no instructions were copied');
+  const ls = await git(top, ['ls-tree', '-z', commit, '--', 'CLAUDE.md']);
+  if (!ls.ok) return none('trusted CLAUDE.md unreadable: git ls-tree failed');
+  const entry = ls.stdout.split('\0')[0];
+  if (!entry) return none('no CLAUDE.md in the trusted commit');
+  const m = /^(\d+) (\w+) ([0-9a-f]+)\t/.exec(entry);
+  if (!m || m[2] !== 'blob') return none('CLAUDE.md in the trusted commit is not a regular file');
+  if (m[1] === '120000') return none('CLAUDE.md in the trusted commit is a symbolic link, so it was not copied');
+  const blob = await git(top, ['cat-file', 'blob', m[3]]);
+  if (!blob.ok) return none('trusted CLAUDE.md unreadable: git cat-file failed');
+  return { ...writeCopy(Buffer.from(blob.stdout, 'utf8'), dir), source };
 }
 
 // Adoption: what an earlier spawn left in the data dir. Never reads the worktree; a worker spawned

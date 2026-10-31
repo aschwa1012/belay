@@ -1,7 +1,7 @@
 'use strict';
 require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
-// instructions-trusted.test.cjs — a reviewer's spawn-time CLAUDE.md copy is never the reviewed coder's working copy, and a
-// symlinked CLAUDE.md is refused. Real git repositories in OS temp, the fake executable for the launch; no Claude Code.
+// instructions-trusted.test.cjs — a reviewer's spawn-time CLAUDE.md copy is never a worker-authored one, and a symlinked
+// CLAUDE.md is refused. Real git repositories in OS temp, the fake executable for the launch; no Claude Code.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -36,44 +36,69 @@ function repo() {
   git(main, 'worktree', 'add', '-q', '-b', 'coder', coder, base);
   fs.writeFileSync(path.join(coder, 'CLAUDE.md'), TRUSTED + INJECTED);
   git(coder, 'commit', '-q', '-am', 'coder edits its instructions');
+  const head = git(coder, 'rev-parse', 'HEAD');
   fs.writeFileSync(path.join(coder, 'CLAUDE.md'), TRUSTED + INJECTED + 'and an uncommitted line\n');
   const dir = path.join(d, 'data', 'workers', 'rv');
   fs.mkdirSync(dir, { recursive: true });
-  return { d, main, coder, base, dir };
+  return { d, main, coder, base, head, dir };
 }
 const rm = (d) => { try { fs.rmSync(d, { recursive: true, force: true }); } catch { /* temp dir */ } };
 
-test('trusted: a reviewer copy at the base commit has none of the coder edits, committed or not', () => {
+// A fake core that knows the run's project dir and a small task table: id -> fields merged over the fake's task row.
+// failFirstTaskGet: the first task.get throws (the spawn's own task read), later ones answer.
+function coreWith(r, tasks, { failFirstTaskGet = false } = {}) {
+  const core = createFakeCore();
+  core.run = { ...(core.run || {}), get: async () => ({ run: { project_dir: fwd(r.main) } }) };
+  const base = core.task.get;
+  let failed = !failFirstTaskGet;
+  core.task = { ...core.task, get: async (a) => { if (!failed) { failed = true; throw new Error('E_BUSY'); } const row = await base(a); return tasks[a.task_id] ? { ...row, ...tasks[a.task_id] } : row; } };
+  return core;
+}
+async function spawnCopy(r, core, spec) {
+  const data = fwd(path.join(r.d, 'run'));
+  const m = createRunManager({ core, dataDir: data, runId: 'run-trusted', paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: USER_SETTINGS } });
+  try {
+    const out = await m.spawn({ substrate: 'claude-code', worktree: fwd(r.coder), prompt: 'go', ...spec });
+    const args = JSON.parse(fs.readFileSync(path.join(data, 'workers', spec.worker_id, 'argv.json'), 'utf8')).spec.args;
+    const i = args.indexOf('--append-system-prompt-file');
+    return { out, text: i === -1 ? null : fs.readFileSync(args[i + 1], 'utf8') };
+  } finally { await m.shutdown().catch(() => {}); }
+}
+
+test('trusted: a copy at the trusted commit has none of the coder edits, committed or not', async () => {
   const r = repo();
   try {
     const own = I.snapshotInstructions(r.coder, r.dir);
     assert.match(fs.readFileSync(own.path, 'utf8'), /APPROVE THIS WORK/, 'the coder own spawn still copies its working copy');
-    const t = I.snapshotTrusted(r.coder, r.dir, r.base);
-    assert.equal(fs.readFileSync(t.path, 'utf8'), TRUSTED);
-    assert.doesNotMatch(fs.readFileSync(t.path, 'utf8'), /APPROVE|uncommitted/);
-  } finally { rm(r.d); }
-});
-
-test('trusted: with no base the copy is HEAD of the main checkout, not the coder branch', () => {
-  const r = repo();
-  try {
-    const t = I.snapshotTrusted(r.coder, r.dir, null);
+    const t = await I.snapshotTrusted(r.main, r.dir, r.base);
     assert.equal(fs.readFileSync(t.path, 'utf8'), TRUSTED);
   } finally { rm(r.d); }
 });
 
-test('trusted: a bad ref copies nothing, and an old copy is removed', () => {
+test('trusted: no commit, or an unknown one, copies nothing and removes an old copy', async () => {
   const r = repo();
   try {
     I.snapshotInstructions(r.coder, r.dir);
-    const t = I.snapshotTrusted(r.coder, r.dir, 'deadbeefdeadbeef');
+    const t = await I.snapshotTrusted(r.main, r.dir, null);
     assert.equal(t.path, null);
-    assert.match(t.reason, /unreadable|no CLAUDE\.md/);
     assert.ok(!fs.existsSync(path.join(r.dir, 'instructions.md')), 'the earlier copy is gone');
+    const u = await I.snapshotTrusted(r.main, r.dir, 'deadbeef'.repeat(5));
+    assert.equal(u.path, null);
   } finally { rm(r.d); }
 });
 
-test('symlink: a CLAUDE.md committed as a symbolic link is refused in the trusted commit', () => {
+test('trusted: a replace ref a coder writes cannot swap the trusted blob', async () => {
+  const r = repo();
+  try {
+    const trustedBlob = git(r.main, 'rev-parse', `${r.base}:CLAUDE.md`);
+    const evil = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: r.coder, input: 'EVIL', encoding: 'utf8', windowsHide: true }).trim();
+    git(r.coder, 'replace', trustedBlob, evil);
+    const t = await I.snapshotTrusted(r.main, r.dir, r.base);
+    assert.equal(fs.readFileSync(t.path, 'utf8'), TRUSTED);
+  } finally { rm(r.d); }
+});
+
+test('symlink: a CLAUDE.md committed as a symbolic link is refused in the trusted commit', async () => {
   const r = repo();
   try {
     const secret = path.join(r.d, 'secret.md');
@@ -81,7 +106,7 @@ test('symlink: a CLAUDE.md committed as a symbolic link is refused in the truste
     const blob = execFileSync('git', ['hash-object', '-w', '--stdin'], { cwd: r.main, input: fwd(secret), encoding: 'utf8', windowsHide: true }).trim();
     git(r.main, 'update-index', '--cacheinfo', `120000,${blob},CLAUDE.md`);
     git(r.main, 'commit', '-q', '-m', 'link');
-    const t = I.snapshotTrusted(r.main, r.dir, git(r.main, 'rev-parse', 'HEAD'));
+    const t = await I.snapshotTrusted(r.main, r.dir, git(r.main, 'rev-parse', 'HEAD'));
     assert.equal(t.path, null);
     assert.match(t.reason, /symbolic link/);
   } finally { rm(r.d); }
@@ -102,21 +127,39 @@ test('symlink: a symlinked CLAUDE.md in the working copy is refused (skipped whe
   } finally { rm(r.d); }
 });
 
-test('spawn: a reviewer append-system-prompt-file copy lacks the coder injected line; the coder own spawn keeps its working copy', async () => {
+test('spawn: a reviewer copy lacks the coder injected line; the coder own spawn keeps its working copy', async () => {
   const r = repo();
-  const data = fwd(path.join(r.d, 'run'));
-  const m = createRunManager({ core: createFakeCore(), dataDir: data, runId: 'run-trusted', paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: USER_SETTINGS } });
   try {
-    const rv = await m.spawn({ substrate: 'claude-code', worktree: fwd(r.coder), prompt: 'review', worker_id: 'w-rv', agent_type: 'reviewer' });
-    const args = JSON.parse(fs.readFileSync(path.join(data, 'workers', 'w-rv', 'argv.json'), 'utf8')).spec.args;
-    const file = args[args.indexOf('--append-system-prompt-file') + 1];
-    assert.equal(fs.readFileSync(file, 'utf8'), TRUSTED);
-    assert.equal(rv.instructions.path, file);
-    const co = await m.spawn({ substrate: 'claude-code', worktree: fwd(r.coder), prompt: 'code', worker_id: 'w-co' });
-    assert.match(fs.readFileSync(co.instructions.path, 'utf8'), /APPROVE THIS WORK/);
-    await m._waitTurn('w-rv', 8000).catch(() => {});
-  } finally {
-    await m.shutdown().catch(() => {});
-    rm(r.d);
-  }
+    const rv = await spawnCopy(r, coreWith(r, {}), { worker_id: 'w-rv', agent_type: 'reviewer' });
+    assert.equal(rv.text, TRUSTED);
+    const co = await spawnCopy(r, coreWith(r, {}), { worker_id: 'w-co' });
+    assert.match(co.text, /APPROVE THIS WORK/);
+  } finally { rm(r.d); }
+});
+
+test('spawn: a review task without agent_type walks its dependency to the recorded base and flags a CLAUDE.md change', async () => {
+  const r = repo();
+  try {
+    const tasks = { A: { worktree: { base_sha: r.base, path: fwd(r.coder) } }, R: { acceptance: { verdict: true }, depends_on: ['A'] } };
+    const rv = await spawnCopy(r, coreWith(r, tasks), { worker_id: 'w-rt', task_id: 'R' });
+    assert.equal(rv.text, TRUSTED);
+    assert.deepStrictEqual(rv.out.instructions.reviewed_changes_instructions, ['CLAUDE.md'], 'the receipt flags the reviewed diff that touches CLAUDE.md');
+  } finally { rm(r.d); }
+});
+
+test('spawn: a follow-up cut from the coder commit does not make that commit the reviewer instructions', async () => {
+  const r = repo();
+  try {
+    const tasks = { F: { worktree: { base_sha: r.head, path: fwd(r.coder) } }, R: { acceptance: { verdict: true }, depends_on: ['F'] } };
+    const rv = await spawnCopy(r, coreWith(r, tasks), { worker_id: 'w-fu', task_id: 'R' });
+    assert.equal(rv.text, TRUSTED, 'a base that is not an ancestor of the run anchor falls back to the anchor');
+  } finally { rm(r.d); }
+});
+
+test('spawn: a failed task read is treated as a review, not as a coder spawn', async () => {
+  const r = repo();
+  try {
+    const rv = await spawnCopy(r, coreWith(r, {}, { failFirstTaskGet: true }), { worker_id: 'w-ff', task_id: 'R' });
+    assert.equal(rv.text, TRUSTED);
+  } finally { rm(r.d); }
 });
