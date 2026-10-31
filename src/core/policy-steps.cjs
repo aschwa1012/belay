@@ -101,7 +101,7 @@ async function claim(E, caller, args) {
     // A step the executor skipped because the run was paused (error E_PAUSED) took nothing, so its claim is reopened for the retake after the resume.
     const there = existing ? byKey(E, run_id, trig, a.step) : null;
     if (there && there.outcome === 'skipped' && /^E_PAUSED/.test(there.error || '')) {
-      E.store.p("UPDATE policy_step SET outcome = 'started', error = NULL, row_ref = NULL, finished_at = NULL, at = ?, claimant_pid = ?, claimant_created = ? WHERE seq = ? AND outcome = 'skipped'").run(Date.now(), a.claimant_pid || null, a.claimant_created || null, there.seq);
+      E.store.p("UPDATE policy_step SET outcome = 'started', error = NULL, row_ref = NULL, finished_at = NULL, at = ?, claimant_pid = ?, claimant_created = ?, worker_id = ?, turn = ? WHERE seq = ? AND outcome = 'skipped'").run(Date.now(), a.claimant_pid || null, a.claimant_created || null, a.worker_id || null, a.turn === undefined ? null : a.turn, there.seq); // a pause-skipped claim took nothing: the retake's worker and turn are the step's, so the log joins the cost to the worker that ran
       existing = false;
     }
     const row = existing ? byKey(E, run_id, trig, a.step) : E.store.p('SELECT * FROM policy_step WHERE seq = ?').get(there && !existing ? there.seq : Number(info.lastInsertRowid));

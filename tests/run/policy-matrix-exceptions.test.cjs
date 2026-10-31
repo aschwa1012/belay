@@ -115,6 +115,7 @@ test('E6, beside other evaluations: a failing check that ran beside another eval
     fs.writeFileSync(release, `require('node:fs').writeFileSync(${JSON.stringify(flag)}, '1');\n`);
     const mk = async (label, script) => (await e.orch.task.create({ spec: label, acceptance: { commands: [{ argv: [process.execPath, script], timeout_ms: 30000 }] }, policy: M.PLAN }));
     const slow = await mk('slow', hold); const quick = await mk('quick', release);
+    await e.worker('rv'); // the plan's reviewer is there, so the review step the quick task's pass triggers writes no exception
     const lease = async (t, w) => { const wc = await e.worker(w); const a = await e.orch.task.assign({ task_id: t.id, worker_id: w }); await wc.lease.release({ lease_id: a.new_lease.id, reason: 'done', result: { branch: 'b', head: 'h' } }); };
     await lease(slow, 'build-slow'); await lease(quick, 'build-quick');
     const first = M.evaluate(e, slow.id); // starts first and waits

@@ -5,7 +5,7 @@
 // nothing; the orchestrator names a worker it kept for itself to watch it.
 //
 // What the wait returns, and where each thing lands in exactly one place:
-//   - an exception wake (E1 to E3, E5 to E8, derived from store rows by policy-wakes.cjs): polled into `pending`, and claimed at the
+//   - an exception wake (E1 to E3, E5 to E9, derived from store rows by policy-wakes.cjs): polled into `pending`, and claimed at the
 //     instant of the return with no await between the claim and the reply. A poll that is cancelled after it ran leaves its wakes in
 //     `pending` for the next wait; a wake another path (the interactive wake pipe) already claimed is not returned again.
 //   - a worker death or a stale record (E4), once per life, from this manager's own records.

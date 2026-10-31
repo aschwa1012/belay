@@ -196,7 +196,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const {
       substrate, worktree, prompt, task_id = null, model: modelArg = null, allowed_tools = null,
       permission_mode = null, startup_timeout_ms = 60000, worker_id = null, sandbox = null,
-      permission_prompt: permissionArg, permit_wait_ms = 600000, effort: effortArg = null, tools = null, agent_type = null, max_budget_usd = null, memory_queries = null, native_memory = null,
+      permission_prompt: permissionArg, permit_wait_ms = 600000, effort: effortArg = null, tools = null, agent_type = null, max_budget_usd = null, memory_queries = null, native_memory = null, assignCore = null, // assignCore: a policy step's stamped core view for the task assignment (policy-steps-run.cjs spawnFor), never a tool argument
     } = opts || {};
     const permission_prompt = permissionArg !== undefined ? permissionArg : (ctx.permissionPrompt === true && substrate === 'claude-code'); // the run lever is the default; an explicit spawn argument wins
     checkWorkerId(worker_id); // before anything else: the id is a path component
@@ -232,7 +232,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
         allowedTools, permissionMode: permission_mode, sandbox,
         permissionPrompt: permission_prompt, permitWaitMs: permit_wait_ms, effort, tools: spawnTools, maxBudgetUsd: max_budget_usd, nativeMemory, agentType: agent_type,
       });
-      w.indexQueries = indexQueries; // the orchestrator's situation lines for this worker's memory index (memory.embedQuery extra_texts)
+      w.assignCore = assignCore; w.indexQueries = indexQueries; // the orchestrator's situation lines for this worker's memory index (memory.embedQuery extra_texts)
       workers.set(id, w);
     } finally { pendingIds.delete(id); }
     try { await MP.spawnLevers(ctx, w); w.nativeMemoryAuth = await NM.authorize(core, runId, w.nativeMemory); } catch (e) { await discardUnstarted(workers, w, dirExisted); throw e; } // ADR 0047: the levers are known before the files are written; with the first-message index off the row keeps no situation lines

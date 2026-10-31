@@ -194,6 +194,7 @@ function derive(snap) {
       || (byOrch(t) && (t.state === 'cancelled' || t.state === 'assigned'))
       || tasks.some((o) => byOrch(o) && o.id !== root.id && (o.repairs === root.id || (Array.isArray(o.depends_on) && o.depends_on.includes(root.id)))));
     if (cap && s.step === 'fix') add('E2', root, trigger, 'fix', { step: s.step, error: s.error }, R && R.results ? evOf(R) : { key: `step${s.seq}`, seq: Number(s.seq) }, { lifted: !!orchestratorRow });
+    else if (/^E_BUDGET/.test(String(s.error || ''))) add('E9', root, trigger, s.step, { step: s.step, error: s.error }, { key: `step${s.seq}`, seq: Number(s.seq) }, { lifted: true }); // a step refused at the budget's soft threshold (policy-budget.cjs): the wake is the budget's, and it halts nothing
     else add('E8', root, trigger, s.step, { step: s.step, error: s.error }, { key: `step${s.seq}`, seq: Number(s.seq) }, { lifted: !!orchestratorRow });
   }
   return out.filter((e, i) => out.findIndex((o) => o.uid === e.uid) === i); // one exception per trigger: the rows' E2 and a refused fix's E2 are one
@@ -232,6 +233,7 @@ function textOf(e) {
     case 'E5': body = d.executable === false ? ` Task ${d.task} evaluation could not judge.` : ` Task ${d.task} evaluation failed${d.error ? ` (${d.error})` : ''}${d.failing && d.failing.length ? `: ${d.failing.join(', ')}` : ''}.`; break;
     case 'E6': body = d.flaky ? ` Task ${d.task} passed on a retry (flaky).` : ` Task ${d.task} failed beside other evaluations: ${d.concurrent.map((c) => `${c.name} (with ${c.n})`).join(', ')}.`; break;
     case 'E7': body = ` Review ${d.review} holds with ${d.n} should-fix.${titles}`; break;
+    case 'E9': body = ` Step ${d.step} not taken: ${clean(d.error)}.`; break;
     case 'E8': body = ` Step ${d.step} failed: ${clean(d.error)}.`; break;
     default: body = '';
   }

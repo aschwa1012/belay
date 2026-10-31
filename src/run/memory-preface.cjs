@@ -358,7 +358,7 @@ async function preface(w, ctx, prompt) {
   }
   let head = '';
   if (w.taskId) {
-    const assigned = await ctx.core.task.assign({ task_id: w.taskId, worker_id: w.id });
+    const assigned = await (w.assignCore || ctx.core).task.assign({ task_id: w.taskId, worker_id: w.id }); // a policy step's spawn assigns through its stamped view
     if (assigned && assigned.review) w.review = assigned.review; // a review spawn's answer carries the reviewed tree, as task_assign's does
     w.taskSpec = assigned && assigned.task && typeof assigned.task.spec === 'string' ? assigned.task.spec : ''; // belay sends the spec itself (manager.cjs), so the orchestrator's prompt is only added instructions
     w.handbackRule = require('./handback.cjs').rule(assigned, await require('./handback.cjs').facts((id) => ctx.core.task.get({ task_id: id }), assigned)); // belay ends the first message with the hand-back rule (a verdict task's carries the Review standard), as task_assign does
