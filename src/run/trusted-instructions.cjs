@@ -54,7 +54,7 @@ async function anchorOf({ core, worktree, dataDir, runId, fallback }) {
   if (memo.has(file)) return memo.get(file);
   const have = readAnchor(file);
   if (have) { memo.set(file, have); return have; }
-  if (!core || !core.run) return null; // no run row to ask: a coder spawn is not held up for a lookup
+  if (!core || !core.run) return null;
   const a = await resolveAnchor(core, worktree, fallback);
   if (!a) return null;
   try { fs.writeFileSync(file, JSON.stringify({ ...a, at: Date.now() }), { flag: 'wx' }); } catch { /* another spawn wrote it first */ }
@@ -81,10 +81,7 @@ async function touchedInstructions(core, task, anchor) {
 async function snapshotFor({ core, worktree, dir, agentType, taskId, dataDir, runId }) {
   const task = taskId ? await getTask(core, taskId) : null;
   const trusted = agentType === 'reviewer' || isReviewTask(task) || (!!taskId && !task); // a failed task read fails closed
-  if (!trusted) {
-    await anchorOf({ core, worktree, dataDir, runId, fallback: false }); // the first spawn of the run fixes the anchor, awaited
-    return I.snapshotInstructions(worktree, dir);
-  }
+  if (!trusted) return I.snapshotInstructions(worktree, dir); // a coder spawn makes no core call: the anchor is fixed by the run's first trusted spawn
   const anchor = await anchorOf({ core, worktree, dataDir, runId, fallback: true });
   if (!anchor) return I.snapshotTrusted(null, dir, null);
   const out = await I.snapshotTrusted(anchor.top, dir, anchor.sha);
