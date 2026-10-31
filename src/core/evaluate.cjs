@@ -104,7 +104,8 @@ function runCommand(argvGiven, cwd, timeoutMs, { env, tail = TAIL, onChild, keep
     let unregister = () => {};
     if (register && child.pid) {
       try { unregister = require('./check-register.cjs').begin(child, register, spawnedAt, 'a worker-controlled command'); } catch (e) {
-        return Promise.resolve(killTree(child)).then(() => resolve({ executable: false, exit_code: null, ms: Date.now() - t0, timed_out: false, stdout: '', stderr: '', spawn_error: `ended at once, not run to completion: ${(e && e.message) || e}` }));
+        const exited = child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : new Promise((done) => child.once('exit', done));
+        return Promise.all([killTree(child), exited]).then(() => resolve({ executable: false, exit_code: null, ms: Date.now() - t0, timed_out: false, stdout: '', stderr: '', spawn_error: `ended at once, not run to completion: ${(e && e.message) || e}` }));
       }
     }
     const out = capture(keep, tail), errText = capture(keep);

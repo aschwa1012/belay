@@ -51,12 +51,14 @@ test('a check command run by task.evaluate that claims the operator is refused; 
 
 test('a check command is retired from the register when it exits, and its tombstone keeps its lifetime', { timeout: 60000 }, async () => {
   ownSpawnRegistry();
-  const seen = [];
-  const r = await runCommand([process.execPath, '-e', 'setTimeout(() => {}, 300)'], os.tmpdir(), 30000, { register: 'check', onChild: (c) => seen.push(c.pid, SR.list({ persist: false }).map((x) => `${x.pid}:${x.kind}`)) });
+  let pid = null;
+  const run = runCommand([process.execPath, '-e', 'setTimeout(() => {}, 300)'], os.tmpdir(), 30000, { register: 'check', onChild: (c) => { pid = c.pid; } });
+  const during = SR.list({ persist: false }).map((x) => `${x.pid}:${x.kind}`); // the record is written before runCommand returns its promise
+  const r = await run;
   assert.strictEqual(r.exit_code, 0);
-  assert.deepStrictEqual(seen[1], [`${seen[0]}:check`], 'recorded as a check while it ran');
+  assert.deepStrictEqual(during, [`${pid}:check`], 'recorded as a check while it ran');
   assert.deepStrictEqual(SR.list({ persist: false }), [], 'no record left');
-  assert.ok(SR.tombstones().some((t) => t.pid === seen[0] && t.kind === 'check'), 'the tombstone names the check');
+  assert.ok(SR.tombstones().some((t) => t.pid === pid && t.kind === 'check'), 'the tombstone names the check');
 });
 
 test('a register that cannot be written ends the check command at once', { timeout: 60000 }, async () => {
