@@ -27,6 +27,10 @@ if (process.env.BELAY_TEST_TMP_ISOLATE !== '0' && !/^belay-(suite|test)-tmp-/.te
   } catch { ownScratch = null; /* the real temp dir stays in use */ }
 }
 
+// Every git a test or the product code under test starts ignores the developer's global git config and any inherited GIT_DIR and
+// the like (tests/helpers/git-env.cjs). Test files that start git also require it themselves, so a run without --require is isolated too.
+require('./git-env.cjs');
+
 const KEY = Symbol.for('belay.tests.tmp');
 if (!globalThis[KEY]) {
   const made = new Set();

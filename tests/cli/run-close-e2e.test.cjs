@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1'; // ADR 0034: a run here has no model to warm; the one suite that tests the warm-up opts in
 // run-close-e2e.test.cjs — ADR 0029 and its amendment 1 against the REAL belay-mcp orchestrator adapter.
 // A fake orchestrator (tests/cli/fakes/fake-orch-adapter.cjs) spawns the adapter detached and spawns a

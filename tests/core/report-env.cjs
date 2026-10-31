@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // report-env.cjs — shared scaffolding for the report and review tests: a real Engine on a sandbox store with a fake embedder, a real stream file per
 // worker, a real git repository for file cites, and the helpers that drive the flow through real calls (a worker writes a note, another reports it
 // wrong in `lease.release`, a review task hands back verdicts, belay applies them). Not a *.test.cjs file, so the runner does not execute it.

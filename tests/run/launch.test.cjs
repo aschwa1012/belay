@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // Golden argv for the three launch-table entries (ADR 0001 §1, ADR 0008 §6), the per-worker files
 // (ADR 0007 §6) and the environment scrub. Nothing here spawns a substrate; the one spawn is a bare
