@@ -99,14 +99,19 @@ function runCommand(argvGiven, cwd, timeoutMs, { env, tail = TAIL, onChild, keep
     if (onChild) onChild(child);
     const out = capture(keep, tail), errText = capture(keep);
     let settled = false, timedOut = false, killing = null, pipesDropped = false;
-    const timer = setTimeout(() => { timedOut = true; killing = killTree(child); }, timeoutMs);
+    const timer = setTimeout(() => {
+      timedOut = true; killing = killTree(child);
+      // A refused or failed tree kill leaves the child, and whatever holds its pipes, running: our ends are dropped either way.
+      Promise.resolve(killing).then(k => { if (!k || k.ok === false) { try { child.stdout.destroy(); child.stderr.destroy(); } catch { /* closed */ } } });
+    }, timeoutMs);
     timer.unref();
     // ADR 0039: the exit, not the later close, ends the kill's right to fire (the pid may be reused from here on).
     // A grandchild that outlives its parent and holds our pipes would keep `close` from ever firing, and nothing
     // may kill it by a bare pid; so after a short grace our ends of the pipes are dropped and the survivor is left.
     child.once('exit', () => {
-      if (timedOut) return;
-      clearTimeout(timer);
+      // Only the kill's right to fire ends here; the pipe drop is armed after a timeout too, whatever the tree kill reported,
+      // since a holder outside the killed tree (reparented away from the child) would keep `close` from ever arriving.
+      if (!timedOut) clearTimeout(timer);
       const drop = setTimeout(() => { pipesDropped = true; try { child.stdout.destroy(); child.stderr.destroy(); } catch { /* closed */ } }, 2000);
       drop.unref();
       child.once('close', () => clearTimeout(drop));
