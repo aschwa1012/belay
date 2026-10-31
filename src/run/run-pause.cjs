@@ -121,8 +121,18 @@ function createRunPauseControl({ runId, core, hook, pauseWorker, resumeWorker, s
     const alreadyParkedRows = await pausedRows();
     const already_parked = alreadyParkedRows.map((w) => w.id);
 
+    // The two store awaits above yield; the idle rule or the timeout can begin closing the run meanwhile, and
+    // `hook.pause` (what makes the hold read paused) has not run yet. Re-check before and after the row write.
+    const exitedAfterRows = refuseIfExited();
+    if (exitedAfterRows) return exitedAfterRows;
     const pausedAt = Date.now();
     await core.run.setPaused({ paused: true, at: pausedAt, by });
+    const exitedAfterWrite = refuseIfExited();
+    if (exitedAfterWrite) {
+      // Undo the row write so a run that is closing does not read paused; the run may have ended already.
+      try { await core.run.setPaused({ paused: false }); } catch (_e) { /* an ended run clears its own pause */ }
+      return exitedAfterWrite;
+    }
     if (interactive) interactivePaused = true; // from here the wake publisher holds its wakes
     const { interrupt, timeout } = await interruptOrchestrator(by);
 
