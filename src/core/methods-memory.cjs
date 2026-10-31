@@ -280,6 +280,11 @@ async function del(E, caller, args) {
     if (r && (r.type === 'note' || isReserved(r.namespace))) throw err('E_ROLE', `row ${args.id} is a ${r.type === 'note' ? 'note' : `row of ${r.namespace.split('/')[0]}/`}, and only the operator deletes those (an archived note leaves only by the operator's purge)`, { id: args.id, role: caller.role });
   }
   checkOwnRow(E, caller, args.id, 'delete');
+  if (caller.role === 'orchestrator') {
+    // The orchestrator's tool-channel delete reaches only the rows it may write: its own run, its own project and its own summary.
+    const t = E.store.p('SELECT namespace FROM memory_entries WHERE id = ?').get(args.id);
+    if (t) checkOrchestratorWrite(E, caller, t.namespace, t.namespace.startsWith('summary/') ? 'summary' : undefined);
+  }
   const r = E.store.delete(args.id);
   E.noteWrite();
   return r;

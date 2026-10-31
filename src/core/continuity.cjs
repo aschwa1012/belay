@@ -149,6 +149,8 @@ async function resumeDoc(E, caller, args) {
   const task = resolveTask(E, args);
   const c = leaseAndCheckpoints(E, task.id);
   const ns = require('./methods-memory.cjs').resolveNamespace(E, caller, args.namespace) || `run/${caller.run_id}`;
+  // The same reach and lifecycle-namespace rules every memory read applies (a worker reads its own run and project only).
+  require('./memory-reach.cjs').checkReach(E, caller, [ns], 'read');
 
   const candidates = [];
   candidates.push(block('spec', String(task.spec || '(no spec recorded)')));
