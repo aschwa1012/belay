@@ -207,5 +207,7 @@ test('lever on: a worker followed for the first time starts at its current turn,
     const g = mk(o, { countInFlight: true, dataDir: w.dataDir, tickMs: 0 });
     g.tick(w.rows); await settle(g);
     assert.deepStrictEqual(o.s.pauses, [], 'nothing is in flight: the ledger holds $8.00 of $10.00');
+    const fl = g.state().record.in_flight_workers || { usd: 0, partial: [] };
+    assert.deepStrictEqual([fl.usd, fl.partial], [0, []]);
   } finally { w.done(); }
 });
