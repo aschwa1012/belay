@@ -238,6 +238,16 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       state.wakesSuppressed.push({ ...ev, reason: 'stdin already closed when this event was found' });
       return;
     }
+    // ADR 0074: a policy exception is delivered once, by the wake or by worker_wait, whichever claims it first (run-digest.cjs). A claim that
+    // cannot be made delivers the wake: an exception is never lost for want of a file.
+    // A worker death or stale record has the same second path and the same key, and is claimed only once a plan is in force.
+    const planned = !!(spec.policy || (state.evalSeen && state.evalSeen.policyArmed));
+    const uid = require('./run-digest.cjs').wakeUid(ev);
+    if (uid && (ev.exception || planned)) {
+      let won = true;
+      try { won = require('./run-digest.cjs').claimException({ dataDir, runId, uid }); } catch { won = true; }
+      if (!won) { state.wakesSuppressed.push({ ...ev, reason: 'delivered by worker_wait' }); return; }
+    }
     const text = wakeText(ev);
     const rec = require('./wake-record.cjs').wakeRecord(ev, text, Date.now() - t0, state.idle);
     if (!ev.unheld && hold.holdWake(rec)) return; // 6f design item 2: held while paused, never suppressed; the budget pause's own wake is the one not held

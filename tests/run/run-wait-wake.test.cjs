@@ -119,3 +119,45 @@ test('a publisher with no data dir behaves as before: no claim, no digest line',
     assert.ok(!p.lines.some((l) => l.text && /policy steps since/.test(l.text)));
   } finally { await p.done(); }
 });
+
+// A worker death is delivered once too: by the pipe or by worker_wait, whichever claims it first (the key is worker, kind, turn).
+const w2 = (extra = {}) => ({ id: 'w2', run_id: RUN, state: 'running', turns: 3, seq: 1, pid_alive: true, mid_turn: 0, ...extra });
+const deadRecord = { id: 'w2', launches: 1, settled: true, settledState: 'dead', state: 'dead', deathEstablishedBy: 'pid check', exitCode: 1, exitSignal: null, turns: 3 };
+const clockOf = () => { const c = { t: 0, now: () => c.t, sleep: async (ms) => { c.t += ms; } }; return c; };
+
+test('a death the run wait already returned is not published on the pipe', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-rw-wake-')).split(path.sep).join('/');
+  const core = coreOf([]);
+  core.rows.push(w2());
+  assert.ok(D.claimException({ dataDir, runId: RUN, uid: D.deathUid('w2', 'death', 3) }), 'worker_wait named it');
+  const p = await publisher(core, dataDir);
+  try {
+    core.rows[0] = { ...core.rows[0], turns: 1, seq: 2 }; // arms the plan
+    core.rows[1] = w2({ state: 'dead', seq: 2, exit_code: 1 });
+    assert.ok(await p.until(() => p.lines.some((l) => l.text && /exception E1,/.test(l.text))));
+    const polls = p.pub.stats().polls;
+    assert.ok(await p.until(() => p.pub.stats().polls >= polls + 4));
+    assert.deepStrictEqual(p.lines.filter((l) => l.text && /w2/.test(l.text) && !/finished turn/.test(l.text)), [], 'the death is not published');
+  } finally { await p.done(); }
+});
+
+test('a death the pipe published is not returned by the run wait', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-rw-wake-')).split(path.sep).join('/');
+  const core = coreOf([]);
+  core.rows.push(w2());
+  const p = await publisher(core, dataDir);
+  try {
+    core.rows[0] = { ...core.rows[0], turns: 1, seq: 2 };
+    core.rows[1] = w2({ state: 'dead', seq: 2, exit_code: 1 });
+    assert.ok(await p.until(() => p.lines.some((l) => l.text && /w2/.test(l.text))), JSON.stringify(p.lines));
+    const c = clockOf();
+    const r = await createRunWait({ core, runId: RUN, dataDir, pollMs: 50, clock: c }).wait({ ms: 100, t0: 0, workers: [deadRecord] });
+    assert.ok(!r.exceptions || !r.exceptions.some((e) => e.exception === 'E4'), 'the pipe delivered it');
+  } finally { await p.done(); }
+  // And with nothing on the pipe the wait does name it, once.
+  const dir2 = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-rw-wake-')).split(path.sep).join('/');
+  const rw = createRunWait({ core: coreOf([]), runId: RUN, dataDir: dir2, pollMs: 50, clock: clockOf() });
+  const first = await rw.wait({ ms: 100, t0: 0, workers: [deadRecord] });
+  assert.deepStrictEqual(first.exceptions.filter((e) => e.exception === 'E4').map((e) => [e.exception, e.worker_id]), [['E4', 'w2']]);
+  assert.strictEqual(D.claimException({ dataDir: dir2, runId: RUN, uid: D.deathUid('w2', 'death', 3) }), false, 'so the pipe would not');
+});

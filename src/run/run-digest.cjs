@@ -101,6 +101,24 @@ function claimException({ dataDir, runId, uid }) {
   try { fs.closeSync(fs.openSync(f, 'wx')); return true; } catch (e) { if (e && e.code === 'EEXIST') return false; throw e; }
 }
 
+// The delivery key of a wake, the same on every path that can deliver it: a policy exception by its fact, a worker death or stale record by
+// (worker, kind, turn). Null for a wake that has no second path (budget, notes, routine turn ends).
+const deathUid = (workerId, kind, turn) => `${workerId}:${kind}:${turn == null ? 0 : turn}`;
+function wakeUid(ev) {
+  if (!ev || !ev.worker_id) return null;
+  if (ev.exception && ev.key) return `${ev.worker_id}:${ev.key}`;
+  if (ev.event === 'death' || ev.event === 'stale') return deathUid(ev.worker_id, ev.event, ev.turn);
+  return null;
+}
+
+// Undo a claim whose reply was never sent (a worker_wait cancelled after it claimed, call-signal.cjs): the digest's number and the
+// exception markers are removed, so the next asker is offered the same steps and exceptions. Nothing else records a delivery.
+function release({ dataDir, runId, digestN = null, uids = [] }) {
+  const dir = dirOf(dataDir, runId);
+  if (digestN != null) { try { fs.unlinkSync(ownFile(dir, digestN)); } catch { /* already gone */ } }
+  for (const uid of uids) { try { fs.unlinkSync(`${dir}/x-${crypto.createHash('sha1').update(String(uid)).digest('hex').slice(0, 24)}`); } catch { /* already gone */ } }
+}
+
 // The run receipt's digests[]: every claim, in order. A run that never claimed one has no directory, and this makes none.
 function readDigests(dataDir, runId) {
   const dir = dirOf(dataDir, runId);
@@ -136,4 +154,4 @@ async function receiptField(core, dataDir, runId) {
   return digests.length || steps ? { digests } : {};
 }
 
-module.exports = { wakeDigest, receiptField, claimDigest, claimException, readDigests, build, lineOf, CAP_BYTES };
+module.exports = { wakeUid, deathUid, release, wakeDigest, receiptField, claimDigest, claimException, readDigests, build, lineOf, CAP_BYTES };

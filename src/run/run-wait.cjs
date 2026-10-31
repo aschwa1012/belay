@@ -17,6 +17,7 @@
 const P = require('./process.cjs');
 const D = require('./run-digest.cjs');
 const PW = require('./policy-wakes.cjs');
+const CS = require('./call-signal.cjs');
 
 const POLICY_WAIT_DEFAULT_MS = 110000; // ADR 0074 Q4 (open): kept at today's bound behind this one name
 const POLL_MS = Number(process.env.BELAY_RUN_WAIT_POLL_MS) > 0 ? Number(process.env.BELAY_RUN_WAIT_POLL_MS) : 2000;
@@ -52,7 +53,7 @@ function createRunWait({ core, runId, dataDir, armed = () => true, signal: lifeS
       const event = w.staleSince ? 'stale' : (w.settled && (w.settledState != null ? w.settledState : w.state) === 'dead') ? 'dead' : null;
       const key = `${w.id}:${w.launches || 0}:${event}`;
       if (!event || reported.has(key)) continue;
-      out.push({ key, exception: 'E4', worker_id: w.id, event, established_by: w.staleSince ? `row state ${w.staleSince.row_state}, held by adapter ${w.staleSince.adapter_pid}` : w.deathEstablishedBy, exit_code: w.exitCode == null ? null : w.exitCode, exit_signal: w.exitSignal == null ? null : w.exitSignal, turn: w.turns });
+      out.push({ key, uid: D.deathUid(w.id, event === 'dead' ? 'death' : 'stale', w.turns), exception: 'E4', worker_id: w.id, event, established_by: w.staleSince ? `row state ${w.staleSince.row_state}, held by adapter ${w.staleSince.adapter_pid}` : w.deathEstablishedBy, exit_code: w.exitCode == null ? null : w.exitCode, exit_signal: w.exitSignal == null ? null : w.exitSignal, turn: w.turns });
     }
     return out;
   };
@@ -70,7 +71,8 @@ function createRunWait({ core, runId, dataDir, armed = () => true, signal: lifeS
 
   // args: { ms, capNote, t0, workers (this manager's records), idleOf (async), signal }
   async function wait({ ms, capNote = null, t0 = clock.now(), workers = [], idleOf = async () => ({}), signal = lifeSignal }) {
-    const aborted = () => !!(signal && signal.aborted);
+    const call = CS.current(); // the MCP call this wait answers: its cancel aborts the wait, and a cancel after the claim releases it
+    const aborted = () => !!((signal && signal.aborted) || (call && call.signal.aborted));
     const deadline = t0 + ms;
     let deaths = [];
     for (;;) {
@@ -89,15 +91,27 @@ function createRunWait({ core, runId, dataDir, armed = () => true, signal: lifeS
     // From here to the reply there is no await: what is claimed is what is returned.
     if (aborted()) return { worker_id: null, event: null, timed_out: false, cancelled: true, waited_ms: clock.now() - t0, watched: [], ...(capNote || {}) };
     deaths = deathsOf(workers);
-    const wakes = pending.splice(0).filter((w) => D.claimException({ dataDir, runId, uid: `${w.worker_id}:${w.key}` }));
-    for (const d of deaths) reported.add(d.key);
+    const uidOf = (w) => `${w.worker_id}:${w.key}`;
+    const wakes = pending.splice(0).filter((w) => D.claimException({ dataDir, runId, uid: uidOf(w) }));
+    const fresh = deaths; for (const d of fresh) reported.add(d.key); // named once whoever delivers it
+    deaths = fresh.filter((d) => D.claimException({ dataDir, runId, uid: d.uid }));
     let digest = null;
     if (!digestError) {
       try { digest = D.claimDigest({ dataDir, runId, rows, via: 'wait', now: clock.now, hooks }); } catch (e) { digestError = (e && e.code) || 'E_INTERNAL'; }
     }
+    // A cancel that arrives after this point means the reply is never sent: undo the claim so the next wait offers all of it again.
+    if (call) {
+      call.claim = {
+        release: () => {
+          D.release({ dataDir, runId, digestN: digest ? digest.n : null, uids: [...wakes.map(uidOf), ...deaths.map((d) => d.uid)] });
+          pending.unshift(...wakes);
+          for (const d of deaths) reported.delete(d.key);
+        },
+      };
+    }
     const list = [
       ...wakes.map((w) => ({ exception: w.exception, task_id: w.task_id, trigger: w.trigger, field: w.field, text: w.text })),
-      ...deaths.map(({ key, ...d }) => d),
+      ...deaths.map(({ key, uid, ...d }) => d),
     ];
     return {
       worker_id: null, event: list.length ? 'exception' : null, timed_out: !list.length, waited_ms: clock.now() - t0, watched: [],
