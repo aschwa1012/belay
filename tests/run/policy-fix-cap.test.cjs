@@ -17,7 +17,7 @@ const PLAN = { fix: 'builder', re_review: 'refuter', integrate: 'on_hold' };
 const PASS = { commands: [{ argv: [process.execPath, '-e', 'process.exit(0)'], timeout_ms: 20000 }] };
 const refute = (n) => ({ verdict: 'refuted', summary: `r${n}`, findings: [{ severity: 'blocking', clause: 'a', note: `f${n}` }] });
 
-async function capCase(attach) { // -> what the rounds made: the fix steps, the E2 wakes, the fix rows
+async function capCase(attach, act = null) { // -> what the rounds made: the fix steps, the E2 wakes, the fix rows
   const dir = sandbox();
   const orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
   await orch.run.attach({ adapter_pid: process.pid, ...attach });
@@ -58,6 +58,8 @@ async function capCase(attach) { // -> what the rounds made: the fix steps, the 
       if (!rr) break;
       await handIn('judge', { id: rr.row_ref.replace('task:', '') }, refute(round));
     }
+    let afterTick = null;
+    if (act && noticeTick) { await act({ orch, handIn, fixId: fixSteps[fixSteps.length - 1].row_ref.replace('task:', '') }); afterTick = await x.tick(); }
     const tasks = (await h.task.list({})).tasks;
     const steps = (await h.policy.list({})).rows;
     const revisions = await PW.readRevisions(h.policy, RUN, tasks);
@@ -66,7 +68,7 @@ async function capCase(attach) { // -> what the rounds made: the fix steps, the 
     const fixRows = tasks.filter((t) => t.repairs === work.id);
     const leaseOf = (id) => { const t = tasks.find((o) => o.id === id); return !!(t && t.lease && t.lease.holder); };
     const errorOf = (ref) => String((steps.find((z) => z.step === 'fix' && z.row_ref === ref) || {}).error || '');
-    return { errorOf, fixSteps, noticeTick, e2, fixRows, leaseOf, tasks };
+    return { afterTick, errorOf, fixSteps, noticeTick, e2, fixRows, leaseOf, tasks };
   } finally {
     await x.close();
     for (const c of workers.values()) await c.close();
@@ -102,4 +104,17 @@ test('max_fix_rounds at or above the hard cap: E2 at rounds_left 0 after the las
   assert.deepStrictEqual(r.fixSteps.map((s) => s.outcome), ['done', 'done']);
   assert.strictEqual(r.fixRows.length, 2);
   assert.strictEqual(r.e2.length, 1);
+});
+
+test('the orchestrator assigns the notice fix: E2 is lifted and the next tick takes re_review', async () => {
+  const r = await capCase({ max_fix_rounds: 1, fix_hard_cap: 5 }, ({ handIn, fixId }) => handIn('builder', { id: fixId }, { branch: 'b', head: 'h2' }));
+  assert.deepStrictEqual(r.fixSteps.map((s) => s.outcome), ['done', 'exception']);
+  assert.strictEqual(r.e2.length, 0, 'E2 is lifted');
+  assert.deepStrictEqual(r.afterTick.steps.map((s) => s.step), ['re_review']);
+});
+
+test('the orchestrator cancels the notice fix: E2 is lifted and no further step runs', async () => {
+  const r = await capCase({ max_fix_rounds: 1, fix_hard_cap: 5 }, ({ orch, fixId }) => orch.task.cancel({ task_id: fixId }));
+  assert.strictEqual(r.e2.length, 0, 'E2 is lifted');
+  assert.deepStrictEqual(r.afterTick.steps, []);
 });
