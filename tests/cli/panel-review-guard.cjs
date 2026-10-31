@@ -255,11 +255,11 @@ function analyze(files) {
   if (JSON.stringify(where(tk)) !== JSON.stringify(['hooks/panel/index.tsx:ensureTicker']) || !tk.every((r) => /timer = \$\.clock\.every\(1000, \(\) => \{ void tick\(\$\) \}\)/.test(r.line))) bad.push(`tick is named in ${JSON.stringify(where(tk))}; only the timer in ensureTicker may start a round`);
 
   // 6. The generic read helper runs reads only, and no spelling reaches the launcher's words or the host object by a computed name.
-  const READS = /^runJson\(\$,\s*cli,\s*(?:\['(?:agents|notices|transcript|settings)'|\['memory', 'held', '--awaiting'\],|\['memory',\s*'menu'\s*(?:,\s*'--badge'\s*)?\])/;
+  const READS = /^runJson\(\$,\s*cli,\s*(?:\['panel-read'|\['memory',\s*'menu'\s*(?:,\s*'--badge'\s*)?\])/;
   for (const [f, o] of Object.entries(info)) {
     for (const m of o.code.matchAll(/\brunJson\s*\(/g)) {
       if (/function\s+$/.test(o.code.slice(Math.max(0, m.index - 12), m.index))) continue;
-      if (!READS.test(o.text.slice(m.index, m.index + 80))) bad.push(`${f}:${ownerOf(o.its, m.index)}: runJson is called other than with a literal read verb (agents, notices, transcript, settings, memory held --awaiting, or memory menu)`);
+      if (!READS.test(o.text.slice(m.index, m.index + 80))) bad.push(`${f}:${ownerOf(o.its, m.index)}: runJson is called other than with a literal read verb (panel-read, or memory menu)`);
       else if (!['fetchSnapshot', 'fetchMenu'].includes(ownerOf(o.its, m.index))) bad.push(`${f}:${ownerOf(o.its, m.index)}: runJson is called outside fetchSnapshot and fetchMenu; a press runs no read`);
     }
     if (f.startsWith('hooks/wake/')) continue;
@@ -278,7 +278,7 @@ function analyze(files) {
   // The agents read may name the orchestrator's directory (`--dir`, so `belay agents` finds the launch marker of a run whose spec set
   // orchestrator_dir), and only the watch's own, from belay-run.json: exactly one `--dir` literal exists in the mod, it is in the one agents
   // call in fetchSnapshot, that call is the literal below, and inside fetchSnapshot `orchDir` is only ever `watch.orchDir`.
-  const AGENTS_CALL = "runJson($, cli, ['agents', ...(watch.runId ? [watch.runId] : []), ...(watch.orchDir ? ['--dir', watch.orchDir] : [])], watch.dataDir)";
+  const AGENTS_CALL = "runJson($, cli, ['panel-read', ...(watch.runId ? [watch.runId] : []), ...(watch.orchDir ? ['--dir', watch.orchDir] : []), ...(tail === null ? [] : ['--tail', String(tail)]), ...(watch.fixed ? ['--fixed'] : []), ...(prev?.mode ? ['--prev-mode', prev.mode] : []), ...(o.withSettings ? ['--settings'] : [])], watch.dataDir, null, ROUND_TIMEOUT_MS)";
   const dirLits = [];
   for (const [f, o] of Object.entries(info)) for (const l of o.lits) if (l.text === '--dir') dirLits.push(`${f}:${ownerOf(o.its, l.at)}`);
   if (JSON.stringify(dirLits) !== JSON.stringify(['hooks/panel/index.tsx:fetchSnapshot'])) bad.push(`the string "--dir" appears in ${JSON.stringify(dirLits)}; it may appear once, in fetchSnapshot's agents read`);

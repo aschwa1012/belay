@@ -203,3 +203,37 @@ export function buildSnapshot(p: Parts): BelayPanelSnap {
     memWanted: sj !== undefined ? heavyConfigured(sj) : (prev?.memWanted ?? false), errors, readIssues, goodAt: readIssues.length ? (prev?.goodAt ?? null) : p.now,
   }
 }
+
+// How long after a refresh ENDS the next one starts. Each refresh is one `belay panel-read` process, and every process launch costs the host
+// kernel memory it does not give back (a leak measured at about 16 file objects a launch), so the panel refreshes no faster than it must:
+// 5 s with the pane open, 10 s for the band alone, 60 s once the run has ended or died (nothing changes, and every read copies the store).
+// Opening the pane or a press still refreshes at once (the caller resets its clock).
+export const PANE_EVERY_MS = 5000
+export const BAND_EVERY_MS = 10000
+export const ENDED_EVERY_MS = 60000
+export function refreshEvery(open: boolean, runState: BelayPanelSnap['runState'] | undefined): number {
+  if (runState === 'ended' || runState === 'dead') return ENDED_EVERY_MS
+  return open ? PANE_EVERY_MS : BAND_EVERY_MS
+}
+
+export type RoundParts = Pick<Parts, 'agents' | 'notices' | 'transcript' | 'settings' | 'awaiting'>
+
+// `belay panel-read --json` as the parts buildSnapshot takes. null: that read was not made this round. A part that failed or timed out
+// keeps its error (buildSnapshot keeps the earlier value and reports it). A process that failed as a whole is an agents error, so the snapshot
+// goes stale and says so; a timeout of the whole process counts as slow, like a part's timeout.
+export function roundParts(r: Ran): { parts: RoundParts; slow: boolean } {
+  const none = { notices: null, transcript: null, settings: null, awaiting: null }
+  if ('error' in r) return { parts: { agents: r, ...none }, slow: 'timedOut' in r }
+  const p = (r.json as { parts?: unknown } | null)?.parts
+  if (p === null || typeof p !== 'object') return { parts: { agents: { error: 'belay panel-read answered something the panel does not read' }, ...none }, slow: false }
+  const raw = p as Record<string, unknown>
+  const one = (v: unknown): Ran | null => {
+    if (v === null || v === undefined) return null
+    if (typeof v !== 'object') return { error: 'belay panel-read: a part is not an object' }
+    const o = v as { json?: unknown; error?: unknown; timedOut?: unknown }
+    if (typeof o.error === 'string') return o.timedOut === true ? { error: o.error, timedOut: true } : { error: o.error }
+    return 'json' in o ? { json: o.json } : { error: 'belay panel-read: a part has neither json nor error' }
+  }
+  const parts: RoundParts = { agents: one(raw.agents) ?? { error: 'belay panel-read gave no agents part' }, notices: one(raw.notices), transcript: one(raw.transcript), settings: one(raw.settings), awaiting: one(raw.awaiting) }
+  return { parts, slow: Object.values(parts).some(x => x !== null && 'timedOut' in x) }
+}

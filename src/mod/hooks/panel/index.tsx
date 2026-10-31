@@ -23,8 +23,8 @@
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On, Timer } from 'claude-code'
 import type { BelayMenu as BelayMenuT, BelayPanelMenu, BelayPanelSettled, BelayPanelSnap, BelayPanelUi, BelayPanelWatch } from '../../types/index'
-import { argvFor, buildSnapshot, fatalSnapshot, fwd, launcherLine, isWindowsPath, needsRun, parseRan, parseRunFile, projectRootOf, repoCliGuess, type Ran, type RunFileRead } from './fetch'
-import { CONFIRM_MS, normHeld, reasonProblem, reviewProject, SETTLE_ACTIONS, SETTLE_UNKNOWN, PENDING_STALE_MS, pruneSettled, settleArgs, settleKind, settleLine, settledActive, shortId, type SettleAction } from './held'
+import { argvFor, buildSnapshot, fatalSnapshot, fwd, launcherLine, isWindowsPath, needsRun, parseRan, parseRunFile, projectRootOf, refreshEvery, repoCliGuess, roundParts, type Ran, type RunFileRead } from './fetch'
+import { CONFIRM_MS, reasonProblem, reviewProject, SETTLE_ACTIONS, SETTLE_UNKNOWN, PENDING_STALE_MS, pruneSettled, settleArgs, settleKind, settleLine, settledActive, shortId, type SettleAction } from './held'
 import { DEFAULT_SETTINGS, DEFAULT_UI } from './model'
 import { actionId, PROFILE_KEYS, cmdToast, confirmText, cycleDraft, draftOf, gb, modelById, normBadge, normMenu, resultLine, routeFit, routingWrites, sameDraft, writeArgv, type MemAction } from './memory'
 import { Band, BandWaiting, Fallback, Pane, type Act, type Els } from './view'
@@ -37,11 +37,10 @@ const menuA = atom({ plugin: 'belay', key: 'panelMenu' } as const, { menu: null,
 const settleA = atom({ plugin: 'belay', key: 'panelSettle' } as const, null)
 const settledA = atom({ plugin: 'belay', key: 'panelSettled' } as const, {} as BelayPanelSettled)
 
-// A round starts this long after the previous round ENDS (a slow belay is never chased).
-const PANE_EVERY_MS = 4000
-const BAND_EVERY_MS = 5000
+// A round starts after the previous round ENDS (a slow belay is never chased): refreshEvery (fetch.ts) gives the wait, by whether the pane is open and whether the run has ended.
 const SETTINGS_EVERY_MS = 10000
 const COMMAND_TIMEOUT_MS = 8000 // the panel's patience under host load (reads of 3.5 to 4.8 s were seen), not a product budget
+const ROUND_TIMEOUT_MS = 25000 // one panel-read runs up to five reads, each bounded at 6 s inside the verb; this bounds the process
 // `belay transcript --tail N`: the band reads the last 10 entries (it shows the newest words among them), the pane the last 50. Null would read it all.
 const TRANSCRIPT_TAIL: { band: number | null; pane: number | null } = { band: 10, pane: 50 }
 const BACKOFF_FIRST_MS = 10000
@@ -50,8 +49,7 @@ const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/
 const REVIEW_ARGS = ['memory', 'review', '--project'] // the one write the panel makes; the project follows, then START_FLAG
 const START_FLAG = '--start'
 const RUN_FLAG = '--run' // the review acts for the watched run, a live one included (the CLI never defaults to a live run)
-const READ_VERBS = ['agents', 'notices', 'transcript', 'settings'] // the only commands runJson runs ...
-const AWAITING_READ = ['memory', 'held', '--awaiting'] // ... and this one read, run only while a held note waits on the operator
+const READ_VERBS = ['panel-read'] // the only command runJson runs besides the Memory menu's read: one process that runs the panel's reads
 const MENU_EVERY_MS = 30000 // the Memory menu's facts while only the badge needs them; 10 s while the menu is open
 const MENU_OPEN_EVERY_MS = 10000
 const MEM_TIMEOUT_MS = { set: 20000, delete: 30000, verify: 180000 } as const // a verify hashes the whole model
@@ -98,48 +96,33 @@ async function resolveCli($: Host, watch: BelayPanelWatch): Promise<Resolved> {
 // Every command has a hard timeout. A rejection after the full wait (or one that says it timed out) is a
 // timeout, which the caller turns into a skipped round and a back-off; any other rejection is a command
 // that did not run.
-async function runJson($: Host, cli: string[], args: string[], dataDir: string | null, cwd: string | null = null): Promise<Ran> {
+async function runJson($: Host, cli: string[], args: string[], dataDir: string | null, cwd: string | null = null, timeoutMs: number = COMMAND_TIMEOUT_MS): Promise<Ran> {
   const menuRead = args[0] === 'memory' && args[1] === 'menu' && (args.length === 2 || (args.length === 3 && args[2] === '--badge')) // `belay memory menu [--badge]`: the Memory menu's read
-  if (!READ_VERBS.includes(args[0] ?? '') && args.join(' ') !== AWAITING_READ.join(' ') && !menuRead) return { error: `belay ${args[0] ?? ''}: the read helper runs only ${READ_VERBS.join(', ')}, memory held --awaiting and memory menu` } // never a write, whatever called it
+  if (!READ_VERBS.includes(args[0] ?? '') && !menuRead) return { error: `belay ${args[0] ?? ''}: the read helper runs only ${READ_VERBS.join(', ')} and memory menu` } // never a write, whatever called it
   const t0 = await $.clock.now()
   try {
-    const r = await $.process.run(argvFor(cli, args, dataDir), { timeoutMs: COMMAND_TIMEOUT_MS, ...(cwd ? { cwd } : {}) })
+    const r = await $.process.run(argvFor(cli, args, dataDir), { timeoutMs, ...(cwd ? { cwd } : {}) })
     return parseRan(args, r)
   } catch (err) {
     const waited = (await $.clock.now()) - t0
     const said = err instanceof Error ? err.message : String(err)
-    if (waited >= COMMAND_TIMEOUT_MS - 100 || /time/i.test(said)) return { error: `belay ${args.join(' ')} timed out (${COMMAND_TIMEOUT_MS / 1000} s)`, timedOut: true }
+    if (waited >= timeoutMs - 100 || /time/i.test(said)) return { error: `belay ${args.join(' ')} timed out (${timeoutMs / 1000} s)`, timedOut: true }
     return parseRan(args, null)
   }
 }
 
-const timedOut = (r: Ran | null): boolean => !!r && 'timedOut' in r
-
-// One round: agents, notices, then (headless runs only) the transcript, then settings. Sequential, so at
-// most one belay process at a time. The orchestrator's words are read only for a headless run.
-// A timeout skips the rest of the round: what was read stays, what was not read is kept from before.
+// One round: `belay panel-read`, one process that runs the reads the panel needs (agents, notices, the awaiting list while a held note waits,
+// the transcript for a headless run, settings when they are due) one after another and answers with all of them. A part that timed out ends
+// the round inside the verb; what was read stays, what was not read is kept from before (buildSnapshot with prev).
 async function fetchSnapshot($: Host, watch: BelayPanelWatch, prev: BelayPanelSnap | null, o: { withSettings: boolean; now: number; open: boolean }): Promise<{ snap: BelayPanelSnap; timedOut: boolean }> {
   if (watch.error) return { snap: fatalSnapshot(watch.error, null, o.now), timedOut: false }
   const r = await resolveCli($, watch)
   if ('error' in r) return { snap: fatalSnapshot(r.error, watch.runId, o.now), timedOut: false }
   const cli = r.cli
-  const agents = await runJson($, cli, ['agents', ...(watch.runId ? [watch.runId] : []), ...(watch.orchDir ? ['--dir', watch.orchDir] : [])], watch.dataDir)
-  const seen = 'json' in agents ? (agents.json as { run_id?: string; mode?: string }) : null
-  const runId = watch.runId ?? seen?.run_id ?? prev?.runId ?? null
-  const runArg = runId ? [runId] : []
-  const cut = (a: Ran, n: Ran | null, t: Ran | null, s: Ran | null, w: Ran | null = null) => ({ snap: buildSnapshot({ watch, prev, now: o.now, agents: a, notices: n, transcript: t, settings: s, awaiting: w }), timedOut: true })
-  if (timedOut(agents)) return cut(agents, null, null, null)
-  const notices = await runJson($, cli, ['notices', ...runArg], watch.dataDir)
-  if (timedOut(notices)) return cut(agents, notices, null, null)
-  // The ids of the held notes that wait on the operator: one more read, only while the notices say some wait.
-  const awaiting = 'json' in notices && (normHeld(notices.json)?.awaiting ?? 0) > 0 ? await runJson($, cli, ['memory', 'held', '--awaiting'], watch.dataDir) : null
-  if (timedOut(awaiting)) return cut(agents, notices, null, null, awaiting)
-  const mode = watch.fixed ? 'interactive' : seen ? seen.mode : prev?.mode
   const tail = o.open ? TRANSCRIPT_TAIL.pane : TRANSCRIPT_TAIL.band
-  const transcript = mode === 'headless' ? await runJson($, cli, ['transcript', ...runArg, ...(tail === null ? [] : ['--tail', String(tail)])], watch.dataDir) : null
-  if (timedOut(transcript)) return cut(agents, notices, transcript, null, awaiting)
-  const settings = o.withSettings ? await runJson($, cli, ['settings'], watch.dataDir, watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null) : null
-  return { snap: buildSnapshot({ watch, prev, now: o.now, agents, notices, transcript, settings, awaiting }), timedOut: timedOut(settings) }
+  const got = await runJson($, cli, ['panel-read', ...(watch.runId ? [watch.runId] : []), ...(watch.orchDir ? ['--dir', watch.orchDir] : []), ...(tail === null ? [] : ['--tail', String(tail)]), ...(watch.fixed ? ['--fixed'] : []), ...(prev?.mode ? ['--prev-mode', prev.mode] : []), ...(o.withSettings ? ['--settings'] : [])], watch.dataDir, null, ROUND_TIMEOUT_MS)
+  const { parts, slow } = roundParts(got)
+  return { snap: buildSnapshot({ watch, prev, now: o.now, ...parts }), timedOut: slow }
 }
 
 // The Memory menu's facts: `belay memory menu`, a read (it copies the store to count a heavy embedder's backlog, and starts nothing). Its own atom, so a
@@ -185,10 +168,12 @@ async function tick($: Host): Promise<void> {
     if (watch.error) return
     const ui = await read($, uiA)
     const now = await $.clock.now()
-    if (!inflight && now >= backoffUntil && now - lastFetchAt >= (ui.open ? PANE_EVERY_MS : BAND_EVERY_MS)) {
+    const known = await read($, snapA)
+    // 5 s with the pane open, 10 s for the band alone, 60 s once the run has ended or died: each refresh is one belay process.
+    if (!inflight && now >= backoffUntil && now - lastFetchAt >= refreshEvery(ui.open, known?.runState)) {
       inflight = true
       try {
-        const prev = await read($, snapA)
+        const prev = known
         const settingsDue = !prev || now - lastSettingsAt >= SETTINGS_EVERY_MS
         const { snap, timedOut: slow } = await fetchSnapshot($, watch, prev, { withSettings: settingsDue, now, open: ui.open })
         // Back off while commands keep timing out: 10 s, doubling to 60 s; one success resets it.

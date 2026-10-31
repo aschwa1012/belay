@@ -304,6 +304,7 @@ test('budgets: transcript, notices and agents (ADR 0036 U1) each add under 500 m
       transcript: () => timedCli(['transcript', 'run-budgets', '--dir', orchDir, '--data', dataDir], {}, 0, dataDir),
       notices: () => timedCli(['notices', 'run-budgets', '--data', dataDir], {}, 0, dataDir),
       agents: () => timedCli(['agents', 'run-budgets', '--dir', orchDir, '--data', dataDir], {}, 0, dataDir),
+      panel_read: () => timedCli(['panel-read', '--dir', orchDir, '--tail', '10', '--settings', '--data', dataDir], {}, 0, dataDir), // the panel's one batched read: agents, notices and settings against this dead store
       wake_stream: () => timedCli(['wake-stream', '--run', 'run-budgets', '--nonce', 'n', '--data', dataDir], {}, 1, dataDir), // no publisher: ENOENT at once, exit 1
     },
     n: N,

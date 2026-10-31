@@ -131,6 +131,7 @@ export function world(on: any, w: World) {
   const menuWrites: string[][] = [] // every write the Memory menu ran: belay settings <memory key> <value>, belay embedder verify|delete
   const spawned: string[][] = [] // every review launcher (`... memory review --project p --start`) the panel runs: only the review button may run one
   const attempts: { verb: string; t: number; timeoutMs: number; cwd?: string; argv: string[] }[] = []
+  const rounds: { t: number; timeoutMs: number; cwd?: string; argv: string[] }[] = [] // every `belay panel-read` process the panel starts: one per refresh
   const stat = { active: 0, maxActive: 0 }
   const settled: string[][] = [] // every `memory held settle` the panel runs: only the settle buttons may run one
   const asked: string[] = [] // every dialog question
@@ -156,6 +157,7 @@ export function world(on: any, w: World) {
   on('ui.close', () => ({ value: undefined }))
   on('ui.toast', ($: any, e: any) => { toasts.push(e.text); return { value: undefined } })
   on('process.run', async ($: any, e: any) => {
+    if (e.argv.includes('panel-read')) return panelRead(e)
     if (e.argv.includes('settle')) {
       settled.push([...e.argv])
       if (w.settleHold) await w.settleHold
@@ -193,6 +195,10 @@ export function world(on: any, w: World) {
     ran.push([...e.argv])
     const verb = e.argv.find((a: string) => ['agents', 'notices', 'transcript', 'settings'].includes(a))
     attempts.push({ verb, t: clock.now(), timeoutMs: e.init?.timeoutMs, cwd: e.init?.cwd, argv: [...e.argv] })
+    return answer(verb as string, e.argv)
+  })
+  // One belay read as the fixtures answer it: the old per-command handler, now called by panelRead for each part of a round.
+  const answer = async (verb: string, argv: string[]): Promise<any> => {
     stat.active += 1
     stat.maxActive = Math.max(stat.maxActive, stat.active)
     try {
@@ -226,13 +232,68 @@ export function world(on: any, w: World) {
         tasks: { done: 1, total: 3 }, max_fix_rounds: 'maxFix' in w ? w.maxFix : 2, fix_hard_cap: 'hardCap' in w ? w.hardCap : null, memory_notice: w.memoryNotice ? NOTICE : null, ...(w.retrievalModels ? { retrieval_models: w.retrievalModels } : {}), agents: w.noRun ? [] : [...agents, ...extra, ...named, ...dead], footer: 'footer' in w ? w.footer : FOOTER,
       },
       notices: w.notices ?? (w.longNotices ? LONG_NOTICES : NOTICES),
-      transcript: w.nullTs ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.map(x => ({ ...x, ts: null })) } : w.manyTexts ? { run_id: RUN, entries: MANY } : w.toolsOnly ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.filter(x => x.kind !== 'text') } : w.longTranscript ? { run_id: RUN, entries: LONG_ENTRIES.slice(-Number(e.argv[e.argv.indexOf('--tail') + 1])) } : w.honorTail ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.slice(-Number(e.argv[e.argv.indexOf('--tail') + 1])) } : TRANSCRIPT,
+      transcript: w.nullTs ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.map(x => ({ ...x, ts: null })) } : w.manyTexts ? { run_id: RUN, entries: MANY } : w.toolsOnly ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.filter(x => x.kind !== 'text') } : w.longTranscript ? { run_id: RUN, entries: LONG_ENTRIES.slice(-Number(argv[argv.indexOf('--tail') + 1])) } : w.honorTail ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.slice(-Number(argv[argv.indexOf('--tail') + 1])) } : TRANSCRIPT,
       settings: SETTINGS(w.mod, w.memoryNotice ? NOTICE : null, w.heavy),
     }
     if ((verb === 'agents' && w.failAgents) || (verb === 'transcript' && w.transcriptFail)) return { value: { exitCode: verb === 'agents' ? 3 : 4, stdout: '', stderr: 'boom' } }
     return { value: { exitCode: 0, stdout: JSON.stringify(body[verb]), stderr: '' } }
-  })
-  return { clock, openArgs, settled, asked, ran, writes, opened, commands, toasts, spawned, attempts, stat, menuReads, menuWrites, w }
+  }
+  // `belay panel-read`: the CLI's one batched read, as the fixtures answer it. It reads the same fixtures part by part, in the verb's order and with
+  // its rules (a timed-out part ends the round; the awaiting list only while the notices say a note waits; the transcript for a headless run only;
+  // settings only when asked), and records each part in `ran` and `attempts` under the argv the old per-command call would have had.
+  const projectRootOf = (d: string) => d.replace(/\/+$/, '').replace(/\/\.belay$/, '') || '/'
+  const panelRead = async (e: any): Promise<any> => {
+    const a: string[] = e.argv
+    const at = a.indexOf('panel-read')
+    const val = (n: string) => (a.includes(n) ? a[a.indexOf(n) + 1] : undefined)
+    const tailJson = a.slice(a.indexOf('--json'))
+    const head = a.slice(0, at)
+    rounds.push({ t: clock.now(), timeoutMs: e.init?.timeoutMs, cwd: e.init?.cwd, argv: [...a] })
+    if (w.rejectAfter && w.rejectAfter.verb === 'panel-read') {
+      await clock.sleep(w.rejectAfter.ms)
+      return { deny: w.rejectAfter.msg }
+    }
+    const fixed = a.includes('--fixed')
+    const data = val('--data')
+    const part = async (label: string, verb: string, sub: string[], cwd: string | undefined): Promise<any> => {
+      const lbl = verb === 'awaiting' ? 'memory held --awaiting' : [verb, ...sub].join(' ') // the command as typed, as the verb labels its errors
+      const argv = [...head, ...(verb === 'awaiting' ? ['memory', 'held', '--awaiting'] : [verb]), ...sub, ...tailJson]
+      ran.push([...argv])
+      if (verb !== 'awaiting') attempts.push({ verb, t: clock.now(), timeoutMs: e.init?.timeoutMs, cwd, argv: [...argv] })
+      let res: any
+      if (verb === 'awaiting') {
+        if (w.awaitingHang) res = { deny: 'timed out' }
+        else if (w.awaitingFail) res = { value: { exitCode: 3, stdout: '', stderr: 'boom' } }
+        else res = { value: { exitCode: 0, stdout: JSON.stringify(w.awaitingList ?? AWAITING), stderr: '' } }
+      } else res = await answer(verb, argv)
+      if ('deny' in res) return /time/i.test(res.deny) ? { error: `belay ${lbl} timed out`, timedOut: true } : { error: `belay ${lbl} did not run: ${res.deny}` }
+      if (res.value.exitCode !== 0) return { error: `belay ${lbl} exit ${res.value.exitCode}` }
+      return { json: JSON.parse(res.value.stdout) }
+    }
+    const parts: Record<string, any> = { agents: null, notices: null, awaiting: null, transcript: null, settings: null }
+    const first = a[at + 1]
+    const dir = val('--dir')
+    parts.agents = await part('agents', 'agents', [...(first && !first.startsWith('--') ? [first] : []), ...(dir ? ['--dir', dir] : [])], e.init?.cwd)
+    const runId: string | null = (first && !first.startsWith('--') ? first : null) ?? parts.agents.json?.run_id ?? null
+    const runArg = runId ? [runId] : []
+    const done = () => ({ value: { exitCode: 0, stdout: JSON.stringify({ v: 1, at: clock.now(), run_id: runId, parts }), stderr: '' } })
+    if (parts.agents.timedOut) return done()
+    parts.notices = await part('notices', 'notices', runArg, e.init?.cwd)
+    if (parts.notices.timedOut) return done()
+    const held = ((parts.notices.json?.events ?? []) as any[]).filter(x => x.kind === 'notes_held').at(-1)
+    if (held && Math.min(Number(held.count) || 0, Number(held.awaiting_operator) || 0) > 0) {
+      parts.awaiting = await part('memory held --awaiting', 'awaiting', [], e.init?.cwd)
+      if (parts.awaiting.timedOut) return done()
+    }
+    const mode = fixed ? 'interactive' : parts.agents.json ? parts.agents.json.mode : val('--prev-mode')
+    if (mode === 'headless') {
+      parts.transcript = await part('transcript', 'transcript', [...runArg, ...(val('--tail') ? ['--tail', val('--tail') as string] : [])], e.init?.cwd)
+      if (parts.transcript.timedOut) return done()
+    }
+    if (a.includes('--settings')) parts.settings = await part('settings', 'settings', [], fixed && data ? projectRootOf(data) : e.init?.cwd)
+    return done()
+  }
+  return { clock, openArgs, settled, asked, ran, writes, opened, commands, toasts, spawned, attempts, rounds, stat, menuReads, menuWrites, w }
 }
 
 export const START = { cwd: '/x', surface: 'terminal', isInteractive: true } as const
