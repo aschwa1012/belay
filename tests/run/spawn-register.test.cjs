@@ -117,7 +117,7 @@ test('a register update that fails is kept on the worker and never rejects the c
   const eperm = () => Object.assign(new Error('operation not permitted'), { code: 'EPERM' });
   const mk = (pid) => { const child = new EventEmitter(); child.pid = pid; child.exitCode = null; child.signalCode = null; child.belaySpawnStartedAt = Date.now(); return child; };
   try {
-    SR.register({ pid: 424201, kind: 'worker' }); SR.register({ pid: 424202, kind: 'worker' });
+    SR.register({ pid: 424201, kind: 'worker', workerId: 'w-u1' }); SR.register({ pid: 424202, kind: 'worker', workerId: 'w-u2' });
     SR.io.rename = () => { throw eperm(); }; SR.io.sleep = () => {};
     // 1) the first read answers: the closing step of the promise chain writes the register
     const w1 = { id: 'w-u1', pid: 424201 };
