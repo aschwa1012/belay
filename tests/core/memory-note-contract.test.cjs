@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // memory-note-contract.test.cjs — the paired write/search contract for notes. A note is written with a `when` (the task that
 // would run into it); its vector is made from "{title}\nWhen: {when}" only (template v2), its keyword text carries the title,
 // the When: line, subjects and applies_to; applies_to is derived from the worker's worktree diff and the evidence, never typed;

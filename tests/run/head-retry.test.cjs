@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // head-retry.test.cjs — build 12b (headsha), ADR 0029 amendment 2. A worker's head_sha and base_sha used to get
 // one git attempt; under load it timed out and the sha was lost for good. The lookup now retries inside the

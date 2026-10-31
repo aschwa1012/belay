@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // memory-security.test.cjs — the memory write and read rules that keep model-written text from passing as the
 // harness's, each one a probe from the security review of the memory system turned into a test: a worker cannot
 // rewrite a row it did not write or one that is verified, choose an id, a time or a vector, reach another run's or

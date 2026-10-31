@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // git-hooks.test.cjs — belay's merge and worktree add run the repository's git hooks. A rejection names the hook and its output
 // tail, a real conflict stays a conflict, and a hook that changed the merged files is reported, never blocked or reverted.
 // Real git in throwaway repositories, with real hook scripts (git runs them through its bundled sh).
