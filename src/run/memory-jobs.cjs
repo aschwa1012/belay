@@ -108,6 +108,8 @@ function costOf(w, snap) {
   const cost_basis = reset && (t.seen || snap.turn > 1) ? NEW_PROCESS : 'delta-of-cumulative';
   return { cost_usd: Math.max(0, snap.cost - base), cost_basis, advance: () => { t.pid = snap.pid; t.lastCost = snap.cost; t.seen = true; } };
 }
+// The write left this process and its answer was lost: the owner may have committed it. A refusal, or a loss before the send, is not this.
+const sentUnknown = (e) => !!e && (e.code === 'E_TIMEOUT' || e.code === 'E_OWNER_LOST') && !(e.detail && e.detail.sent === false);
 async function usageJob(J, snap) {
   const w = J.w;
   const t = jobsOf(w);
@@ -122,7 +124,11 @@ async function usageJob(J, snap) {
     t.lastTurn = snap.turn;
     if (c.advance) c.advance();
   } catch (e) {
-    await failure(J, 'usage', { worker_id: snap.workerId, task_id: snap.taskId || undefined, message: `usage row for turn ${snap.turn} not written: ${(e && e.message) || e}`.slice(0, 300) }, e, sent);
+    // A write lost after it was sent may have committed (ADR 0033): it is not re-run, and the next row's delta starts after this turn, so the
+    // turn's dollars are not counted again. A write known not to have been sent keeps its base, and its dollars fold into the next row.
+    const unknown = sent && sentUnknown(e);
+    if (unknown) { t.lastTurn = snap.turn; if (c.advance) c.advance(); }
+    await failure(J, 'usage', { worker_id: snap.workerId, task_id: snap.taskId || undefined, message: `usage row for turn ${snap.turn} ${unknown ? 'outcome unknown (sent, not re-sent)' : 'not written'}: ${(e && e.message) || e}`.slice(0, 300) }, e, sent);
   }
 }
 

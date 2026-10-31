@@ -208,15 +208,15 @@ test('usage: Codex rows carry no dollars and the cached subset moves to cache_re
   assert.strictEqual(core.usageRows[1].cost_usd, 0.2);
 });
 
-test('usage: a failed row is an ok:0 event naming the code, and the next row carries the cost the failed one lost', async () => {
+test('usage: a refused row (never committed) is an ok:0 event naming the code, and the next row carries the cost the failed one lost', async () => {
   let failNext = true;
-  const core = spyCore({ fail: { 'usage.record': () => { if (failNext) { failNext = false; return failing('E_TIMEOUT', 'owner slow'); } return null; } } });
+  const core = spyCore({ fail: { 'usage.record': () => { if (failNext) { failNext = false; return failing('E_ARGS', 'refused'); } return null; } } });
   const ctx = mkCtx(core, lv({ cost_ledger: true }));
   const w = worker({ turns: 1, costUsd: 0.01 });
   MJ.afterTurn(w, ctx, {}); await flush(w);
   assert.strictEqual(core.usageRows.length, 0);
   const ev = core.events.find((e) => e.kind === 'usage');
-  assert.ok(ev && ev.ok === 0 && ev.code === 'E_TIMEOUT');
+  assert.ok(ev && ev.ok === 0 && ev.code === 'E_ARGS');
   Object.assign(w, { turns: 2, costUsd: 0.03 });
   MJ.afterTurn(w, ctx, {}); await flush(w);
   assert.strictEqual(core.usageRows.length, 1);
