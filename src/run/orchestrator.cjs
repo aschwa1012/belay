@@ -250,7 +250,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     }
     if (ev.event === 'paused') rec.paused_by = ev.paused_by;
     if (ev.turns_skipped) rec.turns_skipped = ev.turns_skipped;
-    if (!ev.unheld && hold.holdWake(rec)) return; // 6f design item 2: held while paused, never suppressed; the budget pause's own wake is the one not held
+    if (!ev.unheld && hold.holdWake(rec, text)) return; // 6f design item 2: held while paused, never suppressed; the budget pause's own wake is the one not held
     if (writeStdinLine(text, ev.worker_id, rec)) state.wakes.push(rec);
     else state.wakesSuppressed.push({ ...ev, reason: 'stdin was broken when this event was found' });
   }
