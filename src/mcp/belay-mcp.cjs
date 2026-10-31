@@ -217,33 +217,7 @@ function openRunManagerOnce() {
   }
   return runPromise;
 }
-
-// The contract names Core methods with dots. Whether the module hangs them off nested namespaces
-// (core.memory.store), flat dotted keys or camelCase is not stated, so all three are accepted and a
-// method that is genuinely absent fails loudly with E_INTERNAL naming it.
-function resolveCoreMethod(c, dotted) {
-  const parts = dotted.split('.');
-  let owner = c;
-  let cur = c;
-  for (const p of parts) {
-    if (cur == null) { cur = undefined; break; }
-    owner = cur;
-    cur = cur[p];
-  }
-  if (typeof cur === 'function') return cur.bind(owner);
-  if (typeof c[dotted] === 'function') return c[dotted].bind(c);
-  const camel = parts[0] + parts.slice(1).map((s) => s[0].toUpperCase() + s.slice(1)).join('');
-  if (typeof c[camel] === 'function') return c[camel].bind(c);
-  return null;
-}
-
-const fail = (code, message, detail) => {
-  const e = new Error(message);
-  e.code = code;
-  if (detail !== undefined) e.detail = detail;
-  return e;
-};
-
+const { resolveCoreMethod, fail } = require('./core-method.cjs');
 async function callCore(dotted, args, channel = null) {
   const c = await settleEpoch(await openCoreOnce());
   const fn = resolveCoreMethod(channel && typeof c.keepalive === 'function' ? c.keepalive() : c, dotted); // channel: the keep-alive's own (ADR 0054 amendment 1)
@@ -370,6 +344,7 @@ async function handle(msg) {
     return undefined;
   }
   if (method === 'notifications/initialized') { ownCreatedNow(); return undefined; }
+  if (method === 'notifications/cancelled') { require('../run/call-signal.cjs').cancel(params && params.requestId); return undefined; } // a worker_wait in flight under that id (call-signal.cjs)
   if (typeof method === 'string' && method.startsWith('notifications/')) return undefined;
   if (method === 'ping') return send({ jsonrpc: '2.0', id, result: {} });
   if (method === 'tools/list') {
@@ -389,8 +364,12 @@ async function handle(msg) {
       return send({ jsonrpc: '2.0', id, result });
     }
     try {
-      const row = await require('./call-budget.cjs').withinBudget(name, args, (async () => opts.role === 'orchestrator' && require('./views.cjs').isViewed(name) ? await require('./views.cjs').viewed(name, args, (a) => callTool(name, a)) : (opts.role === 'worker' && name === 'lease_release' ? require('./views.cjs').leaseRelease(await callTool(name, args), args) : await callTool(name, args)))(), process.env, opts.role === 'orchestrator' ? require('./call-hooks.cjs').callHooks(callCore) : null); // ADR 0058 amendment 3: compact unless view debug; a worker's lease_release answer is compact too // call-budget.cjs: integrate and task_evaluate answer before the client's tool timeout
-      return send({ jsonrpc: '2.0', id, result: okResult(row) });
+      const tracked = await require('../run/call-signal.cjs').run(id, name, () => require('./call-budget.cjs').withinBudget(name, args, (async () => opts.role === 'orchestrator' && require('./views.cjs').isViewed(name) ? await require('./views.cjs').viewed(name, args, (a) => callTool(name, a)) : (opts.role === 'worker' && name === 'lease_release' ? require('./views.cjs').leaseRelease(await callTool(name, args), args) : await callTool(name, args)))(), process.env, opts.role === 'orchestrator' ? require('./call-hooks.cjs').callHooks(callCore) : null)); // a cancelled worker_wait claims nothing and is not answered (call-signal.cjs) // ADR 0058 amendment 3: compact unless view debug; a worker's lease_release answer is compact too // call-budget.cjs: integrate and task_evaluate answer before the client's tool timeout
+      if (tracked.cancelled) return undefined;
+      const row = tracked.value;
+      const sent = send({ jsonrpc: '2.0', id, result: okResult(row) });
+      tracked.confirm(); // the reply is written: a worker_wait's claim stands (call-signal.cjs)
+      return sent;
     } catch (e) {
       return send({ jsonrpc: '2.0', id, result: errResult(e) });
     }

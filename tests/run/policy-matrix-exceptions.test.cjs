@@ -64,9 +64,8 @@ test('E3: a conflict at a policy integrate; one E3 wake naming the integration r
   } finally { await e.close(); }
 });
 
-// api.md: E3 is a conflict at a policy integrate. The step's own claim should end `done` (policy-steps-run.cjs says a conflict is a finished
-// step), but the conflict row carries passed:false, so the step ends `exception` ("checks failed") and the same fact wakes twice, E3 and E8.
-nodeTest('E3 is the only wake for a conflict: the integrate step ends done, and no E8 follows', { timeout: 240000, todo: 'product defect: a conflict also finishes the claim as an exception (E8)' }, async () => {
+// api.md: E3 is a conflict at a policy integrate. The step's own claim ends `done` (a conflict is a finished step, and its row is E3's), so the fact wakes once.
+nodeTest('E3 is the only wake for a conflict: the integrate step ends done, and no E8 follows', { timeout: 240000 }, async () => {
   const e = await M.env({ label: 'E3-only' });
   try {
     const { b, out } = await conflicting(e);

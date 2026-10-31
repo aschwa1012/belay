@@ -20,6 +20,8 @@
 const reviewWake = require('./review-wake.cjs');
 
 const WAKE_TEXT_MAX = 221; // release-eval.cjs WAKE_TEXT_MAX; the mod's text budget less the plugin name
+const REVISION_IDS = 200; // task ids per policy.revisions call (its cap is 500)
+const AMEND_LIFTS = new Set(['E1', 'E2', 'E5', 'E6', 'E7']); // a plan amend after the exception lifts these halts (E8's own lift reads its step's policy_rev)
 const HALTING = new Set(['E1', 'E2', 'E3', 'E5', 'E6', 'E7', 'E8']); // E4 is the worker's, E9 pauses the run, E10 is not a task's
 // ADR 0073 Q1 (open): 'task' halts the task and its fixes (the recommendation); 'chain' also halts what depends on them.
 const HALT_SCOPE = 'task';
@@ -63,6 +65,20 @@ const cleanRefutation = (r) => r.executable === true && failing(r).length > 0 &&
 
 // -> the exceptions the rows show now. `snap`: { runId, tasks (task.list rows), integrations, steps (policy.list rows), failures (release_failed events) }.
 // Each: { exception, task_id, trigger: { table, id, seq }, field, seq (the wake's), uid (its dedupe key), detail }.
+// Whether review R judged the newest fix of the work (or the work itself, when no fix exists). The newest is by creation order, the seq of a fix's FIRST
+// version (`firstSeq`, from policy.revisions): a later row on an older fix (a sweep, a worktree record) must not make it look newer. Without the
+// versions read (a cut-off or failed read, or a fix missing from it) the order is unknown, and it fails toward waking: E2 is raised, never suppressed.
+function finalFixJudged(work, R, tasks, byId, firstSeq) {
+  const fixes = tasks.filter((t) => t.id !== work.id && t.repairs && rootOf(t, byId).id === work.id);
+  if (!fixes.length || !fixes.every((t) => firstSeq.has(t.id))) return true;
+  const born = (t) => firstSeq.get(t.id);
+  const newest = fixes.reduce((a, b) => (born(b) > born(a) ? b : a));
+  return Array.isArray(R.depends_on) && R.depends_on.includes(newest.id);
+}
+
+// The seq of the task row a release_failed event was written against (its message), or null for an event from before it was recorded.
+function rowSeqOf(ev) { try { const m = JSON.parse(ev.message); return m && Number.isFinite(Number(m.seq)) ? Number(m.seq) : null; } catch { return null; } }
+
 function derive(snap) {
   const { runId } = snap;
   const tasks = (snap.tasks || []).filter((t) => t.run_id === runId);
@@ -71,8 +87,39 @@ function derive(snap) {
   const out = [];
   // `fact`: { key, seq } names the fact the wake is about (an evaluation, a review's verdict, a step), so the wake is one per fact and is not sent
   // again when the trigger row is rewritten. `trigger` is the row at derivation; `seq` (the fact's number) makes the interactive wake id stable.
-  const add = (exception, task, trigger, field, detail, fact, extra = {}) => out.push({ exception, task_id: task.id, trigger, field: field || 'none', seq: fact.seq, key: fact.key, uid: `${exception}:${field || 'none'}:${fact.key}`, detail: detail || {}, ...extra });
-  const evOf = (t) => ({ key: `${t.id}@${t.results.evaluated_at}`, seq: Number(t.results.evaluated_at) || 0 });
+  // `snap.revisions` (policy.revisions: every version's plan revision, from the append-only task rows) says which plan the exception's fact happened
+  // under: the revision of the work's version current at the fact's time. A newer version with a higher revision is an amend after the exception,
+  // which lifts E1, E2, E5, E6 and E7. It is read from the rows, so a restart and every process agree; a caller with no revisions sees no amend lift.
+  const revOf = new Map();
+  for (const r of snap.revisions || []) { if (!revOf.has(r.id)) revOf.set(r.id, []); revOf.get(r.id).push(r); }
+  const firstSeq = new Map([...revOf].map(([id, vs]) => [id, Number(vs[0].seq)]));
+  // The plan revision `id` carried when the fact was written: the fact's own row is the version of `fact.row` whose results hold that evaluation, and
+  // the plan is the latest planned version of `id` at or before that seq (one global seq across task rows, so no clock is compared). A fact with no
+  // row (a release_failed event) compares the version's write time with the event's; a fact whose row is not in the versions read has no baseline.
+  const revAt = (id, fact) => {
+    const vs = (revOf.get(id) || []).filter((r) => r.policy_rev != null);
+    if (!vs.length) return null;
+    let upTo;
+    if (fact.rowSeq != null) upTo = (v) => Number(v.seq) <= fact.rowSeq;
+    else if (fact.row) {
+      const own = (revOf.get(fact.row) || []).find((r) => r.evaluated_at != null && Number(r.evaluated_at) === fact.at);
+      if (!own) return null;
+      upTo = (v) => Number(v.seq) <= Number(own.seq);
+    } else upTo = (v) => Number(v.written_at) <= fact.at;
+    let rev = Number(vs[0].policy_rev);
+    for (const v of vs) if (upTo(v)) rev = Number(v.policy_rev);
+    return rev;
+  };
+  const add = (exception, task, trigger, field, detail, fact, extra = {}) => {
+    const uid = `${exception}:${field || 'none'}:${fact.key}`;
+    let amended = false;
+    if (snap.revisions && fact.at != null && AMEND_LIFTS.has(exception)) {
+      const was = revAt(task.id, fact), now = task.policy_rev == null ? null : Number(task.policy_rev);
+      amended = was !== null && now !== null && now > was;
+    }
+    out.push({ exception, task_id: task.id, trigger, field: field || 'none', seq: fact.seq, key: fact.key, uid, detail: detail || {}, ...(amended ? { lifted: true } : {}), ...extra });
+  };
+  const evOf = (t) => ({ key: `${t.id}@${t.results.evaluated_at}`, seq: Number(t.results.evaluated_at) || 0, at: Number(t.results.evaluated_at) || 0, row: t.id });
   const tref = (t) => ({ table: 'task', id: t.id, seq: Number(t.seq) || 0 });
   const fails = snap.failures || [];
 
@@ -90,7 +137,7 @@ function derive(snap) {
     } else if (own && x.state === 'done' && r.flaky) add('E6', root, tref(x), null, { flaky: true, task: x.id }, evOf(x));
     // E5: a release evaluation that ended without a result (a queue refusal, an error): the ledger's release_failed events.
     if (x.state === 'released' && x.handoff) {
-      for (const f of fails) if (f.task_id === x.id && f.code !== 'E_CANCELLED' && Number(f.written_at) >= Number(x.handoff.at)) add('E5', root, tref(x), null, { executable: true, failing: [], error: f.code, task: x.id }, { key: `${x.id}!${f.id}`, seq: Number(f.seq) || 0 });
+      for (const f of fails) if (f.task_id === x.id && f.code !== 'E_CANCELLED' && Number(f.written_at) >= Number(x.handoff.at)) add('E5', root, tref(x), null, { executable: true, failing: [], error: f.code, task: x.id }, { key: `${x.id}!${f.id}`, seq: Number(f.seq) || 0, at: Number(f.written_at) || 0, rowSeq: rowSeqOf(f) });
     }
     // E1, work done with no review step in the plan; a fix done with no re_review.
     if (own && x.state === 'done' && !isReviewRow(x) && !dependents.has(x.id)) {
@@ -108,7 +155,9 @@ function derive(snap) {
       const fact = evOf(R); // the review's verdict, by its evaluation
       if (rv.state === 'refuted') {
         if (!P.fix) add('E1', x, tref(R), 'fix', { review: R.id, titles }, fact);
-        else if (rv.rounds_left === 0) add('E2', x, tref(R), 'fix', { review: R.id, titles, used: rv.fix_rounds_used, max: rv.max_fix_rounds }, fact);
+        // E2 is a review REFUTED with no rounds left: the refute of the final allowed fix's re-review. While a newer fix than the one this review judged exists,
+        // the last allowed round has not been reviewed yet, so the refute is not the cap.
+        else if (rv.rounds_left === 0 && finalFixJudged(x, R, tasks, byId, firstSeq)) add('E2', x, tref(R), 'fix', { review: R.id, titles, used: rv.fix_rounds_used, max: rv.max_fix_rounds }, fact);
       } else if (facts.should_fix.n > 0 && (!P.follow_up || P.follow_up === 'wake') && !(rv.follow_ups && rv.follow_ups.length) && !(x.integration && x.integration.state === 'merged')) {
         add('E7', x, tref(R), P.follow_up ? 'follow_up' : 'none', { review: R.id, n: facts.should_fix.n, titles: facts.should_fix.titles }, fact);
       }
@@ -194,6 +243,29 @@ const clean = (s) => String(s || 'no reason').replace(/[\x00-\x1f\x7f]+/g, ' ').
 
 const wakeOf = (e) => ({ event: 'evaluated', worker_id: `policy:${e.exception}:${e.field}:${e.task_id}`, turn: 0, seq: e.seq, task_id: e.task_id, exception: e.exception, trigger: `${e.trigger.table}:${e.trigger.id}:${e.trigger.seq}`, field: e.field, key: e.key, text: textOf(e) });
 
+// The tasks whose versions the lifts and the fix order need: every planned work task, the fixes that repair it and the tasks that take its plan
+// (its reviews). Exact and bounded by the run's plans, not by the store's size.
+function familyIds(runId, tasks) {
+  const byId = new Map(tasks.map((t) => [t.id, t]));
+  const mine = tasks.filter((t) => t.run_id === runId);
+  const roots = new Set(mine.filter((t) => !t.repairs && parse(t.policy)).map((t) => t.id));
+  return mine.filter((t) => roots.has(t.id) || roots.has(rootOf(t, byId).id) || policyOf(t, byId)).map((t) => t.id);
+}
+// -> the versions of those tasks (policy.revisions), or undefined when the core has no such read, there is nothing to read, a read fails or any
+// part of the answer was cut off: an incomplete history is never read as "no amend".
+async function readRevisions(policy, runId, tasks) {
+  if (!policy || typeof policy.revisions !== 'function') return undefined;
+  const ids = familyIds(runId, tasks);
+  const out = [];
+  for (let i = 0; i < ids.length; i += REVISION_IDS) {
+    let r;
+    try { r = await policy.revisions({ task_ids: ids.slice(i, i + REVISION_IDS) }); } catch { return undefined; }
+    if (!r || r.truncated || !Array.isArray(r.revisions)) return undefined;
+    out.push(...r.revisions);
+  }
+  return out.length ? out : undefined;
+}
+
 // The watcher both wake paths hold. `seen` is the release-eval map the caller already carries: enrichWakes sets `seen.policyTasks` (the
 // task rows it read this poll) and `seen.policyArmed` once it sees a task under a plan, so a run with no plan reads nothing more.
 // `enabled`: arm from the start (a run whose spec carries a plan). Reads: task.list when enrichWakes did not, then integration.list,
@@ -207,7 +279,8 @@ function createPolicyWatcher({ core, runId, enabled = false }) {
     const ints = core.integration && core.integration.list ? await core.integration.list({}).then((r) => (r && r.integrations) || [], () => []) : [];
     const steps = core.policy && core.policy.list ? await core.policy.list({}).then((r) => (r && r.rows) || [], () => []) : [];
     const failures = core.memory && core.memory.events ? await core.memory.events({ run_id: runId, kinds: ['release_failed'] }).then((r) => ((r && r.events) || []).map((e) => ({ ...e, task_id: e.task_id || (Array.isArray(e.row_ids) ? e.row_ids[0] : null) })), () => []) : [];
-    return { runId, tasks, integrations: ints, steps, failures };
+    const revisions = await readRevisions(core.policy, runId, tasks);
+    return { runId, tasks, integrations: ints, steps, failures, ...(revisions ? { revisions } : {}) };
   }
   async function poll(seen) {
     if (!enabled && !(seen && seen.policyArmed)) return [];
@@ -221,4 +294,4 @@ function createPolicyWatcher({ core, runId, enabled = false }) {
   return { poll, active: () => last.slice() };
 }
 
-module.exports = { derive, exceptionOf, policyOf, rootOf, haltScope, haltedIds, textOf, wakeOf, createPolicyWatcher, HALTING, HALT_SCOPE, WAKE_TEXT_MAX };
+module.exports = { derive, readRevisions, familyIds, exceptionOf, policyOf, rootOf, haltScope, haltedIds, textOf, wakeOf, createPolicyWatcher, HALTING, HALT_SCOPE, WAKE_TEXT_MAX };

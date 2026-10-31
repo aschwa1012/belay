@@ -84,6 +84,7 @@ function diffWorkers({ prev, rows, runId, nowMs, graceMs, orphanGraceMs = graceM
     if (base.state !== 'dead' && row.state === 'dead') {
       events.push({
         worker_id: row.id, event: 'death', turn: turns, seq: row.seq,
+        life: `${Number.isInteger(row.pid) ? row.pid : 0}:${row.pid_created == null ? 0 : row.pid_created}`, // the process this death ends: the key a second delivery path shares (run-digest.cjs lifeOf)
         exit_code: row.exit_code == null ? null : row.exit_code,
         exit_signal: row.exit_signal == null ? null : row.exit_signal,
         death_established_by: row.death_established_by || null,

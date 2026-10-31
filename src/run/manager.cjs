@@ -450,7 +450,8 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     };
   }
 
-  const wait = createWait({ workers, get, core }); // core: the leases behind idle_without_task (ADR 0058, the idle-workers amendment)
+  let policyWait = null; // ADR 0074: the run wait the policy executor's wiring hands over (src/mcp/policy-wire.cjs); null in a run with no plan
+  const wait = createWait({ workers, get, core, policyWait: () => policyWait }); // core: the leases behind idle_without_task (ADR 0058, the idle-workers amendment)
   // build step 6e-4 (ADR 0023 amendment 2): pause parks the worker; resume relaunches it through doRestart.
   const PZ = createPause({ core, forWorker, doStop, doRestart, runOp: LC.runOp, adapterPid: ctx.adapterPid, writeRow });
   const message = createMessage({ core, ctx, forWorker, refuseIfPaused: PZ.refuseIfPaused, sendStdin, launch, guarded, writeRow });
@@ -470,7 +471,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
   const manager = {
     spawn, message, stop, restart, list, shutdown,
-    wait, pause: PZ.pause, resume: PZ.resume,
+    wait, setPolicyWait: (rw) => { policyWait = rw; }, pause: PZ.pause, resume: PZ.resume,
     ask: (args) => MP.ask(manager, ctx, args), // ADR 0043 decision 1
     // Read-only handles for tests and for the CLI's own views. Neither writes.
     _worker: (id) => workers.get(id),

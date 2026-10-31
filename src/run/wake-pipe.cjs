@@ -37,7 +37,7 @@ function wakePipeName(dataDir, runId, nonce) {
 const wakeId = (runId, ev) => `${runId}:${ev.worker_id}:${ev.event}:${ev.turn}:${ev.seq}`;
 
 function startWakePublisher({
-  core, runId, notes = false, budgetWake = null, pipeName, pollMs = 1000, isHeld = () => false, onRelease = null, heartbeatMs = HEARTBEAT_MS, now = () => Date.now(),
+  core, runId, notes = false, budgetWake = null, dataDir = null, pipeName, pollMs = 1000, isHeld = () => false, onRelease = null, heartbeatMs = HEARTBEAT_MS, now = () => Date.now(),
 }) {
   if (!core || !core.worker || typeof core.worker.list !== 'function') throw new Error('startWakePublisher: core.worker.list is required');
   if (!runId) throw new Error('startWakePublisher: runId is required');
@@ -51,6 +51,7 @@ function startWakePublisher({
   let baseline = {};
   const deadPids = require('./dead-pids.cjs').createDeadPids({ graceMs: DEATH_GRACE_MS, adapterAlive: (pid) => !!pid && require('../core/lock.cjs').pidAlive(pid) });
   const evalSeen = new Map(); // ADR 0058: release evaluations already carried by a wake
+  const planned = require('./planned.cjs').createPlanned({ core, runId }); // whether the run has a plan, from the store: the same rule as the headless run and the adapter
   const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId, enabled: !!notes }); // wave 4: a refuted note
   const callWatcher = require('./call-wake.cjs').createCallWatcher({ core, runId }); // a still_running integrate or task_evaluate
   const policyWatcher = require('./policy-wakes.cjs').createPolicyWatcher({ core, runId }); // ADR 0073: the exceptions of a run under a plan
@@ -62,7 +63,21 @@ function startWakePublisher({
 
   const send = (sock, line) => { try { sock.write(line); } catch { clients.delete(sock); } };
 
+  // ADR 0074 decision 4: a policy exception the run wait (worker_wait) already returned is not published again, and the reverse: the claim
+  // (run-digest.cjs claimException) is taken at the instant of publishing. Without a data dir there is no wait to share it with.
+  const claimed = (w) => {
+    const D = dataDir ? require('./run-digest.cjs') : null;
+    const uid = D ? D.wakeUid({ ...(w.ev || {}), worker_id: w.worker_id }) : null;
+    if (!uid || (!(w.ev && w.ev.exception) && !planned.value())) return true; // a death is claimed only once a plan is in force
+    let won = true;
+    try { won = D.claimException({ dataDir, runId, uid }); } catch { won = true; } // a claim that cannot be made delivers: never lose a wake for want of a file
+    if (!won) lost.set(uid, w); // kept: if worker_wait's claim is released (its reply was lost), this wake is published after all
+    return won;
+  };
+  const lost = new Map(); // uid -> the wake another path's claim kept this one from publishing
+
   function publish(w) {
+    if (!claimed(w)) return;
     if (receipt.length < RECEIPT_MAX) receipt.push(require('./wake-record.cjs').wakeRecord({ ...(w.ev || {}), event: w.event || (w.ev && w.ev.event), worker_id: w.worker_id }, w.text, now() - t0, null)); // the run receipt's wakes[], as headless fills it
     const line = `${JSON.stringify({ id: w.id, text: w.text })}\n`;
     retained.push(line);
@@ -80,6 +95,17 @@ function startWakePublisher({
     send(sock, `${JSON.stringify({ hb: now() })}\n`);
   });
   server.on('error', (e) => { stats.errors += 1; stats.last_error = `server: ${(e && e.code) || e}`; });
+
+  // The digest rides the next wake as one more wake line (run-digest.cjs): claimed, so the run wait never returns a step this line showed.
+  async function rideDigest() {
+    try {
+      const d = await require('./run-digest.cjs').wakeDigest({ core, dataDir, runId, now });
+      if (!d) return;
+      const line = `${JSON.stringify({ id: d.id, text: d.text })}\n`;
+      retained.push(line); if (retained.length > RETAIN_MAX) retained.shift();
+      for (const c of clients) send(c, line);
+    } catch (e) { stats.errors += 1; stats.last_error = `digest: ${(e && (e.code || e.message)) || e}`; }
+  }
 
   async function pollOnce() {
     if (stopped || inFlight) return;
@@ -105,6 +131,8 @@ function startWakePublisher({
         }
       }
       if (budgetWake) for (const bw of budgetWake.takeWakes()) publish({ id: bw.id, text: bw.text, event: 'budget_pause', ev: bw }); // the budget pause's own wake is the one a hold does not keep back
+      if (lost.size) for (const [uid, w] of lost) if (!require('./run-digest.cjs').isClaimed({ dataDir, runId, uid })) { lost.delete(uid); queue.push(w); } // a released claim: publish what it had held back
+      if (dataDir && queue.some((q) => q.event === 'death')) await planned.check(); // a death has a second delivery path once the store shows a plan
       stats.held_max = Math.max(stats.held_max, queue.length);
       let held = false;
       try { held = !!isHeld(); } catch { held = true; } // an unreadable hold keeps wakes back, never releases them
@@ -128,7 +156,9 @@ function startWakePublisher({
             publish({ id: info.id, text: info.text(queue.length) });
           }
         }
-        while (queue.length) publish(queue.shift());
+        let out = 0;
+        while (queue.length) { publish(queue.shift()); out += 1; }
+        if (out && dataDir && evalSeen.policyArmed) await rideDigest(); // ADR 0074 decision 4: the steps belay took since the last wake follow the wake
       }
     } finally {
       inFlight = false;
