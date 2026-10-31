@@ -84,3 +84,19 @@ test('a worker of a run that has ended is still adopted', async (t) => {
   assert.strictEqual(out.channel, 'codex-resume');
   assert.strictEqual(s.core.callsTo('task.ensureHold').length, 1, 'its task is held for run B');
 });
+
+test('a core that cannot say whether the worker\'s run is live is a refusal, not a pass', async (t) => {
+  const s = setup(t, { substrate: 'codex', state: 'idle', runA: LIVE });
+  await s.seed();
+  delete s.core.run;
+  await assert.rejects(s.m.message({ worker_id: 'X', text: 'x' }), (e) => { assert.strictEqual(e.code, 'E_ROLE', e.message); assert.strictEqual(e.detail.reason, 'run_list_unavailable'); return true; });
+  s.untouched(1);
+});
+
+test('a worker whose run has no row is adopted, as the core adopts it', async (t) => {
+  const s = setup(t, { substrate: 'codex', state: 'idle', runA: LIVE });
+  await s.seed();
+  s.core.run = { async list() { return { runs: [] }; } };
+  const out = await s.m.message({ worker_id: 'X', text: 'adopt me' });
+  assert.strictEqual(out.channel, 'codex-resume');
+});

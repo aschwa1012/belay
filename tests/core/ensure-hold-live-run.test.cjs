@@ -49,3 +49,19 @@ test('ensureHold still rehomes a task of a run that has ended', async () => {
   assert.strictEqual(r.reason, 'rehomed');
   assert.strictEqual(r.run_id, 'eh-now');
 });
+
+test('task.assign from another live run is refused and writes nothing (check_only too)', async () => {
+  const a = await live('eh-a2');
+  const b = await live('eh-b2');
+  await taskFor(a, 'T-eh3', 'w-eh3');
+  await b.worker.write({ id: 'w-eh3b', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's2', last_event_at: Date.now() });
+  const leaseOf = async () => ((await a.task.list({})).tasks.find((t) => t.id === 'T-eh3') || {}).lease;
+  const t0 = await a.task.get({ task_id: 'T-eh3' }); const l0 = await leaseOf();
+  for (const extra of [{}, { check_only: true }]) {
+    await assert.rejects(b.task.assign({ task_id: 'T-eh3', worker_id: 'w-eh3b', ...extra }), (e) => { assert.strictEqual(e.code, 'E_ROLE', e.message); assert.strictEqual(e.detail.task_run_id, 'eh-a2'); return true; });
+  }
+  const t1 = await a.task.get({ task_id: 'T-eh3' });
+  assert.strictEqual(t1.run_id, 'eh-a2');
+  assert.strictEqual(t1.seq, t0.seq, 'the task row was not written');
+  assert.deepStrictEqual(await leaseOf(), l0, 'the lease row was not written');
+});

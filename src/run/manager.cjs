@@ -17,7 +17,7 @@ const { verifyReady } = require('./ready.cjs');
 const { rotateWireLog } = require('./wire-log.cjs');
 const S = require('./surface.cjs'); // ADR 0024, S2 fix round F4: the surface fields spawn/restart/resume return
 const I = require('./instructions.cjs'); // ADR 0024 amendment 1: the spawn-time CLAUDE.md copy
-const { fail } = require('./errors.cjs');
+const { fail } = require('./errors.cjs'); const ORG = require('./other-run-guard.cjs'); // ORG: a worker of another live run is refused at adoption
 const { checkWorkerId, checkIdFree, validateSpawnArgs, checkMemoryQueries, discardUnstarted } = require('./spawn-args.cjs');
 const AD = require('./agent-defaults.cjs'); // the config's per-agent-type model and effort defaults
 const TP = require('./tool-policy.cjs'); // ADR 0054 decision 4: a worker type's tool list
@@ -322,7 +322,8 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     if (known) return known;
     if (adopting.has(workerId)) return adopting.get(workerId);
     const p = W.adopt({ core, workerId, dataDir: root }).then(async (w) => {
-      await require('./other-run-guard.cjs').refuseLiveOtherRun(core, runId, w); /* before any file write, hold, kill or launch: another live run's worker is that run's */ workers.set(workerId, w); // no launch guard: a stop must always go through, and writeFilesFor below regenerates settings.json from the record
+      await ORG.refuseLiveOtherRun(core, runId, w); // before any file write, hold, kill or launch (other-run-guard.cjs)
+      workers.set(workerId, w); // no launch guard: a stop must always go through, and writeFilesFor below regenerates settings.json from the record
       await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the argv written below carries the notes lever
       const denied = await NM.adoptDenied(w, runId, ctx.memoryLevers, core); // another run's native_memory is never written into this run's settings; the record stays, the relaunch is refused
       if (denied) { w.adoptRefusal = denied; const rec = w.nativeMemory; w.nativeMemory = null; try { writeFilesFor(w); } catch (e) { w.lastError = { where: 'adopt.settings', code: e && e.code, message: e && e.message }; } finally { w.nativeMemory = rec; } } // the refusal is set first and kept whatever the rewrite does: a stop still goes through, a launch never reaches the old settings
