@@ -92,7 +92,7 @@ function createCompose({ callCore, manager, openManager, dataDir = null, runId =
   }
 
   async function spawn(args) {
-    const { view = 'compact', ...rest } = args || {};
+    const { view = 'compact', assignCore: _never, ...rest } = args || {}; // assignCore is the policy executor's own argument, never a tool's
     const row = await (await openManager()).spawn(rest);
     if (view === 'debug') return row;
     const out = compactSpawn(row, rest.model);
