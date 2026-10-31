@@ -82,7 +82,10 @@ function resolveWindowsShim(argv, platform = process.platform, execPath = proces
 // `tail` raises the 2,000-character output cap for a caller that parses the whole output (`git worktree list`).
 // `onChild(child)`, when given, is told the live child handle as soon as it is spawned (a cancel kills it by that handle).
 // `keep: 'ends'` keeps the head and the tail of each stream (an acceptance command; capture above).
-function runCommand(argvGiven, cwd, timeoutMs, { env, tail = TAIL, onChild, keep = 'head' } = {}) {
+// `register: 'check'` records the child in the machine-wide spawn register the moment it exists (ADR 0045 decision 4): the command is code a
+// worker wrote, and a process that descends from it must not be taken for the operator. A record that cannot be written ends the child
+// and the command does not run (fail closed); the record is retired when the child exits, leaving the tombstone that covers its orphans.
+function runCommand(argvGiven, cwd, timeoutMs, { env, tail = TAIL, onChild, keep = 'head', register = null } = {}) {
   return new Promise(resolve => {
     const t0 = Date.now();
     // A missing worktree or cwd is named as such: left to spawn it reads as ENOENT for the executable.
@@ -96,6 +99,15 @@ function runCommand(argvGiven, cwd, timeoutMs, { env, tail = TAIL, onChild, keep
     } catch (e) {
       return resolve({ executable: false, exit_code: null, ms: Date.now() - t0, timed_out: false, stdout: '', stderr: '', spawn_error: e.code || e.message });
     }
+    let unregister = () => {};
+    if (register && child.pid) {
+      const SR = require('./spawn-register.cjs'), spawnedAt = Date.now() - 1, rec = { kind: register, spawnedAt };
+      try { SR.registerProcess({ pid: child.pid, ...rec }, 'a worker-controlled check command'); } catch (e) {
+        const gone = killTree(child);
+        return Promise.resolve(gone).then(() => resolve({ executable: false, exit_code: null, ms: Date.now() - t0, timed_out: false, stdout: '', stderr: '', spawn_error: `not run: ${(e && e.message) || e}` }));
+      }
+      unregister = () => SR.unregister(child.pid, rec);
+    }
     if (onChild) onChild(child);
     const out = capture(keep, tail), errText = capture(keep);
     let settled = false, timedOut = false, killing = null, pipesDropped = false;
@@ -105,6 +117,7 @@ function runCommand(argvGiven, cwd, timeoutMs, { env, tail = TAIL, onChild, keep
     // A grandchild that outlives its parent and holds our pipes would keep `close` from ever firing, and nothing
     // may kill it by a bare pid; so after a short grace our ends of the pipes are dropped and the survivor is left.
     child.once('exit', () => {
+      try { unregister(); } catch { /* the record stays; the next read retires it */ }
       if (timedOut) return;
       clearTimeout(timer);
       const drop = setTimeout(() => { pipesDropped = true; try { child.stdout.destroy(); child.stderr.destroy(); } catch { /* closed */ } }, 2000);
@@ -275,7 +288,7 @@ async function runAcceptance(acceptance, worktree, filesOwned, { base, baseSourc
     }
     const once = async (room) => {
       let mine = null;
-      const r = await runCommand(c.argv, cwd, Math.min(own, room), { keep: 'ends', ...(cancel ? { onChild: (ch) => { mine = ch; cancel.live.add(ch); if (cancel.cancelled) killTree(ch); } } : {}) });
+      const r = await runCommand(c.argv, cwd, Math.min(own, room), { keep: 'ends', register: 'check', ...(cancel ? { onChild: (ch) => { mine = ch; cancel.live.add(ch); if (cancel.cancelled) killTree(ch); } } : {}) });
       if (mine) cancel.live.delete(mine);
       return r;
     };
