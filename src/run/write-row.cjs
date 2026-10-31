@@ -81,7 +81,7 @@ function createWriteRow(ctx, flags) {
       written = await ctx.core.worker.write(row);
     } catch (e) {
       if (state === 'running' && e && e.code === 'E_WORKER_NOT_LIVE') {
-        if (!w.settled && !opts.refresh) W.settle(w, w.exitCode, w.exitSignal, 'core-refused-running', ctx);
+        if (!w.settled && !opts.refresh && !W.holdForExitEvent(w)) W.settle(w, w.exitCode, w.exitSignal, 'core-refused-running', ctx); // the process died in flight: hold for the exit event's code, as the pid-check branch above
         return null;
       }
       throw e;

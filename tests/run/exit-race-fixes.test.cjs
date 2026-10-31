@@ -38,3 +38,23 @@ test('stop: a worker that exits during the background-task stop returns the exit
   assert.strictEqual(w.child, null);
 });
 
+test('core refuses the running write for a process that died in flight: the death waits for the exit code', async () => {
+  const { w, child, dataDir } = record(process.pid); // the pid still answers; the core says the worker is not live
+  w.readyAt = Date.now(); w.state = 'starting';
+  const written = [];
+  const ctx = { runId: 'r1', adapterPid: process.pid, dataDir, core: { worker: {
+    write: async (row) => {
+      if (row.state === 'running') throw Object.assign(new Error('not live'), { code: 'E_WORKER_NOT_LIVE' });
+      written.push({ state: row.state, exit_code: row.exit_code }); return { seq: written.length + 1 };
+    }, get: async () => null } } };
+  ctx.writeRow = WR.createWriteRow(ctx, { closed: false }); w.ctx = ctx;
+  await ctx.writeRow(w, 'running');
+  assert.strictEqual(w.settled, false, 'the death is held for the exit event, not settled with a null code');
+  assert.deepStrictEqual(written, []);
+  child.exitCode = 3; W.settle(w, 3, null, 'exit-event', ctx);
+  await w.queue;
+  const dead = written.find((x) => x.state === 'dead' || x.state === 'stopped');
+  assert.ok(dead, 'a terminal row is written');
+  assert.strictEqual(dead.exit_code, 3);
+});
+
