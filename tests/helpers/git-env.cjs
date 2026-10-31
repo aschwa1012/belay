@@ -19,8 +19,12 @@ if (!globalThis[KEY]) {
   for (const k of Object.keys(process.env)) if (STRIP.test(k)) delete process.env[k];
 
   // Inside the process's spawn register when there is one (the runner removes that tree even after a kill), else in a directory of its own.
-  const reg = process.env.BELAY_SPAWN_REGISTRY;
-  if (reg) fs.mkdirSync(reg, { recursive: true });
+  // Only a register tmp.cjs made (it records it as `<pid>|<path>` in BELAY_TEST_SPAWN_REGISTRY_MADE_BY); an explicit one, an operator's
+  // real register, never gets a file of ours. If the register cannot be used (ENOTDIR, a missing parent), the own directory is used.
+  let reg = process.env.BELAY_SPAWN_REGISTRY;
+  const madeBy = (process.env.BELAY_TEST_SPAWN_REGISTRY_MADE_BY || '').split('|');
+  if (!reg || madeBy[1] !== reg) reg = null;
+  if (reg) { try { fs.mkdirSync(reg, { recursive: true }); } catch { reg = null; } }
   const dir = reg ? null : fs.mkdtempSync(path.join(os.tmpdir(), 'belay-gitcfg-'));
   const file = path.join(reg || dir, 'gitconfig');
   fs.writeFileSync(file, '[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n[gc]\n\tauto = 0\n');
