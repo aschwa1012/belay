@@ -167,7 +167,8 @@ function createPolicyExecutor({ core, runId, assignFor, closing = () => false, c
     if (!run || run.ended_at != null) { out.held = 'ended'; return out; }
     if (run.paused_at != null) { out.held = 'paused'; return out; }
     const integrations = await read(g.integration.list, 'integrations', []);
-    const halted = PW.haltedIds(PW.derive({ runId, tasks, integrations, steps, failures: [] }), tasks);
+    const revisions = await PW.readRevisions(g.policy, runId, tasks); // an amend lifts a halt, and the fixes' creation order (policy-wakes derive)
+    const halted = PW.haltedIds(PW.derive({ runId, tasks, integrations, steps, failures: [], revisions }), tasks);
     const claimed = new Set(steps.filter((s) => !(s.outcome === 'skipped' && /^E_PAUSED/.test(s.error || ''))).map((s) => keyOf(s.step, { table: s.trigger_table, id: s.trigger_id, seq: Number(s.trigger_seq) || 0 })));
     for (const c of due({ runId, tasks, integrations })) {
       if (stopped()) break;

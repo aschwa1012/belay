@@ -71,6 +71,7 @@ async function integrate(c, env) {
   const ref = `integration:${row.id}`;
   if (row.existing === true) return { outcome: row.superseded === true ? 'superseded' : 'done', row_ref: ref };
   if (row.state === 'failed') return exception(`integration ${row.id} failed${row.error ? `: ${String(row.error.message || row.error).slice(0, 200)}` : ''}`, ref);
+  if (row.state === 'conflict') return { outcome: 'done', row_ref: ref }; // a conflict is a finished step: the row carries passed:false too, but only E3 wakes for it
   if (row.passed === false) return exception(`integration ${row.id} checks failed`, ref);
   return { outcome: 'done', row_ref: ref }; // a conflict is a finished step too: the integration row says so and the exception wake carries it
 }

@@ -56,7 +56,7 @@ async function workOf(core, row) {
 function summaryOf(row, byId, forecasts) {
   const r = row.results || {};
   const fr = fixRoundsOf(row, byId);
-  const fc = forecasts && forecasts.get(`${row.id}:${row.handoff && row.handoff.at}`);
+  const fc = forecasts && typeof forecasts.get === 'function' && forecasts.get(`${row.id}:${row.handoff && row.handoff.at}`);
   const review = reviewWake.reviewOf(row); // a review whose verdict check was executable: its facts ride on the wake (review-wake.cjs)
   return { task_id: row.id, state: row.state, passed: !!r.passed, executable: !!r.executable, checks: ((r.checks) || []).length, failing: failedKinds(row), ...(review ? { review } : {}), ...(r.flaky ? { flaky: true } : {}), ...(r.uncommitted ? { uncommitted: true } : {}), ...(r.queued ? { queued: r.queued } : {}), ...(fr ? { fix_rounds: fr } : {}), ...(fc ? { forecast: fc } : {}) };
 }
@@ -89,10 +89,15 @@ async function notePending(w, ctx) {
 // another process and cannot see that, so the end is a ledger event (kind release_failed, ok 0, the code), the same cross-process
 // path call_detached/call_ended use; enrichWakes reads it, drops the watched entry and tells the orchestrator. Best effort: a write
 // that fails is dropped, and the entry is then forgotten by age once its worker is not live.
+// The message carries the seq of the task's row current when the failure is written (best effort), so a plan amend after it is found by row order and not by clock.
 function recordFailure(ctx, w, taskId, code, message, turn) {
   const rec = ctx.core && ctx.core.memory && ctx.core.memory.recordEvent;
   if (typeof rec !== 'function') return Promise.resolve();
-  return Promise.resolve().then(() => rec({ kind: 'release_failed', ok: 0, code: String(code || 'E_INTERNAL'), worker_id: w.id, task_id: taskId, message: JSON.stringify({ turn, by: String(message || '').slice(0, 150) }) })).catch(() => {});
+  return Promise.resolve().then(async () => {
+    let seq = null;
+    try { const t = ctx.core.task && typeof ctx.core.task.get === 'function' ? await ctx.core.task.get({ task_id: taskId }) : null; if (t && Number.isFinite(Number(t.seq))) seq = Number(t.seq); } catch { /* the time comparison stands in */ }
+    return rec({ kind: 'release_failed', ok: 0, code: String(code || 'E_INTERNAL'), worker_id: w.id, task_id: taskId, message: JSON.stringify({ turn, by: String(message || '').slice(0, 150), ...(seq == null ? {} : { seq }) }) });
+  }).catch(() => {});
 }
 
 async function run(w, ctx, ev) {
@@ -351,4 +356,4 @@ function evaluatingHolds(seen, rows, runId) {
   return [...pending].filter(([, p]) => live.has(p.worker_id)).map(([id]) => `eval:${id}`).concat(held);
 }
 
-module.exports = { unevaluated, notePending, evaluatingHolds, startRelease, cancelEvaluation, evalOf, enrichWakes, clause, turnEndText, summaryOf, workOf, cut, holdMs, WAKE_TEXT_MAX, PENDING_MAX_MS, RELEASE_WAKE_HOLD_MS };
+module.exports = { __recordFailure: recordFailure, unevaluated, notePending, evaluatingHolds, startRelease, cancelEvaluation, evalOf, enrichWakes, clause, turnEndText, summaryOf, workOf, cut, holdMs, WAKE_TEXT_MAX, PENDING_MAX_MS, RELEASE_WAKE_HOLD_MS };

@@ -198,13 +198,14 @@ test('an older store opens, gains the policy tables and columns, keeps its rows,
     db.prepare("INSERT INTO task(id, run_id, spec, state, written_at, written_by) VALUES ('old-t', 'r0', 'an old task', 'open', 1, 'orchestrator')").run();
     db.prepare("INSERT INTO meta(key, value) VALUES ('schema_version', '2')").run();
     const had = (t) => db.prepare("SELECT 1 FROM sqlite_master WHERE name = ?").get(t);
-    assert.ok(!had('policy_step') && !had('check_flake'));
+    assert.ok(!had('policy_step') && !had('check_flake') && !had('ix_usage_turn'));
     assert.ok(!db.prepare('PRAGMA table_info(task)').all().some((c) => c.name === 'acted_by'));
     db.close();
     const s = new Store(f, { stamp: true });
     try {
       assert.ok(s.db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'policy_step'").get());
       assert.ok(s.db.prepare("SELECT 1 FROM sqlite_master WHERE name = 'check_flake'").get());
+      assert.ok(s.db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name = 'ix_usage_turn'").get(), 'an older store gains the usage turn index on open');
       const old = s.p("SELECT * FROM task WHERE id = 'old-t'").get();
       assert.strictEqual(old.spec, 'an old task');
       assert.deepStrictEqual([old.acted_by, old.trigger, old.policy_rev, old.policy], [null, null, null, null], 'nothing guesses a stamp for an older row');
