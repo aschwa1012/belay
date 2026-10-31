@@ -122,6 +122,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   let pollHandle = null;
   let pollInFlight = false; // 5a-2: at most one store read at a time, guard not a queue
   let pollByTurnEnd = false; // whether the read in flight was started by a turn end
+  let pollReadDone = false, pollAgain = false; // the pass's read is done; a turn end landed after it, so poll once more
   const deadPids = require('./dead-pids.cjs').createDeadPids({ graceMs: DEATH_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid) });
   const holdRecorder = createHoldRecorder(); // wake.cjs (design item 9): moved out of this file
   const leftovers = require('./orchestrator-leftovers.cjs').createLeftovers({ child, P, state, core, runId }); // ADR 0054 amendment 2
@@ -165,11 +166,9 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   // tree-first. Used by step 9's timeout/interrupt path AND by the ordinary "no worker mid-turn, no
   // wake unanswered" close (`pollOnce`, below): an orchestrator that does not exit when its stdin closes must
   // not make `belay run` permanent, so the same bound applies regardless of which rule closed stdin.
-  // `reason` is recorded only the first time — whichever rule got here first owns `ended_by` — but the
-  // wait-then-kill bound always runs exactly once (`state.boundStarted` guards that), even when stdin
-  // was already closed and `state.finishing` was already set by another rule. `killed_after_close`
-  // (5a-2) names whether the bound had to act: a run whose orchestrator ignored its closed stdin
-  // returns a non-zero exit code even though `ended_by` is still the stdin rule's sentence.
+  // `reason` is recorded only the first time (the first rule here owns `ended_by`); the wait-then-kill bound runs
+  // exactly once (`state.boundStarted`). `killed_after_close` (5a-2) names whether the bound had to act: a run whose
+  // orchestrator ignored its closed stdin returns a non-zero exit code even though `ended_by` is the stdin rule's sentence.
   async function closeThenKillOnDeadline(reason) {
     if (!state.finishing) {
       state.finishing = true;
@@ -248,40 +247,44 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     }
     if (ev.event === 'paused') rec.paused_by = ev.paused_by;
     if (ev.turns_skipped) rec.turns_skipped = ev.turns_skipped;
-    if (!ev.unheld && hold.holdWake(rec)) return; // 6f design item 2: held while paused, never suppressed; the budget pause's own wake is the one not held
+    if (!ev.unheld && hold.holdWake(rec, text)) return; // 6f design item 2: held while paused, never suppressed; the budget pause's own wake is the one not held
     if (writeStdinLine(text, ev.worker_id, rec)) state.wakes.push(rec);
     else state.wakesSuppressed.push({ ...ev, reason: 'stdin was broken when this event was found' });
   }
 
   // 5b: one poll chain for the run's whole life, from the moment the ready check begins until the
   // run is finishing — not only while the orchestrator is idle, because a worker can finish a turn
-  // or die while the orchestrator is still mid-turn on its own, and that wake must still reach stdin
-  // the moment it is found (ADR 0015's evidence: a wake is cheaper precisely because it does not
-  // wait for an idle moment). Started synchronously from the `ready` event itself (`handleEvent`,
-  // below), after the synchronous `verifyClaudeReady` check has already run (S2 fix round 3), so that a worker's turn
+  // or die while the orchestrator is mid-turn, and that wake must reach stdin the moment it is found
+  // (ADR 0015's evidence: a wake does not wait for an idle moment). Started synchronously from the `ready` event itself (`handleEvent`), after the synchronous `verifyClaudeReady` check has already run (S2 fix round 3), so that a worker's turn
   // ending inside the orchestrator's own first stdout chunk — ready and its own first turn end can
   // arrive in the very same chunk — is still caught by a read that began before that chunk's later
   // events set the orchestrator busy or idle. 5a-2's guards still hold: at most one store read in
   // flight, and a failed read does not fail open. Every state is read (not just starting/running) so
   // a death is seen. The stdin-close decision is made only while idle (the freshest `state.idle`, not
-  // the snapshot): no worker of this run mid-turn (the store's own `mid_turn` column, every turn, not
-  // only the first), no wake still unanswered, and (5b-4) no non-terminal row whose pid just died
+  // the snapshot): no worker of this run mid-turn (the store's own `mid_turn` column, every turn), no wake still unanswered, and (5b-4) no non-terminal row whose pid just died
   // still inside its detector grace.
+  // The guard covers the whole pass, not only the read: a second pass could close stdin under the first's unwritten wakes.
+  // A turn end during the pass sets `pollAgain`: it skips its idle close (its rows predate the turn) and polls once more, on
+  // fresh rows, when it ends. Each core call is bounded by the client's 30 s timeout (call-limits.cjs): a stalled owner delays wakes, not wedges them.
   async function pollOnce(byTurnEnd = false) {
     if (state.finishing || pollInFlight) return;
-    pollInFlight = true;
+    pollInFlight = true; pollReadDone = false; pollAgain = false;
+    try { await pollPass(byTurnEnd); } finally { pollInFlight = false; }
+    if (pollAgain && !state.finishing) { if (pollHandle) { clearTimeout(pollHandle); pollHandle = null; } pollOnce(true); }
+  }
+
+  async function pollPass(byTurnEnd) {
     pollByTurnEnd = byTurnEnd;
     const turnAtStart = state.turns;
-    let list = null;
-    let failReason = null;
+    let list = null, failReason = null;
     try { list = await core.worker.list({}); }
     catch (e) { failReason = (e && (e.code || e.message)) || String(e); }
     state.polls += 1;
-    pollInFlight = false;
+    pollReadDone = true;
     // A turn end whose poll was skipped because a read the ready event or the timer started was in flight is the turn a hold from
     // this read names, not the turn the read started at (stale). A later turn end in the same chunk as the end that started this read is neither.
     const turnAtCall = state.skippedTurn == null ? turnAtStart : state.skippedTurn;
-    state.skippedTurn = null;
+    state.skippedTurn = pollAgain ? turnAtCall : null; // a turn end during the read keeps its turn for the re-poll
     if (state.finishing) return; // the run ended while this read was in flight
 
     if (failReason !== null) {
@@ -301,6 +304,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     for (const ev of (await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), state.evalSeen || (state.evalSeen = new Map()), { holdMs: require('./release-eval.cjs').holdMs(), workers: rows })).concat(await noteWatcher.poll(), await callWatcher.poll(), spec.budgetWake ? spec.budgetWake.takeWakes() : [])) writeWake(ev); // ADR 0058 amendment 4: a turn_end carries its release evaluation
     if (state.finishing) return; // a wake's own write may have found the child already gone
 
+    if (pollAgain) { pollHandle = setTimeout(pollOnce, pollMs); return; } // a turn ended after the read: decide on the re-poll's rows
     if (state.idle && await require('./orchestrator-idle-close.cjs').idleClose({ state, rows, runId, pending_deaths, turnAtCall, hold, awaitingWakeIds, callWatcher, recordHold, preClose, writeWake, closeThenKillOnDeadline })) return;
     pollHandle = setTimeout(pollOnce, pollMs);
   }
@@ -367,7 +371,8 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       // idle period, not to the whole run (ADR 0015's evidence table counts a hold at each turn end).
       holdRecorder.reset();
       if (pollHandle) { clearTimeout(pollHandle); pollHandle = null; }
-      if (pollInFlight && !pollByTurnEnd && state.skippedTurn == null) state.skippedTurn = state.turns;
+      if (pollInFlight && !pollReadDone && !pollByTurnEnd && state.skippedTurn == null) state.skippedTurn = state.turns;
+      if (pollInFlight) pollAgain = true;
       pollOnce(true);
       return;
     }
