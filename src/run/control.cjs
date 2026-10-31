@@ -8,6 +8,7 @@
 // 1 MiB, a peer that overflows it destroyed).
 
 const net = require('node:net');
+const { StringDecoder } = require('node:string_decoder');
 const fs = require('node:fs');
 const { adapterPipeName } = require('../core/lock.cjs');
 
@@ -90,8 +91,9 @@ function createWorkerControl({ dataDir, manager, pid = process.pid, redeem }) {
   function onConn(c) {
     conns.add(c);
     let buf = '';
+    const dec = new StringDecoder('utf8'); // a multi-byte character can be split across two chunks
     c.on('data', (d) => {
-      buf += d.toString('utf8');
+      buf += dec.write(d);
       if (buf.length > MAX_LINE_BYTES) { buf = ''; c.destroy(); return; }
       let i;
       while ((i = buf.indexOf('\n')) >= 0) {

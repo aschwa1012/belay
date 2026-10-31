@@ -8,10 +8,11 @@ const EX = require('./exit.cjs');
 
 // True while the death of a record whose child is still attached should wait for the exit event (the exit
 // handler settles it first, 'exit-event', if it arrives). The first check of a pid starts the clock; a
-// relaunch's new pid restarts it. An adopted record (no child) has no event coming, and a record not yet ready
-// is failNoReady's (its own bounded wait), so neither is held. The bound is exit-hold.cjs's.
+// relaunch's new pid restarts it. An adopted record (no child) has no event coming, so it is not held. A record
+// not yet ready is held too: the poll finds its death before the event, and a null code settled then reaches
+// the wake before the code-carrying fill-in does. The bound is exit-hold.cjs's.
 function holdForExitEvent(w) {
-  if (!w.child || !w.readyAt) return false;
+  if (!w.child) return false;
   if (w.pidGoneAt == null || w.pidGonePid !== w.pid) { w.pidGoneAt = Date.now(); w.pidGonePid = w.pid; }
   return Date.now() - w.pidGoneAt < holdBoundMs();
 }

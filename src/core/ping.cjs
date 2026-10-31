@@ -10,6 +10,7 @@
 // pulling in the store, the owner or the embedder.
 
 const net = require('node:net');
+const { StringDecoder } = require('node:string_decoder');
 const { pipeName } = require('./lock.cjs');
 
 function request(dataDir, method, params, timeoutMs) {
@@ -30,8 +31,9 @@ function request(dataDir, method, params, timeoutMs) {
       sock = net.connect(pipe);
     } catch (e) { return finish({ ok: false, reason: e.code || e.message, code: 'E_NO_OWNER' }); }
     sock.once('connect', () => { try { sock.write(JSON.stringify({ id: 1, method, params: params || {} }) + '\n'); } catch (e) { finish({ ok: false, reason: e.code || e.message, code: 'E_OWNER_LOST' }); } });
+    const dec = new StringDecoder('utf8');
     sock.on('data', d => {
-      buf += d.toString('utf8');
+      buf += dec.write(d);
       const i = buf.indexOf('\n');
       if (i < 0) return;
       let msg;
