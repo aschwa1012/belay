@@ -17,7 +17,7 @@ const { verifyReady } = require('./ready.cjs');
 const { rotateWireLog } = require('./wire-log.cjs');
 const S = require('./surface.cjs'); // ADR 0024, S2 fix round F4: the surface fields spawn/restart/resume return
 const I = require('./instructions.cjs'); // ADR 0024 amendment 1: the spawn-time CLAUDE.md copy
-const { fail } = require('./errors.cjs'); const ORG = require('./other-run-guard.cjs'); // ORG: a worker of another live run is refused at adoption
+const { fail } = require('./errors.cjs');
 const { checkWorkerId, checkIdFree, validateSpawnArgs, checkMemoryQueries, discardUnstarted } = require('./spawn-args.cjs');
 const AD = require('./agent-defaults.cjs'); // the config's per-agent-type model and effort defaults
 const TP = require('./tool-policy.cjs'); // ADR 0054 decision 4: a worker type's tool list
@@ -321,8 +321,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const known = workers.get(workerId);
     if (known) return known;
     if (adopting.has(workerId)) return adopting.get(workerId);
-    const p = W.adopt({ core, workerId, dataDir: root }).then(async (w) => {
-      await ORG.refuseLiveOtherRun(core, runId, w); // before any file write, hold, kill or launch (other-run-guard.cjs)
+    const p = W.adopt({ core, workerId, dataDir: root, runId }).then(async (w) => {
       workers.set(workerId, w); // no launch guard: a stop must always go through, and writeFilesFor below regenerates settings.json from the record
       await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the argv written below carries the notes lever
       const denied = await NM.adoptDenied(w, runId, ctx.memoryLevers, core); // another run's native_memory is never written into this run's settings; the record stays, the relaunch is refused
