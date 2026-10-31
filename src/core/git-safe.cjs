@@ -74,17 +74,24 @@ async function filterOverrides(run, git, cwd, env, timeoutMs, { lineEndings = fa
       out.push('-c', nl < 0 ? key : `${CORE_KEYS.has(core) ? core : key}=${entry.slice(nl + 1)}`);
     }
   }
-  const r = await run(git, ['--no-pager', 'config', '--null', '--show-scope', '--name-only', '--get-regexp', '^filter\\.'], { cwd, env, timeoutMs, maxOut: 65536 });
-  if (r.code === 1 && r.total === 0) return out; // no filter key outside the system config
+  const r = await run(git, ['--no-pager', 'config', '--null', '--show-scope', '--name-only', '--get-regexp', '^(filter\\.|merge\\..+\\.driver$)'], { cwd, env, timeoutMs, maxOut: 65536 });
+  if (r.code === 1 && r.total === 0) return out; // no filter or merge driver key outside the system config
   if (r.code !== 0) throw checkFailed('git config', r);
   if (r.total > r.kept) throw tooMany();
   const parts = r.out.toString('utf8').split('\0');
   const drivers = new Set();
+  const mergers = new Set(); // merge.<name>.driver: merge-tree and merge run it for a path whose attributes name it
   for (let i = 0; i + 1 < parts.length; i += 2) {
     const [scope, key] = [parts[i], parts[i + 1]];
     if (scope === 'global' || scope === 'system') continue;
+    const mm = /^merge\.(.+)\.driver$/i.exec(key);
+    if (mm) { mergers.add(mm[1]); continue; }
     const m = /^filter\.(.+)\.[^.]+$/i.exec(key);
     if (m) drivers.add(m[1]);
+  }
+  for (const d of mergers) {
+    if (badKey(d)) throw Object.assign(new Error(`git: the repository's merge driver ${JSON.stringify(d)} cannot be switched off, so the read is refused`), { code: 'E_GIT', detail: { reason: 'merge_driver_name', driver: d } });
+    out.push('-c', `merge.${d}.driver=`);
   }
   for (const d of drivers) {
     if (badKey(d)) throw Object.assign(new Error(`git: the repository's filter driver ${JSON.stringify(d)} cannot be switched off, so the read is refused`), { code: 'E_GIT', detail: { reason: 'filter_name', driver: d } });
