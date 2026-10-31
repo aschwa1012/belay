@@ -12,7 +12,7 @@ const crypto = require('node:crypto');
 const { fit } = require('../core/fit-budget.cjs');
 const { summarise, POLICY } = require('./summarise.cjs');
 const { defaultLevers } = require('./memory-levers.cjs');
-const { sentUnknown, tokensOf } = require('./sent-unknown.cjs');
+const { sentUnknown, tokensOf } = require('./usage-write-helpers.cjs');
 
 const RUN_END_BOUND_MS = 5000; // atRunEnd's whole budget, the give-up record included
 const GIVE_UP_MS = 500;
