@@ -58,6 +58,22 @@ test('usage errors exit 2 and name the subcommands', async () => {
   }
 });
 
+test('a verb refuses an option that another verb takes, as a usage error', async () => {
+  const cases = [
+    [['create', 't1', '--force'], /--force is not an option of worktree create/],
+    [['create', 't1', '--into', 'x'], /--into is not an option of worktree create/],
+    [['remove', 't1', '--take-over'], /--take-over is not an option of worktree remove <task-id>/],
+    [['remove', '--integration', 'i1', '--delete-branch'], /--delete-branch is not an option of worktree remove --integration/],
+    [['merge', 't1', '--force'], /--force is not an option of worktree merge/],
+    [['merge', 't1', '--delete-branch'], /--delete-branch is not an option of worktree merge/],
+  ];
+  for (const [args, re] of cases) {
+    const r = await belay(['worktree', ...args, '--data', data], repo);
+    assert.strictEqual(r.code, 2, `${args.join(' ')}: ${r.err}`);
+    assert.match(r.err, re);
+  }
+});
+
 test('create, list, merge and remove a task\'s worktree from the CLI', async () => {
   const check = { argv: [process.execPath, '-e', "require('fs').accessSync('cli.txt')"] };
   const t = await orch.task.create({ spec: 'cli', acceptance: { commands: [check] } });
