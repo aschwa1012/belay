@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs');
 // utf8-split-chunks.test.cjs — a multi-byte character split across two 'data' chunks must reach every line reader intact. Each case
 // forces the split by construction (a replaced stream or a fake socket delivering two chunks); nothing depends on timing.
 
