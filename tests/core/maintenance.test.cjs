@@ -33,10 +33,10 @@ test('a row with a ttl is swept by the owner and is then genuinely gone', async 
   // early, and the sweep is shown by advancing the clock past the lifetime, not by waiting it out.
   const realNow = Date.now.bind(Date);
   let skew = 0;
-  Date.now = () => realNow() + skew;
-  const dir = sandbox();
-  let c, err;
+  let dir, c, err;
   try {
+    Date.now = () => realNow() + skew;
+    dir = sandbox();
     c = await openCore({
       dataDir: dir, caller: callerFor('orchestrator'), embed: false,
       ownerOpts: { sweepMs: 50, heartbeatMs: 50 },
