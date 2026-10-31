@@ -54,6 +54,8 @@ const usd = (x) => { let t = Number(x).toFixed(4); if (Number(t) !== 0) t = t.re
 
 // Control characters and bidi marks become spaces and the string is capped, so nothing a row holds starts a line of its own.
 const CONTROL = new RegExp('[\u0000-\u001f\u007f-\u009f\u061c\u200b-\u200f\u2028\u2029\u2060\u202a-\u202e\u2066-\u2069\ufeff]', 'g');
+// The whitespace class is built from String.fromCharCode(92) on purpose: a `/s{2,}/` written by a shell-mangled edit once dropped
+// the backslash and turned every "ss" into a space. Keep it this way.
 const clean = (x, cap = 80) => Array.from(String(x).replace(CONTROL, ' ').replace(new RegExp(String.fromCharCode(92) + 's{2,}', 'g'), ' ')).slice(0, cap).join('');
 
 // One line per step: facts only.
