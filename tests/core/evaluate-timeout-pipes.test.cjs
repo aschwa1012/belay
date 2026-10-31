@@ -16,7 +16,7 @@ const { runCommand } = core('evaluate.cjs');
 const FIXTURE = path.join(__dirname, '..', 'run', 'fixtures', 'leak-parent.cjs');
 
 for (const kill of [{ ok: true }, { ok: false, error: 'refused (test)' }]) {
-  test(`a timeout whose tree kill reports ok=${kill.ok} still resolves and drops the pipes of a holder outside the tree`, async (t) => {
+  test(`a timeout whose tree kill reports ok=${kill.ok} still resolves and drops the pipes of a holder outside the tree`, { timeout: 20000 }, async (t) => {
     const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-eval-pipes-'));
     const flag = path.join(dir, 'alive');
     fs.writeFileSync(flag, '');
@@ -30,5 +30,7 @@ for (const kill of [{ ok: true }, { ok: false, error: 'refused (test)' }]) {
     assert.strictEqual(r.timed_out, true);
     assert.strictEqual(child.stdout.destroyed, true, 'stdout dropped');
     assert.strictEqual(child.stderr.destroyed, true, 'stderr dropped');
+    // only the 2 s drop sets this: without it the holder's own exit (up to 60 s) would end the wait, and node would destroy the streams
+    if (kill.ok) assert.ok(r.pipes_dropped, 'the exit-armed drop closed the pipes');
   });
 }
