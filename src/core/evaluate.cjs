@@ -200,10 +200,10 @@ async function resolveRefs(worktree, base) {
   const ref = base || DEFAULT_BASE_REF;
   if (base && base.startsWith('-')) return { failed: ref, stderr: 'a ref may not begin with a dash' };
   const b = base
-    ? await runCommand(['git', 'rev-parse', '--verify', `${base}^{commit}`], worktree, 30000)
-    : await runCommand(['git', 'merge-base', 'HEAD', DEFAULT_BASE_REV], worktree, 30000);
+    ? await runCommand(['git', 'rev-parse', '--verify', `${base}^{commit}`], worktree, 30000, { register: 'check' })
+    : await runCommand(['git', 'merge-base', 'HEAD', DEFAULT_BASE_REV], worktree, 30000, { register: 'check' });
   if (!b.executable || b.exit_code !== 0 || !b.stdout.trim()) return { failed: ref, stderr: (b.stderr || b.spawn_error || '').trim().slice(0, 400) };
-  const h = await runCommand(['git', 'rev-parse', 'HEAD'], worktree, 30000);
+  const h = await runCommand(['git', 'rev-parse', 'HEAD'], worktree, 30000, { register: 'check' });
   if (!h.executable || h.exit_code !== 0 || !h.stdout.trim()) return { failed: 'HEAD', stderr: (h.stderr || h.spawn_error || '').trim().slice(0, 400) };
   return { ref, base_sha: b.stdout.trim(), head_sha: h.stdout.trim() };
 }
@@ -236,7 +236,7 @@ async function filesWithinOwned(worktree, filesOwned, base, baseSource) {
   // HEAD is what a worker's committed work looks like (ADR 0010 amendment 3).
   const refs = await resolveRefs(worktree, base);
   if (refs.failed) return notRun(`the ref ${refs.failed} could not be resolved, so the changed set is unknown`, { base_ref: base || DEFAULT_BASE_REF, failed_ref: refs.failed, stderr: refs.stderr });
-  const d = await runCommand(['git', 'diff', '--name-status', '-z', '-M', refs.base_sha, 'HEAD'], worktree, 30000, { tail: LIST_TAIL, env: readOnlyGitEnv() });
+  const d = await runCommand(['git', 'diff', '--name-status', '-z', '-M', refs.base_sha, 'HEAD'], worktree, 30000, { tail: LIST_TAIL, env: readOnlyGitEnv(), register: 'check' });
   if (!d.executable || d.exit_code !== 0) return notRun('git diff from the base failed', { base_ref: refs.ref, base_sha: refs.base_sha, head_sha: refs.head_sha, exit_code: d.exit_code, stderr: (d.stderr || d.spawn_error || '').trim().slice(0, 400) });
   if (d.truncated) return notRun(`git diff listed more than ${LIST_TAIL} characters, so the changed set is not known whole`, { base_ref: refs.ref, base_sha: refs.base_sha, head_sha: refs.head_sha });
   const owned = Array.isArray(filesOwned) ? filesOwned : [];

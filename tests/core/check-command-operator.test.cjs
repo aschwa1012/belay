@@ -76,32 +76,67 @@ test('a register that cannot be written ends the check command at once', { timeo
   } finally { try { fs.unlinkSync(asFile); } catch { /* gone */ } try { fs.unlinkSync(marker); } catch { /* never written */ } reg.remove(); }
 });
 
+const HARNESS = path.join(__dirname, '..', 'helpers', 'check-harness.cjs');
+const waitFor = async (ok, ms, what) => {
+  for (const end = Date.now() + ms; Date.now() < end;) { if (ok()) return; await new Promise((r) => setTimeout(r, 25)); }
+  assert.fail(`timed out waiting for ${what}`);
+};
+const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } }; // signal 0 sends nothing
+
 test('a harness that exits mid-check retires the record at that moment, so the tombstone covers an orphan started late', { timeout: 60000 }, async () => {
   ownSpawnRegistry();
-  const harness = spawn(process.execPath, [path.join(__dirname, '..', 'helpers', 'check-harness.cjs')], { env: process.env, windowsHide: true, stdio: ['ignore', 'pipe', 'inherit'] });
+  const harness = spawn(process.execPath, [HARNESS, 'soft', '-e', 'setTimeout(() => {}, 4000)'], { env: process.env, windowsHide: true, stdio: ['ignore', 'pipe', 'inherit'] });
   let out = '';
   harness.stdout.on('data', (d) => { out += d; });
   await new Promise((res) => harness.once('close', res));
   const [pidText, aliveAt] = out.trim().split(' ');
   const pid = Number(pidText);
-  try {
-    assert.ok(pid > 0, `the harness named no check pid: ${out}`);
-    assert.deepStrictEqual(SR.list({ persist: false }).filter((r) => r.pid === pid), [], 'no live record is left for the check');
-    const tomb = SR.tombstones().find((t) => t.pid === pid);
-    assert.ok(tomb, 'a tombstone names the check');
-    assert.strictEqual(tomb.kind, 'check');
-    assert.ok(tomb.until >= Number(aliveAt), `the lifetime closed at ${tomb.until}, before the check was seen alive at ${aliveAt}`);
-  } finally { try { process.kill(pid); } catch { /* gone */ } } // the check child, by its exact pid
+  assert.ok(pid > 0, `the harness named no check pid: ${out}`);
+  assert.deepStrictEqual(SR.list({ persist: false }).filter((r) => r.pid === pid), [], 'no live record is left for the check');
+  const tomb = SR.tombstones().find((t) => t.pid === pid);
+  assert.ok(tomb, 'a tombstone names the check');
+  assert.strictEqual(tomb.kind, 'check');
+  assert.ok(tomb.until >= Number(aliveAt), `the lifetime closed at ${tomb.until}, before the check was seen alive at ${aliveAt}`);
+  await waitFor(() => !alive(pid), 15000, 'the check to end by itself'); // it ends by its own timer; nothing is killed by pid
 });
 
-test('a live check record is stamped on the timer', { timeout: 60000 }, async () => {
+test('a live check record is stamped at spawn and every second after', { timeout: 60000 }, async () => {
   ownSpawnRegistry();
   const CR = core('check-register.cjs');
   let child = null;
   const run = runCommand([process.execPath, '-e', 'setTimeout(() => {}, 400)'], os.tmpdir(), 30000, { register: 'check', onChild: (c) => { child = c; } });
   const file = path.join(SR.dir(), `${child.pid}.json`);
-  assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).seen_at, undefined, 'not stamped at the spawn');
-  CR.stamp(Date.now() + CR.STAMP_MS + 1000);
-  assert.ok(Number.isFinite(JSON.parse(fs.readFileSync(file, 'utf8')).seen_at), 'stamped');
+  const first = JSON.parse(fs.readFileSync(file, 'utf8')).seen_at;
+  assert.ok(Number.isFinite(first), 'stamped at the spawn');
+  CR.stamp(first + 1500); // the 30 s guard of a worker's touch does not apply
+  assert.strictEqual(JSON.parse(fs.readFileSync(file, 'utf8')).seen_at, first + 1500);
   await run;
+});
+
+// The owner is hard-killed (TerminateProcess: no exit handler runs) while its check has a detached process of its own, started 3 s in.
+// A new owner must still refuse that process, so the check's lifetime must close at a stamp under the 2 s slack before the kill.
+test('a hard-killed owner mid-check: a process the check started after its first seconds is refused by a new owner', { skip: SKIP, timeout: 120000 }, async () => {
+  ownSpawnRegistry();
+  const dir = sandbox();
+  const f = (n) => path.join(dir, n);
+  const harness = spawn(process.execPath, [HARNESS, 'hold', path.join(__dirname, '..', 'helpers', 'late-check.cjs'), f('flag'), f('started'), f('port'), f('out')], { env: process.env, windowsHide: true, stdio: ['ignore', 'pipe', 'inherit'] });
+  let out = '';
+  harness.stdout.on('data', (d) => { out += d; });
+  const closed = new Promise((res) => harness.once('close', res));
+  try {
+    await waitFor(() => /\n/.test(out), 20000, 'the harness to report its check');
+    const checkPid = Number(out.trim().split(' ')[0]);
+    await waitFor(() => fs.existsSync(f('started')), 20000, 'the check to start its detached process');
+    harness.kill(); // a hard kill on Windows
+    await closed;
+    fs.writeFileSync(f('flag'), 'x'); // the check ends now, with nothing to observe it
+    await waitFor(() => !alive(checkPid), 20000, 'the check to end');
+    await withOwner(async (o) => {
+      fs.writeFileSync(f('port'), String(o.tcpPort));
+      await waitFor(() => fs.existsSync(f('out')), 60000, 'the detached process to get an answer');
+      const forged = JSON.parse(fs.readFileSync(f('out'), 'utf8').trim().split('\n').pop());
+      assert.strictEqual(forged.error && forged.error.code, 'E_UNBOUND', `the check's orphan was vouched for as the operator: ${JSON.stringify(forged)}`);
+      assert.strictEqual(o.store.db.prepare("SELECT COUNT(*) AS n FROM memory_entries WHERE text LIKE 'forged%'").get().n, 0);
+    });
+  } finally { cleanup(dir); }
 });

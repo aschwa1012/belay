@@ -1,19 +1,22 @@
 'use strict';
 // check-register.cjs — the spawn-register record of a command belay runs for a worker's code: an acceptance or integration check, or a
-// git call that runs the repository's hooks. The owner runs these as its own children, so a process they start must not pass the
-// operator check as the operator (ADR 0045 decision 4). The record is the same one a worker has (spawn-register.cjs), kind `check`:
-//   * written at spawn, before the child can reach an owner, and retired when the child exits;
-//   * stamped every 30 s while the child lives (as a worker's record is, run/seen-stamp.cjs), so a harness that dies mid-check leaves
-//     a record whose lifetime closes at the last stamp and not at the spawn;
-//   * retired in this process's exit handler, with its lifetime closed at that moment, so an exit the process can see (a stop, a
-//     timeout, process.exit) leaves a tombstone that covers every orphan the check started;
-//   * given the child's creation time once one snapshot has read it, so its tombstone is named by pid and creation time.
-// A hard kill of the owner leaves the 30 s stamp gap, the same as for a worker.
+// git call in a worker's or an integration tree (a repository hook is a worker's code). The owner runs these as its own children, so a
+// process they start must not pass the operator check as the operator (ADR 0045 decision 4). The record is the same one a worker has
+// (spawn-register.cjs), kind `check`:
+//   * written at spawn, before the child can reach an owner, already stamped, and retired when the child exits;
+//   * stamped every STAMP_MS (1 s, under the 2 s slack spawn-provenance.cjs allows) while the child lives, with a plain file write and no
+//     snapshot. An owner that is hard-killed (TerminateProcess runs no exit handler) leaves a record whose lifetime closes at the last
+//     stamp, so every process the check started before the kill is covered. A worker's record is stamped every 30 s (run/seen-stamp.cjs);
+//     a check starts descendants of its own at once, so it needs the fresher stamp;
+//   * retired in this process's exit handler, with its lifetime closed at that moment, for an exit the process can see;
+//   * given the child's creation time lazily: one snapshot, requested only for a check still running after CREATED_AFTER_MS, so a short
+//     command (most git calls) costs no snapshot. A record without it keeps a tombstone named by pid alone and matches by pid.
 
 const SR = require('./spawn-register.cjs');
 const ID = require('./proc-identity.cjs');
 
-const STAMP_MS = 30000;
+const STAMP_MS = 1000;
+const CREATED_AFTER_MS = 5000;
 const SPAWN_SLACK_MS = 1000; // a creation time earlier than this before the spawn call is another process's
 
 const live = new Map(); // pid -> the identity the record was written with
@@ -27,12 +30,12 @@ function retireAll() {
 }
 
 function stamp(now = Date.now()) {
-  for (const pid of live.keys()) { try { SR.touch(pid, now); } catch { /* a stamp is a refinement */ } }
+  for (const [pid, expect] of live) { try { SR.stampNow(pid, now, expect); } catch { /* a stamp is a refinement */ } }
 }
 
 function ensureRunning() {
   if (!hooked) { hooked = true; process.once('exit', retireAll); }
-  if (!timer) { timer = setInterval(stamp, STAMP_MS); if (timer.unref) timer.unref(); }
+  if (!timer) { timer = setInterval(() => stamp(), STAMP_MS); if (timer.unref) timer.unref(); }
 }
 
 function stopIfIdle() {
@@ -44,18 +47,23 @@ function stopIfIdle() {
 function begin(child, kind, spawnedAt, what) {
   const expect = { kind, spawnedAt };
   const pid = child.pid;
-  const seq = ID.gate.stamp(); // a snapshot counts for this child only if it started after the spawn
-  SR.registerProcess({ pid, ...expect }, what);
+  SR.registerProcess({ pid, ...expect, seenAt: Date.now() }, what);
   live.set(pid, expect);
   ensureRunning();
-  ID.snapshotShared({ kind: 'check-created' }).then((r) => {
-    const e = r && r.snap && r.startSeq > seq ? r.snap.get(pid) : null;
-    if (live.get(pid) === expect && e && Number.isFinite(e.created) && e.created >= spawnedAt - SPAWN_SLACK_MS) SR.update(pid, e.created, expect);
-  }).catch(() => {});
+  const later = setTimeout(() => {
+    if (live.get(pid) !== expect) return;
+    const seq = ID.gate.stamp(); // a snapshot counts for this child only if it started after the spawn
+    ID.snapshotShared({ kind: 'check-created' }).then((r) => {
+      const e = r && r.snap && r.startSeq > seq ? r.snap.get(pid) : null;
+      if (live.get(pid) === expect && e && Number.isFinite(e.created) && e.created >= spawnedAt - SPAWN_SLACK_MS) SR.update(pid, e.created, expect);
+    }).catch(() => {});
+  }, CREATED_AFTER_MS);
+  later.unref();
   return () => {
+    clearTimeout(later);
     if (live.get(pid) === expect) live.delete(pid);
     try { SR.unregister(pid, expect); } finally { stopIfIdle(); }
   };
 }
 
-module.exports = { begin, retireAll, stamp, liveCount: () => live.size, STAMP_MS };
+module.exports = { begin, retireAll, stamp, liveCount: () => live.size, STAMP_MS, CREATED_AFTER_MS };

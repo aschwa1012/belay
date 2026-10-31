@@ -159,6 +159,16 @@ function touch(pid, now = Date.now()) {
   try { writeAtomic(fileOf(pid), JSON.stringify({ ...rec, seen_at: now })); return true; } catch { return false; }
 }
 
+// Stamp the record with the time its process was seen alive, with no 30 s guard: for a record whose harness may be hard-killed at any
+// moment and whose process starts descendants of its own (a check command, check-register.cjs), where the stamp must be fresher than
+// the provenance slack. A worker's stamp is touch(). -> true when written.
+function stampNow(pid, now = Date.now(), expect = null) {
+  let rec;
+  try { rec = readJson(fileOf(pid)); } catch { return false; }
+  if (!matches(rec, expect)) return false;
+  try { writeAtomic(fileOf(pid), JSON.stringify({ ...rec, seen_at: now })); return true; } catch { return false; }
+}
+
 // Retire the record of a process a caller has found dead (run.end closing a row whose adapter never wrote its exit). A pid that still
 // answers is left alone. The lifetime closes at the last moment the process was seen alive (the record's stamp, or `seenFloor`, a time a
 // writer recorded such as the row's last event), not now. -> true when a record was retired.
@@ -244,4 +254,4 @@ function runSpawned(interactive, orchestratorPid) {
   return !interactive && Number.isInteger(orchestratorPid) ? [{ pid: orchestratorPid, created: null, kind: 'orchestrator' }] : [];
 }
 
-module.exports = { matches, register, registerProcess, update, unregister, retire, touch, scan, settle, list, live, tombFile, startOf, bootMs, BOOT_SLACK_MS, tombstones, saveTombstone, dropTombstone, dir, runSpawned, io };
+module.exports = { matches, register, registerProcess, update, unregister, retire, touch, stampNow, scan, settle, list, live, tombFile, startOf, bootMs, BOOT_SLACK_MS, tombstones, saveTombstone, dropTombstone, dir, runSpawned, io };
