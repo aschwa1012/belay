@@ -67,6 +67,7 @@ function createDoStop({ ctx, writeRow }) {
       ms_to_exit: Math.max(0, (w.exitedAt || now()) - t0), graceful, killed, session_id: w.sessionId, // 0 when the exit came before the stop (an adopted row's old exited_at)
       ...(bgStops.length ? { background_tasks_stopped: bgStops.map((s) => ({ task_id: s.task_id, description: s.description, status_after: s.status_after })) } : {}),
       ...(gracefulTimedOutMs != null ? { graceful_timed_out_ms: gracefulTimedOutMs, ...(blockedBy && blockedBy.length ? { blocked_by: blockedBy } : {}) } : {}),
+      ...(maybeLive ? { not_stopped: true, may_be_live: true, row_state: w.state, manual: refused.manual || `pid ${pid} may still be running; check it is the worker's process, then end it by hand (belay worker kill ${worker_id})`, note: `worker ${worker_id}: pid ${pid} could not be proven to be this worker's process, so it was NOT stopped and may still be running; its row stays ${w.state}` } : {}),
       tree_kill: tree || null, ...(tree && tree.killed_processes ? { killed_processes: tree.killed_processes } : {}), ...(refused ? { refused: refused.refused, kind: refused.kind, detail: refused.detail } : {}), ...(notKilled ? { descendants_not_killed: notKilled } : {}),
     };
   };
