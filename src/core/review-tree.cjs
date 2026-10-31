@@ -201,7 +201,7 @@ function lateBy(E, l) {
   if (w && Number(w.last_event_at) > since) out.push('last_event_at');
   const newer = (sql) => !!store.p(sql).get(id, since);
   if (newer('SELECT 1 FROM checkpoint WHERE worker_id = ? AND written_at > ? LIMIT 1')) out.push('checkpoint');
-  if (newer('SELECT 1 FROM permission WHERE worker_id = ? AND requested_at > ? LIMIT 1')) out.push('permission');
+  if (store.p('SELECT 1 FROM permission WHERE worker_id = ? AND run_id = ? AND requested_at > ? LIMIT 1').get(id, l.run_id, since)) out.push('permission'); // worker ids repeat across runs
   if (newer('SELECT 1 FROM memory_event WHERE worker_id = ? AND written_at > ? LIMIT 1')) out.push('memory_event');
   return out;
 }
