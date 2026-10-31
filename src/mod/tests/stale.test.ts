@@ -19,7 +19,7 @@ for (const cols of [30, 40, 72]) {
       expect(flat((await band($, 'terminal', cols)).text)).not.toContain('readsslow')
       const good = lastRound(wd)
       wd.w.hang = 'notices'
-      await later(wd, 6000)
+      await later(wd, 11000)
       const b = flat((await band($, 'terminal', cols)).text)
       expect(b).toContain(flat(`${asOf(good)} · reads slow (notices timed out)`))
       const pn = await pane($, 'terminal', cols)
@@ -40,7 +40,7 @@ for (const cols of [30, 40, 72]) {
       const wd = await boot($, on)
       const good = lastRound(wd)
       wd.w.hang = 'agents'
-      await later(wd, 6000)
+      await later(wd, 11000)
       const b = flat((await band($, 'terminal', cols)).text)
       expect(b).toContain(flat(`${asOf(good)} · reads slow (agents timed out)`))
       if (cols >= 72) expect(b).toContain('4agents') // a narrow band drops parts from the end
@@ -71,13 +71,13 @@ describe('a failed read says why; a timed-out one has no reason to give', () => 
   test('the error text rides the stale line whole when the read failed, and is absent for a timeout', async ($, on) => {
     const wd = await boot($, on)
     wd.w.failAgents = true
-    await later(wd, 6000)
+    await later(wd, 11000)
     const f = flat((await band($, 'terminal', 30)).text)
     expect(f).toContain(flat('agents failed: belay agents r-7f3a exit 3')) // wrapped at 30 columns, never cut
     wd.w.failAgents = false
-    await later(wd, 6000)
+    await later(wd, 11000)
     wd.w.hang = 'agents'
-    await later(wd, 6000)
+    await later(wd, 11000)
     const t = flat((await band($, 'terminal', 30)).text)
     expect(t).toContain('readsslow(agentstimedout)')
     expect(t).not.toContain('failed:')

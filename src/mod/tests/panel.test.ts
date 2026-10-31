@@ -35,6 +35,26 @@ describe('activation and reading', () => {
     const wd = await boot($, on, { file: true })
     expect(wd.ran.filter(a => a.includes('agents')).every(a => !a.includes('--dir'))).toBe(true)
   })
+  test('a refresh is one `belay panel-read` process with the flags the orchestrator window calls for', async ($, on) => {
+    const own = await boot($, on, { file: true, runFile: { ...FULL_RUNFILE, orchestrator_dir: 'C:/o/ops' } })
+    const r = own.rounds[0]!
+    expect(r.argv.slice(0, 3)).toEqual(['C:/n/node.exe', 'C:/x/belay.cjs', 'panel-read'])
+    expect(r.argv.slice(3, 7)).toEqual([RUN, '--dir', 'C:/o/ops', '--tail'])
+    expect(r.argv).toContain('--fixed') // the orchestrator's own window: no transcript, settings from the project root
+    expect(r.argv).toContain('--settings') // the first round reads settings
+    expect(r.cwd).toBeUndefined() // the verb picks the settings directory itself
+    expect(r.argv.slice(-3)).toEqual(['--json', '--data', 'C:/d/.belay'])
+  })
+  test('a watching session asks panel-read for the tail the band wants, and names the mode it last saw', async ($, on) => {
+    const watch = await boot($, on)
+    const w1 = watch.rounds[0]!
+    expect(w1.argv).not.toContain('--fixed')
+    expect(w1.argv.slice(w1.argv.indexOf('--tail'), w1.argv.indexOf('--tail') + 2)).toEqual(['--tail', '10'])
+    await later(watch, 11000)
+    const w2 = watch.rounds[1]!
+    expect(w2.argv.slice(w2.argv.indexOf('--prev-mode'), w2.argv.indexOf('--prev-mode') + 2)).toEqual(['--prev-mode', 'headless']) // the mode the last round saw
+    expect(w2.argv).toContain(RUN) // pinned after the first read
+  })
   for (const [name, runFile, message] of [
     ['lacks node', { ...FULL_RUNFILE, node: undefined }, 'belay-run.json lacks node'],
     ['lacks belay_cli', { ...FULL_RUNFILE, belay_cli: undefined }, 'belay-run.json lacks belay_cli'],
@@ -86,7 +106,7 @@ describe('activation and reading', () => {
     const wd = await boot($, on, { watchId: '' })
     expect(wd.ran[0]).not.toContain(RUN)
     expect((await band($)).text).toContain(`belay ${RUN}`)
-    await later(wd, 5000)
+    await later(wd, 11000)
     const second = wd.ran.filter(a => a.includes('agents'))[1]!
     expect(second).toContain(RUN)
   })
@@ -130,7 +150,7 @@ describe('the band', () => {
   test('the orchestrator line is marked stale after a failed transcript read', async ($, on) => {
     const wd = await boot($, on, { notices: { run_id: RUN, events: [] } })
     wd.w.transcriptFail = true
-    await later(wd, 5000)
+    await later(wd, 11000)
     const { text } = await band($)
     expect(text).toContain('(stale): Spawned rev-1')
     expect(text).toContain('transcript failed')
@@ -145,7 +165,7 @@ describe('the band', () => {
     expect(t).not.toContain('p-19')
     expect(t).toMatch(/orch \d+s ago/)
     wd.w.notices = { run_id: RUN, events: [...EVENTS, { kind: 'worker_dead', ts: T0 + 500, run_id: RUN, worker_id: 'test-1', exit_code: 1, death_established_by: 'process exit' }] }
-    await later(wd, 4000)
+    await later(wd, 6000)
     t = (await band($)).text
     expect(t).not.toContain('test-1 dead')
     const p = await pane($)
@@ -164,13 +184,13 @@ describe('the band', () => {
     const wd = await boot($, on)
     expect((await band($)).text).toContain('● running')
     wd.w.orchDisplay = 'done'
-    await later(wd, 5000)
+    await later(wd, 11000)
     expect((await band($)).text).toContain('● ended')
     wd.w.orchDisplay = 'dead'
-    await later(wd, 5000)
+    await later(wd, 61000)
     expect((await band($)).text).toContain('● dead')
     wd.w.failAgents = true
-    await later(wd, 5000)
+    await later(wd, 61000)
     const t = (await band($)).text
     expect(t).not.toContain('● dead')
     expect(t).not.toContain('● running')
@@ -365,12 +385,12 @@ describe('the agents shape of a8c466d', () => {
     expect((await band($)).text).toContain('● running 42m')
     wd.w.ended = T0 - 12 * 60000
     wd.w.orchDisplay = 'done'
-    await later(wd, 5000)
+    await later(wd, 11000)
     expect((await band($)).text).toContain('● ended 30m')
     wd.w.ended = undefined
     wd.w.orchDisplay = undefined
     wd.w.paused = T0 - 2 * 60000
-    await later(wd, 5000)
+    await later(wd, 61000)
     expect((await band($)).text).toMatch(/● (running|paused|dead) 40m/)
   })
 
@@ -385,11 +405,11 @@ describe('the agents shape of a8c466d', () => {
     expect(t).not.toContain('hard cap')
     expect(t).not.toContain('used')
     wd.w.hardCap = 4
-    await later(wd, 4000)
+    await later(wd, 6000)
     t = (await pane($)).text
     expect(t).toContain('hard cap 4')
     wd.w.maxFix = null
-    await later(wd, 4000)
+    await later(wd, 6000)
     t = (await pane($)).text
     expect(t).not.toContain('fix rounds')
   })
