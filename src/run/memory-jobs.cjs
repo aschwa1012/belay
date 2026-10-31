@@ -12,6 +12,7 @@ const crypto = require('node:crypto');
 const { fit } = require('../core/fit-budget.cjs');
 const { summarise, POLICY } = require('./summarise.cjs');
 const { defaultLevers } = require('./memory-levers.cjs');
+const { sentUnknown, tokensOf } = require('./sent-unknown.cjs');
 
 const RUN_END_BOUND_MS = 5000; // atRunEnd's whole budget, the give-up record included
 const GIVE_UP_MS = 500;
@@ -84,15 +85,6 @@ const failure = (J, kind, fields, e, paired = false) => event(J, { kind, ok: fal
 // Code's cost is cumulative per process, so the row carries the delta from the previous row of the same
 // process; a new process (or a counter that went down) restarts from zero.
 const { snapshotOf, pairedWrite } = require('./memory-capture.cjs');
-const num = (x) => (typeof x === 'number' && Number.isFinite(x) ? x : 0);
-function tokensOf(snap) {
-  const u = snap.usage;
-  if (!u) return {};
-  if (snap.substrate === 'codex') {
-    return { input_tokens: Math.max(0, num(u.input_tokens) - num(u.cached_input_tokens)), output_tokens: num(u.output_tokens), cache_read_tokens: num(u.cached_input_tokens), cache_creation_tokens: 0 };
-  }
-  return { input_tokens: num(u.input_tokens), output_tokens: num(u.output_tokens), cache_read_tokens: num(u.cache_read_input_tokens), cache_creation_tokens: num(u.cache_creation_input_tokens) };
-}
 // The ledger's state for a worker. An adopted worker starts from the cost and turn its row recorded: the ledger holds those already.
 const jobsOf = (w) => w.memoryJobs || (w.memoryJobs = w.adoptedLedger
   ? { pid: null, lastCost: w.adoptedLedger.cost, seen: true, lastTurn: w.adoptedLedger.turns }
@@ -108,8 +100,6 @@ function costOf(w, snap) {
   const cost_basis = reset && (t.seen || snap.turn > 1) ? NEW_PROCESS : 'delta-of-cumulative';
   return { cost_usd: Math.max(0, snap.cost - base), cost_basis, advance: () => { t.pid = snap.pid; t.lastCost = snap.cost; t.seen = true; } };
 }
-// The write left this process and its answer was lost: the owner may have committed it. A refusal, or a loss before the send, is not this.
-const sentUnknown = (e) => !!e && (e.code === 'E_TIMEOUT' || e.code === 'E_OWNER_LOST') && !(e.detail && e.detail.sent === false);
 async function usageJob(J, snap) {
   const w = J.w;
   const t = jobsOf(w);

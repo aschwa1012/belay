@@ -223,6 +223,21 @@ test('usage: a refused row (never committed) is an ok:0 event naming the code, a
   assert.strictEqual(core.usageRows[0].cost_usd, 0.03);
 });
 
+test('usage: a timed-out row that may have committed is not re-sent and its cost is not carried into the next row', async () => {
+  let failNext = true;
+  const lost = () => Object.assign(failing('E_TIMEOUT', 'owner slow'), { detail: { may_have_committed: true } });
+  const core = spyCore({ fail: { 'usage.record': () => { if (failNext) { failNext = false; return lost(); } return null; } } });
+  const ctx = mkCtx(core, lv({ cost_ledger: true }));
+  const w = worker({ turns: 1, costUsd: 0.01 });
+  MJ.afterTurn(w, ctx, {}); await flush(w);
+  const ev = core.events.find((e) => e.kind === 'usage');
+  assert.ok(ev && ev.ok === 0 && ev.code === 'E_TIMEOUT' && /outcome unknown/.test(ev.message));
+  Object.assign(w, { turns: 2, costUsd: 0.03 });
+  MJ.afterTurn(w, ctx, {}); await flush(w);
+  assert.strictEqual(core.usageRows.length, 1);
+  assert.ok(Math.abs(core.usageRows[0].cost_usd - 0.02) < 1e-9);
+});
+
 test('summary: written once per (task, worker) under concurrent turns, labelled, never the worker\'s words', async () => {
   const core = spyCore({ tasks: { t1: releasedTask() }, observations: OBS });
   const ctx = mkCtx(core, lv({ capture: true, observations: true, summaries: 'mechanical' }));
