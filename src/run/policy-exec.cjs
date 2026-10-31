@@ -64,7 +64,7 @@ function due(snap) {
       out.push({ step: 'review', task_id: x.id, trigger: tref(x), policy_rev: rev, review: plan.review, worker: plan.review.worker || (plan.review.spawn && plan.review.spawn.worker_id) || null });
     }
     // fix: the work's review is refuted (belay's own evaluation) and a round is left; the fix goes to the one who built what was judged.
-    if (!x.repairs && plan.fix === 'builder' && x.review && x.review.state === 'refuted' && x.review.rounds_left !== 0) {
+    if (!x.repairs && plan.fix === 'builder' && x.review && x.review.state === 'refuted' && PW.fixRoundsLeft(x.review)) {
       const R = byId.get(x.review.review_id);
       if (R && R.run_id === runId && isRelease(R)) {
         const judged = byId.get((Array.isArray(R.depends_on) ? R.depends_on : [])[0]);

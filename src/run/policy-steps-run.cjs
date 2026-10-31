@@ -43,6 +43,7 @@ async function fix(c, env) {
   const made = await env.core.task.fixFromReview({ review_id: c.review_id });
   const ref = `task:${made.id}`;
   if (made.existing === true) return { outcome: made.superseded === true ? 'superseded' : 'done', row_ref: ref }; // a fix already answers the review: it stands, and is not assigned again
+  if (made.fix_notice) return exception(`fix_notice: ${made.fix_notice}`, ref); // past max_fix_rounds: the fix stays unassigned, the orchestrator decides
   return handOver(env, { task_id: made.id, worker_id: c.worker }, ref);
 }
 
