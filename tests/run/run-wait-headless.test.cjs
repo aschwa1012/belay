@@ -72,3 +72,30 @@ test('the wake claimed it first: it is written once, and worker_wait does not re
     assert.strictEqual(r.timed_out, true);
   } finally { cleanup(root); }
 });
+
+// One rule for "planned", from the store: a plan that arrives by a later task_create (not in the spec) still makes a death a claimed delivery.
+test('no plan in the spec, a planned task in the store, a death in the first poll: delivered once, by the wait', async () => {
+  const { root, sb, core } = setup();
+  try {
+    core.worker = { ...(core.worker || {}), list: async () => ({ workers: [{ id: 'w2', run_id: RUN, state: 'dead', turns: 3, seq: 2, pid: 111, pid_created: 5, exit_code: 1, exit_signal: null, death_established_by: 'exit' }] }) };
+    assert.ok(D.claimException({ dataDir: sb.dataDir, runId: RUN, uid: D.deathUid('w2', 'death', D.lifeOf(111, 5)) }), 'worker_wait named the death');
+    const spec = (policy) => ({ worktree: sb.worktree, promptText: 'hello', orchestratorDir: sb.orchestratorDir, model: 'claude-sonnet-5', allowedTools: null, policy,
+      startupTimeoutMs: 8000, timeoutMs: 60000, mcpToolTimeoutMs: 60000, pollMs: 50, closeGraceMs: 3000 });
+    const out = await withFake(() => runOrchestrator({ core, runId: RUN, dataDir: sb.dataDir, onAttached: async () => ({ ok: true }), spec: spec(false) }));
+    assert.deepStrictEqual(out.wakes.filter((w) => w.event === 'death'), [], 'not written to stdin');
+    assert.strictEqual(out.wakes_suppressed.filter((w) => w.event === 'death' && w.reason === 'delivered by worker_wait').length, 1, JSON.stringify(out.wakes_suppressed));
+  } finally { cleanup(root); }
+});
+
+test('a run with no plan anywhere claims nothing for a death: the wake is written as before', async () => {
+  const { root, sb, core } = setup();
+  try {
+    core.task = { ...(core.task || {}), list: async () => ({ tasks: [] }) };
+    core.worker = { ...(core.worker || {}), list: async () => ({ workers: [{ id: 'w2', run_id: RUN, state: 'dead', turns: 3, seq: 2, pid: 111, pid_created: 5, exit_code: 1, exit_signal: null, death_established_by: 'exit' }] }) };
+    const out = await withFake(() => runOrchestrator({ core, runId: RUN, dataDir: sb.dataDir, onAttached: async () => ({ ok: true }), spec: {
+      worktree: sb.worktree, promptText: 'hello', orchestratorDir: sb.orchestratorDir, model: 'claude-sonnet-5', allowedTools: null, policy: false,
+      startupTimeoutMs: 8000, timeoutMs: 60000, mcpToolTimeoutMs: 60000, pollMs: 50, closeGraceMs: 3000 } }));
+    assert.strictEqual(out.wakes.filter((w) => w.event === 'death').length, 1, JSON.stringify(out.wakes));
+    assert.strictEqual(fs.existsSync(`${sb.dataDir}/run-wait`), false, 'and no claim file was made');
+  } finally { cleanup(root); }
+});

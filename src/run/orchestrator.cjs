@@ -128,6 +128,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   const preClose = require('./pre-close-wake.cjs').createPreCloseNotice({ core, runId }); // ADR 0065 amendment 1
   const callWatcher = require('./call-wake.cjs').createCallWatcher({ core, runId });
   const policyWatcher = require('./policy-wakes.cjs').createPolicyWatcher({ core, runId, enabled: !!spec.policy }); // ADR 0073: the exceptions of a run under a plan
+  const planned = require('./planned.cjs').createPlanned({ core, runId }); // whether the run has a plan, read from the store (the same rule on every delivery path)
   const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId, enabled: !!spec.notes }); // wave 4: a refuted note wakes the orchestrator (notes runs only)
   let readyTimer = null, sigintHandler = null;
 
@@ -241,9 +242,8 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     // ADR 0074: a policy exception is delivered once, by the wake or by worker_wait, whichever claims it first (run-digest.cjs). A claim that
     // cannot be made delivers the wake: an exception is never lost for want of a file.
     // A worker death or stale record has the same second path and the same key, and is claimed only once a plan is in force.
-    const planned = !!(spec.policy || (state.evalSeen && state.evalSeen.policyArmed));
     const uid = require('./run-digest.cjs').wakeUid(ev);
-    if (uid && (ev.exception || planned)) {
+    if (uid && (ev.exception || planned.value())) {
       let won = true;
       try { won = require('./run-digest.cjs').claimException({ dataDir, runId, uid }); } catch { won = true; }
       if (!won) { state.wakesSuppressed.push({ ...ev, reason: 'delivered by worker_wait' }); return; }
@@ -300,7 +300,9 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       orphanGraceMs: ORPHAN_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid), sinceAt: t0,
     });
     state.baseline = next;
-    for (const ev of (await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), state.evalSeen || (state.evalSeen = new Map()), { holdMs: require('./release-eval.cjs').holdMs(), workers: rows })).concat(await noteWatcher.poll(), await callWatcher.poll(), await policyWatcher.poll(state.evalSeen), spec.budgetWake ? spec.budgetWake.takeWakes() : [])) writeWake(ev); // ADR 0058 amendment 4: a turn_end carries its release evaluation
+    const evs = (await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), state.evalSeen || (state.evalSeen = new Map()), { holdMs: require('./release-eval.cjs').holdMs(), workers: rows })).concat(await noteWatcher.poll(), await callWatcher.poll(), await policyWatcher.poll(state.evalSeen), spec.budgetWake ? spec.budgetWake.takeWakes() : []);
+    if (evs.some((e) => e.event === 'death')) await planned.check(); // a death has a second delivery path once the store shows a plan (planned.cjs)
+    for (const ev of evs) writeWake(ev); // ADR 0058 amendment 4: a turn_end carries its release evaluation
     if (state.finishing) return; // a wake's own write may have found the child already gone
 
     if (state.idle && await require('./orchestrator-idle-close.cjs').idleClose({ state, rows, runId, pending_deaths, turnAtCall, hold, awaitingWakeIds, callWatcher, recordHold, preClose, writeWake, closeThenKillOnDeadline })) return;

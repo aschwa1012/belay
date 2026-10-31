@@ -14,16 +14,19 @@ const crypto = require('node:crypto');
 
 const CAP_BYTES = 2048; // ADR 0074 Q3: per return
 const NOTE_RESERVE = 48; // room kept for the "not shown" note when the cap drops lines
+const PAGE = 2000; // policy.list's most rows a call
 const bytes = (s) => Buffer.byteLength(s, 'utf8');
 const scrub = (s, n) => String(s == null ? '' : s).replace(/[\x00-\x1f\x7f]+/g, ' ').trim().slice(0, n);
 
 const dirOf = (dataDir, runId) => path.join(dataDir, 'run-wait', String(runId)).replace(/\\/g, '/');
 const ownFile = (dir, n) => `${dir}/d${n}.json`;
+const markerFile = (dir, uid) => `${dir}/x-${crypto.createHash('sha1').update(String(uid)).digest('hex').slice(0, 24)}`;
 
 const finished = (r) => !!r && Number.isInteger(Number(r.seq)) && !!r.outcome && r.outcome !== 'started';
 
 // One step as one line: ids, states and counts. The error is belay's own text (an E_ code and its message), cut short.
-function lineOf(r) {
+function lineOf(r, short = false) {
+  if (short) return `#${r.seq} ${scrub(r.step, 24)} ${scrub(r.task_id || '-', 40)} ${scrub(r.outcome, 12)}`;
   const to = r.row_ref ? ` -> ${scrub(r.row_ref, 60)}` : '';
   const by = r.worker_id ? ` by ${scrub(r.worker_id, 40)}` : '';
   const why = r.error ? `: ${scrub(r.error, 60)}` : '';
@@ -32,8 +35,8 @@ function lineOf(r) {
 
 // -> { shown: [rows], dropped: [rows], text }. `rows` ascend by seq. The newest lines that fit are kept; the dropped are the oldest.
 // `head` leads the text and counts against the cap; `sep` joins the lines (a wake is one line, so it joins with '; ').
-function build(rows, cap = CAP_BYTES, { head = '', sep = '\n' } = {}) {
-  const lines = rows.map(lineOf);
+function build(rows, cap = CAP_BYTES, { head = '', sep = '\n', short = false } = {}) {
+  const lines = rows.map((r) => lineOf(r, short));
   const room = cap - bytes(head);
   const total = lines.reduce((n, l) => n + bytes(l) + bytes(sep), 0);
   if (total <= room) return { shown: rows.slice(), dropped: [], text: head + lines.join(sep) };
@@ -74,7 +77,7 @@ function createOnce(file, content) {
 
 // Claim the digest of `rows` (policy.list rows): the finished ones no digest has taken. -> the claim record, or null when there is nothing new.
 // `hooks.beforeCreate(rec)` is a test seam: it runs between building the claim and creating its file, where a second asker can take the number.
-function claimDigest({ dataDir, runId, rows, cap = CAP_BYTES, form = {}, via = 'wait', now = Date.now, hooks = {} }) {
+function claimDigest({ dataDir, runId, rows, cap = CAP_BYTES, form = {}, via = 'wait', now = Date.now, claimant = null, hooks = {} }) {
   const dir = dirOf(dataDir, runId);
   fs.mkdirSync(dir, { recursive: true });
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -83,8 +86,8 @@ function claimDigest({ dataDir, runId, rows, cap = CAP_BYTES, form = {}, via = '
     if (!fresh.length) return null;
     const b = build(fresh, cap, form);
     const rec = {
-      n: top + 1, via, at: now(), bytes: bytes(b.text), text: b.text,
-      lines: b.shown.map((r) => ({ step_seq: Number(r.seq), text: lineOf(r) })),
+      n: top + 1, via, at: now(), claimant, bytes: bytes(b.text), text: b.text,
+      lines: b.shown.map((r) => ({ step_seq: Number(r.seq), text: lineOf(r, !!form.short) })),
       dropped: { count: b.dropped.length, seqs: b.dropped.map((r) => Number(r.seq)) },
     };
     if (hooks.beforeCreate) hooks.beforeCreate(rec);
@@ -93,30 +96,75 @@ function claimDigest({ dataDir, runId, rows, cap = CAP_BYTES, form = {}, via = '
   throw Object.assign(new Error('the digest could not be claimed: its number kept being taken'), { code: 'E_BUSY' });
 }
 
-// Claim the delivery of one exception wake (by its dedupe uid). true: this caller delivers it; false: another path already has.
-function claimException({ dataDir, runId, uid }) {
+
+// Claim the delivery of one wake (by its dedupe uid). true: this caller delivers it; false: another path already has. The marker records the
+// claimant (adapter pid and creation time) and, for a wait's delivery, the receipt record of the wake (readDeliveries).
+function claimException({ dataDir, runId, uid, record = null, claimant = null }) {
   const dir = dirOf(dataDir, runId);
   fs.mkdirSync(dir, { recursive: true });
-  const f = `${dir}/x-${crypto.createHash('sha1').update(String(uid)).digest('hex').slice(0, 24)}`;
-  try { fs.closeSync(fs.openSync(f, 'wx')); return true; } catch (e) { if (e && e.code === 'EEXIST') return false; throw e; }
+  return createOnce(markerFile(dir, uid), `${JSON.stringify({ uid, at: Date.now(), claimant, record })}\n`);
 }
+const isClaimed = ({ dataDir, runId, uid }) => fs.existsSync(markerFile(dirOf(dataDir, runId), uid));
 
+// A worker life: the process a row records, never the turn count (a relaunched worker can die again at the same turn).
+const lifeOf = (pid, created) => `${Number.isInteger(pid) ? pid : 0}:${created == null ? 0 : created}`;
 // The delivery key of a wake, the same on every path that can deliver it: a policy exception by its fact, a worker death or stale record by
-// (worker, kind, turn). Null for a wake that has no second path (budget, notes, routine turn ends).
-const deathUid = (workerId, kind, turn) => `${workerId}:${kind}:${turn == null ? 0 : turn}`;
+// (worker, kind, life). Null for a wake that has no second path (budget, notes, routine turn ends).
+const deathUid = (workerId, kind, life) => `${workerId}:${kind}:${life}`;
 function wakeUid(ev) {
   if (!ev || !ev.worker_id) return null;
   if (ev.exception && ev.key) return `${ev.worker_id}:${ev.key}`;
-  if (ev.event === 'death' || ev.event === 'stale') return deathUid(ev.worker_id, ev.event, ev.turn);
+  if (ev.event === 'death' || ev.event === 'stale') return deathUid(ev.worker_id, ev.event, ev.life || lifeOf(null, null));
   return null;
 }
 
+const rm = (f) => { try { fs.unlinkSync(f); } catch { /* already gone */ } };
 // Undo a claim whose reply was never sent (a worker_wait cancelled after it claimed, call-signal.cjs): the digest's number and the
 // exception markers are removed, so the next asker is offered the same steps and exceptions. Nothing else records a delivery.
 function release({ dataDir, runId, digestN = null, uids = [] }) {
   const dir = dirOf(dataDir, runId);
-  if (digestN != null) { try { fs.unlinkSync(ownFile(dir, digestN)); } catch { /* already gone */ } }
-  for (const uid of uids) { try { fs.unlinkSync(`${dir}/x-${crypto.createHash('sha1').update(String(uid)).digest('hex').slice(0, 24)}`); } catch { /* already gone */ } }
+  if (digestN != null) { rm(ownFile(dir, digestN)); rm(`${ownFile(dir, digestN)}.ok`); }
+  for (const uid of uids) { rm(markerFile(dir, uid)); rm(`${markerFile(dir, uid)}.ok`); }
+}
+// The reply was written: the claim stands for good (releaseUnconfirmed leaves it alone).
+function confirm({ dataDir, runId, digestN = null, uids = [] }) {
+  const dir = dirOf(dataDir, runId);
+  const ok = (f) => { try { fs.writeFileSync(`${f}.ok`, ''); } catch { /* best effort: an unconfirmed claim is only released if its claimant is gone */ } };
+  if (digestN != null) ok(ownFile(dir, digestN));
+  for (const uid of uids) ok(markerFile(dir, uid));
+}
+// A wait's claim whose reply was never confirmed and whose claimant `orphan(claimant)` calls gone (an adapter that crashed with the reply
+// in flight): released, so the next wait offers it. `orphan` is the seam for any other "release on X" (a timeout, an Esc). -> { digests, uids }
+async function releaseUnconfirmed({ dataDir, runId, orphan }) {
+  const dir = dirOf(dataDir, runId);
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch { return { digests: [], uids: [] }; }
+  const has = new Set(names);
+  const out = { digests: [], uids: [] };
+  for (const f of names) {
+    const isDigest = /^d\d+\.json$/.test(f); const isMarker = /^x-[0-9a-f]+$/.test(f);
+    if ((!isDigest && !isMarker) || has.has(`${f}.ok`)) continue;
+    let d; try { d = JSON.parse(fs.readFileSync(`${dir}/${f}`, 'utf8')); } catch { continue; }
+    if (isDigest ? d.via !== 'wait' : !(d.record && d.record.via === 'wait')) continue;
+    if (!d.claimant || !(await orphan(d.claimant))) continue;
+    if (isDigest) { rm(`${dir}/${f}`); out.digests.push(d.n); } else { rm(`${dir}/${f}`); out.uids.push(d.uid); }
+  }
+  return out;
+}
+// The wakes a worker_wait delivered, as run-receipt wakes[] entries (at_ms counted from `t0`).
+function readDeliveries(dataDir, runId, t0 = 0) {
+  const dir = dirOf(dataDir, runId);
+  let names = [];
+  try { names = fs.readdirSync(dir); } catch { return []; }
+  const out = [];
+  for (const f of names) {
+    if (!/^x-[0-9a-f]+$/.test(f)) continue;
+    try {
+      const d = JSON.parse(fs.readFileSync(`${dir}/${f}`, 'utf8'));
+      if (d.record && d.record.via === 'wait') out.push({ ...d.record, at_ms: Number(d.at) - t0 });
+    } catch { /* skipped */ }
+  }
+  return out.sort((a, b) => a.at_ms - b.at_ms);
 }
 
 // The run receipt's digests[]: every claim, in order. A run that never claimed one has no directory, and this makes none.
@@ -135,14 +183,27 @@ function readDigests(dataDir, runId) {
   return out.sort((a, b) => a.n - b.n);
 }
 
+// Every policy step of the run, read in pages after the last seq of the page before (policy.list is capped at 2,000 a call).
+async function listSteps(core, runId) {
+  const rows = []; let since = 0;
+  for (let page = 0; page < 100; page += 1) {
+    const got = ((await core.policy.list({ run_id: runId, since_seq: since, limit: PAGE })) || {}).rows || [];
+    rows.push(...got);
+    const last = got.length ? Number(got[got.length - 1].seq) : since;
+    if (got.length < PAGE || !(last > since)) break;
+    since = last;
+  }
+  return rows;
+}
+
 const WAKE_CAP = 221; // the wake text cap (policy-wakes.cjs WAKE_TEXT_MAX): the digest that rides a wake is one more wake line
 const WAKE_HEAD = 'belay: policy steps since the last wake: ';
 
-// ADR 0074 decision 4: the interactive path. The digest of the steps no digest has taken yet, as one wake line, or null.
-async function wakeDigest({ core, dataDir, runId, now = Date.now, hooks = {} }) {
+// ADR 0074 decision 4: the interactive path. The digest of the steps no digest has taken yet, as one wake line (short lines), or null.
+async function wakeDigest({ core, dataDir, runId, now = Date.now, claimant = null, hooks = {} }) {
   let rows;
-  try { rows = ((await core.policy.list({ limit: 2000 })) || {}).rows || []; } catch { return null; }
-  const rec = claimDigest({ dataDir, runId, rows, cap: WAKE_CAP, form: { head: WAKE_HEAD, sep: '; ' }, via: 'wake', now, hooks });
+  try { rows = await listSteps(core, runId); } catch { return null; }
+  const rec = claimDigest({ dataDir, runId, rows, cap: WAKE_CAP, form: { head: WAKE_HEAD, sep: '; ', short: true }, via: 'wake', now, claimant, hooks });
   return rec ? { id: `${runId}:digest:${rec.n}`, text: rec.text, n: rec.n } : null;
 }
 
@@ -150,8 +211,8 @@ async function wakeDigest({ core, dataDir, runId, now = Date.now, hooks = {} }) 
 async function receiptField(core, dataDir, runId) {
   const digests = readDigests(dataDir, runId);
   let steps = 0;
-  try { steps = (((await core.policy.list({ limit: 1 })) || {}).rows || []).length; } catch { /* an old store has no steps */ }
+  try { steps = (((await core.policy.list({ run_id: runId, limit: 1 })) || {}).rows || []).length; } catch { /* an old store has no steps */ }
   return digests.length || steps ? { digests } : {};
 }
 
-module.exports = { wakeUid, deathUid, release, wakeDigest, receiptField, claimDigest, claimException, readDigests, build, lineOf, CAP_BYTES };
+module.exports = { wakeUid, deathUid, lifeOf, release, confirm, releaseUnconfirmed, readDeliveries, isClaimed, listSteps, wakeDigest, receiptField, claimDigest, claimException, readDigests, build, lineOf, CAP_BYTES };

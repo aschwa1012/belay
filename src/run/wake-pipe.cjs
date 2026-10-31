@@ -51,6 +51,7 @@ function startWakePublisher({
   let baseline = {};
   const deadPids = require('./dead-pids.cjs').createDeadPids({ graceMs: DEATH_GRACE_MS, adapterAlive: (pid) => !!pid && require('../core/lock.cjs').pidAlive(pid) });
   const evalSeen = new Map(); // ADR 0058: release evaluations already carried by a wake
+  const planned = require('./planned.cjs').createPlanned({ core, runId }); // whether the run has a plan, from the store: the same rule as the headless run and the adapter
   const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId, enabled: !!notes }); // wave 4: a refuted note
   const callWatcher = require('./call-wake.cjs').createCallWatcher({ core, runId }); // a still_running integrate or task_evaluate
   const policyWatcher = require('./policy-wakes.cjs').createPolicyWatcher({ core, runId }); // ADR 0073: the exceptions of a run under a plan
@@ -67,7 +68,7 @@ function startWakePublisher({
   const claimed = (w) => {
     const D = dataDir ? require('./run-digest.cjs') : null;
     const uid = D ? D.wakeUid({ ...(w.ev || {}), worker_id: w.worker_id }) : null;
-    if (!uid || (!(w.ev && w.ev.exception) && !evalSeen.policyArmed)) return true; // a death is claimed only once a plan is in force
+    if (!uid || (!(w.ev && w.ev.exception) && !planned.value())) return true; // a death is claimed only once a plan is in force
     try { return D.claimException({ dataDir, runId, uid }); } catch { return true; } // a claim that cannot be made delivers: never lose a wake for want of a file
   };
 
@@ -126,6 +127,7 @@ function startWakePublisher({
         }
       }
       if (budgetWake) for (const bw of budgetWake.takeWakes()) publish({ id: bw.id, text: bw.text, event: 'budget_pause', ev: bw }); // the budget pause's own wake is the one a hold does not keep back
+      if (dataDir && queue.some((q) => q.event === 'death')) await planned.check(); // a death has a second delivery path once the store shows a plan
       stats.held_max = Math.max(stats.held_max, queue.length);
       let held = false;
       try { held = !!isHeld(); } catch { held = true; } // an unreadable hold keeps wakes back, never releases them

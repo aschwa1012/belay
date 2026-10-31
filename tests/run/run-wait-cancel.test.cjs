@@ -87,7 +87,27 @@ test('a cancel after the reply was sent changes nothing, and other tools are not
   assert.strictEqual(CS.cancel('31'), false, 'the call is no longer in flight');
   assert.strictEqual(D.readDigests(dir, RUN).length, 1, 'the delivered claim stands');
   const other = await CS.run('32', 'task_list', async () => 'ok');
-  assert.deepStrictEqual(other, { value: 'ok' });
+  assert.strictEqual(other.value, 'ok');
   assert.strictEqual(CS.cancel('32'), false);
   assert.strictEqual(CS.current(), null, 'no store outside a tracked call');
+});
+
+test('the reply written: confirm makes the claim stand, so an orphan sweep leaves it alone', async () => {
+  const dir = dirOf();
+  const core = fakeCore([failed({ task_id: 'W' })]);
+  const c = clock();
+  const gone = { pid: 999002, created: '1' };
+  const rw = createRunWait({ core, runId: RUN, dataDir: dir, pollMs: 100, clock: c, claimant: gone, alive: async () => false });
+  const out = await CS.run('41', 'worker_wait', () => rw.wait(args(c)));
+  assert.strictEqual(out.value.exceptions.length, 1);
+  out.confirm();
+  assert.deepStrictEqual(await rw.releaseOrphans(), { digests: [], uids: [] }, 'confirmed: nothing to release');
+  assert.strictEqual(D.readDigests(dir, RUN).length, 1);
+  // Not confirmed (the adapter died with the reply in flight): released.
+  const dir2 = dirOf();
+  const rw2 = createRunWait({ core: fakeCore([failed({ task_id: 'W' })]), runId: RUN, dataDir: dir2, pollMs: 100, clock: c, claimant: gone, alive: async () => false });
+  await CS.run('42', 'worker_wait', () => rw2.wait(args(c)));
+  const freed = await rw2.releaseOrphans();
+  assert.strictEqual(freed.digests.length, 1);
+  assert.strictEqual(freed.uids.length, 1);
 });

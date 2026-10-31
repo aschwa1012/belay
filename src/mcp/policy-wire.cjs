@@ -29,7 +29,11 @@ function start({ core, manager, opts, run = null, log = () => {} }) {
   current = exec;
   const waitEnd = new AbortController(); // aborted at the manager's shutdown: a wait in flight takes no step and returns cancelled
   // ADR 0074: a worker_wait that names no worker waits for the run once a plan is in force (the run manager asks `active()` at each call).
-  if (typeof manager.setPolicyWait === 'function') manager.setPolicyWait(require('../run/run-wait.cjs').createRunWait({ core: h, runId: opts.runId, dataDir: opts.dataDir, armed: () => exec.isArmed(), signal: waitEnd.signal }));
+  if (typeof manager.setPolicyWait === 'function') {
+    const rw = require('../run/run-wait.cjs').createRunWait({ core: h, runId: opts.runId, dataDir: opts.dataDir, armed: () => exec.isArmed(), signal: waitEnd.signal });
+    manager.setPolicyWait(rw);
+    rw.releaseOrphans().catch((e) => log(`run wait: orphan release: ${e && e.code}`)); // a wait's claim whose reply was lost with the adapter that made it (run-digest.cjs)
+  }
   if (armEarly || (run && run.policy_default)) exec.arm();
   // One task.list at start (an indexed read of the run's task rows, once per adapter life) arms the executor when any task already carries a plan, so a restart mid-run loses nothing. A run with no plan pays only this read.
   else h.task.list({}).then((r) => { if (((r && r.tasks) || []).some((t) => t.run_id === opts.runId && t.policy)) exec.arm(); }, () => {});

@@ -400,7 +400,9 @@ async function run(ctx) {
     : crashedBy;
   const holds = partial ? partial.holds : [];
   const polls = partial ? partial.polls : 0;
-  const wakes = partial ? partial.wakes : [];
+  // ADR 0074: the wakes a worker_wait delivered are in the receipt too (via: 'wait'); the same fact is in wakes_suppressed only as a note of the duplicate.
+  const waitWakes = require('../run/run-digest.cjs').readDeliveries(dataDir, parsed.runId, t0);
+  const wakes = (partial ? partial.wakes : []).concat(waitWakes).sort((a, b) => a.at_ms - b.at_ms);
   const wakesSuppressed = partial ? partial.wakes_suppressed : [];
   const wakesExpired = partial ? partial.wakes_expired : []; // 5b fix round, finding 2
   // Fix round (6f finding 4): runOrchestrator already returns these (orchestrator.cjs's own `settle`);

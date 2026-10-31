@@ -41,33 +41,55 @@ const realClock = {
   sleep: (ms) => new Promise((res) => { const t = setTimeout(res, ms); if (t.unref) t.unref(); }),
 };
 
+
 // core: the harness core (task, integration, policy, memory reads). dataDir: where the claims live. armed(): whether the run has a plan.
-function createRunWait({ core, runId, dataDir, armed = () => true, signal: lifeSignal = null, clock = realClock, pollMs = POLL_MS, watcher = null, hooks = {} }) {
+function createRunWait({ core, runId, dataDir, armed = () => true, signal: lifeSignal = null, clock = realClock, pollMs = POLL_MS, watcher = null, claimant = undefined, alive = null, hooks = {} }) {
   const exceptions = watcher || PW.createPolicyWatcher({ core, runId, enabled: true });
   const pending = []; // exception wakes polled and not yet delivered, oldest first
   const reported = new Set(); // worker lives already named in a return
+  // The adapter that claims: pid and creation time. A claim made by an adapter that is gone is released at the next one's start (releaseOrphans).
+  let me = claimant === undefined ? null : claimant;
+  const meP = claimant !== undefined ? Promise.resolve(claimant)
+    : P.createdOf(process.pid).then((r) => ({ pid: process.pid, created: r && r.created != null ? String(r.created) : null }), () => ({ pid: process.pid, created: null }));
+  meP.then((c) => { me = c; });
+  const isAlive = alive || (async (pid, created) => { if (created == null) return P.pidAlive(pid); const r = await P.createdOf(pid).catch(() => null); return !!r && String(r.created) === String(created); });
+  const uidOf = (w) => `${w.worker_id}:${w.key}`;
 
   const deathsOf = (workers) => {
     const out = [];
     for (const w of workers) {
       const event = w.staleSince ? 'stale' : (w.settled && (w.settledState != null ? w.settledState : w.state) === 'dead') ? 'dead' : null;
-      const key = `${w.id}:${w.launches || 0}:${event}`;
+      const life = D.lifeOf(w.pid, w.pidCreated);
+      const key = `${w.id}:${life}:${event}`;
       if (!event || reported.has(key)) continue;
-      out.push({ key, uid: D.deathUid(w.id, event === 'dead' ? 'death' : 'stale', w.turns), exception: 'E4', worker_id: w.id, event, established_by: w.staleSince ? `row state ${w.staleSince.row_state}, held by adapter ${w.staleSince.adapter_pid}` : w.deathEstablishedBy, exit_code: w.exitCode == null ? null : w.exitCode, exit_signal: w.exitSignal == null ? null : w.exitSignal, turn: w.turns });
+      out.push({ key, uid: D.deathUid(w.id, event === 'dead' ? 'death' : 'stale', life), exception: 'E4', worker_id: w.id, event, established_by: w.staleSince ? `row state ${w.staleSince.row_state}, held by adapter ${w.staleSince.adapter_pid}` : w.deathEstablishedBy, exit_code: w.exitCode == null ? null : w.exitCode, exit_signal: w.exitSignal == null ? null : w.exitSignal, turn: w.turns });
     }
+    return out;
+  };
+
+  // Whatever another path already delivered is not waited on: only an item no one has claimed ends the wait.
+  const unclaimed = (workers) => {
+    for (let i = pending.length - 1; i >= 0; i -= 1) if (D.isClaimed({ dataDir, runId, uid: uidOf(pending[i]) })) pending.splice(i, 1);
+    const out = [];
+    for (const d of deathsOf(workers)) { if (D.isClaimed({ dataDir, runId, uid: d.uid })) reported.add(d.key); else out.push(d); }
     return out;
   };
 
   async function collect(workers) {
     const fresh = await exceptions.poll();
     for (const w of fresh) pending.push(w);
-    return deathsOf(workers);
+    return unclaimed(workers);
   }
 
   const busyOf = (workers) => workers.filter((w) => !w.settled && !w.turnEnded).map((w) => ({
     worker_id: w.id, state: w.state, pid_alive: w.pid ? P.pidAlive(w.pid) : false,
     last_event_age_ms: w.lastEventAt ? clock.now() - w.lastEventAt : null, turns: w.turns,
   }));
+
+  // The wake as the run receipt's wakes[] entry for a delivery by this wait (cmd-run adds the ones the claims hold).
+  const recordOf = (w) => ({ ...require('./wake-record.cjs').wakeRecord(w, w.text || '', 0, null), via: 'wait' });
+  // Claim one delivery; a claim that cannot be made delivers it (fail open: never lose an exception for want of a file).
+  const claimOne = (uid, record) => { try { return D.claimException({ dataDir, runId, uid, record, claimant: me }); } catch { return true; } };
 
   // args: { ms, capNote, t0, workers (this manager's records), idleOf (async), signal }
   async function wait({ ms, capNote = null, t0 = clock.now(), workers = [], idleOf = async () => ({}), signal = lifeSignal }) {
@@ -84,29 +106,31 @@ function createRunWait({ core, runId, dataDir, armed = () => true, signal: lifeS
     // exception, if any, in the next return, each in one place.
     let rows = []; let digestError = null;
     if (!aborted()) {
-      try { rows = ((await core.policy.list({ limit: 2000 })) || {}).rows || []; } catch (e) { digestError = (e && e.code) || 'E_INTERNAL'; }
+      try { rows = await D.listSteps(core, runId); } catch (e) { digestError = (e && e.code) || 'E_INTERNAL'; }
       if (hooks.afterRows) await hooks.afterRows();
     }
     const idle = aborted() ? {} : await idleOf();
+    await meP;
     // From here to the reply there is no await: what is claimed is what is returned.
     if (aborted()) return { worker_id: null, event: null, timed_out: false, cancelled: true, waited_ms: clock.now() - t0, watched: [], ...(capNote || {}) };
-    deaths = deathsOf(workers);
-    const uidOf = (w) => `${w.worker_id}:${w.key}`;
-    const wakes = pending.splice(0).filter((w) => D.claimException({ dataDir, runId, uid: uidOf(w) }));
-    const fresh = deaths; for (const d of fresh) reported.add(d.key); // named once whoever delivers it
-    deaths = fresh.filter((d) => D.claimException({ dataDir, runId, uid: d.uid }));
+    const fresh = deathsOf(workers);
+    const candidates = pending.length + fresh.length;
+    for (const d of fresh) reported.add(d.key); // named once whoever delivers it
+    const wakes = pending.splice(0).filter((w) => claimOne(uidOf(w), recordOf(w)));
+    deaths = fresh.filter((d) => claimOne(d.uid, recordOf({ worker_id: d.worker_id, event: 'death', turn: d.turn, exit_code: d.exit_code, exit_signal: d.exit_signal, death_established_by: d.established_by, text: `belay: worker ${d.worker_id} ${d.event}.` })));
+    // Everything polled lost its claim to another path between the look and the claim, and nothing is owed: the wait is not over, it goes on to its deadline.
+    if (candidates && !wakes.length && !deaths.length && clock.now() < deadline) return wait({ ms: deadline - clock.now(), capNote, t0: clock.now(), workers, idleOf, signal });
     let digest = null;
     if (!digestError) {
-      try { digest = D.claimDigest({ dataDir, runId, rows, via: 'wait', now: clock.now, hooks }); } catch (e) { digestError = (e && e.code) || 'E_INTERNAL'; }
+      try { digest = D.claimDigest({ dataDir, runId, rows, via: 'wait', now: clock.now, claimant: me, hooks }); } catch (e) { digestError = (e && e.code) || 'E_INTERNAL'; }
     }
-    // A cancel that arrives after this point means the reply is never sent: undo the claim so the next wait offers all of it again.
+    const claimed = { dataDir, runId, digestN: digest ? digest.n : null, uids: [...wakes.map(uidOf), ...deaths.map((d) => d.uid)] };
     if (call) {
       call.claim = {
-        release: () => {
-          D.release({ dataDir, runId, digestN: digest ? digest.n : null, uids: [...wakes.map(uidOf), ...deaths.map((d) => d.uid)] });
-          pending.unshift(...wakes);
-          for (const d of deaths) reported.delete(d.key);
-        },
+        // A cancel after this point means the reply is never sent: undo the claim so the next wait offers all of it again.
+        release: () => { D.release(claimed); pending.unshift(...wakes); for (const d of deaths) reported.delete(d.key); },
+        // The reply was written: the claim stands.
+        confirm: () => D.confirm(claimed),
       };
     }
     const list = [
@@ -122,7 +146,11 @@ function createRunWait({ core, runId, dataDir, armed = () => true, signal: lifeS
     };
   }
 
-  return { wait, active: () => !!armed(), pending: () => pending.slice() };
+  // At an adapter's start: a wait claim whose reply was never confirmed and whose adapter is gone was lost with it. Released; this adapter's
+  // watcher derives the exceptions again from the rows, and the steps are in no digest. The seam for any other "release on X" is `orphan`.
+  const releaseOrphans = () => D.releaseUnconfirmed({ dataDir, runId, orphan: async (c) => c.pid !== process.pid && !(await isAlive(c.pid, c.created)) });
+
+  return { wait, active: () => !!armed(), pending: () => pending.slice(), releaseOrphans };
 }
 
 module.exports = { createRunWait, boundOf, POLICY_WAIT_DEFAULT_MS, POLL_MS };

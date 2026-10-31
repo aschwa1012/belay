@@ -15,9 +15,9 @@ const open = new Map(); // request id -> the call's store
 
 const current = () => als.getStore() || null;
 
-// -> { value } or { cancelled: true } (the reply is to be dropped). Any tool but worker_wait runs as it always did.
+// -> { value, confirm } or { cancelled: true } (the reply is to be dropped). `confirm` is called once the reply is written: the claim then stands for good. Any tool but worker_wait runs as it always did.
 async function run(id, name, fn) {
-  if (name !== 'worker_wait' || id === undefined || id === null) return { value: await fn() };
+  if (name !== 'worker_wait' || id === undefined || id === null) return { value: await fn(), confirm: () => {} };
   const ac = new AbortController();
   const store = { signal: ac.signal, claim: null };
   open.set(String(id), { ac, store });
@@ -27,7 +27,7 @@ async function run(id, name, fn) {
       if (store.claim && typeof store.claim.release === 'function') store.claim.release();
       return { cancelled: true };
     }
-    return { value };
+    return { value, confirm: () => { if (store.claim && typeof store.claim.confirm === 'function') store.claim.confirm(); } };
   } finally { open.delete(String(id)); }
 }
 

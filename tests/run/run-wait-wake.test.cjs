@@ -48,7 +48,7 @@ async function publisher(core, dataDir) {
 
 test('the digest rides the wake as one more wake line inside the wake cap, and worker_wait does not show those steps again', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-rw-wake-')).replace(/\\/g, '/');
-  const steps = Array.from({ length: 6 }, (_, i) => step({ task_id: `task-${i}` }));
+  const steps = Array.from({ length: 12 }, (_, i) => step({ task_id: `task-${i}` }));
   const core = coreOf(steps);
   const p = await publisher(core, dataDir);
   try {
@@ -56,7 +56,7 @@ test('the digest rides the wake as one more wake line inside the wake cap, and w
     assert.ok(await p.until(() => p.lines.some((l) => l.text && /^belay: policy steps since the last wake: /.test(l.text))), JSON.stringify(p.lines));
     const dig = p.lines.find((l) => l.text && /^belay: policy steps since the last wake: /.test(l.text));
     assert.ok(B(dig.text) <= 221, `${B(dig.text)} B`);
-    assert.match(dig.text, /\(\+\d+ earlier policy steps not shown\)/, 'six steps do not fit one wake line: the count says how many were left out');
+    assert.match(dig.text, /\(\+\d+ earlier policy steps not shown\)/, 'twelve steps do not fit one wake line: the count says how many were left out');
     assert.ok(p.lines.findIndex((l) => l === dig) > p.lines.findIndex((l) => l.text && /exception E1,/.test(l.text)), 'it follows the wake it rides');
     const wakesBefore = p.lines.filter((l) => l.text).length;
     await new Promise((r) => setTimeout(r, 120));
@@ -64,7 +64,7 @@ test('the digest rides the wake as one more wake line inside the wake cap, and w
     const field = await D.receiptField(core, dataDir, RUN);
     assert.strictEqual(field.digests.length, 1);
     assert.strictEqual(field.digests[0].via, 'wake');
-    assert.strictEqual(field.digests[0].lines.length + field.digests[0].dropped.count, 6, 'every step is shown or counted');
+    assert.strictEqual(field.digests[0].lines.length + field.digests[0].dropped.count, 12, 'every step is shown or counted');
     // The wait now has nothing of those steps to show, and a new one is shown once.
     const clock = { t: 0, now: () => clock.t, sleep: async (ms) => { clock.t += ms; } };
     const rw = createRunWait({ core, runId: RUN, dataDir, pollMs: 50, clock });
@@ -121,15 +121,16 @@ test('a publisher with no data dir behaves as before: no claim, no digest line',
 });
 
 // A worker death is delivered once too: by the pipe or by worker_wait, whichever claims it first (the key is worker, kind, turn).
-const w2 = (extra = {}) => ({ id: 'w2', run_id: RUN, state: 'running', turns: 3, seq: 1, pid_alive: true, mid_turn: 0, ...extra });
-const deadRecord = { id: 'w2', launches: 1, settled: true, settledState: 'dead', state: 'dead', deathEstablishedBy: 'pid check', exitCode: 1, exitSignal: null, turns: 3 };
+const w2 = (extra = {}) => ({ id: 'w2', run_id: RUN, state: 'running', turns: 3, seq: 1, pid: 4242, pid_created: 99, pid_alive: true, mid_turn: 0, ...extra });
+const LIFE = D.lifeOf(4242, 99);
+const deadRecord = { id: 'w2', pid: 4242, pidCreated: 99, launches: 1, settled: true, settledState: 'dead', state: 'dead', deathEstablishedBy: 'pid check', exitCode: 1, exitSignal: null, turns: 3 };
 const clockOf = () => { const c = { t: 0, now: () => c.t, sleep: async (ms) => { c.t += ms; } }; return c; };
 
 test('a death the run wait already returned is not published on the pipe', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-rw-wake-')).split(path.sep).join('/');
   const core = coreOf([]);
   core.rows.push(w2());
-  assert.ok(D.claimException({ dataDir, runId: RUN, uid: D.deathUid('w2', 'death', 3) }), 'worker_wait named it');
+  assert.ok(D.claimException({ dataDir, runId: RUN, uid: D.deathUid('w2', 'death', LIFE) }), 'worker_wait named it');
   const p = await publisher(core, dataDir);
   try {
     core.rows[0] = { ...core.rows[0], turns: 1, seq: 2 }; // arms the plan
@@ -159,5 +160,19 @@ test('a death the pipe published is not returned by the run wait', async () => {
   const rw = createRunWait({ core: coreOf([]), runId: RUN, dataDir: dir2, pollMs: 50, clock: clockOf() });
   const first = await rw.wait({ ms: 100, t0: 0, workers: [deadRecord] });
   assert.deepStrictEqual(first.exceptions.filter((e) => e.exception === 'E4').map((e) => [e.exception, e.worker_id]), [['E4', 'w2']]);
-  assert.strictEqual(D.claimException({ dataDir: dir2, runId: RUN, uid: D.deathUid('w2', 'death', 3) }), false, 'so the pipe would not');
+  assert.strictEqual(D.claimException({ dataDir: dir2, runId: RUN, uid: D.deathUid('w2', 'death', LIFE) }), false, 'so the pipe would not');
+});
+
+test('a death is claimed on the pipe when the store shows a plan, with no turn end before it', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-rw-wake-')).split(path.sep).join('/');
+  const core = coreOf([]);
+  core.rows.push(w2());
+  assert.ok(D.claimException({ dataDir, runId: RUN, uid: D.deathUid('w2', 'death', LIFE) }), 'worker_wait named it');
+  const p = await publisher(core, dataDir);
+  try {
+    core.rows[1] = w2({ state: 'dead', seq: 2, exit_code: 1 }); // only the death: nothing armed the plan but the store's own task
+    const polls = p.pub.stats().polls;
+    assert.ok(await p.until(() => p.pub.stats().polls >= polls + 5));
+    assert.deepStrictEqual(p.lines.filter((l) => l.text && /w2/.test(l.text) && !/finished turn/.test(l.text)), [], 'the death is not published');
+  } finally { await p.done(); }
 });
