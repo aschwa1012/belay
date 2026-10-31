@@ -238,3 +238,19 @@ test('reading the store\'s steps creates no file in the data dir', async (tcx) =
     await c.close();
   } finally { cleanup(d); }
 });
+
+test('a claim skipped for a pause is reopened with the retake\'s worker and turn; any other finished claim is not reopened', async () => {
+  const d = sandbox();
+  const s = new Store(path.join(d, 'memory.db'), { stamp: true });
+  try {
+    const first = await steps.claim(E(s), HARNESS, { step: 'review', trigger: TRIG, worker_id: 'rev-a', turn: 1 });
+    await steps.finish(E(s), HARNESS, { seq: first.row.seq, outcome: 'skipped', error: 'E_PAUSED: the run was paused' });
+    const retake = await steps.claim(E(s), HARNESS, { step: 'review', trigger: TRIG, worker_id: 'rev-b', turn: 4 });
+    assert.strictEqual(retake.existing, false);
+    assert.deepStrictEqual([retake.row.seq, retake.row.outcome, retake.row.worker_id, retake.row.turn], [first.row.seq, 'started', 'rev-b', 4], 'the retake names the worker that will run');
+    await steps.finish(E(s), HARNESS, { seq: first.row.seq, outcome: 'skipped', error: 'no longer due' });
+    const again = await steps.claim(E(s), HARNESS, { step: 'review', trigger: TRIG, worker_id: 'rev-c', turn: 9 });
+    assert.strictEqual(again.existing, true);
+    assert.deepStrictEqual([again.row.worker_id, again.row.turn], ['rev-b', 4], 'a skip for another reason stays taken');
+  } finally { s.close(); cleanup(d); }
+});

@@ -160,13 +160,13 @@ test('integrate: a conflict is a finished step naming its row; a failed merge an
 });
 
 test('integrate waits for a dependency that has not landed, and takes it when it has', async () => {
-  const D = work('D', null, { integration: { state: 'not_merged' } });
+  const D = work('D', { state: 'holds', review_id: 'R1', rounds_left: 1 }, { integration: { state: 'not_merged' } });
   const W = work('W', { state: 'holds', review_id: 'R2', rounds_left: 1 }, { depends_on: ['D'] });
-  const s = store({ tasks: [D, W, review('R2', 'W', 'rv', true)] });
+  const s = store({ tasks: [D, W, review('R1', 'D', 'rv', true), review('R2', 'W', 'rv', true)] });
   const e = s.exec();
-  assert.deepStrictEqual((await e.tick()).steps, []);
+  assert.deepStrictEqual((await e.tick()).steps.map((x) => [x.task_id, x.step]), [['D', 'integrate']], 'D lands first; W waits for it');
   D.integration = { state: 'merged' };
-  assert.deepStrictEqual((await e.tick()).steps.map((x) => x.step), ['integrate']);
+  assert.deepStrictEqual((await e.tick()).steps.map((x) => [x.task_id, x.step]), [['W', 'integrate']]);
 });
 
 test('pause: a paused run takes no claim; at resume one pass takes the triggers that arrived, in row order', async () => {
