@@ -181,3 +181,33 @@ test('the run spec lever is off unless stated, needs a budget, and must be a boo
   assert.match(applyBudget({}, { budget_counts_in_flight: true }).error, /needs a budget/);
   assert.match(applyBudget({}, { budget_usd: 10, budget_counts_in_flight: 'yes' }).error, /true or false/);
 });
+
+test('lever on: a worker turn that has just reported is not counted again as in flight before the next tick', async () => {
+  const w = withWorker(1); // $2.00 of the turn read by the first tick
+  try {
+    const o = spy({ run: 5 });
+    const g = mk(o, { countInFlight: true, dataDir: w.dataDir, tickMs: 60000 });
+    g.tick(w.rows); await settle(g);
+    assert.strictEqual(g.state().record.in_flight_workers.usd, 2);
+    fs.appendFileSync(`${w.dataDir}/workers/w1/stream.jsonl`, result + '\n'); // the turn ends...
+    o.s.run = 7; // ...and its $2.00 reaches the ledger at once, with no tick in between
+    await g.onUsage({ worker_id: 'w1' }); await settle(g);
+    assert.deepStrictEqual(o.s.pauses, [], '$7.00 reported is under the $9.00 threshold');
+  } finally { w.done(); }
+});
+
+test('lever on: a worker followed for the first time starts at its current turn, so a stream longer than one catch-up never counts reported turns', async () => {
+  const w = withWorker(0);
+  try {
+    const sp = `${w.dataDir}/workers/w1/stream.jsonl`;
+    const pad = (i) => msg(`p${i}`, 1).replace('"content":[]', `"content":["${'x'.repeat(1000)}"]`); // about 4.5 MB: past the tracker's 4 MB read per call
+    // An old turn worth $2.00 whose result lies past the first 4 MB; the last line is a result, so nothing is in flight.
+    fs.writeFileSync(sp, [init, msg('old'), ...Array.from({ length: 4500 }, (_, i) => pad(i)), result, init, msg('t2'), result].join('\n') + '\n');
+    const o = spy({ run: 8 });
+    const g = mk(o, { countInFlight: true, dataDir: w.dataDir, tickMs: 0 });
+    g.tick(w.rows); await settle(g);
+    assert.deepStrictEqual(o.s.pauses, [], 'nothing is in flight: the ledger holds $8.00 of $10.00');
+    const fl = g.state().record.in_flight_workers || { usd: 0, partial: [] };
+    assert.deepStrictEqual([fl.usd, fl.partial], [0, []]);
+  } finally { w.done(); }
+});
