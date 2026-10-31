@@ -120,11 +120,29 @@ function sameProcess(rec, snap) {
   return e.created == null || e.created <= (Number(rec.at) || Date.now()) + UNKNOWN_START_SLACK_MS;
 }
 
+// Is the record the one the caller means? `expect` names the identity the caller judged: any of kind, workerId, dataDir (compared as
+// paths) and created (compared only when both sides know one). A field left out is not checked; no `expect` matches any record. A pid
+// number alone is not an identity: Windows reuses it, and another store's spawn may hold the number by the time the caller acts.
+const samePath = (a, b) => {
+  const n = (p) => path.resolve(String(p)).split(String.fromCharCode(92)).join('/');
+  return process.platform === 'win32' ? n(a).toLowerCase() === n(b).toLowerCase() : n(a) === n(b);
+};
+function matches(rec, expect) {
+  if (!expect) return true;
+  if (expect.kind != null && (rec.kind || 'worker') !== expect.kind) return false;
+  if (expect.workerId != null && rec.worker_id !== expect.workerId) return false;
+  if (expect.dataDir != null && !(rec.data_dir != null && samePath(rec.data_dir, expect.dataDir))) return false;
+  if (Number.isFinite(expect.created) && Number.isFinite(rec.created) && rec.created !== expect.created) return false;
+  return true;
+}
+
 // Retire a record whose process has exited. The tombstone is written first: when it cannot be, the record stays, so the next read
 // retires it again (and throws, which the operator check turns into a refusal) rather than forgetting the process.
-function unregister(pid) {
+// A record that is not `expect`'s (another spawn took the number) is left alone.
+function unregister(pid, expect = null) {
   let rec;
   try { rec = readJson(fileOf(pid)); } catch { return; }
+  if (!matches(rec, expect)) return;
   try { saveTombstone(tombstoneOf(rec, Date.now())); } catch { return; }
   try { fs.unlinkSync(fileOf(pid)); } catch { /* someone else removed it */ }
 }
@@ -141,9 +159,11 @@ function touch(pid, now = Date.now()) {
 // Retire the record of a process a caller has found dead (run.end closing a row whose adapter never wrote its exit). A pid that still
 // answers is left alone. The lifetime closes at the last moment the process was seen alive (the record's stamp, or `seenFloor`, a time a
 // writer recorded such as the row's last event), not now. -> true when a record was retired.
-function retire(pid, now = Date.now(), seenFloor = null, { checked = false } = {}) {
+// `expect` (see matches) names the record the caller judged; another spawn's record under the same pid stays.
+function retire(pid, now = Date.now(), seenFloor = null, { checked = false, expect = null } = {}) {
   let rec;
   try { rec = readJson(fileOf(pid)); } catch { return false; }
+  if (!matches(rec, expect)) return false;
   if (!checked && pidAlive(pid)) return false; // `checked`: the caller has shown the process under this pid is not the record's
   try { saveTombstone(tombstoneOf(rec, Math.min(Math.max(lastSeen(rec), Number.isFinite(seenFloor) ? seenFloor : 0), now))); } catch { return false; }
   try { fs.unlinkSync(fileOf(pid)); } catch { /* someone else removed it */ }
@@ -221,4 +241,4 @@ function runSpawned(interactive, orchestratorPid) {
   return !interactive && Number.isInteger(orchestratorPid) ? [{ pid: orchestratorPid, created: null, kind: 'orchestrator' }] : [];
 }
 
-module.exports = { register, registerProcess, update, unregister, retire, touch, scan, settle, list, live, tombFile, startOf, bootMs, BOOT_SLACK_MS, tombstones, saveTombstone, dropTombstone, dir, runSpawned, io };
+module.exports = { matches, register, registerProcess, update, unregister, retire, touch, scan, settle, list, live, tombFile, startOf, bootMs, BOOT_SLACK_MS, tombstones, saveTombstone, dropTombstone, dir, runSpawned, io };

@@ -63,7 +63,7 @@ function registerSpawn(w, child, dataDir, kind = 'worker') {
     Object.defineProperty(refusal, 'teardown', { value: endUnregistered(child, refusal).catch(() => null), enumerable: false });
     throw refusal;
   }
-  child.once('exit', () => SR.unregister(child.pid));
+  child.once('exit', () => SR.unregister(child.pid, { workerId: w.id, dataDir }));
   stampWhileAlive(child);
 }
 

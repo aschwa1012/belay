@@ -25,7 +25,7 @@ let adoptedTimer = null;
 
 // Cost: one process snapshot (about a second of CIM) every SEEN_STAMP_MS for each adopting adapter that holds an adopted worker, and none
 // when it holds none. One pass over the adopted workers; exported for a test to drive. `snapshot` and `touch` are seams.
-async function tickAdopted({ snapshot = (o) => ID.processSnapshot(o), touch = (p, now) => SR.touch(p, now), retire = (p, now) => SR.retire(p, now, null, { checked: true }), now = Date.now() } = {}) {
+async function tickAdopted({ snapshot = (o) => ID.processSnapshot(o), touch = (p, now) => SR.touch(p, now), retire = (p, now, expect) => SR.retire(p, now, null, { checked: true, expect }), now = Date.now() } = {}) {
   for (const [pid, a] of [...adopted]) if (a.w.pid !== pid || a.w.pidCreated !== a.created || !LIFE.has(a.w.state)) adopted.delete(pid); // relaunched, or no life to hold
   if (adopted.size === 0) { stopAdopted(); return; }
   const snap = await snapshot({ kind: 'seen-stamp' });
@@ -33,7 +33,7 @@ async function tickAdopted({ snapshot = (o) => ID.processSnapshot(o), touch = (p
   for (const [pid, a] of [...adopted]) {
     const v = ID.checkIdentity(pid, { created: a.created }, snap);
     if (v.ok) touch(pid, now);
-    else if (v.kind === 'mismatch' || v.kind === 'absent') { adopted.delete(pid); retire(pid, now); }
+    else if (v.kind === 'mismatch' || v.kind === 'absent') { adopted.delete(pid); retire(pid, now, { workerId: a.w.id, created: a.created }); }
   }
 }
 
