@@ -33,8 +33,8 @@ async function driveReal(mode, closeGraceMs) {
   const head = git('rev-parse', 'HEAD').stdout.trim();
   const out = `${dir}/e2e.jsonl`;
   const run = runCli(specPath, dataDir, {
-    BELAY_CLAUDE_EXE: FAKE_ORCH, E2E_FAKE_CLAUDE: FAKE_CLAUDE, E2E_OUT: out, E2E_WT: wt,
-    E2E_KILL_ADAPTER: mode === 'kill' ? '1' : '', E2E_WORKER_IGNORE_END: '1', FAKE_ANSWER_DELAY_MS: '4000',
+    BELAY_CLAUDE_EXE: FAKE_ORCH, FAKE_E2E_FAKE_CLAUDE: FAKE_CLAUDE, FAKE_E2E_OUT: out, FAKE_E2E_WT: wt,
+    FAKE_E2E_KILL_ADAPTER: mode === 'kill' ? '1' : '', FAKE_E2E_WORKER_IGNORE_END: '1', FAKE_ANSWER_DELAY_MS: '4000',
     // ADR 0048 decision 8 (b): this test asserts a product budget that includes a kill snapshot by definition (the adapter's
     // stop: 10,000 ms of grace for the worker, then the kill, inside the 15,000 ms the run waits). An injected stall would
     // test the stall, so these processes run with the seam off even when the suite runs with it on.

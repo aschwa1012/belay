@@ -39,6 +39,13 @@ function verifyClaudeReady(w, ready) {
   if (version && compareVersions(version, MIN_CLAUDE_CODE_VERSION) < 0) {
     return { ok: false, reason: `the session reported Claude Code ${version} in its system/init, and belay needs ${MIN_CLAUDE_CODE_VERSION} or later; set BELAY_CLAUDE_EXE to a newer install` };
   }
+  // Belay runs on the subscription only. An init whose apiKeySource is anything but "none" (ANTHROPIC_API_KEY, an auth token, a
+  // helper) means the session is billed elsewhere: refuse it, naming the source. An init that carries no apiKeySource claims
+  // nothing and passes, as the version check does.
+  const keySource = ready && ready.api_key_source;
+  if (typeof keySource === 'string' && keySource !== 'none') {
+    return { ok: false, reason: `the session reported apiKeySource "${keySource}" in its system/init, and belay runs on the subscription only (apiKeySource "none"); remove the credential that source names from the environment` };
+  }
   const servers = ready && ready.mcp_servers;
   if (!Array.isArray(servers)) {
     return { ok: false, reason: `the ${L.MCP_SERVER_NAME} MCP server was not verified at ready: the system/init event carried no mcp_servers list` };

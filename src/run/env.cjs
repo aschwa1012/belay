@@ -35,6 +35,30 @@ const SCRUB_CWD = ['PWD', 'OLDPWD', 'INIT_CWD'];
 // buildEnv sets it explicitly only for a worker launched with permission_prompt.
 const SCRUB_ENV_EXTRA = ['MCP_TOOL_TIMEOUT'];
 
+// The child environment is an allowlist: a worker or orchestrator gets what the process needs to run and nothing the operator's
+// shell or the lead session happens to hold. Credentials (GH_TOKEN, ANTHROPIC_API_KEY, ANTHROPIC_AUTH_TOKEN, OPENAI_API_KEY),
+// base-URL redirects (ANTHROPIC_BASE_URL), the VS Code git askpass bridge (GIT_ASKPASS, VSCODE_GIT_IPC_HANDLE) and the lead's
+// session handles (CLAUDECODE, CLAUDE_PID, CODEX_COMPANION_*) are absent because they are not listed. Belay is subscription-only;
+// a billing variable must never reach a launch (the ready gate also refuses an init whose apiKeySource is not "none").
+// Names compare case-insensitively (Windows spells `Path` and `SystemRoot` as it likes); the original spelling is kept.
+const ALLOW_EXACT = new Set([
+  // process and shell basics
+  'PATH', 'PATHEXT', 'COMSPEC', 'OS', 'SHELL', 'TERM', 'TERM_PROGRAM', 'COLORTERM', 'NO_COLOR', 'FORCE_COLOR', 'LANG', 'TZ',
+  // Windows system and profile locations
+  'SYSTEMROOT', 'SYSTEMDRIVE', 'WINDIR', 'USERPROFILE', 'HOME', 'HOMEDRIVE', 'HOMEPATH', 'APPDATA', 'LOCALAPPDATA',
+  'PROGRAMDATA', 'PROGRAMFILES', 'PROGRAMFILES(X86)', 'PROGRAMW6432', 'COMMONPROGRAMFILES', 'COMMONPROGRAMFILES(X86)',
+  'COMMONPROGRAMW6432', 'ALLUSERSPROFILE', 'PUBLIC', 'TEMP', 'TMP', 'TMPDIR', 'USERNAME', 'USERDOMAIN', 'COMPUTERNAME',
+  'PROCESSOR_ARCHITECTURE', 'NUMBER_OF_PROCESSORS',
+  // network plumbing: a proxy or a private CA is not a credential
+  'HTTP_PROXY', 'HTTPS_PROXY', 'NO_PROXY', 'ALL_PROXY', 'SSL_CERT_FILE', 'SSL_CERT_DIR', 'NODE_EXTRA_CA_CERTS',
+  // Claude Code and Codex configuration belay relies on (ADR 0024: the config dir the surface gate and the settings copy read)
+  'CLAUDE_CONFIG_DIR', 'CLAUDE_CODE_GIT_BASH_PATH', 'CODEX_HOME', 'RUST_LOG', 'DISABLE_AUTOUPDATER',
+]);
+// `BELAY_` carries belay's own settings (BELAY_FAKE_ is scrubbed first); `FAKE_` is the test fakes' knobs, which the test
+// processes put in their own environment and the fake executables read.
+const ALLOW_PREFIXES = ['BELAY_', 'FAKE_', 'LC_'];
+const allowed = (k) => ALLOW_EXACT.has(k.toUpperCase()) || ALLOW_PREFIXES.some((p) => k.startsWith(p));
+
 // Lifted from the R5 prototype (prototypes/run-harness/harness.cjs): the only channel on which a
 // Codex MCP failure is observable at all.
 const CODEX_RUST_LOG = 'codex_core=debug,codex_rmcp_client=debug,rmcp=info';
@@ -57,6 +81,7 @@ function buildEnv(base, { substrate = 'claude-code', cwd = null, mcpToolTimeoutM
     if (SCRUB_CWD.includes(k)) continue;
     if (SCRUB_ENV_EXTRA.includes(k)) continue;
     if (SCRUB_PREFIXES.some((p) => k.startsWith(p))) continue;
+    if (!allowed(k)) continue;
     out[k] = v;
   }
   if (cwd) out.PWD = fwd(path.resolve(cwd));
@@ -81,4 +106,4 @@ function buildEnv(base, { substrate = 'claude-code', cwd = null, mcpToolTimeoutM
   return out;
 }
 
-module.exports = { WORKER_MARKER, SCRUB_EXACT, SCRUB_PREFIXES, SCRUB_CWD, SCRUB_ENV_EXTRA, CODEX_RUST_LOG, buildEnv, fwd };
+module.exports = { ALLOW_EXACT, ALLOW_PREFIXES, WORKER_MARKER, SCRUB_EXACT, SCRUB_PREFIXES, SCRUB_CWD, SCRUB_ENV_EXTRA, CODEX_RUST_LOG, buildEnv, fwd };
