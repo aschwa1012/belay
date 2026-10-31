@@ -37,7 +37,11 @@ async function run(ctx) {
   const parsed = parseArgs(ctx.argv);
   if (parsed.error) return usageError(parsed.error);
   const { wakePipeName } = require('../run/wake-pipe.cjs');
-  const pipe = (ctx.wakeStreamDeps && ctx.wakeStreamDeps.pipe) || wakePipeName(ctx.dataDir, parsed.runId, parsed.nonce);
+  // The store directory is found as every other command finds it (--data, then the config's data_dir, then <project root>/.belay):
+  // the launcher names its pipe from that directory. config.cjs reads files only; it starts nothing and writes nothing.
+  const C = require('./config.cjs');
+  const seam = ctx.wakeStreamDeps && ctx.wakeStreamDeps.pipe;
+  const pipe = seam || wakePipeName(C.dataDirOf(C.discover(ctx.cwd || process.cwd()), ctx), parsed.runId, parsed.nonce);
   const out = ctx.emit || ((t) => { process.stdout.write(t); });
   const started = Date.now();
   return new Promise((resolve) => {
