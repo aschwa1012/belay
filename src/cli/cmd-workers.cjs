@@ -56,6 +56,13 @@ async function run(ctx) {
   try {
     let runId = parsed.runId;
     let runIdSource = parsed.runId ? 'argument' : null;
+    if (parsed.runId && !parsed.all) {
+      const { runs } = await core.run.list({});
+      if (!runs.some(r => r.id === parsed.runId)) {
+        const message = `no run row exists for ${parsed.runId}; list runs with belay status`;
+        return { code: 1, text: `belay workers: ${message}\n`, json: { error: { code: 'E_NOT_FOUND', message, run_id: parsed.runId } } };
+      }
+    }
     if (!runId) {
       const { runs } = await core.run.list({});
       if (runs.length) {
