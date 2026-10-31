@@ -151,6 +151,7 @@ let noStoreDir = null;
 let orchDir = null;
 let txDir = null; // an interactive run's orchestrator dir: a launch marker and no stream
 let liveDir = null; // a budgeted run with 10 live workers in long turns (9 MB streams, no result line)
+let policyDir = null; // a live run holding 500 policy steps and 1000 usage rows
 let txCfg = null; // the sandbox CLAUDE_CONFIG_DIR holding the ~10 MB transcript the marker names
 
 before(async () => {
@@ -194,6 +195,8 @@ before(async () => {
     }
     await lo.run.setBudget({ budget: { counts_in_flight: false, orchestrator: { counted: true, usd: 0, in_flight_usd: 0 }, in_flight_workers: { usd: 10, by_worker: by, partial: [], unpriced: [] } } });
   } finally { await lo.close(); await lc.shutdownOwner(); await lc.close(); }
+  policyDir = `${dir}/.belay-policy`;
+  await require('../helpers/policy-plant.cjs').plantPolicyRun(policyDir, 'run-policy', 500);
 });
 
 after(() => {
@@ -276,6 +279,21 @@ test('budgets: status, agents and receipts over 10 live workers in 9 MB turns ea
   assertGate(result);
   const out = spawnCli(['status', 'run-live', '--data', liveDir]).stdout;
   assert.match(out, /worker lw0: \$1\.00 in flight \(estimate\)/);
+});
+
+test('budgets: status and receipts over a live run holding 500 policy steps and 1000 usage rows each add under 500 ms to the host floor, interleaved, and show the log', () => {
+  const result = interleaved({
+    spawnFloor: makeSpawnFloor(),
+    commands: {
+      status: () => timedCli(['status', 'run-policy', '--data', policyDir], {}, 0, policyDir),
+      receipts: () => timedCli(['receipts', 'run-policy', '--data', policyDir], {}, 0, policyDir),
+    },
+    n: N,
+  });
+  report('reads_policy_steps', result);
+  assertGate(result);
+  assert.match(spawnCli(['status', 'run-policy', '--data', policyDir]).stdout, /^policy steps: 500 in all, newest 5$/m);
+  assert.match(spawnCli(['receipts', 'run-policy', '--data', policyDir]).stdout, /^policy steps: 500 in all, newest 200$/m);
 });
 
 test('budgets: transcript, notices and agents (ADR 0036 U1) each add under 500 ms to the host floor, interleaved, on a dead store', () => {

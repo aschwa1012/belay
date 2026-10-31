@@ -80,6 +80,8 @@ CREATE TABLE IF NOT EXISTS usage (
   written_at INTEGER NOT NULL, written_by TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_usage_id ON usage(id, seq);
 CREATE INDEX IF NOT EXISTS ix_usage_run ON usage(run_id, seq);
+-- 0.4.0: the policy step log prices a step turn by (run, turn, worker) without scanning the run ledger.
+CREATE INDEX IF NOT EXISTS ix_usage_turn ON usage(run_id, turn, worker_id);
 
 -- ADR 0053 decision 5: one row per state of an integration (merging, then conflict, failed or evaluated). Append-only like the
 -- tables above; the JSON columns are text in SQLite and parsed on the wire.
@@ -323,6 +325,7 @@ const MEMORY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS ix_entries_task ON memory_entries(task_id)',
   'CREATE INDEX IF NOT EXISTS ix_entries_status ON memory_entries(status)',
   'CREATE INDEX IF NOT EXISTS ix_entries_ns_created ON memory_entries(namespace, created_at)',
+  'CREATE INDEX IF NOT EXISTS ix_usage_turn ON usage(run_id, turn, worker_id)', // 0.4.0: the policy step log prices a turn through it; an older store gains it on open
 ];
 
 // build step 6b: 'forgotten' is the state worker.forget appends over a dead worker's rows, always last
