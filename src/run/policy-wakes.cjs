@@ -67,14 +67,17 @@ const cleanRefutation = (r) => r.executable === true && failing(r).length > 0 &&
 // Each: { exception, task_id, trigger: { table, id, seq }, field, seq (the wake's), uid (its dedupe key), detail }.
 // Whether review R judged the newest fix of the work (or the work itself, when no fix exists). The newest is by creation order, the seq of a fix's FIRST
 // version (`firstSeq`, from policy.revisions): a later row on an older fix (a sweep, a worktree record) must not make it look newer. Without the
-// versions read it falls back to the latest row's seq.
+// versions read (a cut-off or failed read, or a fix missing from it) the order is unknown, and it fails toward waking: E2 is raised, never suppressed.
 function finalFixJudged(work, R, tasks, byId, firstSeq) {
   const fixes = tasks.filter((t) => t.id !== work.id && t.repairs && rootOf(t, byId).id === work.id);
-  if (!fixes.length) return true;
-  const born = (t) => (firstSeq.has(t.id) ? firstSeq.get(t.id) : Number(t.seq));
+  if (!fixes.length || !fixes.every((t) => firstSeq.has(t.id))) return true;
+  const born = (t) => firstSeq.get(t.id);
   const newest = fixes.reduce((a, b) => (born(b) > born(a) ? b : a));
   return Array.isArray(R.depends_on) && R.depends_on.includes(newest.id);
 }
+
+// The seq of the task row a release_failed event was written against (its message), or null for an event from before it was recorded.
+function rowSeqOf(ev) { try { const m = JSON.parse(ev.message); return m && Number.isFinite(Number(m.seq)) ? Number(m.seq) : null; } catch { return null; } }
 
 function derive(snap) {
   const { runId } = snap;
@@ -97,7 +100,8 @@ function derive(snap) {
     const vs = (revOf.get(id) || []).filter((r) => r.policy_rev != null);
     if (!vs.length) return null;
     let upTo;
-    if (fact.row) {
+    if (fact.rowSeq != null) upTo = (v) => Number(v.seq) <= fact.rowSeq;
+    else if (fact.row) {
       const own = (revOf.get(fact.row) || []).find((r) => r.evaluated_at != null && Number(r.evaluated_at) === fact.at);
       if (!own) return null;
       upTo = (v) => Number(v.seq) <= Number(own.seq);
@@ -133,7 +137,7 @@ function derive(snap) {
     } else if (own && x.state === 'done' && r.flaky) add('E6', root, tref(x), null, { flaky: true, task: x.id }, evOf(x));
     // E5: a release evaluation that ended without a result (a queue refusal, an error): the ledger's release_failed events.
     if (x.state === 'released' && x.handoff) {
-      for (const f of fails) if (f.task_id === x.id && f.code !== 'E_CANCELLED' && Number(f.written_at) >= Number(x.handoff.at)) add('E5', root, tref(x), null, { executable: true, failing: [], error: f.code, task: x.id }, { key: `${x.id}!${f.id}`, seq: Number(f.seq) || 0, at: Number(f.written_at) || 0 });
+      for (const f of fails) if (f.task_id === x.id && f.code !== 'E_CANCELLED' && Number(f.written_at) >= Number(x.handoff.at)) add('E5', root, tref(x), null, { executable: true, failing: [], error: f.code, task: x.id }, { key: `${x.id}!${f.id}`, seq: Number(f.seq) || 0, at: Number(f.written_at) || 0, rowSeq: rowSeqOf(f) });
     }
     // E1, work done with no review step in the plan; a fix done with no re_review.
     if (own && x.state === 'done' && !isReviewRow(x) && !dependents.has(x.id)) {
