@@ -229,7 +229,7 @@ async function killProcessRaw(target, opts) {
 async function descendantTargets(pid, opts = {}) {
   const { snap } = await acquire(opts);
   if (!snap) return [];
-  if (opts.handle && !ID.handleLive(opts.handle)) return [];
+  if (opts.handle && opts.expectCreated == null && !ID.handleLive(opts.handle)) return []; // a known creation time proves the root without the handle
   const root = snap.get(assertPid(pid));
   if (opts.expectCreated != null && !(root && root.created === opts.expectCreated)) return [];
   return ID.descendantsOf(pid, snap).leavesFirst;

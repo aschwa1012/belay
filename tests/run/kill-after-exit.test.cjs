@@ -44,6 +44,32 @@ test('descendantTargets: a handle that exits during the snapshot names no descen
   assert.deepStrictEqual(t.map((d) => d.pid), [78]);
 });
 
+test('descendantTargets: a known matching creation time proves the root, so descendants stay named when the handle exits during the snapshot', async () => {
+  const handle = { pid: ROOT, exitCode: null, signalCode: null };
+  const snapshot = async () => { handle.exitCode = 0; return stranger(); };
+  const t = await PROC.descendantTargets(ROOT, { expectCreated: 2000, handle, snapshot });
+  assert.deepStrictEqual(t.map((d) => d.pid), [78]);
+});
+
+test('pause: the park passes the child handle to descendantTargets', async () => {
+  const P = require('../../src/run/process.cjs');
+  const { createPause } = require('../../src/run/pause.cjs');
+  const child = { pid: process.pid, exitCode: null, signalCode: null, stdin: { destroyed: false, writableEnded: false, write() {} } };
+  const w = { id: 'w1', pid: process.pid, pidCreated: null, child, substrate: 'claude-code', readyAt: 1, paused: null, settled: false, stopRequested: false,
+    controlWaiters: new Map(), bgTasks: new Map(), launches: 1, turns: 0, queue: Promise.resolve(), sessionId: 's' };
+  const seen = [];
+  const orig = { dt: P.descendantTargets, km: P.killMany };
+  P.descendantTargets = async (pid, opts) => { seen.push(opts); return []; };
+  P.killMany = async () => [];
+  try {
+    const pause = createPause({ core: { worker: { get: async () => ({}) } }, forWorker: async () => w, doStop: async () => ({}), doRestart: async () => ({}),
+      runOp: async (rec, name, fn) => fn(), writeRow: async () => null });
+    await pause.pause({ worker_id: 'w1', by: 'test', interrupt_timeout_ms: 1, exit_timeout_ms: 1 }).catch(() => {});
+  } finally { P.descendantTargets = orig.dt; P.killMany = orig.km; }
+  assert.strictEqual(seen.length, 1);
+  assert.strictEqual(seen[0].handle, child);
+});
+
 test('orchestrator leftovers: an orchestrator that exits during the snapshot leaves nothing to kill', async () => {
   const child = { pid: ROOT, exitCode: null, signalCode: null };
   const killed = [];
