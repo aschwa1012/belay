@@ -146,9 +146,11 @@ test('a timed-out acceptance command takes its grandchildren with it', async () 
 
     gpid = Number(fs.readFileSync(pidFile, 'utf8').trim());
     assert.ok(gpid > 0, 'the fixture must have recorded the pid of the child it spawned');
-    // Identified now, if it still lives (the tree kill may already have ended it, which the receipt above proves). `identify` reads a
-    // pid that is gone as creation time null, and then any later holder is another process.
-    gId = await G.identify(gpid);
+    // The creation time the fixture wrote while the grandchild lived, before the tree kill; reading it now could record a reused pid.
+    // Without it a pid that is still held is unverifiable, which fails (and the finally below then kills nothing).
+    let createdText = null;
+    try { createdText = fs.readFileSync(`${pidFile}.created`, 'utf8').trim(); } catch { /* the fixture's snapshot never landed */ }
+    gId = G.recorded(gpid, createdText ? Number(createdText) : null);
     assert.ok(await G.waitGone(gId, { deadlineMs: 10000, intervalMs: 100 }), `the grandchild (pid ${gpid}) outlived the command that spawned it`);
     gId = null;
   } finally {
