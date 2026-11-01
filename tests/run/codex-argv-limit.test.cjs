@@ -91,9 +91,10 @@ test('a synchronous spawn throw (E2BIG) writes the first launch dead and release
   });
 });
 
-// A restart builds its relaunch text before it stops the live process. The text here (the resume line, read from the core) is oversized,
-// so the restart is refused while the old worker still runs; before the fix the stop came first and the worker died with none started.
-test('a restart whose relaunch line is oversized is refused before the live worker is stopped', { skip: process.platform !== 'win32' }, async () => {
+// A restart stops the old process, then builds its text from the worker's final state. Belay's own text here (the resume line, read from
+// the core) is oversized, so the relaunch is refused after the stop with advice that says so, not the "still running" advice of a
+// refusal before the stop. (A caller's appended message, checked before any stop, comes only from a resume, and Codex has no pause.)
+test('a restart whose own relaunch text is oversized is refused with advice that the old process was stopped', { skip: process.platform !== 'win32' }, async () => {
   const wrapCore = (h) => new Proxy(h, { get: (t, k) => (k === 'continuity' ? { ...t.continuity, resumeLine: async () => ({ text: 'y'.repeat(40000) }) } : Reflect.get(t, k)) });
   const gate = `${sandbox()}/codex-turn.gate`; // never written: the fake's turn stays open, so the process is alive for the whole test
   process.env.FAKE_CODEX_GATE_FILE = gate;
@@ -105,15 +106,19 @@ test('a restart whose relaunch line is oversized is refused before the live work
       await assert.rejects(m.restart({ worker_id: 'c1', first_turn_timeout_ms: 5000 }), (e) => {
         assert.strictEqual(e.code, 'E_ARGS');
         assert.strictEqual(e.detail.reason, 'argv_too_long');
-        assert.strictEqual(e.detail.path, 'restart');
+        assert.strictEqual(e.detail.path, 'restart-stopped');
         assert.match(e.message, /about \d+ characters/);
-        assert.match(e.message, /was not stopped and is still running/);
+        assert.match(e.message, /already stopped/);
+        assert.doesNotMatch(e.message, /still running/);
         return true;
       });
-      assert.ok(P.pidAlive(pid), 'the old process was not stopped');
-      const row = await core.worker.get({ worker_id: 'c1' });
-      assert.notStrictEqual(row.state, 'dead');
-      assert.strictEqual(row.pid, pid);
+      assert.ok(!P.pidAlive(pid), 'the old process was stopped before the text was built');
+      assert.strictEqual((await core.worker.get({ worker_id: 'c1' })).state, 'dead', 'no process exists, so the row is dead');
     }, { wrapCore });
   } finally { delete process.env.FAKE_CODEX_GATE_FILE; }
+});
+
+test('the advice for a relaunch refused after the stop is distinct from the one before it', () => {
+  const big = ['exec', '--', 'x'.repeat(40000)];
+  assert.throws(() => AL.checkCommandLine('codex', big, { workerId: 'c1', windows: true, path: 'restart-stopped' }), (e) => /already stopped/.test(e.message) && !/still running/.test(e.message));
 });

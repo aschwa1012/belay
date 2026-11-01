@@ -127,9 +127,9 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     });
   }
   const launch = (w, o) => require('./bind-launch.cjs').launchBound({ core, runId, root, mcpPath, writeRow }, w, () => launchNow(w, o)); // ADR 0045: one launch of a worker at a time, its bind opened first
-  async function launchNow(w, { resume = null, prompt = null } = {}) {
+  async function launchNow(w, { resume = null, prompt = null, path = 'spawn' } = {}) { // `path` ('spawn', 'message', 'restart') shapes the advice of an oversized-line refusal
     try { NM.checkLaunch(w); } catch (e) { await NM.refuseLaunch(ctx, w, e, () => PI.pidLive(w)); } // sync and first (Codex's check-then-spawn stays one tick); only a refusal awaits
-    const spec = LS.buildSpec(w, exeFor, { resume, prompt }); if (w.substrate === 'codex') AL.checkCommandLine(spec.exe, spec.args, { workerId: w.id, path: w.launches > 0 ? 'message' : 'spawn' }); // before any state change: an oversized text is refused, not thrown by spawn
+    const spec = LS.buildSpec(w, exeFor, { resume, prompt }); if (w.substrate === 'codex') AL.checkCommandLine(spec.exe, spec.args, { workerId: w.id, path }); // before any state change: an oversized text is refused, not thrown by spawn
     w.argvHash = L.writeArgvJson(w.dir, spec);
     w.settled = false; w.pidGoneAt = null; w.pidGonePid = null; w.settleWaitedMs = 0; // the exit-event hold is per launch
     w.settledState = null; // the last process's end; a restatement of this one's row must never carry it
@@ -325,32 +325,26 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const worker_id = w.id;
     const old_pid = w.pid;
     RG.refuseIfRelaunching(w, 'restart'); // a Codex message's relaunch owns the window; this one waits its turn
+    if (w.substrate === 'codex' && appendMessage) { // before anything is stopped or written: the caller's text alone (a floor of the line) over the cap is refused with the worker untouched
+      const floor = LS.buildSpec(w, exeFor, { resume: w.sessionId, prompt: appendMessage });
+      AL.checkCommandLine(floor.exe, floor.args, { workerId: w.id, path: 'restart' });
+    }
     // ADR 0026 amendment 2 (proposed): from here until launch() has moved w.launches, a death of this worker keeps its lease.
     const { d, hold, firstText } = await RG.relaunching(w, writeRow, async () => {
       await w.queue; // the life before's rows land first (a death meanwhile keeps the lease: relaunch-guard.cjs)
       const d = decideBranch(w); const hold = await holdForLaunch(w, core); // the task's files are held for this run, or nothing is touched; a death-released lease is granted back or reported
       W.settleHeld(w, ctx, 'pid-check-on-restart'); await w.queue; // a held death gets its dead row, and every row of the life before lands, before the relaunch
-      const stopOld = async () => {
-        if (w.child && P.pidAlive(w.pid)) await doStop(w, 'graceful', 10000);
-        // Fix round, should-fix finding: `skipDeadPidKill` (resume, pause.cjs) skips this branch — a park's own
-        // pid is dead by construction, so treating it as a still-alive orphan risks killing a bystander that reused it.
-        else if (!skipDeadPidKill && !w.child && PI.pidLive(w)) { // a record with no process by construction is never killed by its pid number
-          const kr = await PI.killWorker(w); w.adoptedKill = kr.tree; await PI.settleAdoptedKill(w, kr, 'restart', hold);
-        }
-        w.stopRequested = false;
-      };
-      const buildText = async () => {
-        const overridden = firstTextOverride ? await firstTextOverride(d.branch) : undefined;
-        const text = overridden !== undefined ? overridden : await restartFirstText(w, d.branch, { core, ctx, hold });
-        return (await MP.relaunch(w, ctx, text, { fresh: d.branch === 'replace', message: appendMessage })) + leaseNote(hold); // ADR 0042 decision 3: minus the rows already shown, only where that conversation still holds them
-      };
-      let firstText;
-      if (w.substrate === 'codex') { // the whole text is in argv: refuse an oversized command line while the old worker still runs, then stop it
-        firstText = await buildText();
-        const spec = LS.buildSpec(w, exeFor, { resume: d.branch === 'resume' ? w.sessionId : null, prompt: firstText });
-        AL.checkCommandLine(spec.exe, spec.args, { workerId: w.id, path: 'restart' });
-        await stopOld();
-      } else { await stopOld(); firstText = await buildText(); }
+      if (w.child && P.pidAlive(w.pid)) await doStop(w, 'graceful', 10000);
+      // Fix round, should-fix finding: `skipDeadPidKill` (resume, pause.cjs) skips this branch — a park's own
+      // pid is dead by construction, so treating it as a still-alive orphan risks killing a bystander that reused it.
+      else if (!skipDeadPidKill && !w.child && PI.pidLive(w)) { // a record with no process by construction is never killed by its pid number
+        const kr = await PI.killWorker(w); w.adoptedKill = kr.tree; await PI.settleAdoptedKill(w, kr, 'restart', hold);
+      }
+      w.stopRequested = false;
+
+      const overridden = firstTextOverride ? await firstTextOverride(d.branch) : undefined;
+      let firstText = overridden !== undefined ? overridden : await restartFirstText(w, d.branch, { core, ctx, hold });
+      firstText = (await MP.relaunch(w, ctx, firstText, { fresh: d.branch === 'replace', message: appendMessage })) + leaseNote(hold); // ADR 0042 decision 3: minus the rows already shown, only where that conversation still holds them
       if (d.branch === 'replace') {
         w.sessionId = null;
         w.costBase = w.costUsd; // a fresh session's total_cost_usd starts at zero: what the earlier sessions reported stays in the row
@@ -359,7 +353,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       if (onFirstText) onFirstText(firstText); if (!skipDeadPidKill) await LG.refuseIfPaused(ctx.core, ctx.runId, w, { restart: true }); // a run pause landing during the awaits above; a resume (skipDeadPidKill) runs while the run is still paused
 
       const resume = d.branch === 'resume' ? w.sessionId : null;
-      await launch(w, w.substrate === 'claude-code' ? { resume } : { resume, prompt: firstText });
+      await launch(w, w.substrate === 'claude-code' ? { resume } : { resume, prompt: firstText, path: 'restart-stopped' });
       return { d, hold, firstText };
     });
     let init;

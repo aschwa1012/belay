@@ -24,6 +24,7 @@ function commandLineLength(exe, args) {
 // `path` is how the line came about, and the advice follows it: 'spawn' (a first launch), 'message' or 'restart' (a relaunch).
 function adviceFor(path, workerId) {
   if (path === 'message') return `shorten the message (put the detail in a file in the worktree and name it); worker ${workerId} keeps its state and no process was started`;
+  if (path === 'restart-stopped') return `the text is belay's own relaunch text (resume line, resume document pointer, memory preface), not the caller's, and worker ${workerId}'s old process was already stopped, so it has none; trim what feeds that text (an oversized task spec or note) and restart again, or spawn a replacement with a new worker id`;
   if (path === 'restart') return `shorten the appended message, or restart without one; worker ${workerId} was not stopped and is still running`;
   return `shorten the task spec or the prompt (put the detail in a file in the worktree and name it) and spawn again with a new worker id, since ${workerId} is used up; no process was started`;
 }
