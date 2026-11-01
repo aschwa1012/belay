@@ -18,9 +18,13 @@ const { openCore } = require(path.join(ROOT, 'src', 'core', 'index.cjs'));
     if (Date.now() - t0 > 90000) throw new Error('the embed never went in flight');
     await new Promise((r) => setTimeout(r, 5));
   }
+  // The embedder child's creation time while it lives (ADR 0039), so the test can tell it from a process that is handed its number later.
+  // The read starts now and runs during the settle below, so it does not push the stop later than the 800 ms the premise needs.
+  const madeRead = require(path.join(ROOT, 'src', 'core', 'proc-identity.cjs')).createdOf(c.owner.embedderObj.pid, { kind: 'test-setup' }).catch(() => null);
   // Let the embed get past tokenizing and into onnx's native run, where a thread could not be interrupted.
   await new Promise((r) => setTimeout(r, 800));
-  console.log(JSON.stringify({ stopping: true, owner_pid: process.pid, embedder_pid: c.owner.embedderObj.pid }));
+  const made = await madeRead;
+  console.log(JSON.stringify({ stopping: true, owner_pid: process.pid, embedder_pid: c.owner.embedderObj.pid, embedder_created: made && made.created != null ? made.created : null }));
   if (process.argv[3] === 'hold') { setInterval(() => {}, 1000); return; } // the test kills this process by its exact pid
   await c.shutdownOwner();
   await c.close();

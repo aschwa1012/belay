@@ -196,7 +196,8 @@ async function closeRunWorkersOnce({ core, runId, graceMs, ownPid = process.pid,
     const tree = kp && kp.tree; const sig = (kp && kp.pidKill) || { signalled: false };
     // A refused kill signalled nothing, so there is no death to wait for: one pid check, and the close's budget is
     // left for the next worker (a fast close that waited here lost every refusal with the deadline).
-    const goneMs = kp && kp.refused ? (pidAlive(w.pid) ? null : 0) : await waitPidGone(w.pid, { timeoutMs: Math.max(100, Math.min(KILL_GONE_BOUND_MS, left())) });
+    // A `mismatch` refusal proves another process holds the pid: the worker is gone, and the holder was never signalled.
+    const goneMs = kp && kp.refused ? (kp.refused.kind === 'mismatch' || !pidAlive(w.pid) ? 0 : null) : await waitPidGone(w.pid, { timeoutMs: Math.max(100, Math.min(KILL_GONE_BOUND_MS, left())) });
     const entry = { worker_id: w.id, pid: w.pid, gone: goneMs !== null, gone_ms: goneMs, tree_terminated: tree && tree.terminated != null ? tree.terminated : null, signalled: !!(sig.signalled || (tree && tree.killed && tree.killed.includes(w.pid))), identity: kp ? kp.identity : null, ...(kp && kp.refused ? { refused: kp.refused.refused, kind: kp.refused.kind, detail: kp.refused.detail, ...(kp.refused.manual ? { manual: kp.refused.manual } : {}) } : {}), ...(kp ? {} : touched ? { refused: 'identity', kind: 'unverifiable', detail: 'the fast-close budget ran out while the kill was proving the process' } : { refused: 'identity', kind: 'no_budget', detail: 'the fast-close budget ran out before a snapshot could prove the process; nothing was signalled' }) };
     entry.outcome = outcomeOf(entry);
     const proved = entry.kind === 'mismatch' || entry.kind === 'absent'; // another process provably holds the pid: no advice to kill it
