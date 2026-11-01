@@ -37,7 +37,7 @@ async function deleteModel(ctx, argv) {
   if (!live.ok) return fail(1, 'the store could not be read, so the live runs that may use this model cannot be told. Nothing was removed', { model: d.entry.id, removed: false });
   const by = MM.modelsInUse(levers, live.models)[d.entry.id];
   if (by) {
-    const clear = live.runs.filter((r) => by.some((w) => w.startsWith(`run ${r.id}`)) && r.why !== 'live').map((r) => `${r.id} (${r.why === 'paused' ? 'paused' : `adapter pid ${r.pid} is alive but could not be verified`}): ${r.why === 'paused' ? `if its run process is live, end it with belay stop ${r.id}; if belay stop says "no live run", no command ends the row, and resume does not release the model` : `if it is live, end it with belay stop ${r.id}; if belay stop says "no live run", it is dead`}`);
+    const clear = live.runs.filter((r) => by.some((w) => w.startsWith(`run ${r.id}`)) && r.why !== 'live').map((r) => `${r.id} (${r.why === 'paused' ? 'paused' : `adapter pid ${r.pid} is alive but could not be verified`}): ${r.why === 'paused' ? `if its run process is live, end it with belay stop ${r.id}; if belay stop says "no live run", re-run belay run with that run_id in its spec, which re-attaches the row so its end (or belay stop) releases the model; resume does not release it` : `if it is live, end it with belay stop ${r.id}; if belay stop says "no live run", it is dead`}`);
     return fail(1, `${d.entry.id} is in use by this project's settings or runs (${by.join(', ')}); change them first${clear.length ? `. To clear a stale run: ${clear.join('; ')}` : ''}. Nothing was removed`, { model: d.entry.id, in_use_by: by, removed: false });
   }
   const root = K.cacheRoot();

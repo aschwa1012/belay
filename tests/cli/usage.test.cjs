@@ -88,7 +88,7 @@ test('usage: an unknown run id is refused with exit 1 and E_NOT_FOUND', async ()
     assert.match(r.stderr, /no run row exists for run-nope/);
     const g = cli(['run-nope', '--by', 'model', '--json'], dataDir);
     assert.strictEqual(g.status, 1);
-    assert.strictEqual(JSON.parse(g.stdout).error.code, 'E_NOT_FOUND');
+    assert.strictEqual(JSON.parse(g.stderr).error.code, 'E_NOT_FOUND'); // a non-zero result's JSON goes to stderr (belay.cjs)
   } finally { cleanup(dir); }
 });
 
