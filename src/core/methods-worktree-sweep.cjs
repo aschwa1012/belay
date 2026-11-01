@@ -89,8 +89,9 @@ async function removeOne(E, caller, g, base) {
   let head = null, ignored = null;
   if (fs.existsSync(g.rec.path)) { head = await G.commitOf(g.rec.path, 'HEAD'); ignored = await ignoredPaths(g.rec); }
   const row = await W.removeForSweep(E, caller, g.tasks[0]);
+  if (row && row.removed_elsewhere) return { kept: { ...base, reason: 'removed_by_other', detail: `the tree was removed by another call, through task ${row.removed_through}`, removed_through: row.removed_through } };
   if (row && row.removal.leftover) return { failed: { ...base, code: 'LEFTOVER', error: row.removal.leftover_note, git_still_lists: false, leftover: true, row_recorded: false, remedy: 'belay worktree remove <task-id> records the removal; delete the directory by hand' } };
-  if (!row) return { kept: { ...base, reason: 'task_open', detail: 'the tree was removed by another call' } };
+  if (!row) return { kept: { ...base, reason: 'removed_by_other', detail: 'the task has no tree to remove now' } };
   const r = row.removal;
   const after = await G.run(g.rec.repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${g.rec.branch}`]);
   const branchAfter = after.ok ? after.stdout.trim() : null;
