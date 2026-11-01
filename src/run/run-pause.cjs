@@ -129,6 +129,7 @@ function createRunPauseControl({ runId, core, hook, pauseWorker, resumeWorker, s
     await core.run.setPaused({ paused: true, at: pausedAt, by });
     const exitedAfterWrite = refuseIfExited();
     if (exitedAfterWrite) {
+      exitedAfterWrite.catch(() => {}); // held across the undo's await; returned (or replaced) below, so it must not read as unhandled
       // Undo the row write so a run that is closing does not read paused; an ended run clears its own pause,
       // so any other failure is named in the refusal: the row may be left paused.
       try { await core.run.setPaused({ paused: false }); } catch (e) {
