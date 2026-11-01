@@ -95,14 +95,18 @@ test('a synchronous spawn throw (E2BIG) writes the first launch dead and release
 // the core) is oversized, so the relaunch is refused after the stop with advice that says so, not the "still running" advice of a
 // refusal before the stop. (A caller's appended message, checked before any stop, comes only from a resume, and Codex has no pause.)
 test('a restart whose own relaunch text is oversized is refused with advice that the old process was stopped', { skip: process.platform !== 'win32' }, async () => {
-  const wrapCore = (h) => new Proxy(h, { get: (t, k) => (k === 'continuity' ? { ...t.continuity, resumeLine: async () => ({ text: 'y'.repeat(40000) }) } : Reflect.get(t, k)) });
+  const big = { on: false }; // the spawn's own text must stay small; the stub grows only for the restart
+  const wrapCore = (h) => Object.create(h, { continuity: { value: { ...h.continuity, resumeLine: async (a) => (big.on ? { text: 'y'.repeat(40000) } : h.continuity.resumeLine(a)) } } }); // h's continuity is frozen, so a Proxy may not replace it; a child object can
   const gate = `${sandbox()}/codex-turn.gate`; // never written: the fake's turn stays open, so the process is alive for the whole test
   process.env.FAKE_CODEX_GATE_FILE = gate;
   try {
     await withRun(async ({ core, m, wt }) => {
-      await m.spawn({ substrate: 'codex', worktree: wt, worker_id: 'c1', prompt: 'short' });
+      // a task, so the resume branch (a fresh worker's usual one) reads the resume line; without one only the replace branch does
+      const task = await core.task.create({ spec: 'small spec', files_owned: ['src/a.js'] });
+      await m.spawn({ substrate: 'codex', worktree: wt, worker_id: 'c1', task_id: task.id });
       const pid = (await core.worker.get({ worker_id: 'c1' })).pid;
       assert.ok(pid && P.pidAlive(pid), 'the worker runs before the restart');
+      big.on = true;
       await assert.rejects(m.restart({ worker_id: 'c1', first_turn_timeout_ms: 5000 }), (e) => {
         assert.strictEqual(e.code, 'E_ARGS');
         assert.strictEqual(e.detail.reason, 'argv_too_long');
@@ -113,7 +117,7 @@ test('a restart whose own relaunch text is oversized is refused with advice that
         return true;
       });
       assert.ok(!P.pidAlive(pid), 'the old process was stopped before the text was built');
-      assert.strictEqual((await core.worker.get({ worker_id: 'c1' })).state, 'dead', 'no process exists, so the row is dead');
+      assert.strictEqual((await core.worker.get({ worker_id: 'c1' })).state, 'stopped', 'the graceful stop wrote the row stopped');
     }, { wrapCore });
   } finally { delete process.env.FAKE_CODEX_GATE_FILE; }
 });
