@@ -16,7 +16,7 @@ const Prov = core('spawn-provenance.cjs');
 
 const H = 3600000;
 const NOW = Date.now();
-const BOOT = NOW - 22 * H;
+const BOOT = NOW - 10 * 24 * H; // a fixed boot, so the tests do not depend on the host's real uptime
 
 function withRegistry(fn) {
   const keep = process.env.BELAY_SPAWN_REGISTRY;
