@@ -241,7 +241,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     try { writeFilesFor(w); } catch (e) { await discardUnstarted(workers, w, dirExisted); throw e; } // no row, nothing launched: leave no record and no directory, so a corrected retry with the same id is free
     const scratch = agent_type === 'reviewer' ? require('./review-scratch.cjs').ensure(root, id, runId) : null; // ADR 0054 amendment 1: outside every worktree
     w.scratchDir = scratch; // a Codex launch adds it as a writable root
-    if (substrate === 'claude-code') w.instructions = I.snapshotInstructions(w.worktree, w.dir); // spawn only
+    if (substrate === 'claude-code') w.instructions = await require('./trusted-instructions.cjs').snapshotFor({ core, worktree: w.worktree, dir: w.dir, agentType: agent_type, taskId: task_id, dataDir: root, runId }); // spawn only; a reviewer's comes from the reviewed work's base commit, never its working copy
 
     // The worker row comes first, with no pid yet: `task.assign` refuses a worker with no row, and the
     // resume line needs the lease it creates. Only `running` is pid-checked, so this is legitimate.
@@ -306,13 +306,13 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
   // ADR 0023 amendment 2 decision 3: stop always wins, waiting out a pause, resume or restart in flight.
   // 6e-5/6e-6 (pause.cjs `clearParkForStop`): a stale park record is caught before any write, never overwritten.
-  async function stop({ worker_id, mode = 'graceful', timeout_ms = 10000 }) {
-    const w = await forWorker(worker_id);
-    return LC.runOp(w, 'stop', async () => {
+  async function stop({ worker_id, mode = 'graceful', timeout_ms = 10000, guard = null }) {
+    const w = await forWorker(worker_id); return LC.runOp(w, guard ? 'idle-stop' : 'stop', async () => {
+      if (guard && await guard()) return null; // stop_idle_on_done re-decides here, after a pause, resume or restart was waited out (idle-stop.cjs)
       const { stale, wasParked } = await PZ.clearParkForStop(w, worker_id); // wasParked: fix round #2, manager.cjs:351
       if (!stale) W.noteStoppedWhileSettled(w); // item 2 (wait.cjs:32): fixes the settled state too
       return doStop(w, mode, timeout_ms, { skipRowWrite: stale, treatPidAsDead: wasParked });
-    }, { waitFor: ['pause', 'resume', 'restart'] });
+    }, { waitFor: guard ? LC.IDLE_STOP_WAIT : LC.STOP_WAIT });
   }
 
   // `workers` holds only what this process launched; an unknown id is looked up in the store rather
@@ -321,7 +321,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const known = workers.get(workerId);
     if (known) return known;
     if (adopting.has(workerId)) return adopting.get(workerId);
-    const p = W.adopt({ core, workerId, dataDir: root }).then(async (w) => {
+    const p = W.adopt({ core, workerId, dataDir: root, runId }).then(async (w) => {
       workers.set(workerId, w); // no launch guard: a stop must always go through, and writeFilesFor below regenerates settings.json from the record
       await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the argv written below carries the notes lever
       const denied = await NM.adoptDenied(w, runId, ctx.memoryLevers, core); // another run's native_memory is never written into this run's settings; the record stays, the relaunch is refused

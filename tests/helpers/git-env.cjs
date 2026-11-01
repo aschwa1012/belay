@@ -10,17 +10,22 @@ const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
 
+// tmp.cjs first: it makes the spawn register this file's config is kept in, and requires this file back (a no-op for the cycle).
+require('./tmp.cjs');
+
 const KEY = Symbol.for('belay.tests.git-env');
 if (!globalThis[KEY]) {
   const STRIP = /^GIT_(DIR|WORK_TREE|INDEX_FILE|OBJECT_DIRECTORY|ALTERNATE_OBJECT_DIRECTORIES|COMMON_DIR|NAMESPACE|PREFIX|CEILING_DIRECTORIES|CONFIG|CONFIG_PARAMETERS|CONFIG_COUNT|CONFIG_KEY_\d+|CONFIG_VALUE_\d+|CONFIG_SYSTEM|AUTHOR_\w+|COMMITTER_\w+|EXTERNAL_DIFF|SSH_COMMAND|ASKPASS|SEQUENCE_EDITOR|EDITOR)$/i;
   for (const k of Object.keys(process.env)) if (STRIP.test(k)) delete process.env[k];
 
-  // Next to the real temp dir's first level only when tmp.cjs has not redirected it; either way the file is removed at exit.
-  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-gitcfg-'));
-  const file = path.join(dir, 'gitconfig');
+  // Inside the process's spawn register when there is one (the runner removes that tree even after a kill), else in a directory of its own.
+  const reg = process.env.BELAY_SPAWN_REGISTRY;
+  if (reg) fs.mkdirSync(reg, { recursive: true });
+  const dir = reg ? null : fs.mkdtempSync(path.join(os.tmpdir(), 'belay-gitcfg-'));
+  const file = path.join(reg || dir, 'gitconfig');
   fs.writeFileSync(file, '[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n[gc]\n\tauto = 0\n');
   process.env.GIT_CONFIG_GLOBAL = file.split(path.sep).join('/');
-  process.on('exit', () => { try { fs.rmSync(dir, { recursive: true, force: true }); } catch { /* left for the suite guard */ } });
+  process.on('exit', () => { try { fs.rmSync(dir || file, { recursive: true, force: true }); } catch { /* left for the suite guard */ } });
   globalThis[KEY] = { file };
 }
 module.exports = globalThis[KEY];

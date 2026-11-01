@@ -12,6 +12,7 @@ const crypto = require('node:crypto');
 const { fit } = require('../core/fit-budget.cjs');
 const { summarise, POLICY } = require('./summarise.cjs');
 const { defaultLevers } = require('./memory-levers.cjs');
+const { sentUnknown, tokensOf } = require('./usage-write-helpers.cjs');
 
 const RUN_END_BOUND_MS = 5000; // atRunEnd's whole budget, the give-up record included
 const GIVE_UP_MS = 500;
@@ -84,15 +85,6 @@ const failure = (J, kind, fields, e, paired = false) => event(J, { kind, ok: fal
 // Code's cost is cumulative per process, so the row carries the delta from the previous row of the same
 // process; a new process (or a counter that went down) restarts from zero.
 const { snapshotOf, pairedWrite } = require('./memory-capture.cjs');
-const num = (x) => (typeof x === 'number' && Number.isFinite(x) ? x : 0);
-function tokensOf(snap) {
-  const u = snap.usage;
-  if (!u) return {};
-  if (snap.substrate === 'codex') {
-    return { input_tokens: Math.max(0, num(u.input_tokens) - num(u.cached_input_tokens)), output_tokens: num(u.output_tokens), cache_read_tokens: num(u.cached_input_tokens), cache_creation_tokens: 0 };
-  }
-  return { input_tokens: num(u.input_tokens), output_tokens: num(u.output_tokens), cache_read_tokens: num(u.cache_read_input_tokens), cache_creation_tokens: num(u.cache_creation_input_tokens) };
-}
 // The ledger's state for a worker. An adopted worker starts from the cost and turn its row recorded: the ledger holds those already.
 const jobsOf = (w) => w.memoryJobs || (w.memoryJobs = w.adoptedLedger
   ? { pid: null, lastCost: w.adoptedLedger.cost, seen: true, lastTurn: w.adoptedLedger.turns }
@@ -122,7 +114,11 @@ async function usageJob(J, snap) {
     t.lastTurn = snap.turn;
     if (c.advance) c.advance();
   } catch (e) {
-    await failure(J, 'usage', { worker_id: snap.workerId, task_id: snap.taskId || undefined, message: `usage row for turn ${snap.turn} not written: ${(e && e.message) || e}`.slice(0, 300) }, e, sent);
+    // A write lost after it was sent may have committed (ADR 0033): it is not re-run, and the next row's delta starts after this turn, so the
+    // turn's dollars are not counted again. A write known not to have been sent keeps its base, and its dollars fold into the next row.
+    const unknown = sent && sentUnknown(e);
+    if (unknown) { t.lastTurn = snap.turn; if (c.advance) c.advance(); }
+    await failure(J, 'usage', { worker_id: snap.workerId, task_id: snap.taskId || undefined, message: `usage row for turn ${snap.turn} ${unknown ? 'outcome unknown (sent, not re-sent)' : 'not written'}: ${(e && e.message) || e}`.slice(0, 300) }, e, sent);
   }
 }
 

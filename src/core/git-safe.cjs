@@ -102,7 +102,9 @@ async function filterOverrides(run, git, cwd, env, timeoutMs, { lineEndings = fa
 // The hardened setup for one worktree: git's path, the environment and the filter overrides, read once. A caller making several
 // reads of one tree (a review snapshot) prepares once and passes it to each safeGit. Resolves { git, env, filters } or { error }.
 // `lineEndings` adds the system content keys (filterOverrides), for a caller that hashes content.
-async function prepare(cwd, timeoutMs, env = process.env, { lineEndings = false } = {}) {
+// `register` is the spawn-register kind of the config reads ('check' by default: every caller is the core reading a worker's or an
+// integration tree, whose config and hooks are a worker's code; null: none).
+async function prepare(cwd, timeoutMs, env = process.env, { lineEndings = false, register = 'check' } = {}) {
   const { runCommand } = require('./evaluate.cjs'); // lazy: evaluate.cjs requires this module
   const git = findGit(env);
   if (!git) return { error: 'git was not found on PATH' };
@@ -110,7 +112,7 @@ async function prepare(cwd, timeoutMs, env = process.env, { lineEndings = false 
   const run = async (g, argv, { cwd: c, timeoutMs: t, maxOut, system }) => {
     const e = { ...base };
     if (system) delete e.GIT_CONFIG_NOSYSTEM;
-    const r = await runCommand([g, ...argv], c, t, { env: e, tail: maxOut });
+    const r = await runCommand([g, ...argv], c, t, { env: e, tail: maxOut, register });
     const out = Buffer.from(r.stdout || '', 'utf8');
     return { code: r.executable ? r.exit_code : -1, out, total: r.truncated ? out.length + 1 : out.length, kept: out.length, errTail: String(r.stderr || r.spawn_error || '') };
   };
@@ -121,11 +123,11 @@ async function prepare(cwd, timeoutMs, env = process.env, { lineEndings = false 
 
 // One hardened git read for the core, through evaluate.cjs's runCommand: `args` follow belay's PRE and filter overrides.
 // Resolves runCommand's shape; a missing git or a failed filter check is `executable: false` with `spawn_error` naming it.
-async function safeGit(args, cwd, timeoutMs, { tail, env = process.env, prepared = null, lineEndings = false } = {}) {
+async function safeGit(args, cwd, timeoutMs, { tail, env = process.env, prepared = null, lineEndings = false, register = 'check' } = {}) {
   const { runCommand } = require('./evaluate.cjs');
-  const p = prepared || await prepare(cwd, timeoutMs, env, { lineEndings });
+  const p = prepared || await prepare(cwd, timeoutMs, env, { lineEndings, register });
   if (p.error) return { executable: false, exit_code: null, stdout: '', stderr: '', spawn_error: p.error };
-  return runCommand([p.git, ...PRE, ...p.filters, ...args], cwd, timeoutMs, { env: p.env, ...(tail ? { tail } : {}) });
+  return runCommand([p.git, ...PRE, ...p.filters, ...args], cwd, timeoutMs, { env: p.env, ...(tail ? { tail } : {}), register });
 }
 
 // The absolute git every belay spawn uses, found once per PATH value: a bare 'git' is searched in the child's cwd first on Windows, so a
