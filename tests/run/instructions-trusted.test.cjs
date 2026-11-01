@@ -99,6 +99,24 @@ test('trusted: a replace ref a coder writes cannot swap the trusted blob', async
   } finally { rm(r.d); }
 });
 
+test('trusted: an inherited GIT_DIR or GIT_INDEX_FILE does not redirect the blob read, and git is not the bare name', async () => {
+  const r = repo();
+  const other = path.join(r.d, 'other');
+  fs.mkdirSync(other);
+  git(other, 'init', '-q');
+  const saved = { GIT_DIR: process.env.GIT_DIR, GIT_INDEX_FILE: process.env.GIT_INDEX_FILE };
+  try {
+    process.env.GIT_DIR = path.join(other, '.git'); // a repository that lacks the trusted blob
+    process.env.GIT_INDEX_FILE = path.join(r.d, 'x.index');
+    const t = await I.snapshotTrusted(r.main, r.dir, r.base);
+    assert.equal(t.path === null ? t.reason : fs.readFileSync(t.path, 'utf8'), TRUSTED, 'the blob came from the repository at top, not the inherited GIT_DIR');
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    rm(r.d);
+  }
+  assert.ok(!/execFile\('git'/.test(fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'run', 'instructions.cjs'), 'utf8')), 'no spawn names the bare git');
+});
+
 test('symlink: a CLAUDE.md committed as a symbolic link is refused in the trusted commit', async () => {
   const r = repo();
   try {
