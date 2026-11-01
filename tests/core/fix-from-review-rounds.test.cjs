@@ -188,16 +188,18 @@ test('two removals of one shared tree at once: one removes it, the other reports
 async function gatedPair(name, fn) {
   const G = core('git.cjs');
   const real = G[fn];
-  let release, calls = 0;
+  let release, held, armed = false, calls = 0;
   const gate = new Promise((r) => { release = r; });
-  G[fn] = async (...a) => { if (++calls === 1) await gate; return real(...a); };
+  const heldAt = new Promise((r) => { held = r; });
+  G[fn] = async (...a) => { if (armed && ++calls === 1) { held(); await gate; } return real(...a); };
   try {
-    const { w, f } = await workWithOpenFix(name);
+    const { w, f } = await workWithOpenFix(name); // setup's own git calls run ungated
     await orch.task.cancel({ task_id: f.id });
     await orch.worker.write({ id: `c-${name}`, substrate: 'claude-code', pid: process.pid, state: 'stopped', session_id: `s-c-${name}`, last_event_at: Date.now(), worktree: w.worktree.path });
-    calls = 0; // count only the removals' calls
+    armed = true; // only the removals' calls are counted and gated
     const pa = orch.task.worktreeRemove({ task_id: w.id }); // held inside its first gated git call
-    const pb = orch.task.worktreeRemove({ task_id: f.id }); // arrives while the first is held
+    await heldAt; // the first call is inside the gated call, so the second arrives at a fixed point
+    const pb = orch.task.worktreeRemove({ task_id: f.id });
     await new Promise(setImmediate);
     release();
     const [a, b] = await Promise.all([pa, pb]);
