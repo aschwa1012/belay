@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1'; // ADR 0034: a run here has no model to warm; the one suite that tests the warm-up opts in
 // run-close.test.cjs — ADR 0029 decisions 1, 3 and 4 through the built CLI: `belay run` waits for the
 // orchestrator's adapter to be gone, stops a worker still alive by its exact pid, and ends the run with the

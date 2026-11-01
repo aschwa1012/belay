@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // merge-user.test.cjs — a merge into a branch the user owns: who may ask, how approval is given and used, where the merge is built,
 // and when the branch moves. Throwaway repositories and stores under the sandbox only; the user's checkout is the repository's own.
 

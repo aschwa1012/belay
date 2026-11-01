@@ -11,6 +11,7 @@ const P = require('./process.cjs');
 const BG = require('./background.cjs');
 const L = require('./launch.cjs');
 const { fail } = require('./errors.cjs');
+const LG = require('./launch-gate.cjs');
 const { CLAUDE_RESUME_WINDOW_MS } = require('./restart.cjs');
 // 6i-2 fix round (item 7/R9): sendInterrupt moved out to make room for isOwnActiveRow's fix, below.
 const { sendInterrupt } = require('./pause-interrupt.cjs');
@@ -155,7 +156,7 @@ function createPause({ core, forWorker, doStop, doRestart, runOp, adapterPid = p
     // Only while the handle shows the worker still running: a worker that ended in step 2's window may have lost its pid to another
     // process, whose children are not ours. The root's creation time is checked in the same snapshot.
     const live = require('../core/proc-identity.cjs').handleLive(w.child) && w.child.pid === w.pid;
-    const descendantTargets = live ? await P.descendantTargets(w.pid, { expectCreated: w.pidCreated }).catch(() => []) : [];
+    const descendantTargets = live ? await P.descendantTargets(w.pid, { expectCreated: w.pidCreated, handle: w.child }).catch(() => []) : [];
     const descendantsSnapshotMs = now() - dt0;
     const descendants_before_close = descendantTargets.map((d) => d.pid);
 
@@ -200,6 +201,7 @@ function createPause({ core, forWorker, doStop, doRestart, runOp, adapterPid = p
       fail('E_ARGS', 'pause needs exit_timeout_ms as an integer between 1 and 30000', { worker_id, exit_timeout_ms });
     }
     const w = await forWorker(worker_id);
+    if (LG.launchInFlight(w)) return LG.pendPark(w, by, { interrupt_timeout_ms, exit_timeout_ms }); // a spawn or restart still starting: held, parked once it is up (launch-gate.cjs)
     // The refusal ladder and the already-paused answer both run inside the slot: a genuinely in-flight
     // pause is shared by lifecycle.cjs's own name match before either ever runs (never re-refused).
     return runOp(w, 'pause', async () => {

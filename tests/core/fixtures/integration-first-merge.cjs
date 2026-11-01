@@ -1,4 +1,5 @@
 'use strict';
+require('../../helpers/git-env.cjs'); // isolated git config for every fixture
 // integration-first-merge.cjs — times the first integration.merge in a fresh process (ADR 0053 amendment 2): a throwaway
 // repository and data dir under the sandbox given, one done task. Prints one line of JSON.
 const fs = require('fs');

@@ -33,7 +33,7 @@ async function deleteModel(ctx, argv) {
   const found = C.discover(ctx.cwd);
   const { levers, error } = MM.leversOf(found);
   if (error) return fail(1, `the config's memory block is refused (${error}), so what uses this model cannot be told; fix it first. Nothing was removed`, { model: d.entry.id, removed: false });
-  const live = await MM.liveRunUse(ctx.dataDir || C.dataDirOf(found, ctx), { verify: true, snapshot: seams.snapshot });
+  const live = await MM.liveRunUse(C.dataDirOf(found, ctx), { verify: true, snapshot: seams.snapshot });
   if (!live.ok) return fail(1, 'the store could not be read, so the live runs that may use this model cannot be told. Nothing was removed', { model: d.entry.id, removed: false });
   const by = MM.modelsInUse(levers, live.models)[d.entry.id];
   if (by) {

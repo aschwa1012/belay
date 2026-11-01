@@ -14,7 +14,7 @@ const HEAD_BOUND_MS = 5000;
 async function headOf(worktree) {
   if (!worktree) return { sha: null, error: 'the worker row names no worktree' };
   if (!fs.existsSync(String(worktree))) return { sha: null, error: `worktree ${worktree} does not exist` };
-  const r = await runCommand(['git', 'rev-parse', 'HEAD'], String(worktree), HEAD_BOUND_MS);
+  const r = await runCommand(['git', 'rev-parse', 'HEAD'], String(worktree), HEAD_BOUND_MS, { register: 'check' });
   if (!r.executable) return { sha: null, error: `git could not be run: ${r.spawn_error}` };
   if (r.timed_out) return { sha: null, error: `git rev-parse HEAD timed out after ${HEAD_BOUND_MS} ms` };
   const sha = String(r.stdout || '').trim();
@@ -34,7 +34,9 @@ const isCodexIdle = (w) => w.substrate === 'codex' && w.state === 'idle';
 // A pid that answers is the worker only if it is the process the row recorded (pid_created, checked against one snapshot taken for the
 // rows that need it): a pid another process now holds is not a life, and the row closes. A row with no recorded time, or a snapshot that
 // cannot be read, keeps the pid check as it was (live-as.cjs).
-async function closeEpochWorkers(E, runId, by, lifeClaiming) {
+// `treeKill` ({ signalled_at, pids }, from methods-run-life): the orchestrator tree kill the run process made. A row whose pid it
+// signalled was ended by that kill, which took the adapter with it before any exit was written: it says so, and its exit time is the signal's.
+async function closeEpochWorkers(E, runId, by, lifeClaiming, treeKill = null) {
   const marked = [];
   const t = Date.now();
   const mine = rows.currentAll(E.store, 'worker').filter((w) => w.run_id === runId && lifeClaiming.has(w.state) && !isCodexIdle(w));
@@ -49,10 +51,12 @@ async function closeEpochWorkers(E, runId, by, lifeClaiming) {
     if (!cur || cur.seq !== w.seq || (!codexIdle && pidAlive(cur.pid) && ready.runsAs(cur.pid, cur.pid_created))) continue;
     // The head the row carries: git's answer, else the head the row already had (never overwritten with null).
     const headSha = head.sha == null ? (cur.head_sha == null ? null : cur.head_sha) : head.sha;
+    const killedByTree = !codexIdle && treeKill && cur.pid_created != null && treeKill.pids.get(cur.pid) === cur.pid_created; // pid and creation time, as every kill (ADR 0039); a row with no creation time keeps the plain wording
     const values = {
-      ...cur, state: 'dead', exited_at: cur.exited_at == null ? t : cur.exited_at,
+      ...cur, state: 'dead', exited_at: cur.exited_at == null ? (killedByTree ? treeKill.signalled_at : t) : cur.exited_at,
       death_established_by: codexIdle ? CODEX_IDLE_BY
-        : `run.end: pid ${cur.pid} not alive when the run ended; no adapter wrote its exit`,
+        : killedByTree ? `run.end: pid ${cur.pid} was in the orchestrator's process tree that belay killed at ${treeKill.signalled_at} (named by the snapshot taken before the signal); the adapter died with it, so no adapter wrote its exit`
+          : `run.end: pid ${cur.pid} not alive when the run ended; no adapter wrote its exit`,
       head_sha: headSha, head_error: headSha != null ? null : (cur.head_error == null ? null : cur.head_error), paused_at: null, paused_by: null,
     };
     require('./cost-estimate.cjs').apply(E.dataDir, values); // no adapter wrote this life's end: its unreported last turn comes from the stream

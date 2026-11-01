@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // judged-safe.test.cjs — ADR 0060 decision 6 as hardened: recording what a task was judged on runs no program the repository
 // names (a hook, core.fsmonitor, a clean filter: ADR 0054 decision 2), converts line endings as the system config says (Git for
 // Windows sets core.autocrlf=true there), keeps the head when the content cannot be read, and names the uncommitted paths. Real

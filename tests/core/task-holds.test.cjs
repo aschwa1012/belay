@@ -149,7 +149,8 @@ test('a run that lapsed with no run.end and re-attaches queues behind the run th
   const r = await la.run.attach({ adapter_pid: process.pid }); // a new adapter over an unended row: the run is live again
   assert.deepStrictEqual(r.overlaps, [{ task_id: mine.id, other_task_id: theirs.id, files: ['lapse/x'] }]);
   await overlapOf(la.task.assign({ task_id: mine.id, check_only: true }));
-  await overlapOf(la.task.assign({ task_id: mine.id, worker_id: 'wlb' }));
+  await la.worker.write({ id: 'wla', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's', last_event_at: Date.now() });
+  await overlapOf(la.task.assign({ task_id: mine.id, worker_id: 'wla' })); // a run's orchestrator assigns its own run's workers
   assert.deepStrictEqual(await lb.task.assign({ task_id: theirs.id, check_only: true }), { assignable: true, task_id: theirs.id }, 'the incumbent keeps its paths');
   assert.strictEqual((await lb.task.get({ task_id: theirs.id })).state, 'assigned');
   assert.strictEqual((await la.task.get({ task_id: mine.id })).state, 'open', 'a refused assign wrote nothing');

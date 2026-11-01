@@ -18,11 +18,13 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { diffWorkers, wakeText } = require('./wake.cjs');
 const { pipeName: ownerPipeName } = require('../core/lock.cjs');
+const WR = require('./wake-ref.cjs');
 
 const HEARTBEAT_MS = 5000;
 const { DEATH_GRACE_MS } = require('./exit-hold.cjs'); // the same value headless uses (orchestrator.cjs)
 const RETAIN_MAX = 200;
 const RECEIPT_MAX = 2000;
+const DELIVERY_BOUND_MS = 30000; // how long a claimed policy wake may wait for the mod's delivered-wakes file to name it
 
 // The run's wake pipe: the store owner's pipe name for this data dir, plus a short hash of the run id and a
 // nonce the launcher generates at spawn (ADR 0037 amendment 5: the name is not predictable from the run id, so a
@@ -37,7 +39,7 @@ function wakePipeName(dataDir, runId, nonce) {
 const wakeId = (runId, ev) => `${runId}:${ev.worker_id}:${ev.event}:${ev.turn}:${ev.seq}`;
 
 function startWakePublisher({
-  core, runId, notes = false, budgetWake = null, dataDir = null, pipeName, pollMs = 1000, isHeld = () => false, onRelease = null, heartbeatMs = HEARTBEAT_MS, now = () => Date.now(),
+  core, runId, notes = false, budgetWake = null, dataDir = null, pipeName, pollMs = 1000, isHeld = () => false, onRelease = null, heartbeatMs = HEARTBEAT_MS, now = () => Date.now(), deliveredFile = null, deliveryBoundMs = DELIVERY_BOUND_MS,
 }) {
   if (!core || !core.worker || typeof core.worker.list !== 'function') throw new Error('startWakePublisher: core.worker.list is required');
   if (!runId) throw new Error('startWakePublisher: runId is required');
@@ -47,7 +49,7 @@ function startWakePublisher({
   const retained = []; // published lines, oldest first
   const receipt = []; // wakeRecord entries of every published wake, in order
   const queue = []; // derived while held
-  const stats = { polls: 0, errors: 0, published: 0, held_max: 0, last_error: null };
+  const stats = { polls: 0, errors: 0, published: 0, held_max: 0, last_error: null, released: [] }; // released: claims given back undelivered, for the receipt
   let baseline = {};
   const deadPids = require('./dead-pids.cjs').createDeadPids({ graceMs: DEATH_GRACE_MS, adapterAlive: (pid) => !!pid && require('../core/lock.cjs').pidAlive(pid) });
   const evalSeen = new Map(); // ADR 0058: release evaluations already carried by a wake
@@ -71,15 +73,40 @@ function startWakePublisher({
     if (!uid || (!(w.ev && w.ev.exception) && !planned.value())) return true; // a death is claimed only once a plan is in force
     let won = true;
     try { won = D.claimException({ dataDir, runId, uid }); } catch { won = true; } // a claim that cannot be made delivers: never lose a wake for want of a file
+    if (won) owedRef.set(w.id, uid);
+    if (won && deliveredFile) owed.set(uid, { id: w.id, at: now() }); // claimed at publish, not yet delivered: swept by sweepOwed
     if (!won) lost.set(uid, w); // kept: if worker_wait's claim is released (its reply was lost), this wake is published after all
     return won;
   };
+  const owedRef = new Map(); // wake id -> delivery key, for the claims this publisher took
+  const owed = new Map(); // uid -> { id, at }: wakes this publisher claimed that the mod's delivered file has not yet named
+  // The claim is taken before the mod has the line, so it must not outlive a delivery that never happened (a failed submit or write, a hooks
+  // module that did not load, a line pushed out of the retained set). A wake the delivered file does not name within the bound is released,
+  // and worker_wait (ADR 0074 decision 4, the second read path) offers it. `all` is the final sweep at stop: nothing more can arrive.
+  function sweepOwed(all = false) {
+    if (!owed.size) return;
+    const named = new Set();
+    try {
+      for (const l of fs.readFileSync(deliveredFile, 'utf8').split('\n')) {
+        try { const o = JSON.parse(l); if (o && typeof o.id === 'string') named.add(o.id); } catch { /* torn or foreign line */ }
+      }
+    } catch { /* no file yet: nothing is named */ }
+    const D = require('./run-digest.cjs');
+    for (const [uid, o] of owed) {
+      if (named.has(o.id)) { owed.delete(uid); continue; } // delivered: the claim stands for good
+      if (!all && now() - o.at < deliveryBoundMs) continue;
+      owed.delete(uid);
+      stats.released.push({ uid, wake_id: o.id, after_ms: now() - o.at, at_stop: all });
+      try { D.release({ dataDir, runId, uids: [uid] }); } catch { stats.errors += 1; stats.last_error = 'release'; }
+    }
+  }
   const lost = new Map(); // uid -> the wake another path's claim kept this one from publishing
 
   function publish(w) {
     if (!claimed(w)) return;
     if (receipt.length < RECEIPT_MAX) receipt.push(require('./wake-record.cjs').wakeRecord({ ...(w.ev || {}), event: w.event || (w.ev && w.ev.event), worker_id: w.worker_id }, w.text, now() - t0, null)); // the run receipt's wakes[], as headless fills it
-    const line = `${JSON.stringify({ id: w.id, text: w.text })}\n`;
+    const ref = owedRef.get(w.id); // a claimed wake carries its delivery key, so a repeat after a release is recognisable (worker_wait names the same key)
+    const line = `${JSON.stringify({ id: w.id, text: ref ? WR.withRef(w.text, WR.shortRef(ref)) : w.text })}\n`;
     retained.push(line);
     if (retained.length > RETAIN_MAX) retained.shift();
     stats.published += 1;
@@ -131,6 +158,7 @@ function startWakePublisher({
         }
       }
       if (budgetWake) for (const bw of budgetWake.takeWakes()) publish({ id: bw.id, text: bw.text, event: 'budget_pause', ev: bw }); // the budget pause's own wake is the one a hold does not keep back
+      sweepOwed();
       if (lost.size) for (const [uid, w] of lost) if (!require('./run-digest.cjs').isClaimed({ dataDir, runId, uid })) { lost.delete(uid); queue.push(w); } // a released claim: publish what it had held back
       if (dataDir && queue.some((q) => q.event === 'death')) await planned.check(); // a death has a second delivery path once the store shows a plan
       stats.held_max = Math.max(stats.held_max, queue.length);
@@ -185,6 +213,7 @@ function startWakePublisher({
   async function stop() {
     if (stopped) return;
     stopped = true;
+    sweepOwed(true);
     clearTimeout(pollTimer); clearInterval(hbTimer);
     for (const c of clients) { try { c.end(); c.destroy(); } catch { /* gone */ } }
     clients.clear();

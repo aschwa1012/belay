@@ -248,6 +248,7 @@ async function worktreeCreate(E, caller, args) {
   const junctions = junctionList(args.junction);
   return exclusive(`task:${args.task_id}`, `a worktree call for task ${args.task_id}`, async () => {
     const task = requireTask(E, args.task_id, 'task.worktreeCreate');
+    require('./worker-run-guard.cjs').refuseOtherRunTask(E, caller, task); // a live run's task is that run's: no tree or branch cut onto it
     if (task.state === 'done') throw err('E_TASK_DONE', `task ${task.id} is done, so it gets no new worktree`, { task_id: task.id, state: 'done' });
     assertNotLeased(E, task);
     const had = active(task);
@@ -290,9 +291,10 @@ async function worktreeRemove(E, caller, args) {
   for (const k of ['force', 'delete_branch']) if (args[k] !== undefined && typeof args[k] !== 'boolean') throw err('E_ARGS', `task.worktreeRemove: ${k} must be a boolean`, { field: k });
   return exclusive(`task:${args.task_id}`, `a worktree call for task ${args.task_id}`, async () => {
     let task = requireTask(E, args.task_id, 'task.worktreeRemove');
+    require('./worker-run-guard.cjs').refuseOtherRunTask(E, caller, task); // nor its tree removed, forced or not
     const key = G.fwd(task.worktree && task.worktree.path ? task.worktree.path : '').toLowerCase();
     // A sharer's removal of this same tree in flight is waited for: this call then reports it already removed, never a second git.
-    if (active(task) && removing.has(key)) {
+    while (active(task) && removing.has(key)) {
       const by = removing.get(key).task_id;
       await removing.get(key).done.catch(() => {});
       task = requireTask(E, args.task_id, 'task.worktreeRemove');
@@ -302,12 +304,20 @@ async function worktreeRemove(E, caller, args) {
     if (!active(task) && task.worktree && task.worktree.removed_through) return { ...task, removal: { already: true, removed_through: task.worktree.removed_through } };
     const rec = active(task);
     if (!rec) throw err('E_NOT_FOUND', `task ${task.id} has no belay worktree to remove`, { task_id: task.id, worktree: task.worktree || null });
-    // A fix task shares the tree and branch of the work it fixes (task.fixFromReview): one still being worked keeps the tree.
-    const open = openSharer(E, task);
-    if (open) throw err('E_PRECONDITION', `task ${open.id} (${open.state}) is worked in the same tree or branch ${rec.path}; finish or cancel it first`, { task_id: open.id, state: open.state, path: rec.path });
+    // Claimed in this turn, before any await: a sharer's call that arrives from here on waits for this one (ADR 0060).
     let finish;
-    removing.set(key, { task_id: task.id, done: new Promise((r) => { finish = r; }) });
-    try { return await removeShared(E, caller, args, task, rec); } finally { removing.delete(key); finish(); }
+    const mine = { task_id: task.id, done: new Promise((r) => { finish = r; }) };
+    removing.set(key, mine);
+    try {
+      if (caller.role !== 'operator') { // as create does: the orchestrator acts on its run's repository only
+        const runTop = await repoOf(E, caller, undefined, 'task.worktreeRemove');
+        if (!G.samePath(rec.repo, runTop)) throw err('E_ROLE', `task.worktreeRemove: task ${task.id}'s tree is in ${rec.repo}, not this run's repository (${runTop}); another repository is the operator's to name`, { repo: rec.repo, run_repo: runTop });
+      }
+      // A fix task shares the tree and branch of the work it fixes (task.fixFromReview): one still being worked keeps the tree.
+      const open = openSharer(E, task);
+      if (open) throw err('E_PRECONDITION', `task ${open.id} (${open.state}) is worked in the same tree or branch ${rec.path}; finish or cancel it first`, { task_id: open.id, state: open.state, path: rec.path });
+      return await removeShared(E, caller, args, task, rec);
+    } finally { if (removing.get(key) === mine) removing.delete(key); finish(); }
   });
 }
 
