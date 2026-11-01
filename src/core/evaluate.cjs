@@ -82,31 +82,48 @@ function resolveWindowsShim(argv, platform = process.platform, execPath = proces
 // `tail` raises the 2,000-character output cap for a caller that parses the whole output (`git worktree list`).
 // `onChild(child)`, when given, is told the live child handle as soon as it is spawned (a cancel kills it by that handle).
 // `keep: 'ends'` keeps the head and the tail of each stream (an acceptance command; capture above).
-function runCommand(argvGiven, cwd, timeoutMs, { env, tail = TAIL, onChild, keep = 'head' } = {}) {
+// `register: 'check'` records the child in the machine-wide spawn register the moment it exists (ADR 0045 decision 4): the command is code a
+// worker wrote, and a process that descends from it must not be taken for the operator. A record that cannot be written ends the child
+// and the child is ended at once (fail closed; it may have run for an instant before the kill). check-register.cjs keeps the record stamped and retires it at exit.
+function runCommand(argvGiven, cwd, timeoutMs, { env, tail = TAIL, onChild, keep = 'head', register = null } = {}) {
   return new Promise(resolve => {
     const t0 = Date.now();
     // A missing worktree or cwd is named as such: left to spawn it reads as ENOENT for the executable.
     if (cwd && !fs.existsSync(cwd)) {
       return resolve({ executable: false, exit_code: null, ms: Date.now() - t0, timed_out: false, stdout: '', stderr: '', spawn_error: `cwd does not exist: ${cwd}` });
     }
-    const argv = resolveWindowsShim(argvGiven);
+    const argv = resolveWindowsShim(argvGiven[0] === 'git' ? [require('./git-safe.cjs').gitPath(), ...argvGiven.slice(1)] : argvGiven); // never the bare name: the cwd is searched first on Windows
     let child;
+    const spawnedAt = Date.now(); // before the spawn call: the earliest moment the child can exist
     try {
       child = spawn(argv[0], argv.slice(1), { cwd, shell: false, windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'], ...(env ? { env } : {}) });
     } catch (e) {
       return resolve({ executable: false, exit_code: null, ms: Date.now() - t0, timed_out: false, stdout: '', stderr: '', spawn_error: e.code || e.message });
     }
     if (onChild) onChild(child);
+    let unregister = () => {};
+    if (register && child.pid) {
+      try { unregister = require('./check-register.cjs').begin(child, register, spawnedAt, 'a worker-controlled command'); } catch (e) {
+        const exited = child.exitCode !== null || child.signalCode !== null ? Promise.resolve() : new Promise((done) => child.once('exit', done));
+        return Promise.all([killTree(child), exited]).then(() => resolve({ executable: false, exit_code: null, ms: Date.now() - t0, timed_out: false, stdout: '', stderr: '', spawn_error: `ended at once, not run to completion: ${(e && e.message) || e}` }));
+      }
+    }
     const out = capture(keep, tail), errText = capture(keep);
     let settled = false, timedOut = false, killing = null, pipesDropped = false;
-    const timer = setTimeout(() => { timedOut = true; killing = killTree(child); }, timeoutMs);
+    const timer = setTimeout(() => {
+      timedOut = true; killing = killTree(child);
+      // A refused or failed tree kill leaves the child, and whatever holds its pipes, running: our ends are dropped either way.
+      Promise.resolve(killing).then(k => { if (!k || k.ok === false) { try { child.stdout.destroy(); child.stderr.destroy(); } catch { /* closed */ } } });
+    }, timeoutMs);
     timer.unref();
     // ADR 0039: the exit, not the later close, ends the kill's right to fire (the pid may be reused from here on).
     // A grandchild that outlives its parent and holds our pipes would keep `close` from ever firing, and nothing
     // may kill it by a bare pid; so after a short grace our ends of the pipes are dropped and the survivor is left.
     child.once('exit', () => {
-      if (timedOut) return;
-      clearTimeout(timer);
+      try { unregister(); } catch { /* the record stays; the next read retires it */ }
+      // Only the kill's right to fire ends here; the pipe drop is armed after a timeout too, whatever the tree kill reported,
+      // since a holder outside the killed tree (reparented away from the child) would keep `close` from ever arriving.
+      if (!timedOut) clearTimeout(timer);
       const drop = setTimeout(() => { pipesDropped = true; try { child.stdout.destroy(); child.stderr.destroy(); } catch { /* closed */ } }, 2000);
       drop.unref();
       child.once('close', () => clearTimeout(drop));
@@ -189,10 +206,10 @@ async function resolveRefs(worktree, base) {
   const ref = base || DEFAULT_BASE_REF;
   if (base && base.startsWith('-')) return { failed: ref, stderr: 'a ref may not begin with a dash' };
   const b = base
-    ? await runCommand(['git', 'rev-parse', '--verify', `${base}^{commit}`], worktree, 30000)
-    : await runCommand(['git', 'merge-base', 'HEAD', DEFAULT_BASE_REV], worktree, 30000);
+    ? await runCommand(['git', 'rev-parse', '--verify', `${base}^{commit}`], worktree, 30000, { register: 'check' })
+    : await runCommand(['git', 'merge-base', 'HEAD', DEFAULT_BASE_REV], worktree, 30000, { register: 'check' });
   if (!b.executable || b.exit_code !== 0 || !b.stdout.trim()) return { failed: ref, stderr: (b.stderr || b.spawn_error || '').trim().slice(0, 400) };
-  const h = await runCommand(['git', 'rev-parse', 'HEAD'], worktree, 30000);
+  const h = await runCommand(['git', 'rev-parse', 'HEAD'], worktree, 30000, { register: 'check' });
   if (!h.executable || h.exit_code !== 0 || !h.stdout.trim()) return { failed: 'HEAD', stderr: (h.stderr || h.spawn_error || '').trim().slice(0, 400) };
   return { ref, base_sha: b.stdout.trim(), head_sha: h.stdout.trim() };
 }
@@ -225,7 +242,7 @@ async function filesWithinOwned(worktree, filesOwned, base, baseSource) {
   // HEAD is what a worker's committed work looks like (ADR 0010 amendment 3).
   const refs = await resolveRefs(worktree, base);
   if (refs.failed) return notRun(`the ref ${refs.failed} could not be resolved, so the changed set is unknown`, { base_ref: base || DEFAULT_BASE_REF, failed_ref: refs.failed, stderr: refs.stderr });
-  const d = await runCommand(['git', 'diff', '--name-status', '-z', '-M', refs.base_sha, 'HEAD'], worktree, 30000, { tail: LIST_TAIL, env: readOnlyGitEnv() });
+  const d = await runCommand(['git', 'diff', '--name-status', '-z', '-M', refs.base_sha, 'HEAD'], worktree, 30000, { tail: LIST_TAIL, env: readOnlyGitEnv(), register: 'check' });
   if (!d.executable || d.exit_code !== 0) return notRun('git diff from the base failed', { base_ref: refs.ref, base_sha: refs.base_sha, head_sha: refs.head_sha, exit_code: d.exit_code, stderr: (d.stderr || d.spawn_error || '').trim().slice(0, 400) });
   if (d.truncated) return notRun(`git diff listed more than ${LIST_TAIL} characters, so the changed set is not known whole`, { base_ref: refs.ref, base_sha: refs.base_sha, head_sha: refs.head_sha });
   const owned = Array.isArray(filesOwned) ? filesOwned : [];
@@ -275,7 +292,7 @@ async function runAcceptance(acceptance, worktree, filesOwned, { base, baseSourc
     }
     const once = async (room) => {
       let mine = null;
-      const r = await runCommand(c.argv, cwd, Math.min(own, room), { keep: 'ends', ...(cancel ? { onChild: (ch) => { mine = ch; cancel.live.add(ch); if (cancel.cancelled) killTree(ch); } } : {}) });
+      const r = await runCommand(c.argv, cwd, Math.min(own, room), { keep: 'ends', register: 'check', ...(cancel ? { onChild: (ch) => { mine = ch; cancel.live.add(ch); if (cancel.cancelled) killTree(ch); } } : {}) });
       if (mine) cancel.live.delete(mine);
       return r;
     };

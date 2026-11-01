@@ -169,7 +169,7 @@ function killTreeRaw(target, opts = {}) {
       for (const d of tree.leavesFirst) one(d.pid);
       if (handle && !ID.handleLive(target)) errors.push(`${pid}:exited meanwhile`); else one(pid);
       const ok = errors.length === 0;
-      const processes = killed.map((p) => ({ pid: p, image: snap && snap.get(p) ? snap.get(p).image : null })); // named from the snapshot taken before the kill
+      const processes = killed.map((p) => ({ pid: p, created: snap && snap.get(p) ? snap.get(p).created : null, image: snap && snap.get(p) ? snap.get(p).image : null })); // named from the snapshot taken before the kill
       return done({ ok, terminated: killed.length, killed, killed_processes: processes, skipped: tree.skipped, identity, ...sm, signalled_at: signalledAt, output: [treeNote, ...errors].filter(Boolean).join('; ').slice(0, 400), ...(treeNote ? { tree_refused: treeNote } : {}) });
     });
   })();

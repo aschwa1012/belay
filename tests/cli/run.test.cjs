@@ -18,7 +18,8 @@ const { spawn, spawnSync } = require('node:child_process');
 
 const { releaseCore } = require('./stop-helpers.cjs');
 const P = require('../../src/run/process.cjs');
-const { SNAPSHOT_TIMEOUT_MS } = require('../../src/core/proc-identity.cjs');
+const PI = require('../../src/core/proc-identity.cjs');
+const { SNAPSHOT_TIMEOUT_MS } = PI;
 
 const ROOT = path.resolve(__dirname, '..', '..').split(path.sep).join('/');
 const CLI = `${ROOT}/src/cli/belay.cjs`;
@@ -158,6 +159,12 @@ test('run: the orchestrator is a child of the CLI, the run row is written, stdin
     assert.ok(row, 'the run row never appeared within 10,000 ms of the CLI spawning');
     assert.strictEqual(row.adapter_pid, cliProc.pid, "adapter_pid must be the CLI process's own pid");
     assert.ok(Number.isInteger(row.orchestrator_pid) && row.orchestrator_pid > 0, 'orchestrator_pid must be a positive integer');
+    // The reviewer instructions anchor (trusted-instructions.cjs) is fixed before the orchestrator exists: the checkout's HEAD now.
+    const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8', windowsHide: true });
+    if (head.status === 0) {
+      const anchor = JSON.parse(fs.readFileSync(require('../../src/run/trusted-instructions.cjs').anchorFile(dataDir, runId), 'utf8'));
+      assert.strictEqual(anchor.sha, head.stdout.trim(), 'belay run did not fix the instructions anchor at the checkout HEAD before launch');
+    }
 
     fakeWorker = spawn(process.execPath, [FAKE_CLAUDE], {
       cwd: wt, env: { ...process.env, FAKE_HANG: '1' }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
@@ -179,6 +186,15 @@ test('run: the orchestrator is a child of the CLI, the run row is written, stdin
     const row2 = await testCore.run.get();
     const orchPid = row2.run.orchestrator_pid;
     assert.ok(P.pidAlive(orchPid), `orchestrator pid ${orchPid} is not alive`);
+    // Its identity while it lives (ADR 0039): after it exits, Windows may give the bare pid number to another process.
+    const identityOf = async (pid) => { // a readable snapshot is required: an unreadable one never counts as "gone"
+      const snap = await PI.snapshotRetry({ attempts: 2 });
+      assert.ok(snap, `the process snapshot could not be read while checking pid ${pid}`);
+      const e = snap.get(pid);
+      return e && e.created != null ? { created: e.created } : null;
+    };
+    const orchIdentity = await identityOf(orchPid);
+    assert.ok(orchIdentity, `no process snapshot entry for the live orchestrator pid ${orchPid}`);
     const ppid = parentPidOf(orchPid);
     assert.strictEqual(ppid, cliProc.pid, `orchestrator's parent pid ${ppid} is not the CLI's pid ${cliProc.pid}`);
 
@@ -206,7 +222,9 @@ test('run: the orchestrator is a child of the CLI, the run row is written, stdin
     assert.ok(!fs.existsSync(`${dataDir}/owner.lock`), 'owner.lock is still present after shutdownOwner');
     const runJson = JSON.parse(fs.readFileSync(`${orchestratorDir}/run.json`, 'utf8'));
     assert.deepStrictEqual(runJson, receipt);
-    assert.ok(!P.pidAlive(orchPid), 'the orchestrator pid is still alive after the CLI exited');
+    // Gone means: no process holds the pid, or the one that does is not the orchestrator (a later creation time).
+    const now = P.pidAlive(orchPid) ? await identityOf(orchPid) : null;
+    assert.ok(!(now && now.created === orchIdentity.created), 'the orchestrator process is still alive after the CLI exited');
   } finally {
     await releaseCore(testCore);
     if (fakeWorker && P.pidAlive(fakeWorker.pid)) require('../crash.cjs').crash(fakeWorker);

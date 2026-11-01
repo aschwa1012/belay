@@ -409,7 +409,7 @@ test('task_assign of a review: the answer carries the real scratch folder, made 
   await worker('coder-type-reviewing', wt); // a worker of another type: no scratch folder yet
   assert.strictEqual(SD.scratchDir(dir, 'test-run', 'coder-type-reviewing'), null);
   let sent = null;
-  const fakeManager = { _worker: () => true, message: async ({ text }) => { sent = text; return {}; } };
+  const fakeManager = { _worker: () => ({ id: 'coder-type-reviewing' }), message: async ({ text }) => { sent = text; return {}; } }; // a launched worker's record, as manager._worker returns it
   const callCore = (dotted, args) => { const [g, n] = dotted.split('.'); return orch[g][n](args); };
   const C = createCompose({ callCore, manager: () => fakeManager, openManager: async () => fakeManager, dataDir: dir, runId: 'test-run' });
   const out = await C.assign({ task_id: r.id, worker_id: 'coder-type-reviewing', prompt: 'review it' });
