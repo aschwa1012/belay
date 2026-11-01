@@ -19,10 +19,11 @@ const bash = (command) => ({ tool_name: 'Bash', tool_input: { command } });
 const BAD_PATHS = [
   '/tmp/x', '/tmp', '/tmp/', '/TMP/x', '/Tmp/a/b.js', '\\tmp\\x', '\\TMP', 'C:\\tmp\\x.js', 'c:/tmp/x', 'C:/TMP/x', 'D:\\Tmp',
   '/c/tmp/x', '/d/tmp', '//?/C:/tmp/x', 'C:/foo/../tmp/x', '/foo/../tmp/x', 'C:\\\\tmp\\\\x', 'C:/tmp/./x',
+  'C:/tmp./x', 'C:/tmp /x', 'C:\\tmp.\\x', 'C:\\tmp \\x', '/tmp../x', '/tmp. /x', 'c:/TMP./x', '/tmp.',
 ];
 const OK_PATHS = [
   'tmp/x', './tmp/x', 'C:\\Work\\a\\tmp\\x', 'C:/repo/tmp/x', '/home/tmp/x', '/tmpfoo/x', 'C:/tmpfoo', 'C:\\tmp-old\\x',
-  'C:/Work/AppData/Local/Temp/x', `${TEMP}/x`, 'C:/repo/src/../src/tmp.js', '/c/Users/tmp', '', undefined, 5,
+  'C:/tmp.old/x', 'C:/repo/tmp./x', 'C:/.../tmp/x', 'C:/Work/AppData/Local/Temp/x', `${TEMP}/x`, 'C:/repo/src/../src/tmp.js', '/c/Users/tmp', '', undefined, 5,
 ];
 
 test('Write, Edit, MultiEdit and NotebookEdit to a rooted tmp path are refused, in every spelling and case', () => {
@@ -57,6 +58,9 @@ const BAD_COMMANDS = [
   "cat > /tmp/mk.py <<'EOF'\nopen('/tmp/locking.js','w').write('x')\nEOF\npython /tmp/mk.py",
   'cat > mk.js <<EOF\nfs.writeFileSync("/tmp/moved.js", s)\nEOF\nnode mk.js',
   'node - <<"EOF"\nfs.writeFileSync(`/tmp/a`, 1)\nEOF',
+  `node -e "console.log(1)" && node -e "fs.writeFileSync('/tmp/x','')"`,
+  `python -c "print(1)"; python -c 'open("/tmp/x")'`,
+  `node -p "'/tmp/x'" > out.txt`,
   'cat > mk.py <<-EOF\n\topen("/tmp")\n\tEOF\npython mk.py',
   'cat <<EOF > a.js\nconst d = "C:\\\\tmp\\\\x";\nEOF',
 ];
@@ -74,6 +78,11 @@ const OK_COMMANDS = [
   `node -e "fs.readFileSync('./tmp/x')"`,
   `node -e "fs.readFileSync('/tmpfoo/x')"`,
   `node -e "fs.readFileSync('src/tmp/x')"`,
+  `node -e "fs.readFileSync('x')" && cat /tmp/out`,
+  `node -e "console.log(1)" > /tmp/out`,
+  `python -c "print(1)" | tee /tmp/out`,
+  `python -c 'print(1)'; ls /tmp/x`,
+  'python run.py -c /tmp/x', 'node a.js -p /tmp/x', 'perl -c /tmp/x.pl', 'grep -c foo /tmp/x', 'tar -c -f /tmp/a.tar src',
   'cat <<EOF\nuse $TMPDIR/tmp and ${TEMP}/tmp\nEOF',
 ];
 
@@ -91,6 +100,29 @@ test('the refusal is one line and names the worker temp dir and the way out', ()
   assert.ok(m.includes(TEMP));
   assert.match(m, /os\.tmpdir|tempfile|\$TEMP/);
   assert.ok(TG.refusal(bash(`node -e "open('/tmp/x')"`), TEMP).includes(TEMP));
+});
+
+test('the whole deny JSON stays under 400 bytes however long the temp dir is, and keeps the rule', () => {
+  const long = ['C:\\Work\\a-very-long-folder-name', ...Array.from({ length: 30 }, (_, i) => `segment-${i}-\u00e9\u00e9`), 'belay-w1'].join('\\');
+  for (const dir of [TEMP, long, 'x'.repeat(2000), undefined]) {
+    for (const p of [file('Write', '/tmp/x'), bash(`node -e "open('/tmp/x')"`)]) {
+      const reason = TG.refusal(p, dir);
+      const json = TG.denyOutput(reason);
+      assert.ok(Buffer.byteLength(json, 'utf8') < 400, `deny JSON is ${Buffer.byteLength(json, 'utf8')} bytes`);
+      assert.ok(!reason.includes('\n'));
+      assert.match(reason, /^Do not write to \/tmp or <drive>:\\tmp: .*os\.tmpdir\(\), tempfile, \$TEMP\) or a path in your worktree\.$/);
+    }
+  }
+  const cut = TG.refusal(file('Write', '/tmp/x'), long);
+  assert.ok(cut.includes('belay-w1'), 'the end of the path, the part that names the worker, is kept');
+});
+
+test('the hook process bounds its answer the same way', () => {
+  const dir = 'C:\\' + 'long\\'.repeat(200) + 'belay-w1';
+  const r = spawnSync(process.execPath, [HOOK], { input: JSON.stringify(file('Write', '/tmp/x')), encoding: 'utf8', timeout: 10000, env: { ...process.env, TEMP: dir, TMP: dir, TMPDIR: dir } });
+  assert.strictEqual(r.status, 0);
+  assert.ok(Buffer.byteLength(r.stdout, 'utf8') < 400);
+  assert.strictEqual(JSON.parse(r.stdout).hookSpecificOutput.permissionDecision, 'deny');
 });
 
 test('the refusal names the process temp dir when none is passed', () => {
