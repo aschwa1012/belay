@@ -40,6 +40,7 @@ async function amend(E, caller, args) {
   const out = E.store.tx(() => {
     const task = rows.current(E.store, 'task', args.id);
     if (!task) throw err('E_NOT_FOUND', `no task row exists for ${args.id}, so there is nothing to amend; leave amend out to create it`, { task_id: args.id });
+    require('./worker-run-guard.cjs').refuseOtherRunTask(E, caller, task); // a live run's task is that run's
     // A field beside the revision that repeats the task's own value is a no-op; one that would change it is refused, by name.
     const extra = Object.keys(args).filter((k) => args[k] !== undefined && !AMEND_FIELDS.has(k) && !(ROW_FIELDS.includes(k) && norm(args[k], k) === norm(task[k], k)));
     if (extra.length) throw err('E_ARGS', `task.create amend revises acceptance and spec only; ${extra.join(', ')} cannot change on an existing task`, { task_id: args.id, fields: extra });

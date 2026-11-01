@@ -82,8 +82,9 @@ function newWorkerRecord({ id, substrate, worktree, dataDir, taskId, model, allo
 // the next adapter's memory, so without this `restart` can only ever reach workers of its own
 // session. The record is settled on arrival: whatever ran under that pid belonged to another
 // adapter, this process is not its parent (invariant 1) and cannot see it exit.
-async function adopt({ core, workerId, dataDir }) {
+async function adopt({ core, workerId, dataDir, runId }) {
   const row = await core.worker.get({ worker_id: workerId }); // E_NOT_FOUND is the store's answer
+  if (runId !== undefined) await require('./other-run-guard.cjs').refuseLiveOtherRun(core, runId, row); // the manager always names its run; a caller that only builds a record from a row (tests) names none // a worker of another live run is that run's: nothing below is read or written for it
   // 6e-5 item 5: the row has no column for model/allowed_tools/permission_prompt, so a cross-adapter
   // relaunch used to fall back to this build's defaults; argv.json/mcp.json name what actually ran.
   const launchOpts = LC.readLaunchOptions(L.workerDir(dataDir, row.id));

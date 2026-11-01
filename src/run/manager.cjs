@@ -321,7 +321,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const known = workers.get(workerId);
     if (known) return known;
     if (adopting.has(workerId)) return adopting.get(workerId);
-    const p = W.adopt({ core, workerId, dataDir: root }).then(async (w) => {
+    const p = W.adopt({ core, workerId, dataDir: root, runId }).then(async (w) => {
       workers.set(workerId, w); // no launch guard: a stop must always go through, and writeFilesFor below regenerates settings.json from the record
       await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the argv written below carries the notes lever
       const denied = await NM.adoptDenied(w, runId, ctx.memoryLevers, core); // another run's native_memory is never written into this run's settings; the record stays, the relaunch is refused

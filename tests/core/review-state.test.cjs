@@ -25,18 +25,18 @@ after(async () => {
 });
 
 let k = 0;
-async function handBack(taskId, result) {
+async function handBack(taskId, result, by = orch) { // by: the orchestrator of the run that owns the task
   const id = `w-${++k}`;
-  await orch.worker.write({ id, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: `s-${id}`, last_event_at: Date.now() });
+  await by.worker.write({ id, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: `s-${id}`, last_event_at: Date.now() });
   const w = await openCore({ dataDir: dir, caller: callerFor('worker', { worker_id: id }), embed: false });
   workers.set(id, w);
-  const a = await orch.task.assign({ task_id: taskId, worker_id: id });
+  const a = await by.task.assign({ task_id: taskId, worker_id: id });
   return w.lease.release({ lease_id: a.new_lease.id, reason: 'done', ...(result ? { result } : {}) });
 }
 
-async function doneWork(task) {
-  await handBack(task.id, { branch: 'b' });
-  assert.strictEqual((await orch.task.evaluate({ task_id: task.id, worktree: dir })).state, 'done');
+async function doneWork(task, by = orch) {
+  await handBack(task.id, { branch: 'b' }, by);
+  assert.strictEqual((await by.task.evaluate({ task_id: task.id, worktree: dir })).state, 'done');
 }
 
 async function judge(task, verdict) {
@@ -148,7 +148,7 @@ test('rounds_left across runs: it is what the run of the newest fix would allow 
   await doneWork(f1);
   const r2 = await judge(f1, 'refuted');
   const f2 = await other.task.fixFromReview({ review_id: r2.id });
-  await doneWork(f2);
+  await doneWork(f2, other); // f2 is run-b's: only run-b's orchestrator assigns and evaluates it
   const r3 = await judge(f2, 'refuted');
   assert.deepStrictEqual(await reviewOf(w.id), { state: 'refuted', review_id: r3.id, rounds: 2, rounds_left: 0 });
   await assert.rejects(other.task.fixFromReview({ review_id: r3.id }), (e) => e.code === 'E_FIX_ROUNDS');
