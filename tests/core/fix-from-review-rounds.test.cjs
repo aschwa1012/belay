@@ -198,14 +198,18 @@ async function gatedPair(name, fn) {
     await orch.worker.write({ id: `c-${name}`, substrate: 'claude-code', pid: process.pid, state: 'stopped', session_id: `s-c-${name}`, last_event_at: Date.now(), worktree: w.worktree.path });
     armed = true; // only the removals' calls are counted and gated
     const pa = orch.task.worktreeRemove({ task_id: w.id }); // held inside its first gated git call
-    await heldAt; // the first call is inside the gated call, so the second arrives at a fixed point
+    // The first call is inside the gated call, so the second arrives at a fixed point; a first call that ends first fails fast.
+    await Promise.race([heldAt, pa.then(() => { throw new Error('the first removal ended before reaching the gated git call'); })]);
     const pb = orch.task.worktreeRemove({ task_id: f.id });
     await new Promise(setImmediate);
     release();
-    const [a, b] = await Promise.all([pa, pb]);
+    const [ra, rb] = await Promise.allSettled([pa, pb]); // neither call outlives the test
+    assert.strictEqual(ra.status, 'fulfilled', ra.reason && ra.reason.message);
+    assert.strictEqual(rb.status, 'fulfilled', rb.reason && rb.reason.message);
+    const [a, b] = [ra.value, rb.value];
     assert.ok(a.worktree.removed_at && !a.removal.already, 'the first call removes the tree');
     assert.deepStrictEqual([b.removal.already, b.removal.removed_through, !!b.worktree.removed_at], [true, w.id, true], 'the second waits and runs no git');
-  } finally { G[fn] = real; }
+  } finally { release(); G[fn] = real; }
 }
 
 test('a second removal that arrives while the first checks the run\'s repository waits for it', () => gatedPair('gate-repo', 'toplevel'));
