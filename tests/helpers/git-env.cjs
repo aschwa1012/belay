@@ -25,9 +25,15 @@ if (!globalThis[KEY]) {
   const madeBy = (process.env.BELAY_TEST_SPAWN_REGISTRY_MADE_BY || '').split('|');
   if (!reg || madeBy[1] !== reg) reg = null;
   if (reg) { try { fs.mkdirSync(reg, { recursive: true }); } catch { reg = null; } }
-  const dir = reg ? null : fs.mkdtempSync(path.join(os.tmpdir(), 'belay-gitcfg-'));
-  const file = path.join(reg || dir, 'gitconfig');
-  fs.writeFileSync(file, '[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n[gc]\n\tauto = 0\n');
+  const CONFIG = '[commit]\n\tgpgsign = false\n[tag]\n\tgpgsign = false\n[gc]\n\tauto = 0\n';
+  let dir = null;
+  let file = reg ? path.join(reg, 'gitconfig') : null;
+  if (file) { try { fs.writeFileSync(file, CONFIG); } catch { file = null; } } // the register could not take the file: the own directory instead
+  if (!file) {
+    dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-gitcfg-'));
+    file = path.join(dir, 'gitconfig');
+    fs.writeFileSync(file, CONFIG);
+  }
   process.env.GIT_CONFIG_GLOBAL = file.split(path.sep).join('/');
   process.on('exit', () => { try { fs.rmSync(dir || file, { recursive: true, force: true }); } catch { /* left for the suite guard */ } });
   globalThis[KEY] = { file };
