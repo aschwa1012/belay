@@ -79,13 +79,13 @@ test('memory: search against a store with no live owner is refused E_NO_EMBEDDER
   assert.strictEqual(jDef.modes_failed.length, 1);
   assert.strictEqual(jDef.modes_failed[0].mode, 'semantic');
 
-  const rStats = checked(() => memoryStatsJson(['run-x'], dataDir), dataDir, 'memory stats (dead store)');
+  const rStats = checked(() => memoryStatsJson([], dataDir), dataDir, 'memory stats (dead store)');
   assert.strictEqual(rStats.status, 0, `memory stats: ${rStats.stdout} / ${rStats.stderr}`);
   const jStats = JSON.parse(rStats.stdout);
   assert.strictEqual(jStats.owner.alive, false);
   assert.match(jStats.owner.established_by, /no owner\.lock in the data dir/);
 
-  const rStatsText = checked(() => memoryStatsText(['run-x'], dataDir), dataDir, 'memory stats (dead store, text)');
+  const rStatsText = checked(() => memoryStatsText([], dataDir), dataDir, 'memory stats (dead store, text)');
   assert.strictEqual(rStatsText.status, 0);
   assert.match(rStatsText.stdout, /^owner: /m, 'the stats owner line must be present');
   assert.match(rStatsText.stdout, /alive=false/);
@@ -112,7 +112,7 @@ async function withLiveOwner(envExtra, body) {
     await core.task.create({ spec: 'planted per B5, so this file is sensitive to a task.create regression too' });
     const afterExit = await body({ core, dataDir, runId, runCliProc, dir });
 
-    const rs = checked(() => memoryStatsJson([runId], dataDir), dataDir, 'memory stats (live owner)');
+    const rs = checked(() => memoryStatsJson([], dataDir), dataDir, 'memory stats (live owner)');
     assert.strictEqual(rs.status, 0, `memory stats: ${rs.stdout} / ${rs.stderr}`);
     const js = JSON.parse(rs.stdout);
     assert.strictEqual(js.owner.alive, true, 'the live owner must report alive');
@@ -249,7 +249,8 @@ test('memory usage errors exit 2 and name the problem; the core is never opened'
     [['timeline', 'a', '--before', '-1'], /--before must be an integer/],
     [['verify', 'a'], /needs --status/],
     [['verify', 'a', '--status', 'verified'], /needs --receipt/],
-    [['stats', 'a', 'b'], /takes 0 to 1 positional/],
+    [['stats', 'a', 'b'], /takes 0 positional arguments; got 2/],
+    [['stats', 'run-1'], /belay memory stats takes 0 positional arguments; got 1/],
   ];
   for (const [argv, re] of cases) {
     let opened = false;
@@ -259,6 +260,12 @@ test('memory usage errors exit 2 and name the problem; the core is never opened'
     assert.match(r.text, /usage: belay memory search/, 'the usage text follows the error');
     assert.strictEqual(opened, false, `${argv.join(' ')} opened the core`);
   }
+});
+
+test('memory resolve: the usage lists refines, which checkResolve accepts', async () => {
+  const r = await MEM.run({ argv: ['resolve'], cwd: ROOT, dataDir: `${ROOT}/.belay-none`, json: false, openCore: async () => fakeCore() });
+  assert.strictEqual(r.code, 2);
+  assert.match(r.text, /belay memory resolve <id> refines <of>/);
 });
 
 test('memory search: the warning is the first line of the text and the first key of the json; exit 0 when a mode ran, 1 when none did', async () => {

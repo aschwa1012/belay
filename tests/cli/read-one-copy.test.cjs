@@ -15,7 +15,7 @@ const ROOT = path.resolve(__dirname, '..', '..').split(path.sep).join('/');
 const CLI = `${ROOT}/src/cli/belay.cjs`;
 const HOOK = `${ROOT}/tests/cli/fakes/count-copies.cjs`;
 
-test('agents, diff and memory proposals copy the store once each', async () => {
+test('agents, diff, memory proposals, workers, tasks and usage copy the store once each', async () => {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   try {
@@ -27,7 +27,7 @@ test('agents, diff and memory proposals copy the store once each', async () => {
     } finally { await plant.shutdownOwner(); await plant.close(); }
     const env = { ...process.env, COPY_COUNT_FILE: `${dir}/count.txt` };
     delete env.BELAY_WORKER_ID;
-    for (const args of [['agents', 'run-a'], ['diff', 'run-a'], ['memory', 'proposals']]) {
+    for (const args of [['agents', 'run-a'], ['diff', 'run-a'], ['memory', 'proposals'], ['workers', 'run-a'], ['tasks', 'run-a'], ['usage', 'run-a']]) {
       fs.rmSync(`${dir}/count.txt`, { force: true });
       const r = spawnSync(process.execPath, ['--require', HOOK, CLI, ...args, '--data', dataDir, '--json'], { cwd: dir, env, encoding: 'utf8', timeout: 60000 });
       assert.strictEqual(r.status, 0, `${args.join(' ')}: ${r.stderr.slice(0, 300)}`);

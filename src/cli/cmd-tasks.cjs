@@ -87,23 +87,32 @@ async function run(ctx) {
   // (build step 4a): the argument if given, else run.list()'s alive-preferring choice.
   const core = await openCore({ dataDir, caller: { role: 'operator', run_id: parsed.runId || 'cli', pid: process.pid } });
   try {
-    let runId = parsed.runId;
-    let runIdSource = parsed.runId ? 'argument' : null;
-    if (!runId) {
-      const { runs } = await core.run.list({});
-      if (runs.length) {
-        const chosen = runs.find(r => r.alive) || runs[0];
-        runId = chosen.id; runIdSource = 'run.list';
-      } else runIdSource = 'none';
-    }
-    const { tasks: everyTask } = await core.task.list({});
-    const tasks = parsed.all ? everyTask : (runId ? everyTask.filter(t => t.run_id === runId) : []);
-    const receipt = {
-      run_id: parsed.all ? null : (runId || null),
-      run_id_source: parsed.all ? 'all' : runIdSource,
-      tasks,
-    };
-    return { code: 0, text: renderText(tasks), json: receipt };
+    return await core.readBatch(async () => { // one store copy for every read below
+      let runId = parsed.runId;
+      let runIdSource = parsed.runId ? 'argument' : null;
+      if (parsed.runId && !parsed.all) {
+        const { runs } = await core.run.list({});
+        if (!runs.some(r => r.id === parsed.runId)) {
+          const message = `no run row exists for ${parsed.runId}; list runs with belay status`;
+          return { code: 1, text: `belay tasks: ${message}\n`, json: { error: { code: 'E_NOT_FOUND', message, run_id: parsed.runId } } };
+        }
+      }
+      if (!runId) {
+        const { runs } = await core.run.list({});
+        if (runs.length) {
+          const chosen = runs.find(r => r.alive) || runs[0];
+          runId = chosen.id; runIdSource = 'run.list';
+        } else runIdSource = 'none';
+      }
+      const { tasks: everyTask } = await core.task.list({});
+      const tasks = parsed.all ? everyTask : (runId ? everyTask.filter(t => t.run_id === runId) : []);
+      const receipt = {
+        run_id: parsed.all ? null : (runId || null),
+        run_id_source: parsed.all ? 'all' : runIdSource,
+        tasks,
+      };
+      return { code: 0, text: renderText(tasks), json: receipt };
+    });
   } catch (e) {
     const detail = { code: e.code || 'E_INTERNAL', message: e.message };
     return { code: 1, text: `belay tasks: ${e.message}\n`, json: { error: detail } };

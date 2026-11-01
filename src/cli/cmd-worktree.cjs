@@ -22,6 +22,25 @@ const usageError = (command, message) => ({ code: 2, text: `belay ${command}: ${
 const VALUE = new Set(['--base', '--branch', '--repo', '--into', '--integration']);
 const FLAG = new Set(['--force', '--delete-branch', '--no-evaluate', '--no-junction', '--all', '--take-over']);
 
+// The options each write verb reads. The parser knows the union; a verb given an option outside its own
+// set would drop it silently, so the verb refuses it instead.
+const TAKES = {
+  create: ['base', 'branch', 'repo', 'no-junction'],
+  'remove-task': ['force', 'delete-branch'],
+  'remove-integration': ['integration', 'force', 'take-over'],
+  merge: ['into', 'base', 'no-evaluate', 'take-over'],
+};
+
+function foreignOption(sub, opts) {
+  const key = sub === 'remove' ? (opts.integration ? 'remove-integration' : 'remove-task') : sub;
+  const takes = TAKES[key];
+  if (!takes) return null;
+  const bad = Object.keys(opts).find((k) => !takes.includes(k));
+  if (!bad) return null;
+  const label = key === 'remove-integration' ? 'remove --integration' : key === 'remove-task' ? 'remove <task-id>' : key;
+  return `--${bad} is not an option of worktree ${label}; it takes ${takes.map((t) => `--${t}`).join(', ')}`;
+}
+
 function parse(argv) {
   const opts = {}, rest = [];
   for (let i = 0; i < argv.length; i += 1) {
@@ -64,6 +83,8 @@ async function write(ctx, core) {
   if (p.error) return usageError('worktree', p.error);
   const { opts, rest } = p;
   const sub = ctx.argv[0];
+  const foreign = foreignOption(sub, opts);
+  if (foreign) return usageError('worktree', foreign);
   try {
     if (sub === 'create') {
       if (rest.length !== 1) return usageError('worktree', 'create needs exactly one task id');

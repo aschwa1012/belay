@@ -78,7 +78,9 @@ function usage() {
     '',
     'global options:',
     '  --json            print machine-readable JSON instead of a table',
-    '  --data <dir>      data directory (default: <cwd>/.belay)',
+    '  --data <dir>      data directory (default: the config file\'s data_dir, else .belay beside the config file,',
+    '                    else <cwd>/.belay when no config file is found)',
+    '  --fix             repair what it reports (belay doctor only; any other command refuses it)',
     '  -h, --help        print this usage',
     '  --                (message and deny) end options: every later word is text',
     '',
@@ -114,7 +116,7 @@ function commandUsage(name) {
 //   dataDir absolute, forward slashes; defaults to <cwd>/.belay
 //   dataDirGiven true only when --data was on the command line
 //   json    true when --json was given; the dispatcher prints ctx.json ? result.json : result.text
-//   fix     true when --fix was given (doctor only; every other command ignores it)
+//   fix     true when --fix was given (doctor only; the dispatcher refuses it for every other command with exit 2)
 //   command the matched command name (build step 6d: cmd-decide.cjs serves both approve and deny and
 //           tells them apart by this field)
 //   emit    ctx.emit(text) writes text to stdout immediately; defined only when --json was not given,
@@ -187,6 +189,10 @@ async function main(argv) {
   const spec = COMMANDS[name];
   if (!spec) {
     process.stderr.write(`belay: unknown command ${name}\n\n${usage()}`);
+    return 2;
+  }
+  if (g.fix && name !== 'doctor') {
+    process.stderr.write(`belay ${name}: --fix is an option of belay doctor only; belay ${name} would ignore it. Run it without --fix${name === 'status' ? ', or run belay doctor --fix to repair what status reports' : ''}\n`);
     return 2;
   }
 
