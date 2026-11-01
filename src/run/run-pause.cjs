@@ -129,8 +129,16 @@ function createRunPauseControl({ runId, core, hook, pauseWorker, resumeWorker, s
     await core.run.setPaused({ paused: true, at: pausedAt, by });
     const exitedAfterWrite = refuseIfExited();
     if (exitedAfterWrite) {
-      // Undo the row write so a run that is closing does not read paused; the run may have ended already.
-      try { await core.run.setPaused({ paused: false }); } catch (_e) { /* an ended run clears its own pause */ }
+      // Undo the row write so a run that is closing does not read paused; an ended run clears its own pause,
+      // so any other failure is named in the refusal: the row may be left paused.
+      try { await core.run.setPaused({ paused: false }); } catch (e) {
+        if (!(e && e.code === 'E_ARGS')) {
+          const left = new Error(`the run (${runId}) is finishing and its pause could not be undone; the row may be left paused: ${(e && e.message) || e}`);
+          left.code = 'E_NOT_FOUND';
+          left.detail = { phase: 'finishing', row_left_paused: true, undo_error: (e && e.code) || null };
+          return Promise.reject(left);
+        }
+      }
       return exitedAfterWrite;
     }
     if (interactive) interactivePaused = true; // from here the wake publisher holds its wakes

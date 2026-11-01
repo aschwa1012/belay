@@ -7,7 +7,7 @@ const { createRunPauseControl } = require(path.join(__dirname, '..', '..', 'src'
 
 function deferred() { let resolve; const p = new Promise((r) => { resolve = r; }); return { p, resolve }; }
 
-function build() {
+function build(opts = {}) {
   const state = { finishing: false, paused: false, hookPauseCalls: 0 };
   const gate = deferred();
   const calls = [];
@@ -18,12 +18,13 @@ function build() {
       setPaused: async (a) => {
         calls.push(a);
         if (calls.length === 1) await gate.p;
+        if (!a.paused && opts.undoError) throw opts.undoError;
         if (a.paused) Object.assign(runRow, { paused_at: a.at, paused_by: a.by });
         else Object.assign(runRow, { paused_at: null, paused_by: null });
         return runRow;
       },
     },
-    worker: { list: async () => ({ workers: [
+    worker: { list: async () => (opts.onList && opts.onList(state), { workers: [
       { id: 'w1', run_id: 'r1', state: 'running', pid_alive: true, substrate: 'claude-code' },
       { id: 'w2', run_id: 'r1', state: 'running', pid_alive: true, substrate: 'claude-code' },
     ] }) },
@@ -56,6 +57,33 @@ test('a run that starts finishing while setPaused is pending is refused, unpause
   assert.strictEqual(t.calls.length, 2, 'the row write is undone');
   assert.strictEqual(t.calls[1].paused, false);
   assert.strictEqual(t.runRow.paused_at, null);
+});
+
+test('a run that turns finishing inside the parked-rows listing is refused by the re-check before the row write', async () => {
+  // The flip happens inside worker.list, after doPause's first finishing check and before its second one.
+  const t = build({ onList: (s) => { s.finishing = true; } });
+  t.gate.resolve();
+  let err = null;
+  try { await t.ctl.pause({ run_id: 'r1', caller: { role: 'operator', pid: 9 } }); } catch (e) { err = e; }
+  assert.ok(err && err.code === 'E_NOT_FOUND');
+  assert.strictEqual(err.detail && err.detail.phase, 'finishing');
+  assert.strictEqual(t.calls.length, 0, 'no row was written');
+  assert.strictEqual(t.state.hookPauseCalls, 0);
+  assert.deepStrictEqual(t.parks, []);
+});
+
+test('a failed undo of the row write is named in the refusal', async () => {
+  const undoError = Object.assign(new Error('owner is closing'), { code: 'E_BUSY' });
+  const t = build({ undoError });
+  const p = t.ctl.pause({ run_id: 'r1', caller: { role: 'operator', pid: 9 } });
+  for (let i = 0; i < 10; i++) await new Promise((r) => setImmediate(r));
+  t.state.finishing = true;
+  t.gate.resolve();
+  let err = null;
+  try { await p; } catch (e) { err = e; }
+  assert.ok(err && err.code === 'E_NOT_FOUND');
+  assert.match(err.message, /the row may be left paused: owner is closing/);
+  assert.strictEqual(err.detail.row_left_paused, true);
 });
 
 test('a run that starts finishing while the parked rows are listed is refused before any row write', async () => {
