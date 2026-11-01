@@ -38,7 +38,7 @@ async function checkpoint(E, caller, args) {
   if (isWorker) {
     workerId = caller.worker_id; // forced to the caller; args.worker_id is never consulted
     source = 'worker';
-    if (!heldLease(E, args.task_id, workerId)) {
+    if (!heldLease(E, args.task_id, workerId, caller.run_id)) {
       throw err('E_NO_LEASE', `worker ${workerId} does not hold the current unexpired lease on task ${args.task_id}, so it cannot write a checkpoint against it`, { task_id: args.task_id, worker_id: workerId });
     }
     stated = {
@@ -149,6 +149,8 @@ async function resumeDoc(E, caller, args) {
   const task = resolveTask(E, args);
   const c = leaseAndCheckpoints(E, task.id);
   const ns = require('./methods-memory.cjs').resolveNamespace(E, caller, args.namespace) || `run/${caller.run_id}`;
+  // The same reach and lifecycle-namespace rules every memory read applies (a worker reads its own run and project only).
+  require('./memory-reach.cjs').checkReach(E, caller, [ns], 'read');
 
   const candidates = [];
   candidates.push(block('spec', String(task.spec || '(no spec recorded)')));
