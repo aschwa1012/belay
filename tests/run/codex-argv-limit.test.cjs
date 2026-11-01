@@ -113,8 +113,10 @@ test('a restart whose own relaunch text is oversized is refused with advice that
         assert.strictEqual(e.detail.path, 'restart-stopped');
         assert.match(e.message, /about \d+ characters/);
         assert.match(e.message, /already stopped/);
-        assert.match(e.message, /its lease was released/);
+        assert.match(e.message, /now dead and its lease \S+ was released/); // the task is leased to c1, so the dead row names the lease it released
         assert.strictEqual(e.detail.lease_released, true);
+        assert.strictEqual(e.detail.row_dead, true);
+        assert.ok(e.detail.leases_released.length > 0);
         assert.doesNotMatch(e.message, /still running/);
         return true;
       });
@@ -127,4 +129,16 @@ test('a restart whose own relaunch text is oversized is refused with advice that
 test('the advice for a relaunch refused after the stop is distinct from the one before it', () => {
   const big = ['exec', '--', 'x'.repeat(40000)];
   assert.throws(() => AL.checkCommandLine('codex', big, { workerId: 'c1', windows: true, path: 'restart-stopped' }), (e) => /already stopped/.test(e.message) && !/still running/.test(e.message));
+});
+
+test('noteDeadWrite words the outcome from the row the write returned', () => {
+  const mk = () => Object.assign(new Error('refused'), { detail: {} });
+  let e = mk(); AL.noteDeadWrite(e, { state: 'dead', leases_released: ['L1'] }, false);
+  assert.match(e.message, /now dead and its lease L1 was released/); assert.strictEqual(e.detail.lease_released, true);
+  e = mk(); AL.noteDeadWrite(e, { state: 'dead', leases_released: null }, false);
+  assert.match(e.message, /now dead \(it held no lease\)/); assert.strictEqual(e.detail.lease_released, false); assert.strictEqual(e.detail.row_dead, true);
+  e = mk(); AL.noteDeadWrite(e, null, false); // a closed record writes nothing and returns null
+  assert.match(e.message, /could not be marked dead; its lease is kept until its TTL/); assert.strictEqual(e.detail.lease_released, false);
+  e = mk(); AL.noteDeadWrite(e, null, true);
+  assert.match(e.message, /the write failed\); its lease is kept until its TTL/);
 });

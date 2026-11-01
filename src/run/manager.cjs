@@ -358,7 +358,9 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       try { await launch(w, w.substrate === 'claude-code' ? { resume } : { resume, prompt: firstText, path: 'restart-stopped' }); } catch (e) {
         if (e && e.detail && e.detail.reason === 'argv_too_long' && e.detail.path === 'restart-stopped') { // the old process is stopped and none will start: a `stopped` row would keep the lease to its TTL
           w.deathEstablishedBy = 'relaunch refused: the command line was too long, so no process was started';
-          try { await writeRow(w, 'dead', { releaseLeases: true }); e.detail.lease_released = true; e.message += '; the worker row is now dead and its lease was released'; } catch { /* the refusal stays the error */ }
+          let row = null, threw = false;
+          try { row = await writeRow(w, 'dead', { releaseLeases: true }); } catch { threw = true; /* the refusal stays the error */ }
+          AL.noteDeadWrite(e, row, threw); // what the message and detail say comes from the row the write returned, never from the attempt
         }
         throw e;
       }

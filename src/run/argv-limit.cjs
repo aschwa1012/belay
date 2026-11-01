@@ -41,6 +41,17 @@ function checkCommandLine(exe, args, { substrate = 'codex', workerId = null, lim
 
 // Runs the spawn. Node throws (rather than emits) a spawn error other than EACCES/EAGAIN/EMFILE/ENFILE/ENOENT (ENAMETOOLONG, E2BIG, ...),
 // and no child exists then, so no exit listener will settle the row: mark the error so a first launch writes its `starting` row dead.
+// After a refused restart's relaunch the row is written dead with leases released. Say what the returned row shows: `row` is what the write
+// returned (null when it wrote nothing, as a closed record does), `threw` that the write failed.
+function noteDeadWrite(e, row, threw) {
+  const dead = !!row && row.state === 'dead';
+  const ids = dead && Array.isArray(row.leases_released) ? row.leases_released.map((l) => (l && l.id) || l) : [];
+  e.detail = { ...(e.detail || {}), row_dead: dead, lease_released: ids.length > 0, leases_released: ids };
+  e.message += dead
+    ? (ids.length ? `; the worker row is now dead and its lease ${ids.join(', ')} was released` : '; the worker row is now dead (it held no lease)')
+    : `; the worker row could not be marked dead${threw ? ' (the write failed)' : ''}; its lease is kept until its TTL`;
+}
+
 function guardSpawn(workerId, doSpawn) {
   try { return doSpawn(); } catch (e) {
     if (e && typeof e === 'object' && !(e.detail && e.detail.reason)) e.detail = { ...(e.detail || {}), reason: 'spawn_throw', worker_id: workerId, spawn_code: e.code || null };
@@ -48,4 +59,4 @@ function guardSpawn(workerId, doSpawn) {
   }
 }
 
-module.exports = { guardSpawn, WIN_CMDLINE_LIMIT, SAFE_LIMIT, commandLineLength, checkCommandLine };
+module.exports = { noteDeadWrite, guardSpawn, WIN_CMDLINE_LIMIT, SAFE_LIMIT, commandLineLength, checkCommandLine };
