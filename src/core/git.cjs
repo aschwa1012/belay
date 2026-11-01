@@ -4,21 +4,33 @@
 // The environment is the owner's own with prompts and editors turned off, so no call can wait on a person.
 
 const { err } = require('./errors.cjs');
+const { safeGit, withoutInjected } = require('./git-safe.cjs');
 const { runCommand, parsePorcelainZ, readOnlyGitEnv } = require('./evaluate.cjs');
 
 const GIT_TIMEOUT_MS = 120000; // a checkout of a large tree (this repository: about 10,800 files) takes seconds
 const LIST_TAIL = 4 * 1024 * 1024;
 
 // GIT_OPTIONAL_LOCKS=0: a `git status` takes no index lock and writes no refreshed index (reading never writes).
-const gitEnv = () => ({ ...readOnlyGitEnv(), GIT_TERMINAL_PROMPT: '0', GIT_EDITOR: 'true', GIT_SEQUENCE_EDITOR: 'true', GIT_MERGE_AUTOEDIT: 'no' });
+// The variables that name which repository, index or object store a call acts on, or inject configuration, are dropped (git-safe's
+// withoutInjected): an owner born inside a git hook inherits them. A caller that wants one (a temporary GIT_INDEX_FILE) passes it
+// through `run`'s `env`.
+const gitEnv = () => ({ ...withoutInjected(readOnlyGitEnv()), GIT_TERMINAL_PROMPT: '0', GIT_EDITOR: 'true', GIT_SEQUENCE_EDITOR: 'true', GIT_MERGE_AUTOEDIT: 'no' });
 
 const fwd = (p) => String(p).split('\\').join('/');
 
 // Runs `git <args>` in `cwd`. Resolves { ok, exit_code, stdout, stderr, argv } and never throws: the caller decides
 // whether a failure is a refusal (`must`) or a fact to report.
-async function run(cwd, args, { timeoutMs = GIT_TIMEOUT_MS, env = null, register = 'check' } = {}) { // env: extra variables, e.g. a temporary GIT_INDEX_FILE; register: the spawn-register kind of the call (null: none). Every git call the core makes runs in a worker's or an integration tree, whose config and hooks are a worker's code, so it is a check process
+// `status` and `diff` read through git-safe (no fsmonitor program, no filter, no pager from the repository's config, ADR 0054), and a
+// diff turns off an external diff and textconv: each runs a program the repository's config names.
+const HARDENED = new Set(['status', 'diff']);
+// `register` is the spawn-register kind of the call (null: none). Every git call the core makes runs in a worker's or an integration
+// tree, whose config and hooks are a worker's code, so it is a check process.
+async function run(cwd, args, { timeoutMs = GIT_TIMEOUT_MS, env = null, register = 'check' } = {}) { // env: extra variables, e.g. a temporary GIT_INDEX_FILE
   const argv = ['git', ...args];
-  const r = await runCommand(argv, cwd, timeoutMs, { env: { ...gitEnv(), ...(env || {}) }, tail: LIST_TAIL, register });
+  const safe = !env && HARDENED.has(args[0]);
+  const r = safe
+    ? await safeGit(args[0] === 'diff' ? ['diff', '--no-ext-diff', '--no-textconv', ...args.slice(1)] : args, cwd, timeoutMs, { tail: LIST_TAIL, lineEndings: true, register })
+    : await runCommand(argv, cwd, timeoutMs, { env: { ...gitEnv(), ...(env || {}) }, tail: LIST_TAIL, register });
   return {
     ok: r.executable && r.exit_code === 0 && !r.timed_out && !r.truncated, exit_code: r.exit_code, timed_out: r.timed_out,
     stdout: r.stdout, stderr: (r.stderr || r.spawn_error || '').trim().slice(0, 800), stderr_tail: (r.stderr || '').trim().slice(-800), argv, cwd: fwd(cwd),

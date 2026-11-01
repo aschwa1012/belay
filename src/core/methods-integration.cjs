@@ -368,7 +368,8 @@ async function remove(E, caller, args) {
   if (cur.removed_at) throw err('E_NOT_FOUND', `integration ${cur.id}'s worktree was removed at ${cur.removed_at}`, { id: cur.id });
   // A merge in flight holds this lock, so the call is refused E_BUSY; a `merging` row met inside it was left by a process that
   // ended, and is closed `abandoned` before its tree is removed.
-  return W.exclusive(`integrate:${cur.repo}:${cur.into_branch}`, `an integration call for ${cur.into_branch}`, async () => {
+  const fold = await MUG.folder(cur.repo); // the key a merge into this branch holds: the name as refs compare it on this host
+  return W.exclusive(`integrate:${cur.repo}:${fold(cur.into_branch)}`, `an integration call for ${cur.into_branch}`, async () => {
     if (cur.state === 'merging') await abandonStale(E, caller, cur.repo, cur.into_branch, takeOver);
     const removal = await W.removeTree(E, { repo: cur.repo, path: cur.worktree, junctions: cur.junctions, branch: cur.into_branch }, { force: args.force }, `integration ${cur.id}`);
     const row = E.store.tx(() => rows.append(E.store, 'integration', { ...rows.current(E.store, 'integration', cur.id), removed_at: Date.now() }, E.writtenBy(caller), Date.now()));
