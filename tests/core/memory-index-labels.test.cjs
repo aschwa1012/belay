@@ -19,7 +19,7 @@ const setCols = (id, cols) => {
 let n = 0;
 const fresh = (prefix = 'lb') => `${prefix}${++n}`;
 async function row(ns, text, cols = {}, extra = {}) {
-  const r = await call('memory.store', { namespace: ns, text, embedding: [1, 0, 0], embedding_model: 'm', dim: 3, type: 'fact', created_at: 1000 + n, ...extra });
+  const r = await E.handle('memory.store', { caller: callerFor('operator'), namespace: ns, text, embedding: [1, 0, 0], embedding_model: 'm', dim: 3, type: 'fact', created_at: 1000 + n, ...extra });
   if (Object.keys(cols).length) setCols(r.id, cols);
   return r.id;
 }

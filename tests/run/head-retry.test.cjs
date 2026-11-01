@@ -19,8 +19,10 @@ let failFirst = 0; // how many `git rev-parse` calls to fail with a timeout befo
 let calls = 0;
 let failMode = 'spawn';
 let slowMs = 0; // when set, git answers after this long, or times out at its own timeout option if that is shorter
+// git-facts runs the absolute git found on PATH (git-safe gitPath), so the stub matches the executable by its base name
+const isGit = (file) => ['git', 'git.exe'].includes(require('node:path').basename(String(file)).toLowerCase());
 cp.execFile = function (file, args, opts, cb) {
-  if (file === 'git' && Array.isArray(args) && args[0] === 'rev-parse') {
+  if (isGit(file) && Array.isArray(args) && args[0] === 'rev-parse') {
     calls += 1;
     if (slowMs) {
       const child = new EventEmitter();

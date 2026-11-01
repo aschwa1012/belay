@@ -49,7 +49,11 @@ function createCompose({ callCore, manager, openManager, dataDir = null, runId =
   // task_assign: assign, then send the worker its task: the resume line (which names the lease), `Task: <spec>` with the orchestrator's `prompt` added after it, and the hand-back rule. `deliver: false` assigns only.
   async function assign(args) {
     const { prompt = null, deliver = true, ...coreArgs } = args || {};
-    const raw = await callCore('task.assign', coreArgs);
+    // The worker is marked before the core commits the lease, so stop_idle_on_done sees an assign that commits during its own read (idle-stop.cjs).
+    const here = manager();
+    const endMark = require('../run/idle-stop.cjs').markAssign(launchedHere(here, coreArgs.worker_id) ? here._worker(coreArgs.worker_id) : null);
+    let raw;
+    try { raw = await callCore('task.assign', coreArgs); } finally { endMark(); }
     const out = withWarnings(withScratch(raw, coreArgs.worker_id), raw && overlapWarning(raw.overlaps));
     const not = (reason, extra) => ({ ...out, delivered: { sent: false, reason, ...extra } });
     const r = manager();

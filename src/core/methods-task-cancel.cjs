@@ -14,6 +14,7 @@ async function cancel(E, caller, args) {
   const out = E.store.tx(() => {
     const task = rows.current(E.store, 'task', args.task_id);
     if (!task) throw err('E_NOT_FOUND', `no task row exists for ${args.task_id}`, { task_id: args.task_id });
+    require('./worker-run-guard.cjs').refuseOtherRunTask(E, caller, task); // a live run's task is that run's
     if (task.state === 'done') throw err('E_TASK_DONE', `task ${task.id} is done, and done is final; there is nothing to cancel`, { task_id: task.id, state: 'done' });
     if (task.state === 'cancelled') throw err('E_ARGS', `task ${task.id} is already cancelled`, { task_id: task.id, state: 'cancelled' });
     const l = rows.currentLeaseForTask(E.store, task.id);

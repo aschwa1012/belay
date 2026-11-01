@@ -8,8 +8,9 @@ process.env.BELAY_TEST_MODE = '1';
 require('../helpers/tmp.cjs'); // this file starts processes: its own spawn register (spawn-register-isolation.test.cjs)
 const cp = require('node:child_process');
 const forked = [];
+const forkedHandles = []; // the same children as handles: a handle's exit proves it ended whatever number Windows hands out next (ADR 0039)
 const realFork = cp.fork;
-cp.fork = function (...a) { const c = realFork.apply(this, a); forked.push(c.pid); return c; }; // the pids of the rerank children, to prove they end (rerank-cpu takes fork at its first load)
+cp.fork = function (...a) { const c = realFork.apply(this, a); forked.push(c.pid); forkedHandles.push(c); return c; }; // the pids of the rerank children, to prove they end (rerank-cpu takes fork at its first load)
 const { test, before, after, afterEach } = require('node:test');
 const assert = require('node:assert');
 const { setup, PROJECT } = require('./lifecycle-env.cjs');
@@ -86,7 +87,7 @@ test('closeAll closes the child, ends its process, forgets the provider, and a l
   const pid = forked[n];
   assert.ok(pidAlive(pid));
   await provider.closeAll(5000);
-  assert.ok(await gone(pid), 'the rerank child is dead');
+  assert.ok(await gone(forkedHandles[n]), 'the rerank child is dead');
   assert.strictEqual(provider.get(tier()), null, 'closed providers are forgotten');
   await assert.rejects(a.rerank({ query: 'q', docs: [{ id: 'x', text: 'y' }] }), /closed/);
   assert.notStrictEqual(provider.get(tier(), { owner: true }), a);
@@ -107,7 +108,7 @@ test('an owner closes the providers it built, ends their children and releases t
     await p.rerank({ query: 'stop worker pid', docs: [{ id: 'x', text: 'stop the worker by pid' }] });
     assert.deepStrictEqual([...o.rerankBuilt], [RR]);
     await o.stop();
-    assert.ok(await gone(forked[n]), 'the rerank child is dead after stop()');
+    assert.ok(await gone(forkedHandles[n]), 'the rerank child is dead after stop()');
     assert.strictEqual(provider.get(tier()), null);
     assert.strictEqual(other, 0, 'a provider this owner did not build is not closed by it');
     assert.ok(!lockHeld(d), 'the lock is released');

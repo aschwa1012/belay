@@ -14,6 +14,7 @@ const { core, sandbox, cleanup, callerFor, deadPid, sleep } = require('./helpers
 
 const { openCore } = core('index.cjs');
 const { pidAlive } = core('lock.cjs');
+const G = require('../helpers/proc-gone.cjs'); // a child the test holds is gone when its handle says it exited, never by a bare pid (ADR 0039)
 
 const fwd = (p) => String(p).replace(/\\/g, '/');
 const SHA_RE = /^[0-9a-f]{40,64}$/;
@@ -54,7 +55,7 @@ async function teardown(ctx, extraDirs = []) {
 async function deadRunningPid() {
   const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { windowsHide: true, stdio: 'ignore' });
   const pid = child.pid;
-  return { pid, kill: async () => { child.kill('SIGKILL'); for (let i = 0; i < 100 && pidAlive(pid); i += 1) await sleep(25); assert.ok(!pidAlive(pid)); } };
+  return { pid, kill: async () => { child.kill('SIGKILL'); assert.ok(await G.childExited(child), `the stand-in worker (pid ${pid}) did not exit`); } };
 }
 
 test('run.end marks a dead-pid worker row in each of starting, running, idle and stopping, with the exact fields', async () => {
