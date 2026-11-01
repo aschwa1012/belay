@@ -13,6 +13,7 @@ const { createRunManager } = require('../../src/run/index.cjs');
 const { createFakeCore } = require('./fake-core.cjs');
 const { cleanup } = require('../core/helpers.cjs');
 const P = require('../../src/run/process.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 
 const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(/\\/g, '/');
 const FAKE_NOREADY = path.join(__dirname, 'fakes', 'fake-claude-noready.cjs').replace(/\\/g, '/');
@@ -273,10 +274,11 @@ test('graceful stop closes stdin and reports graceful; kill reports killed', asy
     assert.equal(core.currentWorker('w5').state, 'stopped', 'a requested stop is stopped, not dead');
 
     const row2 = await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w6' });
+    const id2 = await G.identify(row2.pid);
     const k = await m.stop({ worker_id: 'w6', mode: 'kill', timeout_ms: 8000 });
     assert.equal(k.killed, true);
     assert.equal(k.graceful, false);
-    assert.equal(P.pidAlive(row2.pid), false);
+    await G.assertGone(id2, `the killed worker (pid ${row2.pid}) is still alive`);
   } finally { await teardown(m, sb); }
 });
 
@@ -290,13 +292,14 @@ test('a wedged worker times out on the graceful stop and is killed, and says so'
   process.env.FAKE_IGNORE_STDIN_END = '1';
   try {
     const row = await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w7' });
+    const wedgedId = await G.identify(row.pid);
     const t0 = Date.now();
     const s = await m.stop({ worker_id: 'w7', mode: 'graceful', timeout_ms: 400 });
     assert.equal(s.graceful, false, 'closing stdin did not end this worker');
     assert.equal(s.killed, true, 'the kill did');
     assert.ok(Date.now() - t0 >= 400, 'the graceful branch waited its whole timeout first');
     assert.equal(s.pid, row.pid);
-    assert.equal(P.pidAlive(row.pid), false);
+    await G.assertGone(wedgedId, `the wedged worker (pid ${row.pid}) is still alive`);
     assert.equal(core.currentWorker('w7').state, 'stopped', 'a requested stop is stopped, not dead');
   } finally {
     delete process.env.FAKE_IGNORE_STDIN_END;
@@ -435,10 +438,11 @@ test('a stop walks the worker subtree, and the taskkill receipt proves it', asyn
     const row = await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'wt' });
     gpid = Number(fs.readFileSync(pidFile, 'utf8').trim());
     assert.ok(gpid > 0 && P.pidAlive(gpid), 'the worker must really have a child to lose');
+    const [rowId, gId] = await G.identifyAll([row.pid, gpid]);
 
     const s = await m.stop({ worker_id: 'wt', mode: 'kill', timeout_ms: 8000 });
     assert.equal(s.killed, true);
-    assert.equal(P.pidAlive(row.pid), false);
+    await G.assertGone(rowId, `the killed worker (pid ${row.pid}) is still alive`);
     if (P.IS_WINDOWS) {
       // The receipt is the point. A grandchild also dies with its parent through this host's
       // ambient job binding (ADR 0011 §1), so its absence alone would not prove belay killed it;
@@ -452,9 +456,7 @@ test('a stop walks the worker subtree, and the taskkill receipt proves it', asyn
       assert.equal(tk.exit_code, 0);
       assert.ok(tk.terminated >= 2, `the tree kill must reach past the direct child, and it named ${tk.terminated} process(es): ${tk.output}`);
     }
-    let alive = P.pidAlive(gpid);
-    for (let i = 0; i < 30 && alive; i++) { await sleep(100); alive = P.pidAlive(gpid); }
-    assert.equal(alive, false, `the child (pid ${gpid}) outlived the worker that spawned it`);
+    assert.ok(await G.waitGone(gId, { deadlineMs: 3000, intervalMs: 100 }), `the child (pid ${gpid}) outlived the worker that spawned it`);
     gpid = 0;
   } finally {
     delete process.env.FAKE_CHILD_PID_FILE;

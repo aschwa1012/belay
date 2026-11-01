@@ -7,6 +7,7 @@ const assert = require('node:assert');
 const { spawn } = require('node:child_process');
 
 const P = require('../../src/run/process.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by the child's own handle: a bare pid may be handed to another process (ADR 0039)
 
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -26,7 +27,7 @@ test('pidAlive follows a real child from alive to gone', async () => {
   P.killPid(child, 'SIGKILL');
   const ms = await P.waitPidGone(child.pid, { timeoutMs: 10000 });
   assert.ok(ms !== null, 'the pid must disappear');
-  assert.equal(P.pidAlive(child.pid), false);
+  assert.ok(await G.childExited(child), 'the killed child must have exited');
 });
 
 test('kill refuses anything that is not a positive integer pid', () => {
