@@ -199,10 +199,11 @@ function lateBy(E, l) {
   else if (E.workerCalls && Number(E.workerCalls.get(id)) >= since) out.push('core_call'); // the same millisecond counts: the conservative side
   const w = rows.current(store, 'worker', id);
   if (w && Number(w.last_event_at) > since) out.push('last_event_at');
-  const newer = (sql) => !!store.p(sql).get(id, since);
-  if (newer('SELECT 1 FROM checkpoint WHERE worker_id = ? AND written_at > ? LIMIT 1')) out.push('checkpoint');
-  if (newer('SELECT 1 FROM permission WHERE worker_id = ? AND requested_at > ? LIMIT 1')) out.push('permission');
-  if (newer('SELECT 1 FROM memory_event WHERE worker_id = ? AND written_at > ? LIMIT 1')) out.push('memory_event');
+  const run = l.run_id || null; // the lease's run: worker ids repeat across runs, and evidence from an ended run still counts
+  const newer = (sql) => !!store.p(sql).get(id, since, run, run);
+  if (newer('SELECT 1 FROM checkpoint WHERE worker_id = ? AND written_at > ? AND (? IS NULL OR run_id IS NULL OR run_id = ?) LIMIT 1')) out.push('checkpoint');
+  if (newer('SELECT 1 FROM permission WHERE worker_id = ? AND requested_at > ? AND (? IS NULL OR run_id IS NULL OR run_id = ?) LIMIT 1')) out.push('permission');
+  if (newer('SELECT 1 FROM memory_event WHERE worker_id = ? AND written_at > ? AND (? IS NULL OR run_id IS NULL OR run_id = ?) LIMIT 1')) out.push('memory_event');
   return out;
 }
 

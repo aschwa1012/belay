@@ -16,9 +16,9 @@ const fwd = (p) => String(p).split('\\').join('/');
 
 // Runs `git <args>` in `cwd`. Resolves { ok, exit_code, stdout, stderr, argv } and never throws: the caller decides
 // whether a failure is a refusal (`must`) or a fact to report.
-async function run(cwd, args, { timeoutMs = GIT_TIMEOUT_MS, env = null } = {}) { // env: extra variables, e.g. a temporary GIT_INDEX_FILE
+async function run(cwd, args, { timeoutMs = GIT_TIMEOUT_MS, env = null, register = 'check' } = {}) { // env: extra variables, e.g. a temporary GIT_INDEX_FILE; register: the spawn-register kind of the call (null: none). Every git call the core makes runs in a worker's or an integration tree, whose config and hooks are a worker's code, so it is a check process
   const argv = ['git', ...args];
-  const r = await runCommand(argv, cwd, timeoutMs, { env: { ...gitEnv(), ...(env || {}) }, tail: LIST_TAIL });
+  const r = await runCommand(argv, cwd, timeoutMs, { env: { ...gitEnv(), ...(env || {}) }, tail: LIST_TAIL, register });
   return {
     ok: r.executable && r.exit_code === 0 && !r.timed_out && !r.truncated, exit_code: r.exit_code, timed_out: r.timed_out,
     stdout: r.stdout, stderr: (r.stderr || r.spawn_error || '').trim().slice(0, 800), stderr_tail: (r.stderr || '').trim().slice(-800), argv, cwd: fwd(cwd),

@@ -30,7 +30,7 @@ function sandbox() {
 const coreWith = (levers, base, epochs, runId) => {
   const core = Object.create(base);
   const rows = (epochs || []).map(([seq, ended]) => ({ id: runId, seq, ended_at: ended ? 1 : null }));
-  core.run = { get: async () => ({ run: { id: runId, memory_levers: JSON.stringify(levers) }, epochs: rows }) };
+  core.run = { list: async () => ({ runs: [] }), get: async () => ({ run: { id: runId, memory_levers: JSON.stringify(levers) }, epochs: rows }) };
   return core;
 };
 const make = (sb, core, runId) => createRunManager({ core, dataDir: sb.data, runId, paths: PATHS });

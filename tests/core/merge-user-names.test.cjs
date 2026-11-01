@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // merge-user-names.test.cjs — a merge into a user's branch, the second half: branch names that git treats as one (case), a staging
 // name that is only a prefix, what an approval binds (the checks), what the operator reads in `belay pending`, and the prepared refs.
 
