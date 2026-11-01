@@ -18,6 +18,7 @@ const P = require('./process.cjs');
 const D = require('./run-digest.cjs');
 const PW = require('./policy-wakes.cjs');
 const CS = require('./call-signal.cjs');
+const { shortRef } = require('./wake-ref.cjs');
 
 const POLICY_WAIT_DEFAULT_MS = 110000; // ADR 0074 Q4 (open): kept at today's bound behind this one name
 const POLL_MS = Number(process.env.BELAY_RUN_WAIT_POLL_MS) > 0 ? Number(process.env.BELAY_RUN_WAIT_POLL_MS) : 2000;
@@ -136,8 +137,8 @@ function createRunWait({ core, runId, dataDir, armed = () => true, settled = nul
       };
     }
     const list = [
-      ...wakes.map((w) => ({ exception: w.exception, task_id: w.task_id, trigger: w.trigger, field: w.field, text: w.text, ref: uidOf(w) })),
-      ...deaths.map(({ key, uid, ...d }) => ({ ...d, ref: uid })), // ref: the delivery key, the same one a wake line carries as `(ref ...)`
+      ...wakes.map((w) => ({ exception: w.exception, task_id: w.task_id, trigger: w.trigger, field: w.field, text: w.text, ref: shortRef(uidOf(w)) })),
+      ...deaths.map(({ key, uid, ...d }) => ({ ...d, ref: shortRef(uid) })), // ref: the short delivery key, the same one a wake line carries as `(ref ...)`
     ];
     return {
       worker_id: null, event: list.length ? 'exception' : null, timed_out: !list.length, waited_ms: clock.now() - t0, watched: [],
