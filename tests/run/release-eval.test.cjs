@@ -36,7 +36,7 @@ function within(p, ms, what) {
   return Promise.race([p, new Promise((_, rej) => { h = setTimeout(() => rej(new Error(`${what} did not end within ${ms} ms`)), ms); })]).finally(() => clearTimeout(h));
 }
 
-const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 
 // One turn in which the worker releases its task, then `during(m, w, ctx)` while the evaluation runs. Returns what was seen.
 async function releasedTurn(acceptance, result, { stopIdleOnDone = false, during = null } = {}) {
@@ -110,17 +110,18 @@ test('a stop during the evaluation does not wait for its command: the command is
     during: async (m, w, dir) => {
       const pidFile = path.join(dir, 'cmd.pid');
       const pid = Number(await until(() => (fs.existsSync(pidFile) ? fs.readFileSync(pidFile, 'utf8') : null)));
+      const cmdId = await G.identify(pid); // while the command sleeps, before the stop kills it
       const t0 = Date.now();
       const stopped = await within(m.stop({ worker_id: 'w1', mode: 'graceful' }), 30000, 'the stop');
       const stopMs = Date.now() - t0;
-      await until(() => !pidAlive(pid), 15000);
-      return { pid, stopMs, stopped };
+      assert.ok(await G.waitGone(cmdId, { deadlineMs: 15000 }), `the acceptance command (pid ${pid}) is still alive`);
+      return { pid, cmdId, stopMs, stopped };
     },
   });
   assert.ok(r.extra.stopMs < 20000, `the stop took ${r.extra.stopMs} ms: it waited on the command`);
   assert.strictEqual(r.extra.stopped.graceful, true);
   assert.deepStrictEqual(r.extra.stopped.cancelled_evaluation, { task_ids: [r.row.id], by: 'stop of worker w1' }, 'the stop receipt names what it cancelled');
-  assert.strictEqual(pidAlive(r.extra.pid), false, 'the acceptance command was killed');
+  await G.assertGone(r.extra.cmdId, 'the acceptance command was killed');
   assert.deepStrictEqual(r.out.map((e) => [e.task_id, !!e.cancelled]), [[r.row.id, true]]);
   assert.match(String(r.out[0].by), /stop of worker w1/);
   assert.deepStrictEqual([r.row.state, r.row.results], ['released', null], 'a cancelled evaluation writes nothing');

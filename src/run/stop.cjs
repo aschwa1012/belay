@@ -29,7 +29,7 @@ function createStopControl({ runId, core, closeGraceMs, pauseSettled = async () 
     const t0 = Date.now();
     // ADR 0039: the row's own identity (pid_created), never the bare pid; a refusal is reported, not hidden.
     const { tree, pidKill, identity, refused } = await P.withKillLock(() => P.killProcess(P.rowTarget(w))).catch((e) => ({ tree: { ok: false, terminated: 0, ms: Date.now() - t0 }, pidKill: { signalled: false, error: 'EIDENTITY' }, identity: null, refused: { refused: 'identity', detail: (e && e.message) || String(e) } }));
-    const gone = await P.waitPidGone(w.pid, { timeoutMs: 2000 });
+    const gone = await P.waitProcessGone(w.pid, P.rowTarget(w).created, { timeoutMs: 2000 }); // identity re-check at the deadline: a reused pid is not the worker
     return {
       killed: {
         tree: { ok: tree.ok, terminated: tree.terminated, ms: tree.ms },
@@ -45,7 +45,7 @@ function createStopControl({ runId, core, closeGraceMs, pauseSettled = async () 
   // `stopT0` names the stop; `phaseStart` (this phase's own start, always >= stopT0) bounds the poll
   // against `closeGraceMs` and gives `worker_phase_ms` — the worker phase's own duration, separate
   // from how long step (a) took to end the orchestrator first.
-  async function workerPhase(stopT0, phaseStart) {
+  async function workerPhase(stopT0, phaseStart, orchKill = null) {
     let rows = [];
     let hitBound = false;
     for (;;) {
@@ -73,7 +73,16 @@ function createStopControl({ runId, core, closeGraceMs, pauseSettled = async () 
     for (let i = 0; i < rows.length; i++) {
       const w = rows[i];
       if (!claimsLive(w)) continue;
-      if (!w.pid_alive) { workers[i].note = 'the row claims a live state but the pid is dead; nothing wrote its exit'; continue; }
+      if (!w.pid_alive) {
+        // A worker is the orchestrator adapter's child, so step (a)'s tree kill ends it before any exit handler runs. The kill's own
+        // snapshot named it then; that is who ended it (invariants 4 and 5), not "nothing".
+        const hit = orchKill && Array.isArray(orchKill.killed_processes) ? orchKill.killed_processes.find((p) => p.pid === w.pid && w.pid_created != null && p.created === w.pid_created) : null; // pid and creation time (ADR 0039); a row with none keeps the old note
+        if (hit) {
+          workers[i].killed = { by: "the orchestrator's tree kill", signalled_at: orchKill.signalled_at || null, pid: hit.pid, created: hit.created, image: hit.image || null, established_by: "the tree kill's process snapshot, taken before the signal, named this pid" };
+          workers[i].note = `ended by the orchestrator's tree kill at ${orchKill.signalled_at}, made when the orchestrator ignored its closed stdin; the adapter was killed with it, so nothing wrote the exit`;
+        } else workers[i].note = 'the row claims a live state but the pid is dead; nothing wrote its exit';
+        continue;
+      }
       const { killed, note } = await killWorkerRow(w, stopT0, closeGraceMs);
       workers[i].killed = killed;
       workers[i].note = note;
@@ -97,7 +106,7 @@ function createStopControl({ runId, core, closeGraceMs, pauseSettled = async () 
       established_by: 'the child exit event',
     };
     const phaseStart = Date.now();
-    const { workers, worker_phase_ms } = await workerPhase(t0, phaseStart);
+    const { workers, worker_phase_ms } = await workerPhase(t0, phaseStart, facts.kill || null);
     // 6f, ADR 0023 amendment 3 decision 4.4: named from the same rows the worker phase already read —
     // a paused row claims no life for `claimsLive`/`killWorkerRow` to touch, so it is simply the rows
     // still reading `paused` once the worker phase settles.

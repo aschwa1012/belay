@@ -19,6 +19,7 @@ const { createRunManager } = require('../../src/run/index.cjs');
 const { createFakeCore, FakeCoreError } = require('./fake-core.cjs');
 const { cleanup } = require('../core/helpers.cjs');
 const P = require('../../src/run/process.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 const { SNAPSHOT_TIMEOUT_MS } = require('../../src/core/proc-identity.cjs');
 
 // A real, harmless process standing in for a pid Windows reused after the park's own process exited —
@@ -357,19 +358,21 @@ test('shutdown: a failed resume write ends the relaunched child and leaves the w
     await m.pause({ worker_id: 'w1', by: 'operator:1' });
     const origWrite = core.worker.write.bind(core.worker);
     let failOnce = true;
+    let relaunchedId = null; // the relaunched child's identity, taken while it is alive: the failed start is about to end it
     core.worker.write = async (r) => {
-      if (failOnce && r.id === 'w1' && r.state === 'starting') { failOnce = false; throw new FakeCoreError('E_TIMEOUT', 'fake core: simulated starting-row write failure'); }
+      if (failOnce && r.id === 'w1' && r.state === 'starting') { failOnce = false; relaunchedId = await G.identify(r.pid); throw new FakeCoreError('E_TIMEOUT', 'fake core: simulated starting-row write failure'); }
       return origWrite(r);
     };
     await assert.rejects(m.resume({ worker_id: 'w1', by: 'operator:2' }));
     core.worker.write = origWrite;
     const w = m._worker('w1');
     const pid = w.pid;
+    assert.ok(relaunchedId && relaunchedId.pid === pid, 'the relaunched child was identified while alive');
     assert.notStrictEqual(await P.waitPidGone(pid, { timeoutMs: 10000 }), null, 'the failed start must have ended the relaunched process');
     assert.ok(await pollUntil(() => !w.child && w.state === 'paused', 5000), `the worker must read parked again (state ${w.state}, child ${!!w.child})`);
     const receipt = await m.shutdown();
     assert.deepStrictEqual(receipt.left_parked, ['w1'], 'a parked worker with no process is left parked');
-    assert.strictEqual(P.pidAlive(pid), false, 'and nothing is alive');
+    await G.assertGone(relaunchedId, 'and nothing is alive');
   } finally { await teardown({ m, sb }); }
 });
 
