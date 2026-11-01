@@ -354,6 +354,14 @@ async function assertOnBranch(rec, what) {
 // task.worktreeSweep's removal of one task's tree (ADR 0065): the same exclusion and record as task.worktreeRemove, without force.
 // Null when the task has no tree to remove now.
 async function removeForSweep(E, caller, task0) {
+  // A removal in flight through this very task holds its per-task lock, which would refuse the sweep as E_BUSY. Wait for that
+  // removal first (it waits on nothing, so no cycle), then one turn of the event loop so its lock is released too.
+  const own = active(rows.current(E.store, 'task', task0.id));
+  const ownKey = own ? G.fwd(own.path).toLowerCase() : null;
+  if (ownKey && removing.has(ownKey) && removing.get(ownKey).task_id === task0.id) {
+    await removing.get(ownKey).done.catch(() => {});
+    await new Promise(setImmediate);
+  }
   return exclusive(`task:${task0.id}`, `a worktree call for task ${task0.id}`, async () => {
     let task = requireTask(E, task0.id, 'task.worktreeSweep');
     let rec = active(task);
