@@ -51,7 +51,7 @@ async function closeEpochWorkers(E, runId, by, lifeClaiming, treeKill = null) {
     if (!cur || cur.seq !== w.seq || (!codexIdle && pidAlive(cur.pid) && ready.runsAs(cur.pid, cur.pid_created))) continue;
     // The head the row carries: git's answer, else the head the row already had (never overwritten with null).
     const headSha = head.sha == null ? (cur.head_sha == null ? null : cur.head_sha) : head.sha;
-    const killedByTree = !codexIdle && treeKill && treeKill.pids.has(cur.pid);
+    const killedByTree = !codexIdle && treeKill && cur.pid_created != null && treeKill.pids.get(cur.pid) === cur.pid_created; // pid and creation time, as every kill (ADR 0039); a row with no creation time keeps the plain wording
     const values = {
       ...cur, state: 'dead', exited_at: cur.exited_at == null ? (killedByTree ? treeKill.signalled_at : t) : cur.exited_at,
       death_established_by: codexIdle ? CODEX_IDLE_BY

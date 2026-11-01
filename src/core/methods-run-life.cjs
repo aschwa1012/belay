@@ -63,7 +63,7 @@ function usageColumns(usage) {
 function treeKillOf(v) {
   if (!v || typeof v !== 'object' || !Number.isSafeInteger(v.signalled_at) || !Array.isArray(v.killed_processes)) return null;
   const pids = new Map();
-  for (const p of v.killed_processes) if (p && Number.isSafeInteger(p.pid)) pids.set(p.pid, typeof p.image === 'string' ? p.image : null);
+  for (const p of v.killed_processes) if (p && Number.isSafeInteger(p.pid) && Number.isFinite(p.created)) pids.set(p.pid, p.created); // pid -> creation time: a pid alone proves nothing (ADR 0039)
   return pids.size ? { signalled_at: v.signalled_at, pids } : null;
 }
 
@@ -82,7 +82,7 @@ async function end(E, caller, args) {
   // (run.attach's own `carryPause` above), and `belay pause` never answers `already: true` over nothing.
   const row = M().appendRun(E, { ...prev, ended_at: t, exit_reason: String(args.exit_reason), ...usage, ...clearedPause() }, E.writtenBy(caller), t); // item e
   E.noteWrite();
-  // Only the run process (operator) names a tree kill it made; an orchestrator's adapter cannot attribute a death to belay (invariant 8).
+  // Only the run process (operator) names a tree kill it made; an orchestrator's adapter cannot attribute a death to belay (invariant 3 and ADR 0045: the caller's role comes from its bound identity, never from what it says).
   const treeKill = caller.role === 'operator' ? treeKillOf(args.tree_kill) : null;
   const workersMarkedDead = await closeEpochWorkers(E, caller.run_id, E.writtenBy(caller), M().LIFE_CLAIMING_STATES, treeKill);
   const headsFilled = await fillMissingHeads(E, caller.run_id, E.writtenBy(caller), new Set(workersMarkedDead.map(m => m.worker_id)));

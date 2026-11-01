@@ -76,9 +76,9 @@ function createStopControl({ runId, core, closeGraceMs, pauseSettled = async () 
       if (!w.pid_alive) {
         // A worker is the orchestrator adapter's child, so step (a)'s tree kill ends it before any exit handler runs. The kill's own
         // snapshot named it then; that is who ended it (invariants 4 and 5), not "nothing".
-        const hit = orchKill && Array.isArray(orchKill.killed_processes) ? orchKill.killed_processes.find((p) => p.pid === w.pid) : null;
+        const hit = orchKill && Array.isArray(orchKill.killed_processes) ? orchKill.killed_processes.find((p) => p.pid === w.pid && w.pid_created != null && p.created === w.pid_created) : null; // pid and creation time (ADR 0039); a row with none keeps the old note
         if (hit) {
-          workers[i].killed = { by: "the orchestrator's tree kill", signalled_at: orchKill.signalled_at || null, pid: hit.pid, image: hit.image || null, established_by: "the tree kill's process snapshot, taken before the signal, named this pid" };
+          workers[i].killed = { by: "the orchestrator's tree kill", signalled_at: orchKill.signalled_at || null, pid: hit.pid, created: hit.created, image: hit.image || null, established_by: "the tree kill's process snapshot, taken before the signal, named this pid" };
           workers[i].note = `ended by the orchestrator's tree kill at ${orchKill.signalled_at}, made when the orchestrator ignored its closed stdin; the adapter was killed with it, so nothing wrote the exit`;
         } else workers[i].note = 'the row claims a live state but the pid is dead; nothing wrote its exit';
         continue;
