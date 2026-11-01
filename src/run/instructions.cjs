@@ -14,6 +14,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 const G = require('../core/git.cjs');
+const { gitPath, withoutInjected } = require('../core/git-safe.cjs');
 const { execFile } = require('node:child_process');
 
 // Deliberately not CLAUDE.md: nothing that walks a directory for instruction files should find it.
@@ -61,7 +62,10 @@ const firstLine = (r) => String((r && (r.stderr || r.spawn_error)) || 'no messag
 // A blob as bytes (G.run answers text, which would re-encode a file that is not UTF-8). Async; a timeout kills the child.
 function catBlob(top, id) {
   return new Promise((resolve) => {
-    execFile('git', ['--no-replace-objects', 'cat-file', 'blob', id], { cwd: top, encoding: 'buffer', timeout: 10000, windowsHide: true, maxBuffer: 4 * 1024 * 1024, env: { ...process.env, ...SAFE_ENV, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' } },
+    // The absolute git and an environment without the repository-locating GIT_* variables (git-safe), as every other core spawn. `top`
+    // is the repository's main checkout, not a worker's tree, and cat-file reads the object database only (no hook, no filter), so
+    // there is no check process to register.
+    execFile(gitPath(), ['--no-replace-objects', 'cat-file', 'blob', id], { cwd: top, encoding: 'buffer', timeout: 10000, windowsHide: true, maxBuffer: 4 * 1024 * 1024, env: { ...withoutInjected(), ...SAFE_ENV, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' } },
       (e, stdout, stderr) => resolve(e ? { ok: false, stderr: String(stderr || e.message) } : { ok: true, bytes: stdout }));
   });
 }
