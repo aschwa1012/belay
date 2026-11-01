@@ -69,7 +69,7 @@ function renderText(receipt) {
   ];
   for (const w of receipt.workers) {
     const bad = failedKill(w);
-    lines.push(`worker ${w.id} pid ${w.pid}: ${w.state}, pid alive ${w.pid_alive}, ${bad ? `NOT killed, pid ${w.pid} is still alive: ${bad.reason}` : w.killed && !w.killed.by && reusedPid(w.killed) ? `already gone, pid ${w.pid} now belongs to another process (kill refused: ${w.killed.kind})` : w.killed && w.killed.refused && w.killed.pid_alive_after === false ? 'gone (kill refused)' : w.killed ? 'killed' : 'not killed'}`);
+    lines.push(`worker ${w.id} pid ${w.pid}: ${w.state}, pid alive ${w.pid_alive}, ${bad ? `NOT killed, pid ${w.pid} is still alive: ${bad.reason}` : w.killed && !w.killed.by && reusedPid(w.killed) && w.killed.pid_alive_after === true ? `already gone, pid ${w.pid} now belongs to another process (kill refused: ${w.killed.kind})` : w.killed && w.killed.refused && w.killed.pid_alive_after === false ? 'gone (kill refused)' : w.killed ? 'killed' : 'not killed'}`);
     // ADR 0039: a kill refused for want of proof names how the operator can end the process by hand.
     if (w.killed && w.killed.manual) lines.push(`  refused (${w.killed.detail}). ${w.killed.manual}`);
   }

@@ -43,6 +43,14 @@ test('a mismatch or absent refusal on a reused pid reads as already gone, not as
   }
 });
 
+test('an absent refusal with the pid dead reads gone, not that another process holds the pid', () => {
+  const r = receipt([row('w-8', 57, { tree: { ok: false, terminated: 0, ms: 1 }, pid: { signalled: false }, identity: null, refused: 'identity', kind: 'absent', detail: 'not in snapshot', pid_alive_after: false, ms: 2 }, false)]);
+  assert.strictEqual(failedKills(r).length, 0);
+  const text = renderText(r);
+  assert.match(text, /gone \(kill refused\)/);
+  assert.doesNotMatch(text, /belongs to another process/);
+});
+
 test('a refused kill whose pid then ended by itself reads gone, not killed', () => {
   const r = receipt([row('w-7', 56, { tree: { ok: false, terminated: 0, ms: 1 }, pid: { signalled: false }, identity: null, refused: 'identity', kind: 'unverifiable', detail: 'x', pid_alive_after: false, ms: 2 }, false)]);
   assert.strictEqual(failedKills(r).length, 0);
