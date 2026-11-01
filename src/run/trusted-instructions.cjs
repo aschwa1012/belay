@@ -2,7 +2,7 @@
 // trusted-instructions.cjs — a worker that reads another worker's tree (a reviewer: agent_type `reviewer`, or any worker spawned
 // for a review task) must not take its instructions from that tree's working copy: the reviewed coder can edit CLAUDE.md there and
 // address its reviewer. Its spawn-time copy is CLAUDE.md as committed at the run's anchor itself: the main checkout's HEAD at run
-// start. `belay run` fixes the anchor once, before the orchestrator's first prompt (fixAnchor, called where the run attaches, for
+// start. `belay run` fixes the anchor once, before the orchestrator launches (fixAnchor, called before either launcher, for
 // an interactive run as for a headless one), in <data>/anchor-<run id>.json, written once and never overwritten. A spawn only READS
 // that file: no core call, no git for a coder spawn. With no anchor file nothing is copied (fail closed). A task's own recorded
 // base is never used: ancestry would trust every worker commit ever merged. A failed task read is treated as a review. Every other
