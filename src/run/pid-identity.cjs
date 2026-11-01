@@ -175,7 +175,7 @@ async function settleAdoptedKill(w, kr, verb, hold = null, { waitMs = 5000 } = {
     if (r.kind !== 'unverifiable' || !P.pidAlive(w.pid)) return;
     why = `could not be proven to be this worker's old process (${r.detail}), so it was not killed`;
   } else {
-    if ((await P.waitPidGone(w.pid, { timeoutMs: waitMs })) !== null) return;
+    if ((await P.waitProcessGone(w.pid, w.pidCreated, { timeoutMs: waitMs })) !== null) return;
     why = 'did not end after the kill was sent';
   }
   const manual = (r && r.manual) || `End pid ${w.pid} by hand once you have checked it is the worker (belay worker kill ${w.id}), then run ${verb} again.`;
