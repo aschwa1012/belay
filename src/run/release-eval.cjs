@@ -295,4 +295,14 @@ function evaluatingHolds(seen, rows, runId) {
   return [...pending].filter(([, p]) => live.has(p.worker_id)).map(([id]) => `eval:${id}`).concat(held);
 }
 
-module.exports = { unevaluated, notePending, evaluatingHolds, startRelease, cancelEvaluation, evalOf, enrichWakes, clause, turnEndText, summaryOf, workOf, cut, holdMs, WAKE_TEXT_MAX, PENDING_MAX_MS, RELEASE_WAKE_HOLD_MS };
+// The turn_end wakes still held for their evaluation when a run ends, removed from `seen.held`: the caller records each as
+// suppressed with its reason, so no wake found is left out of the receipt.
+function drainHeld(seen) {
+  const held = seen && seen.held;
+  if (!held || !held.size) return [];
+  const evs = [...held.values()].map((h) => h.ev);
+  held.clear();
+  return evs;
+}
+
+module.exports = { unevaluated, notePending, evaluatingHolds, drainHeld, startRelease, cancelEvaluation, evalOf, enrichWakes, clause, turnEndText, summaryOf, workOf, cut, holdMs, WAKE_TEXT_MAX, PENDING_MAX_MS, RELEASE_WAKE_HOLD_MS };

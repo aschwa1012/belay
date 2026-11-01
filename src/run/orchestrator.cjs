@@ -407,7 +407,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       clearTimers();
       try { fs.closeSync(streamFd); } catch { /* already closed */ }
       try { fs.closeSync(stderrFd); } catch { /* already closed */ }
-      expireStalePendingWrites();
+      expireStalePendingWrites(); for (const ev of require('./release-eval.cjs').drainHeld(state.evalSeen)) state.wakesSuppressed.push({ ...ev, reason: 'the run ended while this turn end was held for its release evaluation' }); // recorded either way
       const out = {
         orchestrator: orchestratorBlock(), ended_by: state.endedBy, holds: state.holds, polls: state.polls,
         wakes: state.wakes, wakes_suppressed: state.wakesSuppressed, wakes_expired: state.wakesExpired,
