@@ -141,3 +141,63 @@ test('stopping the publisher releases what the mod never delivered', async () =>
     assert.strictEqual((await s.wait()).event, 'exception');
   } finally { await s.pub.stop(); fs.rmSync(s.base, { recursive: true, force: true }); }
 });
+
+// The publisher's own emitted line for a long policy exception (E2 with long finding titles), against what worker_wait names for the same key.
+test('a long exception through the wake publisher is a line within the text budget that ends with the ref worker_wait returns', async () => {
+  const net = require('node:net');
+  const PW = require('../../src/run/policy-wakes.cjs');
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'wclaim-p-'));
+  const dataDir = path.join(base, 'data').replaceAll(path.sep, '/'); fs.mkdirSync(dataDir);
+  const PLAN = { review: { worker: 'rv' }, fix: 'builder', re_review: 'refuter', integrate: 'on_hold' };
+  const finding = (n) => ({ severity: 'blocking', title: `${n} ${'finding title that runs on and on '.repeat(3)}`, where: 'a.cjs:1' });
+  const done = (over) => ({ run_id: runId, state: 'done', policy: null, depends_on: [], repairs: null, lease: null, review: null, integration: null, written_at: 50, ...over });
+  const evaluated = (passed, checks) => ({ trigger: 'release', evaluated_at: 20, executable: true, passed, checks });
+  const R = done({ id: 'R', seq: 101, state: 'released', depends_on: ['W'], handoff: { by: 'rv', at: 10 }, results: evaluated(false, [{ kind: 'verdict', executable: true, passed: false, detail: { verdict: 'refuted', summary: 's', findings: [1, 2, 3, 4].map(finding) } }]) });
+  const W = done({ id: 'W', seq: 100, policy: PLAN, handoff: { by: 'w1', at: 10 }, results: evaluated(true, [{ kind: 'command', argv: ['npm', 'test'], passed: true }]), review: { state: 'refuted', review_id: 'R', rounds_left: 0, fix_rounds_used: 2, max_fix_rounds: 2 } });
+  const rows = [{ id: 'w1', run_id: runId, state: 'running', turns: 0, seq: 1, pid_alive: true, mid_turn: 0 }];
+  const core = { worker: { list: async () => ({ workers: rows.map((r) => ({ ...r })) }) }, run: { get: async () => ({ run: { id: runId, policy_default: { review: true } } }) }, task: { list: async () => ({ tasks: [W, R] }) }, policy: { list: async () => ({ rows: [] }) } };
+  const pub = startWakePublisher({ core, runId, dataDir, pipeName: wakePipeName(dataDir, runId, 'n-long'), pollMs: 20 });
+  await pub.listening;
+  const lines = [];
+  let buf = '';
+  const sock = net.connect(wakePipeName(dataDir, runId, 'n-long'));
+  sock.on('data', (d) => { buf += d.toString('utf8'); let i; while ((i = buf.indexOf(NL)) >= 0) { lines.push(JSON.parse(buf.slice(0, i))); buf = buf.slice(i + 1); } });
+  sock.on('error', () => {});
+  try {
+    rows[0] = { ...rows[0], turns: 1, seq: 2 }; // a turn end: the poll reads the tasks and arms the policy watcher
+    assert.ok(await until(() => lines.some((l) => l.text && /exception E2,/.test(l.text))), JSON.stringify(lines));
+    const line = lines.find((l) => l.text && /exception E2,/.test(l.text)).text;
+    const e = PW.derive({ runId, tasks: [W, R], integrations: [], steps: [], failures: [] })[0];
+    const w = PW.wakeOf(e);
+    const uid = D.wakeUid(w);
+    assert.ok(Buffer.byteLength(w.text, 'utf8') >= 200, 'the policy text alone nearly fills the budget');
+    assert.ok(Buffer.byteLength(line, 'utf8') <= WAKE_TEXT_MAX, 'the emitted line fits the mod text budget');
+    assert.ok(line.endsWith(` (ref ${shortRef(uid)})`), 'the emitted line ends with the intact ref');
+    // the same exception through worker_wait, once the publisher's claim is given back
+    D.release({ dataDir, runId, uids: [uid] });
+    const sent = new Set();
+    const watcher = { poll: async () => { if (sent.has(w.key)) return []; sent.add(w.key); return [w]; } };
+    const rw = createRunWait({ core, runId, dataDir, claimant: { pid: process.pid, created: 'p' }, watcher, pollMs: 10 });
+    const r = await rw.wait({ ms: 60, workers: [] });
+    assert.strictEqual(r.exceptions[0].ref, line.slice(line.lastIndexOf('(ref ') + 5, -1), 'worker_wait names the ref the line carries');
+  } finally { sock.destroy(); await pub.stop(); fs.rmSync(base, { recursive: true, force: true }); }
+});
+
+test('a body of multi-byte characters is cut on a character boundary, within the budget, with the ref intact', () => {
+  const ref = shortRef('some:uid');
+  const tail = ` (ref ${ref})`;
+  for (const unit of ['界', '😀', 'é']) {
+    for (let pad = 0; pad < 4; pad += 1) {
+      for (let n = 40; n < 110; n += 1) {
+        const text = `${'a'.repeat(pad)}${unit.repeat(n)} Halted.`;
+        const line = withRef(text, ref);
+        const ctx = `unit ${unit} pad ${pad} n ${n}`;
+        assert.ok(Buffer.byteLength(line, 'utf8') <= WAKE_TEXT_MAX, `within the budget: ${ctx}`);
+        assert.ok(!line.includes('\uFFFD'), `no split character: ${ctx}`);
+        assert.strictEqual(Buffer.from(line, 'utf8').toString('utf8'), line, `round-trips: ${ctx}`);
+        assert.ok(line.endsWith(tail), `ref intact: ${ctx}`);
+        assert.ok(line.includes(`${' Halted.'}${tail}`), `halt notice kept: ${ctx}`);
+      }
+    }
+  }
+});
