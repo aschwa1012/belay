@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // off-path.test.cjs — work that drifts off the straight path (ADR 0061): an amend revises a task's acceptance as a new row of the
 // same task; tree_of gives a conflict fix the conflicting task's tree and its own base, so it is judged there and integrate
 // merges it, covering the work; a hand-back whose head is not the judged head is flagged handoff_stale; each command check names

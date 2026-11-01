@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // note-review-verdicts-k4.test.cjs — the verdict core of a note's review, against a real Engine and a real git repository:
 //   K4-1  a file cite is read from the working tree of a worker that has not committed (workers do not commit; the head is recorded at settle)
 //   K4-2  `confirmed` is refused for a note the reviewer was shown in part; `refuted` is not

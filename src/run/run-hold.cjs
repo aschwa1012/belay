@@ -53,11 +53,14 @@ function createRunHold({ child, getIdle, onDeadline, writeStdinLine, wakeText, p
 
   // orchestrator.cjs's writeWake: while paused, hold the wake record instead of writing it. Returns
   // true when held (the caller must then skip the ordinary stdin write and `state.wakes.push`).
-  function holdWake(rec) {
+  const heldText = new WeakMap(); // held entry -> the text the wake had when it was held (the record carries none)
+  function holdWake(rec, text) {
     if (!paused) return false;
     // 6f-2 fix round (note, run-hold.cjs:57): run-relative, like every other `at_ms` in this receipt
     // (design item 5) — this was still `Date.now()`, the one field review 2 found left as wall clock.
-    wakesHeld.push({ ...rec, held_at_ms: nowMs() });
+    const entry = { ...rec, held_at_ms: nowMs() };
+    if (typeof text === 'string') heldText.set(entry, text);
+    wakesHeld.push(entry);
     return true;
   }
 
@@ -161,7 +164,7 @@ function createRunHold({ child, getIdle, onDeadline, writeStdinLine, wakeText, p
     for (const w of held) {
       const heldRec = { ...w, held_ms: nowMs() - w.held_at_ms };
       delete heldRec.held_at_ms; delete heldRec.delivered;
-      if (writeStdinLine(wakeText(w), w.worker_id, heldRec) === false) { suppressWake(heldRec); continue; }
+      if (writeStdinLine(heldText.has(w) ? heldText.get(w) : wakeText(w), w.worker_id, heldRec) === false) { suppressWake(heldRec); continue; }
       w.delivered = true;
       pushWake(heldRec);
       delivered.push(heldRec);

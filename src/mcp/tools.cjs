@@ -162,7 +162,6 @@ const ORCH_TASK_LIST = {
   inputSchema: S({ states: strs('open, assigned, released, done or cancelled'), task_ids: strs(), view: DEBUG }),
 };
 
-
 const WORKER = [
   {
     name: 'lease_release',
@@ -271,7 +270,7 @@ const { STAMPS, stampIn } = require('./tools-policy.cjs');
 const HARNESS_ONLY = { task_create: STAMPS, task_assign: STAMPS, fix_from_review: STAMPS, integrate: STAMPS, task_evaluate: ['trigger', 'cancel_key'], memory_store: ['task_id', 'turn', 'source', 'embed', 'body', 'worker_id'], worker_spawn: ['native_memory', 'tools', 'sandbox', 'max_budget_usd'] }; // worker_spawn: native_memory is the eval driver's lever (ADR 0024 amendment 3); tools is the built-in list, which only allowed_tools may narrow (amendment 4); sandbox is a Codex worker's sandbox mode and max_budget_usd a job worker's spend cap, both the harness's. permission_prompt and permit_wait_ms stay open: ADR 0020 decision 1 makes the permission channel optional per spawn, and decision 5 has the orchestrator answer its requests
 // Tools that take exactly the properties their schema names: memory_store's row is written from its arguments, so an
 // unnamed one (an id, a created_at, a vector and its model) would reach the core as if the harness had chosen it.
-const CLOSED = new Set(['memory_store']);
+const CLOSED = new Set(['memory_store', 'briefing']);
 // ADR 0043 decision 1: the knowledge agent's id, knowledge-<run>, is the harness's. A worker the orchestrator named
 // with that prefix would be taken for the agent (or block it), so a caller-chosen id with it is refused.
 const RESERVED_WORKER_PREFIX = KNOWLEDGE_PREFIX;

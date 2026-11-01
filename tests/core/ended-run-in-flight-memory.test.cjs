@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // ended-run-in-flight-memory.test.cjs — a memory write that awaited something (git for a commit receipt, a file for a review's
 // citation check) is refused when its run ended meanwhile, and writes nothing (audit D42). Each wait is a gate the test opens or
 // the real citation check's own test seam: the run ends inside the wait, then the write meets its guard. Removing a guard makes

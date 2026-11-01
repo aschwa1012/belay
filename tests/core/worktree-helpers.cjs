@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // worktree-helpers.cjs — throwaway repositories for the ADR 0053 tests. Not a *.test.cjs file, so the runner does not run it.
 // A repository lives under the test's own sandbox dir, on `main`, with one committed base file, a `node_modules/dep` that is
 // not committed, and (unless `ignore: false`) a `.gitignore` of `node_modules/`, the shape of this repository.

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // methods-task-lease.test.cjs — task, lease, dependency gating, checkpoints, authority and evaluate (api.md §3, §6).
 // These tests share `taskId` and `leaseId` and the one store they write; split from methods.test.cjs under the 500-line rule.
 

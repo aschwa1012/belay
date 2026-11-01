@@ -40,7 +40,7 @@ const { createStartFail } = require('./start-fail.cjs');
 const PARK_SETTLE_WAIT_MS = INTERRUPT_TIMEOUT_MS + EXIT_TIMEOUT_MS;
 const LIST = require('./list.cjs');
 const { EARLY, createBudget } = require('./restart-budget.cjs');
-const RG = require('./relaunch-guard.cjs'); // ADR 0026 amendment 2: a death during a relaunch keeps its lease
+const LG = require('./launch-gate.cjs'); const RG = require('./relaunch-guard.cjs'); // ADR 0026 amendment 2: a death during a relaunch keeps its lease
 const { waitTurnOrLanded } = require('./turn-wait.cjs'); // a turn that ended before the wait began is answered
 
 const { POLL_MS } = require('./exit-hold.cjs');
@@ -193,7 +193,8 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
   // ---------------------------------------------------------------- methods
 
-  async function spawn(opts) {
+  const spawn = (opts) => LG.tracked({}, (a) => PZ.pause(a), (hold) => spawnBody(opts, hold)); // a stop or a run pause that overtakes the launch is answered there (launch-gate.cjs)
+  async function spawnBody(opts, hold) {
     const {
       substrate, worktree, prompt, task_id = null, model: modelArg = null, allowed_tools = null,
       permission_mode = null, startup_timeout_ms = 60000, worker_id = null, sandbox = null,
@@ -234,27 +235,27 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
         permissionPrompt: permission_prompt, permitWaitMs: permit_wait_ms, effort, tools: spawnTools, maxBudgetUsd: max_budget_usd, nativeMemory, agentType: agent_type,
       });
       w.assignCore = assignCore; w.indexQueries = indexQueries; // the orchestrator's situation lines for this worker's memory index (memory.embedQuery extra_texts)
-      workers.set(id, w);
+      workers.set(id, w); w.launching = true; hold.w = w; // launching: until the spawn returns or fails, a run pause is held for it (launch-gate.cjs)
     } finally { pendingIds.delete(id); }
     try { await MP.spawnLevers(ctx, w); w.nativeMemoryAuth = await NM.authorize(core, runId, w.nativeMemory); } catch (e) { await discardUnstarted(workers, w, dirExisted); throw e; } // ADR 0047: the levers are known before the files are written; with the first-message index off the row keeps no situation lines
     try { writeFilesFor(w); } catch (e) { await discardUnstarted(workers, w, dirExisted); throw e; } // no row, nothing launched: leave no record and no directory, so a corrected retry with the same id is free
     const scratch = agent_type === 'reviewer' ? require('./review-scratch.cjs').ensure(root, id, runId) : null; // ADR 0054 amendment 1: outside every worktree
     w.scratchDir = scratch; // a Codex launch adds it as a writable root
-    if (substrate === 'claude-code') w.instructions = I.snapshotInstructions(w.worktree, w.dir); // spawn only
+    if (substrate === 'claude-code') w.instructions = await require('./trusted-instructions.cjs').snapshotFor({ core, worktree: w.worktree, dir: w.dir, agentType: agent_type, taskId: task_id, dataDir: root, runId }); // spawn only; a reviewer's comes from the reviewed work's base commit, never its working copy
 
     // The worker row comes first, with no pid yet: `task.assign` refuses a worker with no row, and the
     // resume line needs the lease it creates. Only `running` is pid-checked, so this is legitimate.
-    let t0 = now();
+    LG.abortIfStopped(w); let t0 = now(); // a stop that overtook the awaits above has written `stopped`: nothing is written over it
     await writeRow(w, 'starting');
     let first;
     try {
-      first = NR.isJob(w.id) ? prompt : (await MP.preface(w, ctx, prompt)) + require('./task-body.cjs').body(w.taskSpec, prompt) + require('./task-body.cjs').PROCESS_LINE + (scratch ? require('./review-scratch.cjs').firstLine(scratch) : '') + require('./review-scratch.cjs').treeLine(w.review) + (w.handbackRule || '') + (await MP.contractTail(ctx, w)) + (await NR.reviewTail(ctx, w)); // the resume line, then the memory index, against the `starting` row (ADR 0007 §2, 0042 §2)
+      first = NR.isJob(w.id) ? prompt : (await MP.preface(w, ctx, prompt)) + require('./task-body.cjs').body(w.taskSpec, prompt) + require('./task-body.cjs').PROCESS_LINE + (scratch ? require('./review-scratch.cjs').firstLine(scratch) : '') + require('./review-scratch.cjs').treeLine(w.review) + (w.handbackRule || '') + (await MP.contractTail(ctx, w)) + (await NR.reviewTail(ctx, w)); await LG.refuseIfPaused(ctx.core, ctx.runId, w); // the resume line, then the memory index, against the `starting` row (ADR 0007 §2, 0042 §2); then the paused gate once more, and the pause held for this launch: refused here (the catch drops the worker); a pause after this is parked at ready
     } catch (e) {
       // The task refused the assignment (an open dependency, ADR 0013 §1; the operator's lease; no such
       // task). Nothing has launched, so the `starting` row is written `dead` before the refusal is handed
       // back unchanged (already names what would clear it, so it is not translated into E_NO_READY).
       w.launchFailed = true;
-      await writeRow(w, 'dead');
+      if (!(w.stopRequested && w.state === 'stopped')) await writeRow(w, 'dead'); // a row a stop made terminal stays
       if (e && e.code === 'E_PAUSED' && !(e.detail && e.detail.cause === 'embedder_failure')) {
         // The run paused between the spawn gate and the assignment (ADR 0066 gap). The refusal is the gate's own, so it must not leave
         // the worker standing: drop it and its directory as an unstarted spawn does. The `starting` row is already in the store (an
@@ -266,14 +267,13 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       }
       throw e;
     }
-    // The index's embedding is the harness's wait, not the worker's: it counts neither toward the startup window nor in ready_ms
-    // (Codex's verifyReady and the returned ready_ms run from here). Its own time is in the index_injected receipt.
+    // The index's embedding is the harness's wait, not the worker's: it counts neither toward the startup window nor in ready_ms (see index_injected).
     t0 += w.indexEmbedMs || 0;
-    w.firstMessage = first;
+    w.firstMessage = first; LG.abortIfStopped(w); // the last check before the launch, in the tick it starts: a stop after it finds the process
 
     await launch(w, substrate === 'claude-code' ? {} : { prompt: first });
     return guarded(w, async () => {
-      await writeRow(w, 'starting');
+      await writeRow(w, 'starting'); await LG.holdIfPaused(ctx.core, ctx.runId, w); // the pid row is listable now: a run pause that listed nothing before it is held here
       openWith(w, first, 'task');
 
       const ready = await W.waitReady(w, startup_timeout_ms);
@@ -306,13 +306,13 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
   // ADR 0023 amendment 2 decision 3: stop always wins, waiting out a pause, resume or restart in flight.
   // 6e-5/6e-6 (pause.cjs `clearParkForStop`): a stale park record is caught before any write, never overwritten.
-  async function stop({ worker_id, mode = 'graceful', timeout_ms = 10000 }) {
-    const w = await forWorker(worker_id);
-    return LC.runOp(w, 'stop', async () => {
+  async function stop({ worker_id, mode = 'graceful', timeout_ms = 10000, guard = null }) {
+    const w = await forWorker(worker_id); return LC.runOp(w, guard ? 'idle-stop' : 'stop', async () => {
+      if (guard && await guard()) return null; // stop_idle_on_done re-decides here, after a pause, resume or restart was waited out (idle-stop.cjs)
       const { stale, wasParked } = await PZ.clearParkForStop(w, worker_id); // wasParked: fix round #2, manager.cjs:351
       if (!stale) W.noteStoppedWhileSettled(w); // item 2 (wait.cjs:32): fixes the settled state too
       return doStop(w, mode, timeout_ms, { skipRowWrite: stale, treatPidAsDead: wasParked });
-    }, { waitFor: ['pause', 'resume', 'restart'] });
+    }, { waitFor: guard ? LC.IDLE_STOP_WAIT : LC.STOP_WAIT });
   }
 
   // `workers` holds only what this process launched; an unknown id is looked up in the store rather
@@ -321,7 +321,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const known = workers.get(workerId);
     if (known) return known;
     if (adopting.has(workerId)) return adopting.get(workerId);
-    const p = W.adopt({ core, workerId, dataDir: root }).then(async (w) => {
+    const p = W.adopt({ core, workerId, dataDir: root, runId }).then(async (w) => {
       workers.set(workerId, w); // no launch guard: a stop must always go through, and writeFilesFor below regenerates settings.json from the record
       await MP.levers(ctx, w, { receipt: true }); // ADR 0047: the argv written below carries the notes lever
       const denied = await NM.adoptDenied(w, runId, ctx.memoryLevers, core); // another run's native_memory is never written into this run's settings; the record stays, the relaunch is refused
@@ -363,7 +363,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
         w.costBase = w.costUsd; // a fresh session's total_cost_usd starts at zero: what the earlier sessions reported stays in the row
         w.parser = createParser(w.substrate, MP.parserOpts(ctx));
       }
-      if (onFirstText) onFirstText(firstText);
+      if (onFirstText) onFirstText(firstText); if (!skipDeadPidKill) await LG.refuseIfPaused(ctx.core, ctx.runId, w, { restart: true }); // a run pause landing during the awaits above; a resume (skipDeadPidKill) runs while the run is still paused
 
       const resume = d.branch === 'resume' ? w.sessionId : null;
       await launch(w, w.substrate === 'claude-code' ? { resume } : { resume, prompt: firstText });
@@ -371,7 +371,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     });
     let init;
     await guarded(w, async () => {
-      await writeRow(w, 'starting');
+      await writeRow(w, 'starting'); if (!skipDeadPidKill) await LG.holdIfPaused(ctx.core, ctx.runId, w);
       openWith(w, firstText, 'resume');
 
       const t0 = now();
@@ -425,10 +425,10 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     let p = w.restartInFlight;
     if (!p) {
       RG.refuseIfRelaunching(w, 'restart'); // before runOp, which cancels an evaluation in flight: a refused restart has no effect (invariant 5)
-      p = LC.runOp(w, 'restart', () => {
+      p = LG.afterOp(w, PZ.pause, LC.runOp(w, 'restart', () => { // a run pause held for this relaunch is parked once it is up (launch-gate.cjs)
         PZ.refuseIfPaused(w);
         return doRestart(w, { first_turn_timeout_ms, awaitFirstTurn: false });
-      }, {});
+      }, {}));
       w.restartInFlight = p;
       const clear = () => { if (w.restartInFlight === p) w.restartInFlight = null; };
       p.then(clear, clear);

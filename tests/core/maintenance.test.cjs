@@ -28,26 +28,36 @@ async function down(c, dir, bodyErr) {
 const vec = i => [Math.cos(i), Math.sin(i)];
 
 test('a row with a ttl is swept by the owner and is then genuinely gone', async () => {
-  const dir = sandbox();
-  let c, err;
+  // The owner shares this process, so the store's clock (Date.now) is driven from here: the row's lifetime is
+  // 60 s on a clock that only moves when the test moves it, so no late reply or slow neighbour can expire it
+  // early, and the sweep is shown by advancing the clock past the lifetime, not by waiting it out.
+  const realNow = Date.now.bind(Date);
+  let skew = 0;
+  let dir, c, err;
   try {
+    Date.now = () => realNow() + skew;
+    dir = sandbox();
     c = await openCore({
       dataDir: dir, caller: callerFor('orchestrator'), embed: false,
       ownerOpts: { sweepMs: 50, heartbeatMs: 50 },
     });
     const keep = await c.memory.store({ namespace: 'ttl', text: 'permanent', embedding: vec(1), embedding_model: 'm', dim: 2 });
-    const go = await c.memory.store({ namespace: 'ttl', text: 'ephemeral', ttl_seconds: 0.05, embedding: vec(2), embedding_model: 'm', dim: 2 });
+    const go = await c.memory.store({ namespace: 'ttl', text: 'ephemeral', ttl_seconds: 60, embedding: vec(2), embedding_model: 'm', dim: 2 });
     assert.ok(go.ttl_at > Date.now(), 'the row carries the moment it expires');
-    assert.strictEqual((await c.memory.get({ id: go.id })).found, true);
+    // Several sweep ticks run before the lifetime is up; the row must survive all of them.
+    await sleep(200);
+    assert.strictEqual((await c.memory.get({ id: go.id })).found, true, 'a sweep before the lifetime ends removes nothing');
 
-    const deadline = Date.now() + 4000;
-    while (Date.now() < deadline && (await c.memory.get({ id: go.id })).found) await sleep(40);
+    skew = 61000; // the lifetime is now over, by the store's own clock
+    const deadline = realNow() + 10000;
+    while (realNow() < deadline && (await c.memory.get({ id: go.id })).found) await sleep(40);
     assert.strictEqual((await c.memory.get({ id: go.id })).found, false, 'the TTL sweep must remove an expired row');
     assert.strictEqual((await c.memory.get({ id: keep.id })).found, true, 'and must remove nothing else');
     // A swept row must also be gone from the search cache, not merely from the table.
     const s = await c.memory.search({ namespace: 'ttl', query_embedding: vec(2), k: 5 });
     assert.ok(!s.results.some(r => r.id === go.id), 'an expired row must not come back from the vector cache');
   } catch (e) { err = e; }
+  finally { Date.now = realNow; }
   await down(c, dir, err);
 });
 

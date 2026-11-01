@@ -18,4 +18,32 @@ function refuseOtherRun(E, caller, args, prev) {
   }
 }
 
-module.exports = { refuseOtherRun };
+// The same rule for a task: the orchestrator of one run may not move a task, or its lease, out of another LIVE run (task.assign
+// and task.ensureHold both do that when the task owns files). A run with no row counts as not live here, as above; the
+// operator is unaffected. Call inside the transaction that would write.
+function refuseOtherRunTask(E, caller, task) {
+  if (caller.role !== 'orchestrator' || !caller.run_id || !task.run_id || task.run_id === caller.run_id) return;
+  if (rows.current(E.store, 'run', task.run_id) && require('./task-holds.cjs').runLiveness(E.store)(task.run_id).live) {
+    throw err('E_ROLE', `task ${task.id} belongs to run ${task.run_id}, which is live, so the orchestrator of run ${caller.run_id} may not take it`, { task_id: task.id, run_id: caller.run_id, task_run_id: task.run_id });
+  }
+}
+
+// Whether `runId` names a run, other than the caller's, that is live by the rule above (a run with no row is not).
+function liveOtherRun(E, callerRunId, runId) {
+  if (!runId || runId === callerRunId) return false;
+  return !!rows.current(E.store, 'run', runId) && require('./task-holds.cjs').runLiveness(E.store)(runId).live;
+}
+
+// A lease granted under another LIVE run is that run's, whatever worker id holds it: a worker's renew, release and checkpoint
+// reach the leases of its own run (a lease of an ended run is adopted with its worker, as a task is).
+const leaseOfOtherRun = (E, caller, lease) => caller.role === 'worker' && liveOtherRun(E, caller.run_id, lease.run_id);
+
+// task.assign: the orchestrator grants a lease on its work to a worker of its own run, or of a run that has ended.
+function refuseOtherRunWorker(E, caller, worker) {
+  if (caller.role !== 'orchestrator' || !caller.run_id || !worker) return;
+  if (liveOtherRun(E, caller.run_id, worker.run_id)) {
+    throw err('E_ROLE', `worker ${worker.id} belongs to run ${worker.run_id}, which is live, so the orchestrator of run ${caller.run_id} may not assign it a task`, { worker_id: worker.id, run_id: caller.run_id, worker_run_id: worker.run_id });
+  }
+}
+
+module.exports = { refuseOtherRun, refuseOtherRunTask, refuseOtherRunWorker, leaseOfOtherRun, liveOtherRun };

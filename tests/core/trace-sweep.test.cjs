@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // trace-sweep.test.cjs — the sweep of belay-trace files left by a process that died mid-git removes only a file belay's runTraced
 // wrote whose writer is gone, and keeps everything else. Seams: the directory, the pid check, the clock, the cap and unlink.
 

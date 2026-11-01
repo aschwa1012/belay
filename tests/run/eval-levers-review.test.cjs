@@ -34,7 +34,7 @@ function sandbox() {
 // A fake core whose run row holds `stored` (an object, stringified, or a raw string); `base` shares the worker rows between managers.
 const coreWith = (stored, base) => {
   const core = base ? Object.create(base) : createFakeCore({ runId: 'run-el', resumeLineText: RESUME });
-  core.run = { get: async () => ({ run: { memory_levers: typeof stored === 'string' ? stored : JSON.stringify(stored) } }) };
+  core.run = { list: async () => ({ runs: [] }), get: async () => ({ run: { memory_levers: typeof stored === 'string' ? stored : JSON.stringify(stored) } }) };
   return core;
 };
 const make = (sb, core, runId) => createRunManager({ core, dataDir: sb.data, runId, paths: PATHS });

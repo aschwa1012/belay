@@ -98,7 +98,7 @@ const ORCHESTRATOR = [
     // ADR 0020 decision 5: the orchestrator's window onto the permission channel, so a headless run
     // with a prompting worker does not stall until a human types.
     name: 'permission_list',
-    description: 'List permission requests waiting on a verdict. Returns each with its tool, input, age and whether the requesting adapter is still alive. Defaults to pending only.',
+    description: 'List your run\'s permission requests awaiting a verdict (other runs: E_ROLE). Returns each with tool, input, age and whether its adapter is alive. Default pending.',
     inputSchema: S({ run_id: str(), states: strs('pending, allowed, denied or expired; default pending') }),
   },
   {

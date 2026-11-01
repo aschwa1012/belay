@@ -41,6 +41,7 @@ async function amend(E, caller, args) {
   const out = E.store.tx(() => {
     const task = rows.current(E.store, 'task', args.id);
     if (!task) throw err('E_NOT_FOUND', `no task row exists for ${args.id}, so there is nothing to amend; leave amend out to create it`, { task_id: args.id });
+    require('./worker-run-guard.cjs').refuseOtherRunTask(E, caller, task); // a live run's task is that run's
     // A field beside the revision that repeats the task's own value is a no-op; one that would change it is refused, by name.
     const extra = Object.keys(args).filter((k) => args[k] !== undefined && !AMEND_FIELDS.has(k) && !(ROW_FIELDS.includes(k) && norm(args[k], k) === norm(task[k], k)));
     if (extra.length) throw err('E_ARGS', `task.create amend revises acceptance, spec and policy only; ${extra.join(', ')} cannot change on an existing task`, { task_id: args.id, fields: extra });
@@ -84,10 +85,11 @@ async function amend(E, caller, args) {
 // a fix the judged task's tree. A removed tree is not given. A conflict fix made this way does not use `repairs`, so it spends no
 // fix round; its own `base` (task.create base) is the base its evaluations default to.
 // `runTop` is the run's repository (runRepo): a tree in another repository is the operator's to name (task.worktreeCreate's repoOf).
-function treeOf(E, id, runTop) {
+function treeOf(E, id, runTop, caller) {
   if (typeof id !== 'string' || !id) throw err('E_ARGS', 'task.create tree_of must be the id of a task whose worktree the new task is worked in');
   const src = rows.current(E.store, 'task', id);
   if (!src) throw err('E_NOT_FOUND', `task.create tree_of names ${id}, which has no row in this store`, { tree_of: id });
+  if (caller) require('./worker-run-guard.cjs').refuseOtherRunTask(E, caller, src); // a live run's tree is that run's
   const rec = require('./methods-worktree.cjs').inheritable(src);
   if (!rec) throw err('E_PRECONDITION', `task ${id} has no worktree${src.worktree && src.worktree.removed_at ? ' (it was removed)' : ''}, so there is no tree to work the new task in`, { tree_of: id });
   if (!require('./git.cjs').samePath(rec.repo, runTop)) {

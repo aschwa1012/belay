@@ -71,6 +71,12 @@ if (!globalThis[KEY]) {
     if (inherited) process.on('exit', () => { try { fs.rmSync(own, { recursive: true, force: true }); } catch { /* the runner's removal of the tree follows */ } });
   }
 
+  // Every git a test or the product code under test starts ignores the developer's global git config and any inherited GIT_DIR and
+  // the like (tests/helpers/git-env.cjs). Test files that start git also require it themselves, so a run without --require is isolated
+  // too. It is loaded after the spawn register above exists: its config file lives inside that register, which the runner removes with
+  // the tree even when this process is killed.
+  require('./git-env.cjs');
+
   // One attempt per directory when budgetMs is 0; otherwise retried within the budget. Returns what remains.
   function cleanup(budgetMs = 3000) {
     const deadline = Date.now() + budgetMs;

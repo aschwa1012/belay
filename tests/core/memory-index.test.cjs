@@ -16,6 +16,7 @@ const { FOOTER, HEADER } = core('memory-index.cjs');
 let dir, store, E, orch;
 const call = (method, args, caller = orch) => E.handle(method, { ...args, caller });
 const put = (ns, text, extra = {}) => call('memory.store', { namespace: ns, text, embedding: [1, 0, 0], embedding_model: 'm', dim: 3, ...extra });
+const putAs = (caller, ns, text, extra = {}) => call('memory.store', { namespace: ns, text, embedding: [1, 0, 0], embedding_model: 'm', dim: 3, ...extra }, caller);
 const setCols = (id, cols) => {
   const keys = Object.keys(cols);
   store.db.prepare(`UPDATE memory_entries SET ${keys.map((k) => `${k} = ?`).join(', ')} WHERE id = ?`).run(...keys.map((k) => cols[k]), id);
@@ -160,9 +161,9 @@ test('an empty namespace gives an empty block, not an error', async () => {
 test('namespaces default to the run project, then the run', async () => {
   const caller = callerFor('orchestrator', { run_id: 'run-ix' });
   await E.handle('run.attach', { caller, adapter_pid: process.pid, project: 'demo' });
-  const inProject = await put('project/demo', 'project knowledge', { caller, type: 'decision' });
-  const inRun = await put('run/run-ix', 'run knowledge', { caller, type: 'summary' });
-  const other = await put('project/other', 'someone else', { caller, type: 'summary' });
+  const inProject = await putAs(callerFor('operator'), 'project/demo', 'project knowledge', { type: 'decision' });
+  const inRun = await putAs(callerFor('operator'), 'run/run-ix', 'run knowledge', { type: 'summary' });
+  const other = await putAs(callerFor('operator'), 'project/other', 'someone else', { type: 'summary' });
   const r = await E.handle('memory.index', { caller });
   assert.deepStrictEqual(new Set(r.row_ids), new Set([inProject.id, inRun.id]));
   assert.ok(!r.row_ids.includes(other.id));

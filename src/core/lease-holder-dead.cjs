@@ -15,12 +15,13 @@ const { DEFAULT_LEASE_TTL_MS } = require('./schema.cjs');
 
 const HOLDER_DEAD = 'holder_dead';
 
-function releaseForDeadHolder(store, workerId, by, t) {
+function releaseForDeadHolder(store, workerId, by, t, runId) {
   const taskIds = store.p("SELECT DISTINCT task_id FROM lease WHERE holder = ? AND holder_role = 'worker'").all(workerId).map((r) => r.task_id);
   const released = [];
   for (const taskId of taskIds) {
     const l = rows.currentLeaseForTask(store, taskId);
     if (!l || l.released_at != null || l.holder !== workerId || l.holder_role !== 'worker') continue;
+    if (runId && l.run_id && require('./worker-run-guard.cjs').liveOtherRun({ store }, runId, l.run_id)) continue; // a live run's lease is that run's: this row's death does not release it
     rows.append(store, 'lease', { ...l, released_at: t, released_reason: HOLDER_DEAD }, by, t);
     const task = rows.current(store, 'task', taskId);
     if (task && task.state === 'assigned') rows.append(store, 'task', { ...task, state: 'open' }, by, t);
@@ -39,7 +40,7 @@ function holdsAny(store, workerId) {
 // (`leases_released`, null when nothing), so the death wake can say so. `E` is the engine. Returns { row, released }.
 function appendDead(E, values, by, t) {
   return E.store.tx(() => {
-    const released = releaseForDeadHolder(E.store, values.id, by, t);
+    const released = releaseForDeadHolder(E.store, values.id, by, t, values.run_id);
     const row = rows.append(E.store, 'worker', { ...values, leases_released: released.length ? released : (values.leases_released == null ? null : values.leases_released) }, by, t); // a restated death with nothing left to release keeps its record
     return { row, released };
   });

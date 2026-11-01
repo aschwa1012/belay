@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // review-spawn-baseline.test.cjs — ADR 0054 amendment 1: a reviewer spawned with its review task gets its grant snapshot before
 // it is launched (the run manager assigns, then launches), so the snapshot is never baseline_late on the spawn path. The real
 // run manager, the real core, the fake claude, a real git repository.
