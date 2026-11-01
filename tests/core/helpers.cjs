@@ -102,26 +102,27 @@ function trackOwnerChild(child) {
 // this test spawned, never a name or a command line, and only after the pid check says it is still there.
 async function stopOwnerProcesses(dataDir) {
   const { openCore } = core('index.cjs');
-  const { pidAlive, readOwnerLock } = core('lock.cjs');
+  const { readOwnerLock } = core('lock.cjs');
   const receipts = [];
   for (const child of [...OWNER_CHILDREN]) {
     const pid = child.pid;
+    const running = () => child.exitCode === null && child.signalCode === null; // the handle, not a bare pid that may have been handed to another process
     try {
       // It cannot be asked to stop before it is serving, so give it a bounded chance to get there.
-      for (let i = 0; i < 200 && pidAlive(pid); i++) {
+      for (let i = 0; i < 200 && running(); i++) {
         const lock = readOwnerLock(dataDir);
         if (lock && lock.listening !== false) break;
         await sleep(25);
       }
-      if (pidAlive(pid)) {
+      if (running()) {
         const c = await openCore({ dataDir, caller: callerFor('operator'), embed: false });
         await c.shutdownOwner();
         await c.close();
       }
     } catch { /* it may never have got far enough to answer */ }
-    for (let i = 0; i < 80 && pidAlive(pid); i++) await sleep(25);
+    for (let i = 0; i < 80 && running(); i++) await sleep(25);
     let killed = false;
-    if (pidAlive(pid)) { try { process.kill(pid); killed = true; } catch { /* it raced us to the exit */ } }
+    if (running()) { try { killed = child.kill(); } catch { /* it raced us to the exit */ } } // by the live handle
     OWNER_CHILDREN.delete(child);
     receipts.push({ pid, killed });
   }

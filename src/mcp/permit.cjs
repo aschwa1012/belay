@@ -7,6 +7,7 @@
 // measured cost of a channel that outlives MCP_TOOL_TIMEOUT, ADR 0020 §Context).
 
 const WAIT_SLICE_MS = 25000;
+const RECONCILE_MAX_MS = 20000; // the most an unknown-outcome reconcile may spend, inside the substrate's margin
 
 function verdictAnswer(state, input, reason) {
   if (state === 'allowed') {
@@ -33,6 +34,65 @@ function sleep(ms) {
 function createPermit({ openCore, caller, waitMs = 600000, log = () => {} }) {
   const inFlight = new Map(); // rpcId -> { id, answered }
 
+  // A request that was sent and not answered may be committed. Reconcile it, so no live-looking
+  // pending row survives a deny the worker has already acted on: expire it (E_NOT_FOUND means it was
+  // never written; an already-decided row is answered from its verdict).
+  function unknownOutcome(e) {
+    return !!(e && (e.code === 'E_OWNER_LOST' || e.code === 'E_TIMEOUT') && e.detail && e.detail.may_have_committed);
+  }
+
+  async function unknownAnswer(c, e, toolUseId, toolName, input) {
+    const reason = `belay: the permission request outcome is unknown (${e.code}: ${e.message}); it was expired`;
+    let last = null;
+    // The whole reconcile stays inside the substrate's own limit (MCP_TOOL_TIMEOUT is waitMs + 60000):
+    // no attempt starts, and none is waited on, past this deadline.
+    const deadline = Date.now() + Math.min(waitMs, RECONCILE_MAX_MS);
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      if (attempt > 0) {
+        if (deadline - Date.now() <= 250) break;
+        await sleep(250);
+      }
+      try {
+        const left = Math.max(1, deadline - Date.now());
+        let timer;
+        const cutoff = new Promise((_, reject) => {
+          timer = setTimeout(() => reject(Object.assign(new Error(`no answer within the ${left} ms left for reconciling`), { code: 'E_TIMEOUT' })), left);
+          if (timer.unref) timer.unref();
+        });
+        let decided;
+        try { decided = await Promise.race([c.permission.decide({ id: toolUseId, verdict: 'expire', reason }), cutoff]); }
+        finally { clearTimeout(timer); }
+        log('##', `permit ${toolUseId} ${toolName} expired after an unknown request outcome`);
+        return verdictAnswer(decided.verdict.state, input, decided.verdict.reason);
+      } catch (e2) {
+        last = e2;
+        if (e2.code === 'E_NOT_FOUND') {
+          return verdictAnswer('denied', input, `belay: the permission request could not be written (${e.code}: ${e.message})`);
+        }
+        if (e2.code === 'E_ARGS' && e2.detail) {
+          const rows = await c.permission.list({ states: ['allowed', 'denied', 'expired'] }).catch(() => null);
+          const landed = rows && rows.requests.find((r) => r.id === toolUseId);
+          if (landed) return verdictAnswer(landed.state, input, landed.reason);
+        }
+      }
+    }
+    last = last || { code: 'E_TIMEOUT', message: 'no time left to reconcile' };
+    log('!!', `permit ${toolUseId} reconcile failed: ${last.code}: ${last.message}`);
+    return verdictAnswer('denied', input, `belay: the permission request outcome is unknown and could not be reconciled (${e.code}: ${e.message}; ${last.code}: ${last.message})`);
+  }
+
+  async function expireCancelled(c, entry) {
+    if (entry.expired) return;
+    try {
+      await c.permission.decide({ id: entry.id, verdict: 'expire', reason: 'cancelled by the substrate' });
+      entry.expired = true;
+      log('##', `permit ${entry.id} expired: cancelled by the substrate`);
+    } catch (e) {
+      if (e.code === 'E_ARGS' && e.detail && e.detail.state === 'expired') { entry.expired = true; return; } // a racing expire already landed
+      log('!!', `permit ${entry.id} cancel failed: ${e.code || 'E_INTERNAL'}: ${e.message}`);
+    }
+  }
+
   async function call(args, rpcId) {
     const toolName = args && args.tool_name;
     const toolUseId = args && args.tool_use_id;
@@ -50,15 +110,21 @@ function createPermit({ openCore, caller, waitMs = 600000, log = () => {} }) {
       // A request nobody can see must not hold a worker: deny at once, naming the code and message.
       log('##', `permit ${toolUseId} ${toolName} request failed: ${e.code}: ${e.message}`);
       entry.answered = true;
+      if (unknownOutcome(e)) return unknownAnswer(c, e, toolUseId, toolName, input);
       return verdictAnswer('denied', input, `belay: the permission request could not be written (${e.code}: ${e.message})`);
     }
     log('##', `permit ${toolUseId} ${toolName} requested`);
+    if (entry.cancelled) {
+      // A cancel that landed before the row existed found nothing to expire: apply it now.
+      await expireCancelled(c, entry);
+      return null;
+    }
 
     const startedAt = Date.now();
     let verdictRow = requestRow;
     let waitFault = null; // the last permission.wait failure, if the real clock is still what ends this
     for (;;) {
-      if (entry.cancelled) return null; // cancel() already answered (or dropped) this call
+      if (entry.cancelled) { await expireCancelled(c, entry); return null; } // cancel() may have failed to expire the row
       const remaining = waitMs - (Date.now() - startedAt);
       if (remaining <= 0) break;
       const slice = Math.max(1, Math.min(WAIT_SLICE_MS, remaining));
@@ -81,7 +147,7 @@ function createPermit({ openCore, caller, waitMs = 600000, log = () => {} }) {
       verdictRow = w.request || verdictRow;
       if (!w.timed_out) break;
     }
-    if (entry.cancelled) return null;
+    if (entry.cancelled) { await expireCancelled(c, entry); return null; }
 
     if (verdictRow && verdictRow.state !== 'pending') {
       entry.answered = true;
@@ -126,13 +192,15 @@ function createPermit({ openCore, caller, waitMs = 600000, log = () => {} }) {
     const entry = inFlight.get(rpcId);
     if (!entry || entry.answered) return;
     entry.cancelled = true;
+    let c;
     try {
-      const c = await openCore();
-      await c.permission.decide({ id: entry.id, verdict: 'expire', reason: 'cancelled by the substrate' });
-      log('##', `permit ${entry.id} expired: cancelled by the substrate`);
+      c = await openCore();
     } catch (e) {
       log('!!', `permit ${entry.id} cancel failed: ${e.code || 'E_INTERNAL'}: ${e.message}`);
+      return;
     }
+    // A failure here (E_NOT_FOUND: the row is not written yet) is retried by call() once it can.
+    await expireCancelled(c, entry);
   }
 
   return { call, cancel, inFlight: () => inFlight, caller, waitMs };
