@@ -38,23 +38,27 @@ function rootedTmp(p) {
 // The character before must not be a word character, `.`, `-`, `/`, `$`, `~` or `}`, so `src/tmp`, `./tmp`, `$TMPDIR/tmp`,
 // `${TEMP}/tmp` and `http://host/tmp` pass; the character after must not extend the name, so `/tmpfoo` passes.
 const LITERAL = /(?:^|[^\w.\-/$~}])(?:[a-z]:)?[\\/]{1,2}tmp(?![\w-])/i;
-// An inline-script flag directly after the interpreter and its own option flags (so `python run.py -c /tmp/x` and `node a.js -p`
-// are the script's arguments, not the interpreter's). `-c` only after python or a shell, `-p` only after node, never `perl -c`.
-const flag = (exe, flags) => new RegExp(String.raw`(?<![\w.\-])(?:${exe})(?:\.exe)?\b(?:\s+-\S+)*?\s+(?:${flags})(?=[\s"'=]|$)`, 'gi');
+// An inline-script flag directly after the interpreter (its path may be quoted: `"C:/Program Files/nodejs/node.exe"`) and its
+// own options, each with at most one separate value word (`node -r dotenv/config`, `python -X utf8`). So `python run.py -c /tmp/x`
+// and `node a.js -p` are the script's arguments, not the interpreter's. `-c` only after python or pwsh, `-p` only after node,
+// never `perl -c`. The cost: `python -m x -c /tmp/y` reads `x` as -m's value and `-c` as the flag (a rare false positive).
+const flag = (exe, flags) => new RegExp(String.raw`(?<![\w.\-])(?:${exe})(?:\.exe)?(?![\w.\-])["']?(?:\s+-\S+(?:\s+[^-\s"']\S*)?)*?\s+(?:${flags})(?=[\s"'=]|$)`, 'gi');
 const INLINE = [flag('node(?:js)?|bun|deno', '-e|--eval|-p|--print'), flag('python[\\d.]*|py', '-c'), flag('perl|ruby', '-e'), flag('pwsh|powershell', '-c|-command')];
 const HEREDOC = /(?<!<)<<(-?)\s*(["']?)([A-Za-z_][\w.-]*)\2/;
 
-// The interpreter's own script argument from `text` (just after the flag): a quoted string up to its closing quote, or one bare
-// word. What follows (`&& cat /tmp/out`) is the shell's again and is not scanned.
+// The interpreter's own script argument from `text` (just after the flag): the whole shell word, as written. Adjacent quoted
+// pieces join into one word (`'it'\''s'`, `'a'"b"`, `"$(f "x")"`), so the word ends only at whitespace or `; & | < > )`
+// outside quotes. What follows (`&& cat /tmp/out`) is the shell's again and is not scanned.
 function scriptArg(text) {
   const s = text.replace(/^\s+/, '');
-  const q = s[0];
-  if (q !== '"' && q !== "'") return s.split(/\s/, 1)[0];
-  for (let i = 1; i < s.length; i++) {
-    if (q === '"' && s[i] === '\\') i++;
-    else if (s[i] === q) return s.slice(1, i);
+  let q = null;
+  for (let i = 0; i < s.length; i++) {
+    const c = s[i];
+    if (q === "'") { if (c === "'") q = null; } else if (c === '\\') i++;
+    else if (q === '"') { if (c === '"') q = null; } else if (c === '"' || c === "'") q = c;
+    else if (/[\s;&|<>)]/.test(c)) return s.slice(0, i);
   }
-  return s.slice(1);
+  return s;
 }
 
 // The text of the command that a native interpreter will read as a script: every heredoc body, and each interpreter's
