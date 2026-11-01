@@ -42,11 +42,13 @@ test('a write refused twice by a stopping owner waits for it to finish and is co
   const refuse = owner._refuse.bind(owner);
   let refused = 0;
   // The stop is held past the first refusal: a client that re-dials the same stopping owner meets a second refusal at once and fails.
-  // The hold ends on that second refusal, or on a short timer after the first, which only lets the fixed client's wait finish.
+  // The hold ends on that second refusal, which a client that re-dials gets within one round trip. The fixed client never causes
+  // one; its wait ends only when the hold does, so a backstop timer (far above a round trip, and never what the verdict turns on
+  // in the failing direction) lets the held stop finish.
   let timer = null;
   owner._refuse = (conn, req, why) => {
     refused++; refuse(conn, req, why);
-    if (refused >= 2) release(); else timer = setTimeout(release, 300);
+    if (refused >= 2) release(); else timer = setTimeout(release, 2000);
   };
   const stopping = owner.stop();
   const made = await c.task.create({ spec: 'raced a slow stop' });
@@ -68,6 +70,27 @@ test('a stopping owner does not answer a ping as a serving one', async (t) => {
   await stopping;
   assert.equal(p.ok, false);
   assert.equal(p.code, 'E_OWNER_STOPPING');
+});
+
+test('a call refused by a stopping owner names that owner by pid and lock token, for the engine and bind paths', async (t) => {
+  const { owner, info } = await started(t);
+  const sock = await dial(info);
+  let releaseCalls;
+  owner.inFlightCalls.add(new Promise((res) => { releaseCalls = res; }));
+  const stopping = owner.stop();
+  const caller = { role: 'operator', pid: process.pid };
+  const engine = JSON.parse(await oneLine(sock, { id: 1, method: 'task.list', params: { caller } }));
+  const bind = JSON.parse(await oneLine(sock, { id: 2, method: 'bind.status', params: { bind_id: 'x', caller } }));
+  sock.destroy();
+  releaseCalls();
+  await stopping;
+  for (const reply of [engine, bind]) {
+    assert.equal(reply.error.code, 'E_OWNER_LOST');
+    assert.equal(reply.error.detail.owner_stopping, true);
+    assert.equal(reply.error.detail.owner_pid, process.pid);
+    assert.equal(reply.error.detail.owner_token, owner.lockToken);
+  }
+  assert.ok(owner.lockToken, 'the owner had a lock token to name');
 });
 
 test('a run control that arrives after stop() began is refused E_OWNER_STOPPING and has no effect', async (t) => {

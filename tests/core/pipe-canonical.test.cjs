@@ -22,13 +22,17 @@ function junctionTo(real, t) {
   return { link };
 }
 
+// The sandbox may already sit under an 8.3 TEMP, so the long spelling to compare with is the real path, and the short one is made
+// from a long-named directory made here (its name is over eight characters, so a volume with 8.3 names gives it an alias).
 function shortSpelling(dir) {
   if (process.platform !== 'win32') return { skip: 'no 8.3 names off Windows' };
-  if (/[\s"&^%()]/.test(path.resolve(dir))) return { skip: 'the sandbox path has characters the cmd lookup cannot take unquoted' };
-  const r = spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/c', `for %I in (${path.resolve(dir)}) do @echo %~sI`], { encoding: 'utf8' });
+  const long = path.join(dir, 'a-long-directory-name-for-an-alias');
+  fs.mkdirSync(long, { recursive: true });
+  if (/[\s"&^%()]/.test(long)) return { skip: 'the sandbox path has characters the cmd lookup cannot take unquoted' };
+  const r = spawnSync(process.env.ComSpec || 'cmd.exe', ['/d', '/c', `for %I in (${long}) do @echo %~sI`], { encoding: 'utf8' });
   const short = r.status === 0 ? String(r.stdout).trim().replace(/\\/g, '/') : '';
-  if (!short || short.toLowerCase() === path.resolve(dir).replace(/\\/g, '/').toLowerCase()) return { skip: 'this volume has no 8.3 short name for the sandbox path' };
-  return { short };
+  if (!short || short.toLowerCase() === fs.realpathSync.native(long).replace(/\\/g, '/').toLowerCase()) return { skip: 'this volume has no 8.3 short name for a long directory name' };
+  return { short, long };
 }
 
 test('a junction to the data dir names the same pipes as the real path, even for a dir not made yet', async (t) => {
@@ -62,6 +66,6 @@ test('an 8.3 short spelling of the data dir names the same pipes as the long one
   t.after(() => cleanup(real));
   const s = shortSpelling(real);
   if (s.skip) return t.skip(s.skip);
-  assert.equal(pipeName(s.short), pipeName(real));
-  assert.equal(adapterPipeName(s.short, 7), adapterPipeName(real, 7));
+  assert.equal(pipeName(s.short), pipeName(s.long));
+  assert.equal(adapterPipeName(s.short, 7), adapterPipeName(s.long, 7));
 });
