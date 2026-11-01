@@ -61,7 +61,7 @@ function createDoStop({ ctx, writeRow }) {
       tree = kr.tree; w.treeKill = tree; refused = kr.refused; notKilled = kr.descendants_not_killed; killed = !refused;
       if (w.child) await W.waitExit(w, Math.max(2000, Math.min(timeout_ms, 10000)));
       else {
-        const gone = await P.waitPidGone(pid, { timeoutMs: Math.max(2000, Math.min(timeout_ms, 10000)) });
+        const gone = await P.waitProcessGone(pid, w.pidCreated, { timeoutMs: Math.max(2000, Math.min(timeout_ms, 10000)) });
         if (!refused && gone === null) { killSentAlive = true; killed = false; } // the kill was sent and the pid is still there at the deadline
       }
     }

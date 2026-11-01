@@ -311,7 +311,21 @@ async function waitPidGone(pid, { timeoutMs = 15000, intervalMs = 25 } = {}) {
   return null;
 }
 
+// Wait for the process {pid, created} to disappear (ADR 0039). waitPidGone polls the bare pid, which another process may take
+// inside the wait, so at its deadline the pid is checked once more against ONE snapshot: a different or absent creation time
+// means the process we meant is gone. 'unverifiable' (no created time, or an unreadable snapshot) proves nothing and stays alive.
+// -> ms until gone, or null when it may still be running. `wait` and `snapshot` are seams.
+async function waitProcessGone(pid, created, { timeoutMs = 15000, intervalMs = 25, wait = waitPidGone, snapshot = null } = {}) {
+  const ms = await wait(pid, { timeoutMs, intervalMs });
+  if (ms !== null || !Number.isFinite(created)) return ms;
+  const r = snapshot ? await snapshot() : await ID.snapshotShared({ kind: 'liveness' });
+  const snap = r instanceof Map ? r : (r && r.snap) || null;
+  const c = ID.checkIdentity(pid, { created }, snap);
+  return c.kind === 'mismatch' || c.kind === 'absent' ? timeoutMs : null;
+}
+
 module.exports = {
+  waitProcessGone,
   IS_WINDOWS, assertPid, killPid, killTree, killProcess, rowTarget, manualStopHint, withKillLock, descendantTargets, killMany, childPids, waitPidGone, isHandle,
   processSnapshot: ID.processSnapshot, snapshotShared: ID.snapshotShared, gate: ID.gate, createdOf: ID.createdOf, recentRefusals: () => refusals.slice(),
 };

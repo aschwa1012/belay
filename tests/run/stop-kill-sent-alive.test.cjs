@@ -41,3 +41,26 @@ test('a stop whose kill was sent but left the pid alive is reported as not stopp
     assert.strictEqual(running(s), true);
   } finally { PI.killWorker = realKill; P.waitPidGone = realWait; s.kill(); await m.shutdown(); cleanup(data); }
 });
+
+test('a stop whose wait times out while another process holds the pid (a different creation time) is a stop', async () => {
+  const PI = require('../../src/run/pid-identity.cjs');
+  const P = require('../../src/run/process.cjs');
+  const ID = require('../../src/core/proc-identity.cjs');
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-ksb-'));
+  const wt = path.join(d, 'wt'); fs.mkdirSync(wt, { recursive: true });
+  const data = d.replace(/\\/g, '/');
+  const core = createFakeCore();
+  const m = createRunManager({ core, dataDir: data, runId: 'run-ksb', paths: { claudeExe: FAKE, userSettings: USER_SETTINGS } });
+  const s = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { windowsHide: true, stdio: 'ignore' });
+  const realKill = PI.killWorker; const realWait = P.waitPidGone; const realSnap = ID.snapshotShared;
+  // The kill was identity-proven and sent; the bare-pid wait reaches its deadline because the pid now belongs to another process.
+  PI.killWorker = async () => ({ tree: null, pidKill: { signalled: true }, identity: { via: 'created' }, refused: null });
+  P.waitPidGone = async () => null;
+  ID.snapshotShared = async () => ({ snap: new Map([[s.pid, { created: 222, image: 'node.exe', ppid: 1 }]]), startSeq: Infinity });
+  try {
+    await core.worker.write({ id: 'w-k', run_id: 'run-ksb', substrate: 'claude-code', pid: s.pid, state: 'running', session_id: 'sess-1', worktree: wt.replace(/\\/g, '/'), started_at: Date.now(), turns: 1, last_event_at: Date.now(), pid_created: 111 });
+    const r = await m.stop({ worker_id: 'w-k', mode: 'kill', timeout_ms: 2000 });
+    assert.strictEqual(r.killed, true, JSON.stringify(r));
+    assert.ok(!r.not_stopped && !r.may_be_live, 'a reused pid is not the worker alive');
+  } finally { PI.killWorker = realKill; P.waitPidGone = realWait; ID.snapshotShared = realSnap; s.kill(); await m.shutdown(); cleanup(data); }
+});
