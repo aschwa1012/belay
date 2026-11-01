@@ -113,11 +113,13 @@ test('a restart whose own relaunch text is oversized is refused with advice that
         assert.strictEqual(e.detail.path, 'restart-stopped');
         assert.match(e.message, /about \d+ characters/);
         assert.match(e.message, /already stopped/);
+        assert.match(e.message, /its lease was released/);
+        assert.strictEqual(e.detail.lease_released, true);
         assert.doesNotMatch(e.message, /still running/);
         return true;
       });
       assert.ok(!P.pidAlive(pid), 'the old process was stopped before the text was built');
-      assert.strictEqual((await core.worker.get({ worker_id: 'c1' })).state, 'stopped', 'the graceful stop wrote the row stopped');
+      await assertClean(core, task.id, 'c1'); // a `stopped` row would keep the lease to its TTL: the refusal writes it dead and the task goes back to open
     }, { wrapCore });
   } finally { delete process.env.FAKE_CODEX_GATE_FILE; }
 });
