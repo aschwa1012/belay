@@ -18,10 +18,20 @@ const TERMINAL_WORKER = new Set(['stopped', 'dead', 'forgotten']);
 
 // One create or remove per task at a time, in the owner's process (the only process that serves writes).
 const inFlight = new Set();
-async function exclusive(key, what, fn) {
+// A holder that is a removal (kind 'remove') also publishes a promise resolved in its finally, after the key is free, so the sweep can
+// wait for exactly the lock's release instead of guessing how many turns that takes.
+const releases = new Map(); // key -> { kind, released }
+async function exclusive(key, what, fn, kind) {
   if (inFlight.has(key)) throw err('E_BUSY', `${what} is already in flight; nothing was done`, { key });
   inFlight.add(key);
-  try { return await fn(); } finally { inFlight.delete(key); }
+  let release;
+  const mine = { kind, released: new Promise((r) => { release = r; }) };
+  releases.set(key, mine);
+  try { return await fn(); } finally {
+    inFlight.delete(key);
+    if (releases.get(key) === mine) releases.delete(key);
+    release();
+  }
 }
 
 // Several keys at once, all or none: a key already held refuses the call before anything is taken (task.create with trees).
@@ -318,7 +328,7 @@ async function worktreeRemove(E, caller, args) {
       if (open) throw err('E_PRECONDITION', `task ${open.id} (${open.state}) is worked in the same tree or branch ${rec.path}; finish or cancel it first`, { task_id: open.id, state: open.state, path: rec.path });
       return await removeShared(E, caller, args, task, rec);
     } finally { if (removing.get(key) === mine) removing.delete(key); finish(); }
-  });
+  }, 'remove');
 }
 
 // Removes the tree and records the removal on the task and on every task that shares the tree.
@@ -352,28 +362,27 @@ async function assertOnBranch(rec, what) {
 }
 
 // task.worktreeSweep's removal of one task's tree (ADR 0065): the same exclusion and record as task.worktreeRemove, without force.
-// Null when the task has no tree to remove now.
+// Null when the task has no tree to remove now; { removed_elsewhere, removed_through } when another call removed it first.
 async function removeForSweep(E, caller, task0) {
-  // A removal in flight through this very task holds its per-task lock, which would refuse the sweep as E_BUSY. Wait for that
-  // removal first (it waits on nothing, so no cycle), then one turn of the event loop so its lock is released too.
-  const own = active(rows.current(E.store, 'task', task0.id));
-  const ownKey = own ? G.fwd(own.path).toLowerCase() : null;
-  if (ownKey && removing.has(ownKey) && removing.get(ownKey).task_id === task0.id) {
-    await removing.get(ownKey).done.catch(() => {});
-    await new Promise(setImmediate);
-  }
-  return exclusive(`task:${task0.id}`, `a worktree call for task ${task0.id}`, async () => {
+  // A removal through this very task holds its per-task lock, which would refuse the sweep as E_BUSY. Wait for the lock's release
+  // (a removal waits only on removal claims, never on the sweep, so there is no cycle). Any other holder, a create, still refuses.
+  const lockKey = `task:${task0.id}`;
+  let waited = false;
+  while (releases.has(lockKey) && releases.get(lockKey).kind === 'remove') { waited = true; await releases.get(lockKey).released; }
+  const elsewhere = (t, by) => ({ removed_elsewhere: true, removed_through: (t.worktree && t.worktree.removed_through) || by || t.id });
+  return exclusive(lockKey, `a worktree call for task ${task0.id}`, async () => {
     let task = requireTask(E, task0.id, 'task.worktreeSweep');
     let rec = active(task);
-    if (!rec) return null;
+    if (!rec) return waited ? elsewhere(task) : null;
     const key = G.fwd(rec.path).toLowerCase();
     // A sharer's removal of this tree in flight is waited for, as task.worktreeRemove does: the sweep then finds the tree
-    // removed (null) or, if that removal failed, removes it itself. Waiting reports the tree's true end state; skipping would not.
+    // removed or, if that removal failed, removes it itself. Waiting reports the tree's true end state; skipping would not.
     while (removing.has(key)) {
+      const by = removing.get(key).task_id;
       await removing.get(key).done.catch(() => {});
       task = requireTask(E, task0.id, 'task.worktreeSweep');
       rec = active(task);
-      if (!rec) return null;
+      if (!rec) return elsewhere(task, by);
     }
     const open = openSharer(E, task);
     if (open) throw err('E_PRECONDITION', `task ${open.id} (${open.state}) is worked in the same tree or branch ${rec.path}`, { task_id: open.id, state: open.state, path: rec.path });
@@ -382,7 +391,7 @@ async function removeForSweep(E, caller, task0) {
     const mine = { task_id: task.id, done: new Promise((r) => { finish = r; }) };
     removing.set(key, mine);
     try { return await removeShared(E, caller, { force: false, noRecordLeftover: true }, task, rec); } finally { if (removing.get(key) === mine) removing.delete(key); finish(); }
-  });
+  }, 'remove');
 }
 
 // The shared removal (a task's tree, or an integration's): refuses a live worker in it and a dirty tree unless force,

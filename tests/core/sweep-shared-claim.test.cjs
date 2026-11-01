@@ -59,7 +59,7 @@ async function sharedTree(name) {
 
 // The removal goes through `via`; the sweep passes the group's first task to its removal, so one of the two orders has the sweep
 // and the removal on different tasks, and only then can the per-task lock not hide a double removal.
-async function sweepDuringRemoval(name, pick) {
+async function sweepDuringRemoval(name, pick, second = false) {
   const { w, f } = await sharedTree(name);
   const via = pick(w, f);
   const realList = G.worktrees, realRun = G.run;
@@ -73,17 +73,25 @@ async function sweepDuringRemoval(name, pick) {
     armed = true;
     const pr = orch.task.worktreeRemove({ task_id: via.id }); // held inside its first worktree listing
     await Promise.race([heldAt, pr.then(() => { throw new Error('the removal ended before reaching the held git call'); })]);
+    // With `second`, the sharer's own removal arrives too and waits on the claim holding its task lock, so a sweep whose group
+    // starts at that task meets a lock held by a call that is itself waiting.
+    const p2 = second ? orch.task.worktreeRemove({ task_id: (via === w ? f : w).id }) : null;
+    if (p2) await new Promise(setImmediate);
     const ps = op.task.worktreeSweep({ run_id: 'test-run' });
     await Promise.race([sweepAt, ps.then(() => { throw new Error('the sweep ended before reaching the tree'); })]);
     await new Promise(setImmediate); // the sweep's own call is made or waiting; the removal is still held
     release();
-    const [rr, rs] = await Promise.allSettled([pr, ps]);
+    const [rr, rs, r2] = await Promise.allSettled([pr, ps, p2]);
+    if (p2) {
+      assert.strictEqual(r2.status, 'fulfilled', r2.reason && r2.reason.message);
+      assert.deepStrictEqual([r2.value.removal.already, r2.value.removal.removed_through], [true, via.id], 'the sharer\'s removal reports it already removed');
+    }
     assert.strictEqual(rr.status, 'fulfilled', rr.reason && rr.reason.message);
     assert.strictEqual(rs.status, 'fulfilled', rs.reason && rs.reason.message);
     assert.ok(rr.value.worktree.removed_at && !rr.value.removal.already && !rr.value.removal.already_gone, 'the held removal removes the tree itself');
     const mine = (list) => list.filter((x) => x.task_ids.includes(w.id));
     assert.deepStrictEqual([mine(rs.value.removed).length, mine(rs.value.failed).length], [0, 0], `the sweep removes nothing a second time: ${JSON.stringify(rs.value)}`);
-    assert.strictEqual(mine(rs.value.kept).length, 1, 'the sweep reports the tree as removed by another call');
+    assert.deepStrictEqual(mine(rs.value.kept).map((k) => [k.reason, k.removed_through]), [['removed_by_other', via.id]], 'the sweep reports the tree as removed by another call');
     assert.ok(!fs.existsSync(w.worktree.path));
     for (const id of [w.id, f.id]) assert.ok((await orch.task.get({ task_id: id })).worktree.removed_at, `task ${id} records the removal`);
   } finally { release(); G.worktrees = realList; G.run = realRun; }
@@ -91,3 +99,5 @@ async function sweepDuringRemoval(name, pick) {
 
 test('a sweep that reaches a shared tree while the work task\'s removal is in flight waits for it', () => sweepDuringRemoval('sweep-w', (w) => w));
 test('a sweep that reaches a shared tree while the fix task\'s removal is in flight waits for it', () => sweepDuringRemoval('sweep-f', (w, f) => f));
+test('a sweep, the held removal and the sharer\'s waiting removal all meet on one tree (held work task)', () => sweepDuringRemoval('sweep-3w', (w) => w, true));
+test('a sweep, the held removal and the sharer\'s waiting removal all meet on one tree (held fix task)', () => sweepDuringRemoval('sweep-3f', (w, f) => f, true));
