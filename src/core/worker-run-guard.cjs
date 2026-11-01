@@ -18,4 +18,14 @@ function refuseOtherRun(E, caller, args, prev) {
   }
 }
 
-module.exports = { refuseOtherRun };
+// The same rule for a task: the orchestrator of one run may not move a task, or its lease, out of another LIVE run (task.assign
+// and task.ensureHold both do that when the task owns files). A run with no row counts as not live here, as above; the
+// operator is unaffected. Call inside the transaction that would write.
+function refuseOtherRunTask(E, caller, task) {
+  if (caller.role !== 'orchestrator' || !caller.run_id || !task.run_id || task.run_id === caller.run_id) return;
+  if (rows.current(E.store, 'run', task.run_id) && require('./task-holds.cjs').runLiveness(E.store)(task.run_id).live) {
+    throw err('E_ROLE', `task ${task.id} belongs to run ${task.run_id}, which is live, so the orchestrator of run ${caller.run_id} may not take it`, { task_id: task.id, run_id: caller.run_id, task_run_id: task.run_id });
+  }
+}
+
+module.exports = { refuseOtherRun, refuseOtherRunTask };

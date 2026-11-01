@@ -103,6 +103,7 @@ async function assign(E, caller, args) {
     // of a run that came back to life after this task's run did yields, so the run live now keeps the paths.
     // The hold belongs to a live run: a task whose own run has ended is taken over by the run of the worker that takes it
     // (the calling orchestrator's run for a check_only), and is refused when no live run can own it.
+    require('./worker-run-guard.cjs').refuseOtherRunTask(E, caller, task); // a live run's task is that run's: no move of it or its lease by another run
     const worker = checkOnly ? null : rows.current(E.store, 'worker', args.worker_id);
     // ADR 0058 amendment 1: a worker runs in one directory for its whole life, so a task with its own worktree goes only to a
     // worker that runs there. A check_only call checks the directory the spawn will run in, when it names one. Checked before
@@ -202,6 +203,7 @@ async function evaluate(E, caller, args, queued = null) {
   // final: a re-run would overwrite its passing evidence, or keep `done` over failing results. An open dependency is refused
   // rather than evaluated without `done`, because a task is not done while its dependency is open (ADR 0013 section 1).
   const gate = (t) => {
+    require('./worker-run-guard.cjs').refuseOtherRunTask(E, caller, t); // a live run's task is that run's
     if (t.state === 'done') throw err('E_TASK_DONE', `task ${t.id} is already done${t.results && t.results.evaluated_at ? ` (evaluated at ${t.results.evaluated_at})` : ''}; its results are in task_list with task_ids. To redo the work, create a new task`, { task_id: t.id, state: 'done' });
     if (t.state === 'cancelled') throw err('E_ARGS', `task ${t.id} was cancelled, which is final; there is nothing to evaluate`, { task_id: t.id, state: 'cancelled' });
     assertDependenciesDone(E, t);
