@@ -89,18 +89,26 @@ async function run(ctx) {
   const open = process.env.BELAY_TEST_MODE === '1' && typeof ctx.openCore === 'function' ? ctx.openCore : openCore;
   const core = await open({ dataDir, caller: { role: 'operator', run_id: 'cli', pid: process.pid } });
   try {
-    let runId = parsed.runId;
-    let source = runId ? 'argument' : 'none';
-    if (!runId) {
-      const { runs } = await core.run.list({});
-      const chosen = runs.find(r => r.alive) || runs[0];
-      if (chosen) { runId = chosen.id; source = 'run.list'; }
-    }
-    const args = {};
-    if (runId) args.run_id = runId;
-    if (parsed.by) args.group_by = parsed.by;
-    const result = await core.usage.list(args);
-    return { code: 0, text: render(runId, parsed.by, result), json: { run_id: runId || null, run_id_source: source, ...result } };
+    return await core.readBatch(async () => { // one store copy for every read below
+      let runId = parsed.runId;
+      let source = runId ? 'argument' : 'none';
+      if (runId) {
+        const { runs } = await core.run.list({});
+        if (!runs.some(r => r.id === runId)) {
+          const message = `no run row exists for ${runId}; list runs with belay status`;
+          return { code: 1, text: `belay usage: ${message}\n`, json: { error: { code: 'E_NOT_FOUND', message, run_id: runId } } };
+        }
+      } else {
+        const { runs } = await core.run.list({});
+        const chosen = runs.find(r => r.alive) || runs[0];
+        if (chosen) { runId = chosen.id; source = 'run.list'; }
+      }
+      const args = {};
+      if (runId) args.run_id = runId;
+      if (parsed.by) args.group_by = parsed.by;
+      const result = await core.usage.list(args);
+      return { code: 0, text: render(runId, parsed.by, result), json: { run_id: runId || null, run_id_source: source, ...result } };
+    });
   } catch (e) {
     const code = e.code || 'E_INTERNAL';
     const detail = e.detail === undefined ? {} : { detail: e.detail };

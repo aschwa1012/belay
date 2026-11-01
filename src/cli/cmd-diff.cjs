@@ -118,6 +118,10 @@ async function run(ctx) {
         if (parsed.runId) {
           runId = parsed.runId; runIdSource = 'argument';
           chosen = runs.find(r => r.id === parsed.runId) || null;
+          if (!chosen) {
+            const message = `no run row exists for ${parsed.runId}; list runs with belay status`;
+            return { code: 1, text: `belay diff: ${message}\n`, json: { error: { code: 'E_NOT_FOUND', message, run_id: parsed.runId } } };
+          }
         } else if (runs.length) {
           chosen = runs.find(r => r.alive) || runs[0];
           runId = chosen.id; runIdSource = 'run.list';
