@@ -23,7 +23,7 @@ const BAD_PATHS = [
 ];
 const OK_PATHS = [
   'tmp/x', './tmp/x', 'C:\\Work\\a\\tmp\\x', 'C:/repo/tmp/x', '/home/tmp/x', '/tmpfoo/x', 'C:/tmpfoo', 'C:\\tmp-old\\x',
-  'C:/tmp.old/x', 'C:/repo/tmp./x', 'C:/.../tmp/x', 'C:/Work/AppData/Local/Temp/x', `${TEMP}/x`, 'C:/repo/src/../src/tmp.js', '/c/Users/tmp', '', undefined, 5,
+  'C:/tmp.old/x', 'C:/repo/tmp./x', 'C:/.../tmp/x', 'C:/Work/AppData/Local/Temp/x', `${TEMP}/x`, 'C:/repo/src/../src/tmp.js', '/c/Work/tmp', '', undefined, 5,
 ];
 
 test('Write, Edit, MultiEdit and NotebookEdit to a rooted tmp path are refused, in every spelling and case', () => {
@@ -121,7 +121,7 @@ test('the refusal is one line and names the worker temp dir and the way out', ()
 });
 
 test('the whole deny JSON stays under 400 bytes however long the temp dir is, and keeps the rule', () => {
-  const long = ['C:\\Work\\a-very-long-folder-name', ...Array.from({ length: 30 }, (_, i) => `segment-${i}-\u00e9\u00e9`), 'belay-w1'].join('\\');
+  const long = ['C:\\Work\\a-very-long-folder-name',...Array.from({ length: 30 }, (_, i) => `segment-${i}-\u00e9\u00e9`), 'belay-w1'].join('\\');
   for (const dir of [TEMP, long, 'x'.repeat(2000), undefined]) {
     for (const p of [file('Write', '/tmp/x'), bash(`node -e "open('/tmp/x')"`)]) {
       const reason = TG.refusal(p, dir);
