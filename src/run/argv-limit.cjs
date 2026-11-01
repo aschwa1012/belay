@@ -45,7 +45,7 @@ function checkCommandLine(exe, args, { substrate = 'codex', workerId = null, lim
 // returned (null when it wrote nothing, as a closed record does), `threw` that the write failed.
 function noteDeadWrite(e, row, threw) {
   const dead = !!row && row.state === 'dead';
-  const ids = dead && Array.isArray(row.leases_released) ? row.leases_released.map((l) => (l && l.id) || l) : [];
+  const ids = dead && Array.isArray(row.leases_released) ? row.leases_released.map((l) => (l && (l.lease_id || l.id)) || l) : []; // core writes { lease_id, task_id } (lease-holder-dead.cjs)
   e.detail = { ...(e.detail || {}), row_dead: dead, lease_released: ids.length > 0, leases_released: ids };
   e.message += dead
     ? (ids.length ? `; the worker row is now dead and its lease ${ids.join(', ')} was released` : '; the worker row is now dead (it held no lease)')

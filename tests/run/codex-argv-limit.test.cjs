@@ -135,6 +135,8 @@ test('noteDeadWrite words the outcome from the row the write returned', () => {
   const mk = () => Object.assign(new Error('refused'), { detail: {} });
   let e = mk(); AL.noteDeadWrite(e, { state: 'dead', leases_released: ['L1'] }, false);
   assert.match(e.message, /now dead and its lease L1 was released/); assert.strictEqual(e.detail.lease_released, true);
+  e = mk(); AL.noteDeadWrite(e, { state: 'dead', leases_released: [{ lease_id: 'L2', task_id: 't2' }] }, false); // the shape core writes
+  assert.match(e.message, /now dead and its lease L2 was released/); assert.deepStrictEqual(e.detail.leases_released, ['L2']);
   e = mk(); AL.noteDeadWrite(e, { state: 'dead', leases_released: null }, false);
   assert.match(e.message, /now dead \(it held no lease\)/); assert.strictEqual(e.detail.lease_released, false); assert.strictEqual(e.detail.row_dead, true);
   e = mk(); AL.noteDeadWrite(e, null, false); // a closed record writes nothing and returns null
