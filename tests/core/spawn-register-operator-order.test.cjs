@@ -90,8 +90,8 @@ test('the register read without a snapshot closes a dead record at its last-seen
     const dead = deadPid();
     putRecord(dir, { pid: dead, created: NOW - 3 * H, at: NOW - 3 * H + 500, seen_at: NOW - 2 * H });
     assert.deepStrictEqual(SR.list(), []);
-    // a stamped process can live one refresh interval past its stamp, so the close is the stamp plus that
-    assert.strictEqual(SR.tombstones().find((t) => t.pid === dead).until, NOW - 2 * H + SR.SEEN_REFRESH_MS);
+    // touch skips within one refresh interval, so a stamped process can live two past its stamp: the close is the stamp plus that
+    assert.strictEqual(SR.tombstones().find((t) => t.pid === dead).until, NOW - 2 * H + 2 * SR.SEEN_REFRESH_MS);
   });
 });
 
@@ -117,8 +117,10 @@ test('a headless orchestrator whose run process died is covered up to its last s
     const shot = snapOf({ 99001: { ppid: pid, created: s4 + H, image: 'node.exe' } });
     const chain = [{ pid: 99001, created: s4 + H }];
     const match = () => OC.spawnedMatch(chain, spawned({ snap: shot, persist: false }).concat(Prov.refresh(shot, { persist: false }).alive));
-    // never stamped: the record closes at the moment it was found dead, so the orphan made an hour in is covered (a lifetime is never closed before the process could have been alive)
-    assert.ok(match(), 'never stamped: covered up to the time it was found dead');
+    // never stamped: the window runs from the record's write time for two refresh intervals (60 s), no further
+    assert.strictEqual(match(), null, 'never stamped: an orphan made an hour in is outside the window');
+    const early = snapOf({ 99002: { ppid: pid, created: s4 + 30000, image: 'node.exe' } });
+    assert.ok(OC.spawnedMatch([{ pid: 99002, created: s4 + 30000 }], spawned({ snap: early, persist: false }).concat(Prov.refresh(early, { persist: false }).alive)), 'one made within the window is covered');
     assert.strictEqual(SR.touch(pid, s4 + 3.5 * H), true, 'the run process timer, 3.5 h in');
     assert.ok(match(), 'stamped: the orphan made an hour in is a descendant');
   });

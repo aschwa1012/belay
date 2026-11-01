@@ -59,11 +59,11 @@ test('a retired record closes at its last-seen time, never at the time it is rea
   // The same, read directly through the register: the tombstone's until is the stamp.
   putRecord(dir, { pid: 4101, created: spawned, at: spawned + 100, seen_at: spawned + 600000 });
   SR.live({ snap: snapOf({}), now: NOW, boot: BOOT });
-  // A stamped process can live up to one refresh interval past its last stamp, so the lifetime closes there (never earlier).
-  assert.strictEqual(tomb(4101).until, spawned + 600000 + SR.SEEN_REFRESH_MS);
+  // touch skips within one refresh interval, so a stamped process can live two past its last stamp: the lifetime closes there (never earlier).
+  assert.strictEqual(tomb(4101).until, spawned + 600000 + 2 * SR.SEEN_REFRESH_MS);
   putRecord(dir, { pid: 4102, created: spawned, at: spawned + 100 });
   SR.live({ snap: snapOf({}), now: NOW, boot: BOOT });
-  assert.strictEqual(tomb(4102).until, NOW, 'a record never stamped closes at the moment it was found dead');
+  assert.strictEqual(tomb(4102).until, spawned + 100 + 2 * SR.SEEN_REFRESH_MS, 'a record never stamped counts from the time it was written');
 }));
 
 test('a record from before the current boot covers nothing, whatever answers to its pid', () => withRegistry((dir) => {
@@ -114,8 +114,8 @@ test('retire closes a dead pid\'s record at the later of its stamp and the row\'
   assert.strictEqual(SR.retire(process.pid, NOW), false, 'a pid that still answers is not retired');
   assert.ok(fs.existsSync(path.join(dir, `${process.pid}.json`)));
   assert.strictEqual(SR.retire(d1, NOW, t + 90000), true);
-  // A stamped process can live one refresh interval past its stamp: the close is that, and the row's last event does not move it.
-  assert.strictEqual(tomb(d1).until, t + 1000 + SR.SEEN_REFRESH_MS);
+  // The row's last event (t + 90000) is later than the stamp plus two refresh intervals (t + 61000), so it sets the close.
+  assert.strictEqual(tomb(d1).until, t + 90000);
   putRecord(dir, { pid: d2, created: t, at: t + 100 });
   SR.retire(d2, t + 50, t + 90000);
   assert.strictEqual(tomb(d2).until, t + 50, 'never later than the time of the close');

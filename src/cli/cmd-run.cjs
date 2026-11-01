@@ -119,7 +119,9 @@ async function run(ctx) {
     if (!Number.isInteger(pid)) return;
     const SR = require('../core/spawn-register.cjs');
     SR.registerProcess({ pid, kind: 'orchestrator', dataDir, spawnedAt: Date.now() }, 'the headless orchestrator');
-    process.once('exit', () => SR.unregister(pid));
+    // Stamped while the orchestrator lives, so a record left behind closes near its last stamp (the workers' records are stamped the same way).
+    const stamping = SR.stampWhileHeld(pid);
+    process.once('exit', () => { stamping.stop(); SR.unregister(pid); });
   };
   const core = await openCore({
     dataDir, caller: { role: 'operator', run_id: parsed.runId, pid: process.pid },
