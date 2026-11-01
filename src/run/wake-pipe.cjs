@@ -18,6 +18,7 @@ const fs = require('node:fs');
 const crypto = require('node:crypto');
 const { diffWorkers, wakeText } = require('./wake.cjs');
 const { pipeName: ownerPipeName } = require('../core/lock.cjs');
+const WR = require('./wake-ref.cjs');
 
 const HEARTBEAT_MS = 5000;
 const { DEATH_GRACE_MS } = require('./exit-hold.cjs'); // the same value headless uses (orchestrator.cjs)
@@ -105,7 +106,7 @@ function startWakePublisher({
     if (!claimed(w)) return;
     if (receipt.length < RECEIPT_MAX) receipt.push(require('./wake-record.cjs').wakeRecord({ ...(w.ev || {}), event: w.event || (w.ev && w.ev.event), worker_id: w.worker_id }, w.text, now() - t0, null)); // the run receipt's wakes[], as headless fills it
     const ref = owedRef.get(w.id); // a claimed wake carries its delivery key, so a repeat after a release is recognisable (worker_wait names the same key)
-    const line = `${JSON.stringify({ id: w.id, text: ref ? `${w.text} (ref ${ref})` : w.text })}\n`;
+    const line = `${JSON.stringify({ id: w.id, text: ref ? WR.withRef(w.text, WR.shortRef(ref)) : w.text })}\n`;
     retained.push(line);
     if (retained.length > RETAIN_MAX) retained.shift();
     stats.published += 1;
