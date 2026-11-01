@@ -117,7 +117,13 @@ function killPidRaw(target, signal, opts) {
       if (!snap) return nom(unreadable(pid, m), 'unverifiable');
       const e = snap.get(pid);
       if (!e) return nom(`pid ${pid} is not running`, 'absent');
-      if (target.image == null || !ID.imageIn(e.image, target.image)) return nom(`no recorded creation time for pid ${pid} and its image ${e.image} is not the expected one`, 'unverifiable');
+      if (target.image == null) return nom(`no recorded creation time for pid ${pid} and no expected image to check it against`, 'unverifiable');
+      if (!ID.imageIn(e.image, target.image)) {
+        // A live process never changes its image, so another image than the one the spawner recorded proves the original has
+        // exited and the pid was reused. An image that is only the substrate's guess proves nothing (the launch may be a shim).
+        if (target.image_recorded === true) return nom(`no recorded creation time for pid ${pid} and its image ${e.image} is not the recorded one: the process belay meant has exited and the pid was reused`, 'mismatch');
+        return nom(`no recorded creation time for pid ${pid} and its image ${e.image} is not the expected one`, 'unverifiable');
+      }
       return { ...base, ...sendKill(pid, signal, opts.kill), ...sm, ok: true, identity: { via: 'image', image: e.image } };
     }
     const c = snap ? ID.checkIdentity(pid, { created: target.created, image: target.image }, snap) : { ok: false, kind: 'unverifiable', detail: unreadable(pid, m) };
@@ -186,6 +192,7 @@ function rowTarget(row, pidField = 'pid', createdField = 'pid_created') {
     pid: row[pidField], created: Number.isFinite(row[createdField]) ? row[createdField] : null,
     image: row.pid_image ? [row.pid_image] : (SUBSTRATE_IMAGES[row.substrate] || []),
   };
+  if (row.pid_image) t.image_recorded = true; // the image the spawner launched, not the substrate's guess: another image at the pid proves a reuse
   if (row.pid_created_error) { t.unverified = row.pid_created_error; if (Number.isInteger(row.adapter_pid)) t.holder_pid = row.adapter_pid; }
   return t;
 }
