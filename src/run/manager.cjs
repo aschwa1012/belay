@@ -355,7 +355,13 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       if (onFirstText) onFirstText(firstText); if (!skipDeadPidKill) await LG.refuseIfPaused(ctx.core, ctx.runId, w, { restart: true }); // a run pause landing during the awaits above; a resume (skipDeadPidKill) runs while the run is still paused
 
       const resume = d.branch === 'resume' ? w.sessionId : null;
-      await launch(w, w.substrate === 'claude-code' ? { resume } : { resume, prompt: firstText, path: 'restart-stopped' });
+      try { await launch(w, w.substrate === 'claude-code' ? { resume } : { resume, prompt: firstText, path: 'restart-stopped' }); } catch (e) {
+        if (e && e.detail && e.detail.reason === 'argv_too_long' && e.detail.path === 'restart-stopped') { // the old process is stopped and none will start: a `stopped` row would keep the lease to its TTL
+          w.deathEstablishedBy = 'relaunch refused: the command line was too long, so no process was started';
+          try { await writeRow(w, 'dead', { releaseLeases: true }); e.detail.lease_released = true; e.message += '; the worker row is now dead and its lease was released'; } catch { /* the refusal stays the error */ }
+        }
+        throw e;
+      }
       return { d, hold, firstText };
     });
     let init;
