@@ -47,8 +47,12 @@ async function runOp(w, name, fn, { waitFor = [] } = {}) {
 // A message never lands inside a stop, a restart or a resume: the process it would reach is being ended or replaced, and its
 // `running` row would follow the stop's `stopping` one. Checked at the call and again just before a Codex turn's launch.
 const MESSAGE_REFUSING_OPS = ['stop', 'restart', 'resume'];
+// The guarded idle stop (stop_idle_on_done) has its own op name, so an explicit stop never coalesces onto it and receives its skip:
+// a stop always waits it out and then really stops. It refuses a message only once its guard has decided to stop (`stopCommitted`).
+const STOP_WAIT = ['pause', 'resume', 'restart', 'idle-stop'];
+const IDLE_STOP_WAIT = ['pause', 'resume', 'restart', 'stop'];
 function refuseMessageDuringOp(w) {
-  if (w.op && MESSAGE_REFUSING_OPS.includes(w.op.name)) {
+  if (w.op && (MESSAGE_REFUSING_OPS.includes(w.op.name) || (w.op.name === 'idle-stop' && w.stopCommitted))) {
     fail('E_BUSY', `worker ${w.id} is busy with ${w.op.name}, so it takes no message; retry when it returns`, { worker_id: w.id, op: w.op.name });
   }
 }
@@ -247,4 +251,4 @@ function readLaunchOptions(dir) {
   return out;
 }
 
-module.exports = { runOp, refuseMessageDuringOp, shutdown, readLaunchOptions, killSurvivor };
+module.exports = { runOp, refuseMessageDuringOp, STOP_WAIT, IDLE_STOP_WAIT, shutdown, readLaunchOptions, killSurvivor };

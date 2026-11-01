@@ -307,12 +307,12 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   // ADR 0023 amendment 2 decision 3: stop always wins, waiting out a pause, resume or restart in flight.
   // 6e-5/6e-6 (pause.cjs `clearParkForStop`): a stale park record is caught before any write, never overwritten.
   async function stop({ worker_id, mode = 'graceful', timeout_ms = 10000, guard = null }) {
-    const w = await forWorker(worker_id); return LC.runOp(w, 'stop', async () => {
+    const w = await forWorker(worker_id); return LC.runOp(w, guard ? 'idle-stop' : 'stop', async () => {
       if (guard && await guard()) return null; // stop_idle_on_done re-decides here, after a pause, resume or restart was waited out (idle-stop.cjs)
       const { stale, wasParked } = await PZ.clearParkForStop(w, worker_id); // wasParked: fix round #2, manager.cjs:351
       if (!stale) W.noteStoppedWhileSettled(w); // item 2 (wait.cjs:32): fixes the settled state too
       return doStop(w, mode, timeout_ms, { skipRowWrite: stale, treatPidAsDead: wasParked });
-    }, { waitFor: ['pause', 'resume', 'restart'] });
+    }, { waitFor: guard ? LC.IDLE_STOP_WAIT : LC.STOP_WAIT });
   }
 
   // `workers` holds only what this process launched; an unknown id is looked up in the store rather
