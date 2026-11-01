@@ -78,5 +78,7 @@ module.exports = {
   spawnWorker,
   gracefulStop,
   waitPidGone,
+  // The wait through this module's own `waitPidGone` (read at call time), then an identity re-check at the deadline.
+  waitProcessGone: (pid, created, opts = {}) => coreProcess.waitProcessGone(pid, created, { wait: (p, o) => module.exports.waitPidGone(p, o), ...opts }),
   withKillLock: coreProcess.withKillLock, // ADR 0039 review: belay stop's worker kills and the run's worker close share it
 };

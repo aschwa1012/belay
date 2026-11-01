@@ -8,6 +8,7 @@
 
 const fs = require('node:fs');
 const { runCommand, parseNameStatusZ, parsePorcelainZ } = require('./evaluate.cjs');
+const { safeGit } = require('./git-safe.cjs');
 
 const APPLIES_MAX = 16;
 const ITEM_MAX = 300;
@@ -27,7 +28,7 @@ async function workerDiff(worktree, baseSha) {
     if (!d.executable || d.exit_code !== 0) error = `git diff ${String(baseSha).slice(0, 12)}..HEAD exited ${d.exit_code}: ${String(d.stderr || d.spawn_error || '').trim().slice(0, 160)}`;
     else for (const p of parseNameStatusZ(d.stdout)) paths.add(norm(p));
   } else error = 'the worker row has no base_sha, so only uncommitted changes were read';
-  const s = await runCommand(['git', '--no-optional-locks', 'status', '--porcelain', '-z', '--untracked-files=all'], String(worktree), GIT_BOUND_MS);
+  const s = await safeGit(['status', '--porcelain', '-z', '--untracked-files=all'], String(worktree), GIT_BOUND_MS);
   if (!s.executable || s.exit_code !== 0) error = `${error ? `${error}; ` : ''}git status exited ${s.exit_code}: ${String(s.stderr || s.spawn_error || '').trim().slice(0, 160)}`;
   else for (const p of parsePorcelainZ(s.stdout)) paths.add(norm(p));
   return { paths: [...paths].filter(Boolean).sort(), error };

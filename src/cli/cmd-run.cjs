@@ -248,6 +248,10 @@ async function run(ctx) {
   let attachRow = null;
   let routingPin = null; // the retrieval routing the run was pinned with (run-routing.cjs), or null when it pinned nothing
   const RID = require('./run-identity.cjs').createRunIdentity(process.pid);
+  // The main checkout's HEAD, fixed before the orchestrator (or any worker) exists; a spawn only reads it, and with none a reviewer's
+  // spawn names why it copied nothing (silent here: a run outside a git repository has no reviews). Not inside onAttached: its git
+  // calls there would delay the attach past an early startup timeout, which then ends a run that has no attached row.
+  await require('../run/trusted-instructions.cjs').fixAnchor({ dataDir, runId: parsed.runId, projectDir: found.found ? found.dir : C.writeDirOf(ctx.cwd) });
   async function onAttached({ pid }) {
     try {
       clearRunStart(orchestratorDir); // before this launch's attach: no marker of an earlier life of this run id survives
@@ -350,7 +354,7 @@ async function run(ctx) {
         const survivors = [...['scrub', 'review'].map((k) => closeStages && closeStages[k] && closeStages[k].survivor), ...((closeStages && closeStages.survivors) || [])].filter(Boolean);
         if (survivors.length) failClose(`a run-close stage child (pid ${survivors.join(', ')}) is still alive after its kill`); } catch (e) { closeStages = { error: (e && e.message) || String(e) }; } finally { for (const sig of ['SIGINT', 'SIGBREAK']) process.off(sig, onInterrupt); } // never the run's failure
       const er = await RI.endRun({
-        core, ce, runId: parsed.runId, exitReason: partial ? partial.ended_by : crashedBy, usage: partial ? partial.orchestrator.usage : null,
+        core, ce, runId: parsed.runId, exitReason: partial ? partial.ended_by : crashedBy, usage: partial ? partial.orchestrator.usage : null, treeKill: partial ? partial.orchestrator.kill : null,
         reviewRounds, countReviewRounds, late,
       });
       ({ reviewRounds, endedRow, gotRun } = er);

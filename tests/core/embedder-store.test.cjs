@@ -22,6 +22,7 @@ const { ping } = core('ping.cjs');
 const M = core('models.cjs');
 const K = core('model-cache.cjs');
 const I = core('embed-identity.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity or by the child's own handle: a bare pid may be handed to another process (ADR 0039)
 
 const VOYAGE = M.MODELS[M.DEFAULT_MODEL];
 const MINILM = M.MODELS['Xenova/all-MiniLM-L6-v2'];
@@ -240,7 +241,6 @@ test('memory.search: the scan ceiling at the check site follows the namespace\'s
 test('embedder: stopping an owner mid-embed exits 0 within 5 s and the embedder child is gone (m11)', async t => {
   if (noVoyage) return t.skip(noVoyage);
   const { spawn } = require('node:child_process');
-  const { pidAlive } = core('lock.cjs');
   const dir = sandbox();
   try {
     const child = spawn(process.execPath, [`${ROOT}/tests/core/fixtures/owner-embed-stop.cjs`, dir], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -260,7 +260,7 @@ test('embedder: stopping an owner mid-embed exits 0 within 5 s and the embedder 
     assert.strictEqual(info.owner_pid, child.pid);
     assert.strictEqual(r.code, 0, `the owner exited ${r.code}/${r.signal}: ${out} ${err}`);
     assert.ok(r.at - stoppingAt < 5000, `the owner took ${r.at - stoppingAt} ms to exit after the stop`);
-    assert.strictEqual(pidAlive(info.embedder_pid), false, 'the embedder child is gone');
+    await G.assertGone(G.recorded(info.embedder_pid, info.embedder_created), 'the embedder child is gone');
     assert.match(out, /"stopped":true/);
   } finally { cleanup(dir); }
 });
@@ -291,8 +291,11 @@ test('embedder: a child that dies after a good load makes later calls say so, an
 
 test('embedder: a failure after a good load is coded, closes the child and publishes nothing (SF2)', async t => {
   if (noVoyage) return t.skip(noVoyage);
-  const { pidAlive } = core('lock.cjs');
   const real = I.writeMeta;
+  // The failed store closes the embedder, which clears its child handle; keep the handle as the close takes it.
+  const realClose = Embedder.prototype.close;
+  let handle = null;
+  Embedder.prototype.close = function close() { if (this.child) handle = this.child; return realClose.call(this); };
   let pid = null;
   try {
     I.writeMeta = () => { throw new Error('planted meta write failure'); };
@@ -308,8 +311,9 @@ test('embedder: a failure after a good load is coded, closes the child and publi
       assert.strictEqual(s.embedder, null, 'nothing half-published');
       await assert.rejects(c.memory.search({ namespace: 'sf2', query: 'x', mode: 'semantic' }), x => x.code === 'E_INTERNAL', 'sticky, with the same code');
     });
-  } finally { I.writeMeta = real; }
-  assert.strictEqual(pidAlive(pid), false, 'the child was closed');
+  } finally { I.writeMeta = real; Embedder.prototype.close = realClose; }
+  assert.ok(handle && handle.pid === pid, 'the embedder child was closed through its handle');
+  assert.ok(await G.childExited(handle), 'the child was closed');
 });
 
 test('memory.search: a vector call that times out against a live owner is E_TIMEOUT naming its pid, not a copy fallback (SF3)', async () => {

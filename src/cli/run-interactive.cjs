@@ -116,11 +116,11 @@ function onceClose(ce, run, enabled) {
 // The close's last records, in one place so cmd-run.cjs stays under its line budget: the review-round count (ADR 0031
 // decision 6), run.end, then run.get. Each is bounded by the fast close's budget when there is one (F7); a cut count
 // says so and is not "never attached". Failures come back as `errors` ({ what, msg }) for the caller to chain.
-async function endRun({ core, ce, runId, exitReason, usage, reviewRounds, countReviewRounds, late }) {
+async function endRun({ core, ce, runId, exitReason, usage, treeKill, reviewRounds, countReviewRounds, late }) {
   const out = { reviewRounds, endedRow: null, gotRun: null, errors: [] };
   const err = (what, e) => out.errors.push({ what, msg: (e && e.message) || String(e) });
   out.reviewRounds = await within(ce, countReviewRounds(core, runId), 'the review-round count', { value: null, reason: 'not counted: fast-close budget' }, late, END_RESERVE_MS);
-  try { out.endedRow = await within(ce, core.run.end({ exit_reason: exitReason, usage }), 'run.end', null, late, END_RESERVE_MS); } catch (e) { err('run.end', e); }
+  try { out.endedRow = await within(ce, core.run.end({ exit_reason: exitReason, usage, ...(treeKill && treeKill.signalled_at ? { tree_kill: treeKill } : {}) }), 'run.end', null, late, END_RESERVE_MS); } catch (e) { err('run.end', e); }
   if (out.endedRow) {
     try { out.gotRun = await within(ce, core.run.get(), 'run.get', null, late, END_RESERVE_MS); } catch (e) { err('run.get', e); }
   }

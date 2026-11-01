@@ -141,6 +141,9 @@ async function run(ctx) {
     let note = null;
     if (!took.old_lease) {
       note = 'no lease was superseded';
+    } else if (took.old_lease.released_at != null) {
+      // A released lease has no holder to park: that worker may now be working on another task (ADR 0023 decision 9 pauses the holder).
+      note = `the superseded lease was already released (at ${took.old_lease.released_at}), so no worker was paused`;
     } else if (took.old_lease.holder_role !== 'worker') {
       note = `the superseded lease was held by ${took.old_lease.holder_role}`;
     } else {

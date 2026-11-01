@@ -41,6 +41,26 @@ async function lastRunRow(core) {
   }
 }
 
+// A 'mismatch' or 'absent' refusal proves the pid no longer belongs to the worker (the same rule as the worker stop).
+function reusedPid(k) {
+  return !!k.refused && (k.kind === 'mismatch' || k.kind === 'absent');
+}
+
+// A worker whose kill was refused, or whose pid is still alive after the kill, was not stopped (invariant
+// 5). Built only from the stop receipt's own facts (the row's kill record), never a fresh bare-pid probe
+// (ADR 0039). Null when the worker was killed, was already gone, or had no kill attempted.
+function failedKill(w) {
+  const k = w.killed;
+  if (!k || k.by || k.pid_alive_after !== true) return null;
+  if (reusedPid(k)) return null; // the worker's own process is gone; its pid now belongs to another process
+  const why = k.refused ? `kill refused (${k.kind || k.refused}${k.detail ? `: ${k.detail}` : ''})` : 'kill sent but the process is still alive';
+  return { id: w.id, pid: w.pid, reason: why, manual: k.manual || null };
+}
+
+function failedKills(receipt) {
+  return (receipt.workers || []).map(failedKill).filter(Boolean);
+}
+
 function renderText(receipt) {
   if (!receipt.stopped) return `belay stop: ${receipt.reason}\n`;
   const o = receipt.orchestrator;
@@ -48,7 +68,8 @@ function renderText(receipt) {
     `orchestrator pid ${o.pid}: exit ${o.exit_code != null ? o.exit_code : o.exit_signal}, ${o.ms_to_exit} ms, ${o.graceful ? 'graceful' : 'killed after close'}`,
   ];
   for (const w of receipt.workers) {
-    lines.push(`worker ${w.id} pid ${w.pid}: ${w.state}, pid alive ${w.pid_alive}, ${w.killed ? 'killed' : 'not killed'}`);
+    const bad = failedKill(w);
+    lines.push(`worker ${w.id} pid ${w.pid}: ${w.state}, pid alive ${w.pid_alive}, ${bad ? `NOT killed, pid ${w.pid} is still alive: ${bad.reason}` : w.killed && !w.killed.by && reusedPid(w.killed) && w.killed.pid_alive_after === true ? `already gone, pid ${w.pid} now belongs to another process (kill refused: ${w.killed.kind})` : w.killed && w.killed.refused && w.killed.pid_alive_after === false ? 'gone (kill refused)' : w.killed ? 'killed' : 'not killed'}`);
     // ADR 0039: a kill refused for want of proof names how the operator can end the process by hand.
     if (w.killed && w.killed.manual) lines.push(`  refused (${w.killed.detail}). ${w.killed.manual}`);
   }
@@ -101,10 +122,12 @@ async function run(ctx) {
     }
     const ms = Date.now() - t0;
     const receipt = { ...result, stopped: true, established_by: `run.stop over the owner pipe answered in ${ms} ms` };
-    return { code: 0, text: renderText(receipt), json: receipt };
+    const failed = failedKills(receipt);
+    if (failed.length) receipt.failed_kills = failed;
+    return { code: failed.length ? 1 : 0, text: renderText(receipt), json: receipt };
   } finally {
     await core.close();
   }
 }
 
-module.exports = { run };
+module.exports = { run, renderText, failedKills };

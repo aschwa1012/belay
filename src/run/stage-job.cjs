@@ -8,6 +8,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
+const { gitPath, PRE, withoutInjected } = require('../core/git-safe.cjs');
 
 const BUILTINS = ['Read', 'Glob', 'Grep'];
 const DIFF_MAX = 200 * 1024;
@@ -176,11 +177,11 @@ async function runChild({ manager, workerId, worktree, model, capUsd, wallMs, pr
 
 function git(worktree, args, opts = {}) {
   return new Promise((resolve) => {
-    execFile('git', ['-C', worktree, ...args], { maxBuffer: 16 * 1024 * 1024, timeout: GIT_BOUND_MS, windowsHide: true, encoding: 'utf8', ...opts }, (e, out) => resolve(e ? { error: e.killed ? 'git timed out' : 'git failed' } : { text: out }));
+    execFile(gitPath(), [...PRE, '-C', worktree, ...args], { maxBuffer: 16 * 1024 * 1024, timeout: GIT_BOUND_MS, windowsHide: true, encoding: 'utf8', env: withoutInjected(), ...opts }, (e, out) => resolve(e ? { error: e.killed ? 'git timed out' : 'git failed' } : { text: out }));
   });
 }
 async function diffText(worktree, base, head) {
-  const d = await git(worktree, ['diff', '--no-color', base, head]);
+  const d = await git(worktree, ['diff', '--no-color', '--no-ext-diff', '--no-textconv', base, head]);
   if (d.error) return `(${d.error} for ${String(base).slice(0, 12)}..${String(head).slice(0, 12)})\n`;
   return d.text.length > DIFF_MAX ? `${d.text.slice(0, DIFF_MAX)}\n(diff cut at ${DIFF_MAX} bytes)\n` : d.text || '(no change)\n';
 }

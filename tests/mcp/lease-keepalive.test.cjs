@@ -234,3 +234,18 @@ test('keepalive: an old lease without ttl_ms falls back to the remaining time at
   assert.strictEqual(r.action, 'renewed');
   assert.deepStrictEqual(w.renews()[0].args, { lease_id: 'l1', ttl_ms: 500000 }, 'not expires_at - granted_at (600 s)');
 });
+
+test('keepalive: a lease the core refused as not this worker\'s is not asked again, and a later lease still is', async () => {
+  const w = world();
+  w.renewImpl = () => { const e = new Error('not holder'); e.code = 'E_NOT_HOLDER'; throw e; };
+  const k = w.make();
+  const [r1] = await k.tick();
+  assert.match(r1.reason, /E_NOT_HOLDER/);
+  const [r2] = await k.tick();
+  assert.strictEqual(r2.reason, 'not-holder');
+  assert.strictEqual(w.renews().length, 1, 'one renew call in two ticks');
+  w.renewImpl = null;
+  w.leases = [{ id: 'l8', holder: W, holder_role: 'worker', granted_at: w.t - 500000, ttl_ms: 600000, expires_at: w.t + 100000 }];
+  const [r3] = await k.tick();
+  assert.strictEqual(r3.action, 'renewed');
+});

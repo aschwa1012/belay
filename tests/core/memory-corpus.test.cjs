@@ -14,7 +14,7 @@ const { corpus } = core('memory-corpus.cjs');
 
 let dir, store, E, orch;
 const rejects = async (p, code) => assert.rejects(p, e => { assert.strictEqual(e.code, code, `${e.code}: ${e.message}`); return true; });
-const put = (ns, text, extra = {}) => E.handle('memory.store', { namespace: ns, text, embedding: [1, 0, 0], embedding_model: 'm', dim: 3, caller: orch, ...extra });
+const put = (ns, text, extra = {}) => E.handle('memory.store', { namespace: ns, text, embedding: [1, 0, 0], embedding_model: 'm', dim: 3, caller: callerFor('operator'), ...extra });
 const setCols = (id, cols) => {
   const keys = Object.keys(cols);
   store.db.prepare(`UPDATE memory_entries SET ${keys.map(k => `${k} = ?`).join(', ')} WHERE id = ?`).run(...keys.map(k => cols[k]), id);
