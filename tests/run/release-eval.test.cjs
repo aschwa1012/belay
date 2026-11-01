@@ -138,8 +138,9 @@ test('a stop while worker_wait holds the turn end for the evaluation answers the
     whileHeld: async (m, dir, pTurn) => {
       const pidFile = path.join(dir, 'cmd.pid');
       const pid = Number(await until(() => (fs.existsSync(pidFile) ? fs.readFileSync(pidFile, 'utf8') : null))); // the evaluation is running
+      const cmdId = await G.identify(pid); // while the command sleeps, before the stop kills it
       const stopped = await within(m.stop({ worker_id: 'w1', mode: 'graceful' }), 30000, 'the stop');
-      await until(() => !pidAlive(pid), 15000);
+      assert.ok(await G.waitGone(cmdId, { deadlineMs: 15000 }), `the acceptance command (pid ${pid}) is still alive`);
       return { stopped };
     },
   });
