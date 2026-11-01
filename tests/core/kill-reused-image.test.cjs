@@ -100,9 +100,18 @@ test('rowTarget: a row with a recorded pid_image marks the image as recorded; a 
   assert.strictEqual('image_recorded' in P.rowTarget({ pid: 7, substrate: 'claude-code' }), false);
 });
 
-test('killPid: no creation time and the recorded image at the pid is unverifiable, never a mismatch and never signalled', async () => {
+// Pins the current behaviour (unchanged by this branch, same on its base): the single-pid kill of a row with no creation time
+// signals when the image at the pid is the expected one, because the image is all it has. The tree kill refuses such a row.
+test('killPid: no creation time and the expected image at the pid IS signalled, by image (pins current behaviour); killTree refuses it', async () => {
   const rec = recorder();
-  const r = await P.killPid({ pid: 5006, created: null, image: ['node.exe'], image_recorded: true }, 'SIGKILL', { snapshot: snapOf([[5006, 1, T, 'node.exe']]), kill: rec.kill });
-  assert.strictEqual(r.kind, 'unverifiable', 'the same image with no creation time may be the same process');
-  assert.match(r.detail, /^(?!.*reused)/);
+  const snapshot = snapOf([[5006, 1, T, 'node.exe']]);
+  const target = { pid: 5006, created: null, image: ['node.exe'], image_recorded: true };
+  const one = await P.killPid(target, 'SIGKILL', { snapshot, kill: rec.kill });
+  assert.strictEqual(one.ok, true);
+  assert.deepStrictEqual(one.identity, { via: 'image', image: 'node.exe' });
+  assert.deepStrictEqual(rec.sent, [5006]);
+  const tree = await P.killTree(target, { snapshot, kill: rec.kill });
+  assert.strictEqual(tree.refused, 'identity');
+  assert.strictEqual(tree.kind, 'unverifiable');
+  assert.deepStrictEqual(rec.sent, [5006], 'the tree kill signalled nothing more');
 });
