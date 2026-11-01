@@ -20,7 +20,9 @@ const { openCore } = require(path.join(ROOT, 'src', 'core', 'index.cjs'));
   }
   // Let the embed get past tokenizing and into onnx's native run, where a thread could not be interrupted.
   await new Promise((r) => setTimeout(r, 800));
-  console.log(JSON.stringify({ stopping: true, owner_pid: process.pid, embedder_pid: c.owner.embedderObj.pid }));
+  // The embedder child's creation time while it lives (ADR 0039), so the test can tell it from a process that is handed its number later.
+  const made = await require(path.join(ROOT, 'src', 'core', 'proc-identity.cjs')).createdOf(c.owner.embedderObj.pid, { kind: 'test-setup' }).catch(() => null);
+  console.log(JSON.stringify({ stopping: true, owner_pid: process.pid, embedder_pid: c.owner.embedderObj.pid, embedder_created: made && made.created != null ? made.created : null }));
   if (process.argv[3] === 'hold') { setInterval(() => {}, 1000); return; } // the test kills this process by its exact pid
   await c.shutdownOwner();
   await c.close();
