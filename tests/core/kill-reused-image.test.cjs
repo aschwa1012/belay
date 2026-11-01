@@ -35,7 +35,7 @@ test('killProcess: the mismatch survives the tree-then-pid sequence, and nothing
   assert.deepStrictEqual(rec.sent, []);
 });
 
-test('killPid: no creation time, the expected image at the pid, stays unverifiable and unsignalled when no image is expected', async () => {
+test('killPid: no creation time and no image to check it against stays unverifiable and unsignalled', async () => {
   const rec = recorder();
   const noImage = await P.killPid({ pid: 5003, created: null }, 'SIGKILL', { snapshot: snapOf([[5003, 1, T, 'node.exe']]), kill: rec.kill });
   assert.strictEqual(noImage.refused, 'identity');
