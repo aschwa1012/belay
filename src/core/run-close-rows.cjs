@@ -14,7 +14,7 @@ const HEAD_BOUND_MS = 5000;
 async function headOf(worktree) {
   if (!worktree) return { sha: null, error: 'the worker row names no worktree' };
   if (!fs.existsSync(String(worktree))) return { sha: null, error: `worktree ${worktree} does not exist` };
-  const r = await runCommand(['git', 'rev-parse', 'HEAD'], String(worktree), HEAD_BOUND_MS);
+  const r = await runCommand(['git', 'rev-parse', 'HEAD'], String(worktree), HEAD_BOUND_MS, { register: 'check' });
   if (!r.executable) return { sha: null, error: `git could not be run: ${r.spawn_error}` };
   if (r.timed_out) return { sha: null, error: `git rev-parse HEAD timed out after ${HEAD_BOUND_MS} ms` };
   const sha = String(r.stdout || '').trim();

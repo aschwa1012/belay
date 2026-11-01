@@ -187,3 +187,14 @@ test('a task integration reflects only its own checks; integrate checks are repo
   assert.strictEqual(fact.passed, true, 'the task own check passed');
   assert.strictEqual(fact.checks_passed, false);
 });
+
+// An integration check is code a worker wrote, run as the owner's child: it is in the spawn register as a check while it runs, so what
+// it starts is not taken for the operator (the record is the owner's refusal; see check-command-operator.test.cjs).
+test('an integration check runs as a registered check process', async () => {
+  const repo = makeRepo(dir), seen = counterFile();
+  const a = await work(repo, { 'a.txt': 'a\n' });
+  const asks = `const f = require('path').join(process.env.BELAY_SPAWN_REGISTRY, process.pid + '.json'); require('fs').writeFileSync(${JSON.stringify(seen)}, require('fs').existsSync(f) ? JSON.parse(require('fs').readFileSync(f, 'utf8')).kind : 'unregistered')`;
+  const r = await orch.integration.merge({ task_ids: [a.id], into: into(), evaluate: false, checks: [{ argv: [process.execPath, '-e', asks] }] });
+  assert.strictEqual(r.passed, true, JSON.stringify(mine(r)));
+  assert.strictEqual(fs.readFileSync(seen, 'utf8'), 'check');
+});

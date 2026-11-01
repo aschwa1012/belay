@@ -49,7 +49,7 @@ function hooksIn(text) {
 async function runTraced(cwd, args, opts = {}) {
   const file = path.join(os.tmpdir(), T.traceFileName(process.pid, rows.newId()));
   try {
-    const r = await G.run(cwd, args, { ...opts, env: { ...(opts.env || {}), GIT_TRACE2_EVENT: file } });
+    const r = await G.run(cwd, args, { ...opts, register: 'check', env: { ...(opts.env || {}), GIT_TRACE2_EVENT: file } }); // hooks are the repository's code: a process they start is not the operator
     let hooks = null;
     try { hooks = hooksIn(fs.readFileSync(file, 'utf8')); } catch { /* no trace written */ }
     return { ...r, hooks };

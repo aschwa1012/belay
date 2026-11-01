@@ -308,7 +308,7 @@ async function rerun(tasks, tree, reuse, head, beside = null, extra = [], until 
     const t0 = Date.now();
     if (until - t0 <= 0) { checks.push({ argv: c.argv, cwd: c.cwd, timeout_ms: c.timeout_ms, task_ids: c.task_ids, ...mark, executable: false, exit_code: null, ms: 0, timed_out: false, passed: false, not_run: `the call's commands share a budget of ${ACCEPTANCE_BUDGET_MS} ms and it was spent` }); continue; }
     const allowed = Math.min(c.timeout_ms, until - t0);
-    const r = await runCommand(c.argv, c.cwd, allowed, { keep: 'ends' }); // the ends and the failure section, as task.evaluate keeps
+    const r = await runCommand(c.argv, c.cwd, allowed, { keep: 'ends', register: 'check' }); // the ends and the failure section, as task.evaluate keeps
     const concurrent = beside ? beside(t0, Date.now()) : [];
     checks.push({
       argv: c.argv, cwd: c.cwd, timeout_ms: c.timeout_ms, task_ids: c.task_ids, ...mark, executable: r.executable, exit_code: r.exit_code, ms: r.ms, timed_out: r.timed_out,
