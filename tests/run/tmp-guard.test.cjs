@@ -121,7 +121,7 @@ test('the refusal is one line and names the worker temp dir and the way out', ()
 });
 
 test('the whole deny JSON stays under 400 bytes however long the temp dir is, and keeps the rule', () => {
-  const long = ['C:\\Work\\a-very-long-folder-name', ...Array.from({ length: 30 }, (_, i) => `segment-${i}-\u00e9\u00e9`), 'belay-w1'].join('\\');
+  const long = ['C:\\Work\\a-very-long-folder-name',...Array.from({ length: 30 }, (_, i) => `segment-${i}-\u00e9\u00e9`), 'belay-w1'].join('\\');
   for (const dir of [TEMP, long, 'x'.repeat(2000), undefined]) {
     for (const p of [file('Write', '/tmp/x'), bash(`node -e "open('/tmp/x')"`)]) {
       const reason = TG.refusal(p, dir);
