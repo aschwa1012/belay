@@ -47,7 +47,7 @@ function idleCase(over = {}, tasks = [], onList = null) {
   const stops = [];
   let lists = 0;
   const w = { id: 'w1', turnEnded: true, settled: false, stopRequested: false, parkRequested: null, queue: Promise.resolve(), ...over };
-  const manager = { _worker: (id) => (id === 'w1' ? w : null), stop: async (a) => { stops.push(a); return { worker_id: a.worker_id, graceful: true }; } };
+  const manager = { _worker: (id) => (id === 'w1' ? w : null), stop: async (a) => { if (a.guard && await a.guard()) return null; stops.push(a); return { worker_id: a.worker_id, graceful: true }; } };
   const ctx = { stopIdleOnDone: true, core: { task: { list: async () => { lists += 1; if (onList) onList(w); return { tasks }; } } } };
   return { stops, lists: () => lists, run: () => stopIfIdleDone(manager, ctx, { id: 't1', state: 'done', handoff: { by: 'w1' } }) };
 }
