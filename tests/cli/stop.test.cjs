@@ -14,6 +14,7 @@ const path = require('node:path');
 const { spawn, spawnSync } = require('node:child_process');
 
 const P = require('../../src/run/process.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity or by the child's own handle: a bare pid may be handed to another process (ADR 0039)
 const { openCore } = require('../../src/core/index.cjs');
 const {
   sleep, sandbox, cleanup, waitUntil, waitForFileLine, waitForExit, makeSpec, runCli, receiptOf,
@@ -77,8 +78,8 @@ test('stop: a live run is stopped from a second process, the orchestrator exits 
     assert.ok(finalRow && finalRow.ended_at != null, 'the run row lacks ended_at');
     assert.match(finalRow.exit_reason, /stopped by belay stop/);
     assert.ok(!fs.existsSync(`${dataDir}/owner.lock`), 'owner.lock is still present');
-    assert.strictEqual(P.pidAlive(sr.orchestrator.pid), false, 'the orchestrator pid is still alive');
-    assert.strictEqual(P.pidAlive(runCliProc.proc.pid), false, 'the run process pid is still alive');
+    await G.assertGone(G.recorded(sr.orchestrator.pid, runReceipt.orchestrator.pid_created), 'the orchestrator pid is still alive');
+    assert.ok(await G.childExited(runCliProc.proc), 'the run process pid is still alive');
   } finally {
     if (runCliProc.proc.exitCode === null) { try { await P.killTree(runCliProc.proc); } catch { /* best effort */ } }
     cleanup(dir);
@@ -130,7 +131,7 @@ test("stop: the run waits for the stop's worker phase before it ends the run, at
     assert.ok(w.killed, 'w1 was not reported killed');
     assert.strictEqual(w.killed.pid_alive_after, false);
     assert.ok(sr.worker_phase_ms >= 10000, `worker_phase_ms ${sr.worker_phase_ms} was not >= 10,000 (the default close_grace_ms)`);
-    assert.strictEqual(P.pidAlive(plantedPid), false, 'the planted worker pid is still alive');
+    assert.ok(await G.childExited(plantedProc), 'the planted worker pid is still alive');
 
     const exited = await waitForExit(runCliProc.proc, 90000);
     assert.ok(exited, 'the CLI run did not exit within 90,000 ms of the stop');
@@ -412,7 +413,7 @@ test('stop: a worker row of this run that is nobody\'s child is reported from it
     assert.match(w.note, /past the 2000 ms bound; killed by exact pid/);
     assert.match(w.established_by, /worker\.list row seq \d+ at \d+ ms/);
     assert.ok(sr.worker_phase_ms >= 2000, `worker_phase_ms ${sr.worker_phase_ms} was not >= 2,000`);
-    assert.strictEqual(P.pidAlive(plantedPid), false, 'the planted worker pid is still alive');
+    assert.ok(await G.childExited(plantedProc), 'the planted worker pid is still alive');
 
     const exited = await waitForExit(runCliProc.proc, 90000);
     assert.ok(exited, 'the CLI run did not exit');

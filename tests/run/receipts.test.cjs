@@ -381,7 +381,7 @@ test('receipts: an adopted live worker that later settles asks git for its head'
     await first.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w-r11' });
     await first._waitTurn('w-r11', 8000);
     assert.ok(await pollUntil(() => { const c = core.currentWorker('w-r11'); return c && c.state === 'running' ? c : null; }, 5000));
-    const w = await W.adopt({ core, workerId: 'w-r11', dataDir: sb.data });
+    const w = await W.adopt({ core, workerId: 'w-r11', dataDir: sb.data, runId: null });
     assert.strictEqual(w.headSha, null, 'a live row carries no head');
     const ctx = { core, runId: 'run-receipts', adapterPid: process.pid };
     ctx.writeRow = createWriteRow(ctx, { closed: false });

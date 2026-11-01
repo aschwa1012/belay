@@ -103,7 +103,9 @@ async function assign(E, caller, args) {
     // of a run that came back to life after this task's run did yields, so the run live now keeps the paths.
     // The hold belongs to a live run: a task whose own run has ended is taken over by the run of the worker that takes it
     // (the calling orchestrator's run for a check_only), and is refused when no live run can own it.
+    require('./worker-run-guard.cjs').refuseOtherRunTask(E, caller, task); // a live run's task is that run's: no move of it or its lease by another run
     const worker = checkOnly ? null : rows.current(E.store, 'worker', args.worker_id);
+    require('./worker-run-guard.cjs').refuseOtherRunWorker(E, caller, worker); // a live run's worker is that run's: no lease on another run's work
     // ADR 0058 amendment 1: a worker runs in one directory for its whole life, so a task with its own worktree goes only to a
     // worker that runs there. A check_only call checks the directory the spawn will run in, when it names one. Checked before
     // the hold, so a worker in the wrong tree is told that, not a hold's remedy (ADR 0059).
@@ -203,6 +205,7 @@ async function evaluate(E, caller, args, queued = null) {
   // final: a re-run would overwrite its passing evidence, or keep `done` over failing results. An open dependency is refused
   // rather than evaluated without `done`, because a task is not done while its dependency is open (ADR 0013 section 1).
   const gate = (t) => {
+    require('./worker-run-guard.cjs').refuseOtherRunTask(E, caller, t); // a live run's task is that run's
     if (t.state === 'done') throw err('E_TASK_DONE', `task ${t.id} is already done${t.results && t.results.evaluated_at ? ` (evaluated at ${t.results.evaluated_at})` : ''}; its results are in task_list with task_ids. To redo the work, create a new task`, { task_id: t.id, state: 'done' });
     if (t.state === 'cancelled') throw err('E_ARGS', `task ${t.id} was cancelled, which is final; there is nothing to evaluate`, { task_id: t.id, state: 'cancelled' });
     assertDependenciesDone(E, t);
@@ -272,8 +275,8 @@ function requireCurrentLease(E, leaseId) {
 
 async function renew(E, caller, args) {
   const l = requireCurrentLease(E, args.lease_id);
-  if (l.holder !== caller.worker_id || l.holder_role !== 'worker') {
-    throw err('E_NOT_HOLDER', `lease ${l.id} is held by ${l.holder_role} ${l.holder}, and this call came from worker ${caller.worker_id}`, { lease_id: l.id, holder: l.holder, holder_role: l.holder_role });
+  if (l.holder !== caller.worker_id || l.holder_role !== 'worker' || require('./worker-run-guard.cjs').leaseOfOtherRun(E, caller, l)) {
+    throw err('E_NOT_HOLDER', `lease ${l.id} is held by ${l.holder_role} ${l.holder} under run ${l.run_id}, and this call came from worker ${caller.worker_id} of run ${caller.run_id}`, { lease_id: l.id, holder: l.holder, holder_role: l.holder_role, lease_run_id: l.run_id });
   }
   const t = Date.now();
   if (l.released_at != null) throw err('E_LEASE_EXPIRED', `lease ${l.id} was released at ${l.released_at} and a released lease cannot be renewed`, { lease_id: l.id, released_at: l.released_at });
@@ -329,8 +332,8 @@ async function releaseNow(E, caller, args) {
     // release acts on the lease the task actually has.
     LHD.refuseSupersededDeath(E.store, args.lease_id); // ADR 0026 amendment 2: a death release the task has moved on from is named
     const l = requireCurrentLease(E, args.lease_id);
-    if (caller.role === 'worker' && (l.holder !== caller.worker_id || l.holder_role !== 'worker')) {
-      throw err('E_NOT_HOLDER', `lease ${l.id} is held by ${l.holder_role} ${l.holder}, and this call came from worker ${caller.worker_id}`, { lease_id: l.id, holder: l.holder, holder_role: l.holder_role });
+    if (caller.role === 'worker' && (l.holder !== caller.worker_id || l.holder_role !== 'worker' || require('./worker-run-guard.cjs').leaseOfOtherRun(E, caller, l))) {
+      throw err('E_NOT_HOLDER', `lease ${l.id} is held by ${l.holder_role} ${l.holder} under run ${l.run_id}, and this call came from worker ${caller.worker_id} of run ${caller.run_id}`, { lease_id: l.id, holder: l.holder, holder_role: l.holder_role, lease_run_id: l.run_id });
     }
     const task = rows.current(E.store, 'task', l.task_id);
     if (!task) throw err('E_NOT_FOUND', `lease ${l.id} names task ${l.task_id}, which has no row in this store`, { lease_id: l.id, task_id: l.task_id });
@@ -405,10 +408,11 @@ async function takeControl(E, caller, args) {
 }
 
 // The lease a worker must hold before it may write a checkpoint (api.md §3, continuity.checkpoint).
-function heldLease(E, taskId, workerId) {
+function heldLease(E, taskId, workerId, runId) {
   const l = rows.currentLeaseForTask(E.store, taskId);
   if (!l || l.released_at != null) return null;
   if (l.holder !== workerId || l.holder_role !== 'worker') return null;
+  if (runId && require('./worker-run-guard.cjs').liveOtherRun(E, runId, l.run_id)) return null; // the lease of another live run is that run's
   if (l.expires_at != null && Number(l.expires_at) < Date.now()) return null;
   return l;
 }
