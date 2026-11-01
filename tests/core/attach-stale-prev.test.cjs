@@ -45,3 +45,33 @@ test('a pause committed during the attach snapshot is carried onto the new epoch
     try { await operator.run.end({ exit_reason: 'test' }); } catch { /* ended */ }
   }
 });
+
+test('an attach whose row was re-attached during the snapshot is refused and writes nothing', { skip: process.platform !== 'win32' }, async () => {
+  const other = spawn(process.execPath, ['-e', 'process.stdin.resume()'], { windowsHide: true, stdio: ['pipe', 'ignore', 'ignore'] });
+  const real = ID.snapshotRetry;
+  let release, entered;
+  const gate = new Promise((r) => { release = r; });
+  const inSnap = new Promise((r) => { entered = r; });
+  try {
+    await operator.run.attach({ adapter_pid: await deadPid() });
+    await orch.run.attach({ adapter_pid: other.pid, orchestrator_pid: 111111 });
+    ID.snapshotRetry = async (o) => { entered(); await gate; return real(o); };
+    const att = operator.run.attach({ adapter_pid: process.pid, orchestrator_pid: 222222 });
+    await inSnap;
+    ID.snapshotRetry = real;
+    const second = await orch.run.attach({ adapter_pid: other.pid, orchestrator_pid: 333333 }); // another attach commits meanwhile
+    release();
+    let refusal = null;
+    try { await att; } catch (e) { refusal = e; }
+    assert.ok(refusal, 'the held attach is refused');
+    assert.strictEqual(refusal.code, 'E_BUSY');
+    assert.strictEqual(refusal.detail.op, 'attach');
+    const now = (await operator.run.get()).run;
+    assert.strictEqual(now.epoch, second.epoch,'nothing was written over the other attach');
+    assert.strictEqual(Number(now.adapter_pid), other.pid);
+  } finally {
+    ID.snapshotRetry = real;
+    other.kill();
+    try { await operator.run.end({ exit_reason: 'test' }); } catch { /* ended */ }
+  }
+});

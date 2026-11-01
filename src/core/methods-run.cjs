@@ -148,7 +148,13 @@ async function attach(E, caller, args) {
     if (a.state === 'unverifiable') warnings.push(RL.unverifiedWarning(runId, prev, a));
     // The snapshot awaited above can take about a second; another writer of this row (a pause, a budget raise, the old life's
     // run.end) may have committed meanwhile. Read the row again so the next epoch is built from it, with nothing awaited after.
+    const checked = prev;
     prev = rows.current(E.store, 'run', runId);
+    // The gates above decided on the row as first read. If another attach committed meanwhile, the re-read row names an adapter
+    // that was never checked: write nothing and let the caller retry against it.
+    if (prev && checked && (Number(prev.epoch) !== Number(checked.epoch) || Number(prev.adapter_pid) !== Number(checked.adapter_pid))) {
+      throw err('E_BUSY', `another attach committed meanwhile for run ${runId} (epoch ${checked.epoch} to ${prev.epoch}); nothing was written; retry`, { op: 'attach', run_id: runId, epoch: prev.epoch, adapter_pid: prev.adapter_pid });
+    }
   }
   const epoch = prev ? Number(prev.epoch || 0) + 1 : 1;
   const by = E.writtenBy(caller);
