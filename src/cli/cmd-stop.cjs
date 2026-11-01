@@ -41,13 +41,19 @@ async function lastRunRow(core) {
   }
 }
 
+// A 'mismatch' or 'absent' refusal proves the pid no longer belongs to the worker (the same rule as the worker stop).
+function reusedPid(k) {
+  return !!k.refused && (k.kind === 'mismatch' || k.kind === 'absent');
+}
+
 // A worker whose kill was refused, or whose pid is still alive after the kill, was not stopped (invariant
 // 5). Built only from the stop receipt's own facts (the row's kill record), never a fresh bare-pid probe
 // (ADR 0039). Null when the worker was killed, was already gone, or had no kill attempted.
 function failedKill(w) {
   const k = w.killed;
   if (!k || k.by || k.pid_alive_after !== true) return null;
-  const why = k.refused ? `kill refused (${k.refused}${k.detail ? `: ${k.detail}` : ''})` : 'kill sent but the process is still alive';
+  if (reusedPid(k)) return null; // the worker's own process is gone; its pid now belongs to another process
+  const why = k.refused ? `kill refused (${k.kind || k.refused}${k.detail ? `: ${k.detail}` : ''})` : 'kill sent but the process is still alive';
   return { id: w.id, pid: w.pid, reason: why, manual: k.manual || null };
 }
 
@@ -63,7 +69,7 @@ function renderText(receipt) {
   ];
   for (const w of receipt.workers) {
     const bad = failedKill(w);
-    lines.push(`worker ${w.id} pid ${w.pid}: ${w.state}, pid alive ${w.pid_alive}, ${bad ? `NOT killed, pid ${w.pid} is still alive: ${bad.reason}` : w.killed ? 'killed' : 'not killed'}`);
+    lines.push(`worker ${w.id} pid ${w.pid}: ${w.state}, pid alive ${w.pid_alive}, ${bad ? `NOT killed, pid ${w.pid} is still alive: ${bad.reason}` : w.killed && !w.killed.by && reusedPid(w.killed) ? `already gone, pid ${w.pid} now belongs to another process (kill refused: ${w.killed.kind})` : w.killed && w.killed.refused && w.killed.pid_alive_after === false ? 'gone (kill refused)' : w.killed ? 'killed' : 'not killed'}`);
     // ADR 0039: a kill refused for want of proof names how the operator can end the process by hand.
     if (w.killed && w.killed.manual) lines.push(`  refused (${w.killed.detail}). ${w.killed.manual}`);
   }

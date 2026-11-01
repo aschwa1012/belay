@@ -36,6 +36,7 @@ function createDoStop({ ctx, writeRow }) {
     if (w.state !== 'stopping') await writeRow(w, 'stopping');
     let graceful = false;
     let bgStops = []; let gracefulTimedOutMs = null; let blockedBy = null;
+    let killSentAlive = false;
     let killed = false; let refused = null; let notKilled = null; let tree = null; // tree: this stop's own kill, never an earlier life's (w.treeKill)
     // Closing stdin needs a stdin: an adopted worker's pipes belong to the adapter that spawned it,
     // so there is nothing to close and the kill is the only channel left.
@@ -59,14 +60,17 @@ function createDoStop({ ctx, writeRow }) {
       const kr = await PI.killWorker(w); // ADR 0039: `killed` is what the kill did, never what was attempted
       tree = kr.tree; w.treeKill = tree; refused = kr.refused; notKilled = kr.descendants_not_killed; killed = !refused;
       if (w.child) await W.waitExit(w, Math.max(2000, Math.min(timeout_ms, 10000)));
-      else await P.waitPidGone(pid, { timeoutMs: Math.max(2000, Math.min(timeout_ms, 10000)) });
+      else {
+        const gone = await P.waitPidGone(pid, { timeoutMs: Math.max(2000, Math.min(timeout_ms, 10000)) });
+        if (!refused && gone === null) { killSentAlive = true; killed = false; } // the kill was sent and the pid is still there at the deadline
+      }
     }
     if (w.child) await W.waitExit(w, 5000);
     await w.queue;
     // No child means no exit event, so nothing else will write this row: same fix as the finding above.
     // A refusal that proved nothing leaves the process possibly running: no terminal row then (a 'mismatch' or an
     // 'absent' proves the worker is not at that pid, so its terminal row is true).
-    const maybeLive = refused && refused.kind === 'unverifiable' && P.pidAlive(pid);
+    const maybeLive = killSentAlive || (refused && refused.kind === 'unverifiable' && P.pidAlive(pid));
     if (!w.child && !maybeLive && w.state !== W.terminalState(w)) await writeRow(w, W.terminalState(w));
     // A refused stop is not a stop: a later death must not be written `stopped`, and the row goes back to the state it had (the receipt carries the refusal), since `stopping` claims a stop is under way.
     if (maybeLive) { w.stopRequested = false; if (priorState !== 'stopping') { try { await ctx.core.worker.write(W.rowOf(w, priorState, ctx)); w.state = priorState; } catch (e) { w.lastError = { where: 'worker.write/stop-refused', code: e && e.code, message: e && e.message }; } } } // writeRow would refuse a settled adopted record's live state
@@ -75,7 +79,7 @@ function createDoStop({ ctx, writeRow }) {
       ms_to_exit: Math.max(0, (w.exitedAt || now()) - t0), graceful, killed, session_id: w.sessionId, // 0 when the exit came before the stop (an adopted row's old exited_at)
       ...(bgStops.length ? { background_tasks_stopped: bgStops.map((s) => ({ task_id: s.task_id, description: s.description, status_after: s.status_after })) } : {}),
       ...(gracefulTimedOutMs != null ? { graceful_timed_out_ms: gracefulTimedOutMs, ...(blockedBy && blockedBy.length ? { blocked_by: blockedBy } : {}) } : {}),
-      ...(maybeLive ? { not_stopped: true, may_be_live: true, row_state: w.state, manual: refused.manual || `pid ${pid} may still be running; check it is the worker's process, then end it by hand (belay worker kill ${worker_id})`, note: `worker ${worker_id}: pid ${pid} could not be proven to be this worker's process, so it was NOT stopped and may still be running; its row is ${w.state}` } : {}),
+      ...(maybeLive ? { not_stopped: true, may_be_live: true, row_state: w.state, manual: (refused && refused.manual) || `pid ${pid} may still be running; check it is the worker's process, then end it by hand (belay worker kill ${worker_id})`, note: killSentAlive ? `worker ${worker_id}: the kill was sent but pid ${pid} is still running, so it was NOT stopped; its row is ${w.state}` : `worker ${worker_id}: pid ${pid} could not be proven to be this worker's process, so it was NOT stopped and may still be running; its row is ${w.state}` } : {}),
       tree_kill: tree || null, ...(tree && tree.killed_processes ? { killed_processes: tree.killed_processes } : {}), ...(refused ? { refused: refused.refused, kind: refused.kind, detail: refused.detail } : {}), ...(notKilled ? { descendants_not_killed: notKilled } : {}),
     };
   };

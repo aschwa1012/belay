@@ -62,6 +62,8 @@ test('stop: a worker whose kill is refused as unverifiable and whose pid stays a
     // A second stop is refused as ended, so the text is rendered from this real receipt by the command's own renderer.
     const text = require('../../src/cli/cmd-stop.cjs').renderText(j.receipt);
     assert.match(text, /NOT killed/);
+    assert.match(text, /kill refused \(unverifiable: /, text);
+    assert.doesNotMatch(text, /kill refused \(identity/);
     assert.ok(text.includes(String(plantedPid)), 'the text shows the pid');
     const w = j.receipt.workers[0];
     assert.strictEqual(w.killed.pid_alive_after, true);

@@ -13,7 +13,7 @@ const row = (id, pid, killed, pid_alive = true) => ({ id, pid, state: 'running',
 test('a refused kill with the pid still alive is named, shows the pid, and is a failure', () => {
   const r = receipt([row('w-1', 4242, {
     tree: { ok: false, terminated: 0, ms: 1 }, pid: { signalled: false, error: 'EIDENTITY' }, identity: null,
-    refused: 'unverifiable', kind: 'unverifiable', detail: 'no creation time recorded', manual: 'end pid 4242 by hand',
+    refused: 'identity', kind: 'unverifiable', detail: 'no creation time recorded', manual: 'end pid 4242 by hand',
     pid_alive_after: true, ms: 2,
   })]);
   const failed = failedKills(r);
@@ -31,6 +31,22 @@ test('a signalled kill whose pid is still alive is a failure too', () => {
   const r = receipt([row('w-2', 77, { tree: { ok: true, terminated: 1, ms: 1 }, pid: { signalled: true }, identity: { pid: 77 }, pid_alive_after: true, ms: 3 })]);
   assert.strictEqual(failedKills(r).length, 1);
   assert.match(renderText(r), /NOT killed, pid 77 is still alive: kill sent but the process is still alive/);
+});
+
+test('a mismatch or absent refusal on a reused pid reads as already gone, not as a failed kill', () => {
+  for (const kind of ['mismatch', 'absent']) {
+    const r = receipt([row('w-6', 55, { tree: { ok: false, terminated: 0, ms: 1 }, pid: { signalled: false, error: 'EIDENTITY' }, identity: null, refused: 'identity', kind, detail: 'another process', pid_alive_after: true, ms: 2 })]);
+    assert.strictEqual(failedKills(r).length, 0, kind);
+    const text = renderText(r);
+    assert.match(text, new RegExp(`already gone, pid 55 now belongs to another process \\(kill refused: ${kind}\\)`));
+    assert.doesNotMatch(text, /NOT killed/);
+  }
+});
+
+test('a refused kill whose pid then ended by itself reads gone, not killed', () => {
+  const r = receipt([row('w-7', 56, { tree: { ok: false, terminated: 0, ms: 1 }, pid: { signalled: false }, identity: null, refused: 'identity', kind: 'unverifiable', detail: 'x', pid_alive_after: false, ms: 2 }, false)]);
+  assert.strictEqual(failedKills(r).length, 0);
+  assert.match(renderText(r), /gone \(kill refused\)/);
 });
 
 test('a really killed process, a tree-killed one and an already-gone one keep their wording and are not failures', () => {
