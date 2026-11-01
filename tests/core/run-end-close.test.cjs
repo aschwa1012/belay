@@ -303,3 +303,47 @@ test('a head run.end supplies clears the head_error the row carried, on both pat
     }
   } finally { await teardown(ctx, [repo.dir]); }
 });
+
+// The 2026-10-30 operator lockout: a stopped run left worker pids in the machine-wide spawn register because the adapter that would
+// have unregistered them never saw them exit. run.end, which closes the row, also retires the record it judged (its own worker's),
+// and closes the lifetime one refresh interval after the last stamp, never before the process could have been alive.
+test("run.end retires the spawn register record of a worker it closes over a dead pid, and leaves a live pid's record", async () => {
+  const reg = require('./helpers.cjs').ownSpawnRegistry();
+  const SR = core('spawn-register.cjs');
+  const ctx = await setup();
+  const live = await deadRunningPid(); // alive until killed below
+  try {
+    const { orch } = ctx;
+    const dead = deadPid();
+    const t = Date.now() - 60000;
+    await orch.worker.write({ id: 'w-gone', substrate: 'claude-code', pid: dead, state: 'starting', worktree: makePlainDir(), started_at: t });
+    await orch.worker.write({ id: 'w-up', substrate: 'claude-code', pid: live.pid, state: 'running', worktree: makePlainDir(), started_at: t });
+    fs.mkdirSync(reg.dir, { recursive: true });
+    const rec = (pid, id) => fs.writeFileSync(path.join(reg.dir, `${pid}.json`), JSON.stringify({ pid, created: t, kind: 'worker', data_dir: ctx.dir, worker_id: id, spawned_at: t, by_pid: 1, at: t + 500, seen_at: t + 20000 }));
+    rec(dead, 'w-gone'); rec(live.pid, 'w-up');
+    const ended = await orch.run.end({ exit_reason: 'test end' });
+    assert.deepStrictEqual(ended.workers_marked_dead.map((m) => [m.worker_id, m.register_retired]), [['w-gone', true]]);
+    assert.ok(!fs.existsSync(path.join(reg.dir, `${dead}.json`)), "the dead worker's record is gone");
+    const tomb = SR.tombstones().find((x) => x.pid === dead);
+    assert.strictEqual(tomb.until, t + 20000 + SR.SEEN_REFRESH_MS, 'closed one refresh interval after the last stamp, not at the close');
+    assert.ok(fs.existsSync(path.join(reg.dir, `${live.pid}.json`)), 'a record whose pid still answers is left');
+  } finally { await live.kill(); await teardown(ctx); reg.remove(); }
+});
+
+test("run.end leaves a spawn register record under a dead worker's pid that names another worker", async () => {
+  const reg = require('./helpers.cjs').ownSpawnRegistry();
+  const SR = core('spawn-register.cjs');
+  const ctx = await setup();
+  try {
+    const dead = deadPid();
+    const t = Date.now() - 60000;
+    await ctx.orch.worker.write({ id: 'w-gone', substrate: 'claude-code', pid: dead, state: 'starting', worktree: makePlainDir(), started_at: t });
+    fs.mkdirSync(reg.dir, { recursive: true });
+    // the number went to another worker (another run's) after this one's process exited
+    fs.writeFileSync(path.join(reg.dir, `${dead}.json`), JSON.stringify({ pid: dead, created: t, kind: 'worker', data_dir: ctx.dir, worker_id: 'w-other', spawned_at: t, by_pid: 1, at: t + 500 }));
+    const ended = await ctx.orch.run.end({ exit_reason: 'test end' });
+    assert.deepStrictEqual(ended.workers_marked_dead.map((m) => [m.worker_id, m.register_retired]), [['w-gone', undefined]]);
+    assert.ok(fs.existsSync(path.join(reg.dir, `${dead}.json`)), "the other worker's record stays");
+    assert.strictEqual(SR.tombstones().filter((x) => x.pid === dead).length, 0, 'and no lifetime is closed for it');
+  } finally { await teardown(ctx); reg.remove(); }
+});

@@ -35,7 +35,7 @@ test('a record re-registered under the same pid between the scan and the settle 
   SR.settle(found.dead);
   const kept = JSON.parse(fs.readFileSync(path.join(dir, `${pid}.json`), 'utf8'));
   assert.deepStrictEqual([kept.worker_id, kept.created], ['new', NOW - 1000], 'the running worker\'s record stands');
-  assert.ok(SR.tombstones().some((t) => t.pid === pid && t.until === OLD.seen_at), 'the old process\'s lifetime is still kept');
+  assert.ok(SR.tombstones().some((t) => t.pid === pid && t.until === OLD.seen_at + SR.SEEN_REFRESH_MS), 'the old process\'s lifetime is still kept');
 }));
 
 test('the same through refresh: a register between its scan and its settle', () => withRegistry((dir) => {
