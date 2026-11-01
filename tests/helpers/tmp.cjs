@@ -73,8 +73,8 @@ if (!globalThis[KEY]) {
 
   // Every git a test or the product code under test starts ignores the developer's global git config and any inherited GIT_DIR and
   // the like (tests/helpers/git-env.cjs). Test files that start git also require it themselves, so a run without --require is isolated
-  // too. It is loaded after the spawn register above exists: its config file lives inside that register, which the runner removes with
-  // the tree even when this process is killed.
+  // too. It is loaded after the spawn register above exists: when this helper made that register, the config file lives inside it,
+  // which the runner removes with the tree even when this process is killed; otherwise git-env.cjs uses its own belay-gitcfg-* dir.
   require('./git-env.cjs');
 
   // One attempt per directory when budgetMs is 0; otherwise retried within the budget. Returns what remains.
