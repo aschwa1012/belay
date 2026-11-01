@@ -14,6 +14,7 @@ const { POLL_EXIT_HOLD_MS } = require('../../src/run/worker.cjs');
 const { createFakeCore } = require('./fake-core.cjs');
 const { cleanup } = require('../core/helpers.cjs');
 const P = require('../../src/run/process.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 
 const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').split(path.sep).join('/');
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -82,8 +83,9 @@ async function heldDeath(id, m, core, sb) {
     return emit.call(this, ev, ...a);
   };
   const oldPid = w.pid;
+  const oldId = await G.identify(oldPid); // while it lives
   process.kill(oldPid); // exact pid
-  while (P.pidAlive(oldPid)) await sleep(20);
+  assert.ok(await G.waitGone(oldId, { deadlineMs: 15000, intervalMs: 20 }), `the killed worker (pid ${oldPid}) is still alive`);
   assert.equal(w.settled, false, 'premise: the death is held, not settled');
   return oldPid;
 }

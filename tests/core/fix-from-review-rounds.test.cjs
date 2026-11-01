@@ -4,6 +4,7 @@
 // it fixes, so the coder idle in that tree can take it, and the tree is removed for every task that shares it. Real core, a
 // sandbox store and a throwaway repository (worktree-helpers.cjs), never this checkout.
 
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 const { test: nodeTest, before, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -182,6 +183,37 @@ test('two removals of one shared tree at once: one removes it, the other reports
   assert.strictEqual((await orch.task.worktreeRemove({ task_id: second.id })).removal.already, true);
   assert.ok(!fs.existsSync(w.worktree.path));
 });
+
+// Holds one git call of the first removal until released, so the second removal arrives at a fixed point. In-process owner only.
+async function gatedPair(name, fn) {
+  const G = core('git.cjs');
+  const real = G[fn];
+  let release, held, armed = false, calls = 0;
+  const gate = new Promise((r) => { release = r; });
+  const heldAt = new Promise((r) => { held = r; });
+  G[fn] = async (...a) => { if (armed && ++calls === 1) { held(); await gate; } return real(...a); };
+  try {
+    const { w, f } = await workWithOpenFix(name); // setup's own git calls run ungated
+    await orch.task.cancel({ task_id: f.id });
+    await orch.worker.write({ id: `c-${name}`, substrate: 'claude-code', pid: process.pid, state: 'stopped', session_id: `s-c-${name}`, last_event_at: Date.now(), worktree: w.worktree.path });
+    armed = true; // only the removals' calls are counted and gated
+    const pa = orch.task.worktreeRemove({ task_id: w.id }); // held inside its first gated git call
+    // The first call is inside the gated call, so the second arrives at a fixed point; a first call that ends first fails fast.
+    await Promise.race([heldAt, pa.then(() => { throw new Error('the first removal ended before reaching the gated git call'); })]);
+    const pb = orch.task.worktreeRemove({ task_id: f.id });
+    await new Promise(setImmediate);
+    release();
+    const [ra, rb] = await Promise.allSettled([pa, pb]); // neither call outlives the test
+    assert.strictEqual(ra.status, 'fulfilled', ra.reason && ra.reason.message);
+    assert.strictEqual(rb.status, 'fulfilled', rb.reason && rb.reason.message);
+    const [a, b] = [ra.value, rb.value];
+    assert.ok(a.worktree.removed_at && !a.removal.already, 'the first call removes the tree');
+    assert.deepStrictEqual([b.removal.already, b.removal.removed_through, !!b.worktree.removed_at], [true, w.id, true], 'the second waits and runs no git');
+  } finally { release(); G[fn] = real; }
+}
+
+test('a second removal that arrives while the first checks the run\'s repository waits for it', () => gatedPair('gate-repo', 'toplevel'));
+test('a second removal that arrives while the first\'s git runs waits for it', () => gatedPair('gate-git', 'worktrees'));
 
 test('a fix in a shared tree that names fewer files owns the work\'s files too, so the branch it is judged on passes', async () => {
   let w = await orch.task.create({ spec: 'narrow work', acceptance: { files_within_owned: true }, files_owned: ['src/narrow-a.cjs'] });

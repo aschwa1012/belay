@@ -35,8 +35,9 @@ const note = (marker, over = {}) => ({
   evidence: [{ where: `src/${marker}.js`, saw: 'the unlisted file was never read' }], applies_to: [`src/${marker}.js`], subjects: [marker], ...over,
 });
 async function lease(w) {
-  const t = await call('task.create', orch, { spec: `job ${++seq}` });
-  const a = await call('task.assign', orch, { task_id: t.id, worker_id: w.worker_id });
+  const o = w.run_id === WARN ? callerFor('orchestrator', { run_id: WARN }) : orch; // a run's orchestrator leases its own run's workers
+  const t = await call('task.create', o, { spec: `job ${++seq}` });
+  const a = await call('task.assign', o, { task_id: t.id, worker_id: w.worker_id });
   return { lease_id: a.new_lease.id, task_id: t.id };
 }
 const hand = async (w, extra) => { const l = await lease(w); return { l, out: await call('lease.release', w, { lease_id: l.lease_id, ...extra }) }; };
@@ -48,6 +49,7 @@ before(async () => {
   E = new Engine({ dataDir: dir, store, getEmbedder: async () => ({ embed }), owner: null, establishedBy: 'test' });
   await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true }) });
   await call('run.attach', callerFor('orchestrator', { run_id: WARN }), { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true, held_visibility: 'warn' }) });
+  await call('worker.write', callerFor('orchestrator', { run_id: WARN }), { id: 'w2w', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's-w2w', last_event_at: Date.now(), model: 'claude-test-1' });
   for (const id of ['w1', 'w2', 'w3', 'rev1']) await call('worker.write', orch, { id, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: `s-${id}`, last_event_at: Date.now(), model: 'claude-test-1' });
 });
 after(() => withTeardown(() => {}, [() => store.close(), () => cleanup(dir)]));
@@ -121,8 +123,8 @@ test('a hand-back that restates a held note waits in pending with the hold named
   store.patchBody(hold, (b) => { b.state = 'released'; return b; });
   const held2 = (await hand(worker('w1'), { notes: [note('K6')] })).out.notes[0];
   holdOn(held2.id);
-  const l = await lease(worker('w2'));
-  const w = (await call('lease.release', worker('w2', WARN), { lease_id: l.lease_id, notes: [note('K6x', { title: 'the K6x loader ignores unlisted fixtures' })] })).notes[0];
+  const l = await lease(worker('w2w', WARN));
+  const w = (await call('lease.release', worker('w2w', WARN), { lease_id: l.lease_id, notes: [note('K6x', { title: 'the K6x loader ignores unlisted fixtures' })] })).notes[0];
   assert.deepStrictEqual([w.state, (w.matches || []).map((m) => m.id)], ['pending', [held2.id]]);
 });
 

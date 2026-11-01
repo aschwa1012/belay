@@ -182,6 +182,9 @@ function createFakeCore({ runId = 'run-fake', resumeLineText = null, failing = {
       },
     },
 
+    // run.list: this run is live and no other run has a row, as the manager's other-run guard asks (an adopted worker of a run with no row is adopted).
+    run: { async list() { return { runs: [{ id: runId, ended_at: null, alive: true }] }; } },
+
     isOwner: () => true,
 
     async shutdownOwner() {

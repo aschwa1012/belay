@@ -343,7 +343,9 @@ test('resolving a pending note as new with a changed title re-embeds it under it
 
 test('git status is read without optional locks, so reading a worktree cannot make a lock under a worker', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'core', 'note-paths.cjs'), 'utf8');
-  assert.match(src, /'git', '--no-optional-locks', 'status'/);
+  assert.match(src, /safeGit\(\['status'/); // the status goes through git-safe, whose environment sets GIT_OPTIONAL_LOCKS=0
+  const safe = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'core', 'git-safe.cjs'), 'utf8');
+  assert.match(safe, /GIT_OPTIONAL_LOCKS: '0'/);
 });
 
 // ---- a retitle needs the embedder ---------------------------------------------------------------------------------------------

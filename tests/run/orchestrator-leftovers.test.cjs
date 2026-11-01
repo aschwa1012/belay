@@ -15,6 +15,7 @@ const SR = require('../../src/core/spawn-register.cjs');
 const { createFakeCore } = require('./fake-core.cjs');
 const { cleanup } = require('../core/helpers.cjs');
 const P = require('../../src/run/process.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 
 const fwd = (p) => String(p).split(path.sep).join('/');
 const FAKE = fwd(path.join(__dirname, 'fakes', 'fake-claude.cjs'));
@@ -71,6 +72,7 @@ test("at the close the shell's stray process is ended; the adapter, a spawned wo
     const registered = await pidFrom(f('registered.pid'));
     kids.push(stray, adapter, adaptersWorker, registered);
     assert.strictEqual(P.pidAlive(stray), true, "nothing is ended before the run's own close is done");
+    const strayId = await G.identify(stray);
     assert.strictEqual(typeof result.endLeftovers, 'function');
     assert.strictEqual(Object.keys(result).includes('endLeftovers'), false, 'and the function is not part of the receipt');
 
@@ -80,7 +82,7 @@ test("at the close the shell's stray process is ended; the adapter, a spawned wo
       assert.ok(!l.found.includes(pid), `${name} is not taken`);
       assert.strictEqual(P.pidAlive(pid), true, `${name} is still running`);
     }
-    assert.strictEqual(P.pidAlive(stray), false);
+    await G.assertGone(strayId, `the shell's stray process (pid ${stray}) is still alive after the leftovers were ended`);
   } finally {
     for (const k of KNOBS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
     for (const pid of [...kids, other.pid]) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }

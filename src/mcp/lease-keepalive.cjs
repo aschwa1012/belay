@@ -30,6 +30,7 @@ function createKeepalive({
   let stopped = true;
   let halted = false;
   let inFlight = false;
+  const notHolder = new Set(); // lease ids the core refused as not this worker's (E_NOT_HOLDER): not asked again
 
   const emit = (entry) => {
     try { if (log) log('##', `lease-keepalive ${JSON.stringify(entry)}`); } catch { /* a log that cannot be written must not stop the tick */ }
@@ -56,10 +57,12 @@ function createKeepalive({
     if (worker.last_event_age_ms == null || Number(worker.last_event_age_ms) >= L) return skip('silent');
     if (Number(lease.expires_at) - t > L / 2) return skip('not-due');
     if (halted) return skip('stopped');
+    if (notHolder.has(lease.id)) return skip('not-holder');
     try {
       const row = await call('lease.renew', { lease_id: lease.id, ttl_ms: L });
       return emit({ at: t, lease_id: lease.id, action: 'renewed', reason: 'due', expires_at: row && row.expires_at });
     } catch (e) {
+      if (e && e.code === 'E_NOT_HOLDER') notHolder.add(lease.id);
       return emit({ at: t, lease_id: lease.id, action: 'skip', reason: `refused ${(e && e.code) || 'error'}`, expires_at: lease.expires_at });
     }
   }

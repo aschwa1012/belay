@@ -96,6 +96,7 @@ async function fixFromReview(E, caller, args) {
   if (!args.review_id || typeof args.review_id !== 'string') throw err('E_ARGS', 'task.fixFromReview needs the review_id of a refuted review task');
   const review = rows.current(E.store, 'task', args.review_id);
   if (!review) throw err('E_NOT_FOUND', `no task row exists for ${args.review_id}`, { review_id: args.review_id });
+  require('./worker-run-guard.cjs').refuseOtherRunTask(E, caller, review); // a live run's review is that run's to answer
   if (!review.acceptance || review.acceptance.verdict !== true) throw err('E_ARGS', `task ${review.id} is not a review task (its acceptance has no verdict: true); pass the id of the review task that judged the work`, { review_id: review.id });
   if (!T.refutedReview(review)) {
     throw err('E_PRECONDITION', `review ${review.id} was not last evaluated refuted (an executable verdict check that failed); evaluate it first, and fix only after a refuted review`, { review_id: review.id, state: review.state });
@@ -107,6 +108,7 @@ async function fixFromReview(E, caller, args) {
   }
   const judged = rows.current(E.store, 'task', judgedId);
   if (!judged) throw err('E_NOT_FOUND', `review ${review.id} depends on ${judgedId}, which has no row in this store`, { review_id: review.id, missing: judgedId });
+  require('./worker-run-guard.cjs').refuseOtherRunTask(E, caller, judged); // and so is the work it judged, with its tree and branch
   // The work a chain of fixes began from, however many hand-made fixes of fixes lie between it and the judged task.
   let original = judged;
   for (let n = 0; original.repairs && n < 100; n++) { const up = rows.current(E.store, 'task', original.repairs); if (!up) break; original = up; }
