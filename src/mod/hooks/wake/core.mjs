@@ -82,6 +82,22 @@ export function lineSplitter() {
 // The decision for one parsed line: 'submit' (record, then submit), 'skip' (id already delivered), 'none'.
 export const decide = (parsed, delivered) => (parsed.kind !== 'wake' ? 'none' : delivered.has(parsed.id) ? 'skip' : 'submit')
 
+// Only a missing file means "nothing delivered yet". Any other failure to read it (a sharing violation, a lock, EBUSY, EPERM)
+// says nothing about what was delivered.
+export const isMissing = (e) => !!e && (e.code === 'ENOENT' || /\bENOENT\b|no such file/i.test(String(e.message || '')))
+
+// The delivered file's text for createDelivery's `initial`: '' when the file is missing, its text when it reads, and after
+// `tries` failed reads (a pause of `delayMs`, doubling, between them) null: the caller must not deliver or write on null.
+export async function readDelivered({ read, sleep, tries = 4, delayMs = 250 }) {
+  for (let i = 0; i < tries; i += 1) {
+    try { return String(await read()) } catch (e) {
+      if (isMissing(e)) return ''
+      if (i < tries - 1) await sleep(delayMs * (2 ** i))
+    }
+  }
+  return null
+}
+
 // Delivery, at most once (ADR 0037 amendment 5): the id is recorded (memory and file) ONLY after the file write
 // has succeeded, and the submit happens only after that, so a failed write submits nothing (the wake is retried
 // on a replay) and a crash between the record and the submit loses that wake but never duplicates one.
@@ -90,17 +106,26 @@ export function createDelivery({ file, initial = '', io, now = () => Date.now(),
   let content = String(initial || '')
   const delivered = parseDelivered(content)
   const inflight = new Set()
-  return {
+  const pending = new Map() // id -> text of a wake whose record write failed: kept until the write lands, never dropped
+  const self = {
     delivered,
+    pending,
+    // Tries every wake whose write failed again, in the order they arrived; the caller schedules this until `pending` is empty.
+    async retryPending() {
+      for (const [id, text] of [...pending]) await self.deliver(id, text)
+      return pending.size
+    },
     async deliver(id, text) {
       if (delivered.has(id) || inflight.has(id)) return 'skip'
       inflight.add(id)
       try {
         const next = content + deliveredLine(id, now())
         try { await io.write(file, next) } catch (e) {
+          pending.set(id, text)
           try { io.log({ at: now(), id, stage: 'write', error: String((e && e.message) || e) }) } catch { /* nowhere to log */ }
           return 'write-failed'
         }
+        pending.delete(id)
         content = next
         delivered.add(id)
         try { await io.submit(cap(text)) } catch (e) {
@@ -111,4 +136,5 @@ export function createDelivery({ file, initial = '', io, now = () => Date.now(),
       } finally { inflight.delete(id) }
     },
   }
+  return self
 }
