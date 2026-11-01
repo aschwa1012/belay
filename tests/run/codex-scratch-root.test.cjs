@@ -85,7 +85,7 @@ test('an adopted Codex reviewer record gets its scratch folder back from the dat
   const RS = require('../../src/run/review-scratch.cjs');
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-cx-adopt-')).split(path.sep).join('/');
   const rowOf = (id, substrate) => ({ id, run_id: 'run-ad', substrate, worktree: `${data}/wt`, state: 'idle', seq: 3, pid: null, turns: 1, session_id: 's1' });
-  const adopt = (id, substrate) => W.adopt({ core: { worker: { get: async () => rowOf(id, substrate) } }, workerId: id, dataDir: data });
+  const adopt = (id, substrate) => W.adopt({ core: { worker: { get: async () => rowOf(id, substrate) } }, workerId: id, dataDir: data, runId: null });
   try {
     const dir = RS.ensure(data, 'rev1', 'run-ad');
     assert.ok(dir, 'the reviewer folder was made');

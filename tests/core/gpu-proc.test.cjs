@@ -16,6 +16,7 @@ const { spawn } = require('node:child_process');
 const { core, sandbox, cleanup, FIXTURES } = require('./helpers.cjs');
 const { waitGone, waitEvent, waitLine, countProgress, UP_DEADLINE } = require('../helpers/wait.cjs');
 const { fakeTimers, outcome } = require('../helpers/fake-timers.cjs');
+const G = require('../helpers/proc-gone.cjs'); // waitGone takes the identity of a process taken while it lived: a bare pid may be handed to another process (ADR 0039)
 
 const { GpuClient } = core('gpu.cjs');
 const { pidAlive } = core('lock.cjs');
@@ -25,13 +26,15 @@ const mk = (o = {}) => new GpuClient({ workerPath: FAKE, ...o }).start();
 
 test('start forks the child by handle; ping answers within its bound; close ends it and is safe twice', async () => {
   const c = mk();
+  let id = null;
   try {
     assert.ok(Number.isInteger(c.pid) && pidAlive(c.pid));
+    id = await G.identify(c.pid);
     const p = await c.ping(UP_DEADLINE);
     assert.strictEqual(p.ok, true);
     assert.strictEqual(p.pid, c.pid);
   } finally { await c.close(); }
-  assert.ok(await waitGone(c.pid), 'close ended the child');
+  assert.ok(await waitGone(id), 'close ended the child');
   await c.close();
   assert.strictEqual((await c.ping(200)).ok, false, 'a ping after close does not hang');
   await assert.rejects(c._call({ op: 'ping' }, 1000), (e) => e.code === 'E_MODEL_ABSENT' && e.detail.gpu === true && e.detail.cause === 'dead');
@@ -159,8 +162,9 @@ test('killing the owner by its exact pid takes the GPU child with it promptly', 
     owner = spawn(process.execPath, [OWNER], { windowsHide: true, stdio: ['ignore', 'pipe', 'inherit'], env: { ...process.env, BELAY_TEST_MODE: '1' } });
     const info = await waitLine(owner.stdout, 'gpu_pid'); // printed once the child announced its op is in flight
     assert.ok(pidAlive(info.gpu_pid), 'the GPU child is up and busy');
+    const gpuId = await G.identify(info.gpu_pid);
     process.kill(info.owner_pid); // the exact pid of the owner this test spawned
-    assert.ok(await waitGone(info.gpu_pid), 'the child outlived its owner');
+    assert.ok(await waitGone(gpuId), 'the child outlived its owner');
   } finally { if (owner && owner.exitCode === null) { try { process.kill(owner.pid); } catch { /* gone */ } } }
 });
 
@@ -217,8 +221,9 @@ test('killing the owner by its exact pid takes the REAL gpu-worker with it, even
     owner = spawn(process.execPath, [OWNER, 'real', rt, cache, tableFile], { windowsHide: true, stdio: ['ignore', 'pipe', 'inherit'], env: { ...process.env, BELAY_TEST_MODE: '1' } });
     const info = await waitLine(owner.stdout, 'gpu_pid');
     assert.ok(pidAlive(info.gpu_pid), 'the real worker is up with its model loaded');
+    const gpuId = await G.identify(info.gpu_pid);
     process.kill(info.owner_pid); // the exact pid of the owner this test spawned
-    assert.ok(await waitGone(info.gpu_pid), 'the real worker outlived its owner');
+    assert.ok(await waitGone(gpuId), 'the real worker outlived its owner');
   } finally {
     if (owner && owner.exitCode === null) { try { process.kill(owner.pid); } catch { /* gone */ } }
     cleanup(rt); cleanup(cache);
@@ -240,9 +245,9 @@ test('the real gpu-worker ends itself when its owner\'s channel closes, though a
     const answered = new Promise((res) => kid.on('message', (m) => { if (m.id === 1) res(m); }));
     kid.send({ id: 1, op: 'load', model: 'm', kind: 'embedder', path: 'unused', gpu: 'vulkan', contextSize: 8 });
     assert.strictEqual((await answered).ok, true, 'the stub model is loaded and holds a handle');
-    const pid = kid.pid;
+    const kidId = await G.identify(kid.pid);
     kid.disconnect();
-    assert.ok(await waitGone(pid), 'the worker stayed alive after its owner\'s channel closed');
+    assert.ok(await waitGone(kidId), 'the worker stayed alive after its owner\'s channel closed');
   } finally { if (kid && kid.exitCode === null) { try { process.kill(kid.pid); } catch { /* gone */ } } cleanup(rt); }
 });
 
@@ -260,6 +265,7 @@ test('a load has a wall-clock limit that the child\'s heartbeats do not reset', 
     const c = new GpuClient({ runtimeDir: rt, cacheDir: cache, table: { [e.id]: e }, workerOpts: { heartbeatMs: 50 }, loadBoundMs: 2000, loadWallMs: 500, timers: ft.timers }).start();
     try {
       assert.strictEqual((await c.ping(UP_DEADLINE)).ok, true, 'warm: the child is up');
+      const stuckId = await G.identify(c.pid);
       const progress = countProgress(c.child);
       const load = outcome(c.load(e.id));
       await progress.reach(3); // the child really heartbeated, so the silence clock has been credited repeatedly
@@ -267,7 +273,7 @@ test('a load has a wall-clock limit that the child\'s heartbeats do not reset', 
       assert.strictEqual(load.settled, false, 'not rejected at wall - 1');
       await ft.advance(1);
       assert.ok(load.error && load.error.code === 'E_EMBEDDER_TIMEOUT' && load.error.detail.cause === 'timeout' && load.error.detail.gpu === true && load.error.detail.wall_clock === true && load.error.detail.timeout_ms === 500, JSON.stringify(load.error));
-      assert.ok(await waitGone(c.pid), 'the wall-clock branch closed the stuck child itself, so it holds no memory');
+      assert.ok(await waitGone(stuckId), 'the wall-clock branch closed the stuck child itself, so it holds no memory');
     } finally { await c.close(); }
   } finally { cleanup(rt); cleanup(cache); }
 });

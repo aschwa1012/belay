@@ -12,4 +12,9 @@ if (!pidFile) { process.stderr.write('usage: spawns-a-child.cjs <pidFile>\n'); p
 const kid = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 120000)'], { windowsHide: true, stdio: 'ignore' });
 fs.writeFileSync(pidFile, String(kid.pid));
 process.stdout.write(JSON.stringify({ grandchild: kid.pid }) + '\n');
+// The grandchild's creation time (ADR 0039), written beside the pid while it lives, so the test can tell it from a process handed its number
+// after the tree kill. A snapshot that cannot be read leaves no file, and the test then treats a held pid as unverifiable.
+require('../../../src/core/proc-identity.cjs').createdOf(kid.pid, { kind: 'test-setup' }).then((made) => {
+  if (made && made.created != null) fs.writeFileSync(`${pidFile}.created`, String(made.created));
+}).catch(() => {});
 setTimeout(() => process.exit(0), 120000);

@@ -16,6 +16,7 @@ const { spawn, spawnSync } = require('node:child_process');
 const H = require('./stop-helpers.cjs');
 const P = require('../../src/run/process.cjs');
 const { deadPid, stillRunning } = require('../helpers/dead-pid.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 
 const { ROOT, sleep, sandbox, cleanup, waitUntil, waitForFileLine, waitForExit, makeSpec, runCli, receiptOf, connectOrchestratorCore, readStoreCopy, releaseCore, currentRunRow } = H;
 const FAKE_CLAUDE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
@@ -223,7 +224,7 @@ test('run close: a worker pid still alive when the run ends is killed by its exa
     assert.strictEqual(w.state, 'dead');
     assert.match(w.death_established_by, /^run\.end: pid \d+ not alive when the run ended/);
     assert.strictEqual(w.head_sha, head);
-    assert.ok(await waitUntil(() => !P.pidAlive(run.proc.pid), 5000, 50));
+    assert.ok(await G.childExited(run.proc, { deadlineMs: 5000 }), 'the run process has not exited');
   } finally {
     await releaseCore(core);
     killIfAlive(worker && worker.child); killIfAlive(bystander && bystander.child);

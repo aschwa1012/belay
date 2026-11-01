@@ -43,6 +43,13 @@ function resolveExitedWaiters(w, code, signal, establishedBy) {
 // whose stdio never closes.
 const EXIT_CLOSE_BOUND_MS = 2000;
 
+// A descendant that inherited the worker's stdout or stderr (a background shell, an MCP server) keeps those pipes open after the
+// worker is gone, and the adapter that spawned it is long-lived: our ends are dropped once the worker is settled. The survivor
+// itself is not touched (nothing may kill it by a bare pid); its later writes to the dropped pipes fail with a broken pipe.
+function dropPipes(child) {
+  for (const s of [child.stdout, child.stderr, child.stdin]) { try { if (s && !s.destroyed) s.destroy(); } catch { /* closed */ } }
+}
+
 // Liveness is derived, never self-reported (invariant 4): this is the exit-event half, and the
 // manager's 1,000 ms pid poll is the other. Whichever gets there first calls settle().
 function settle(w, code, signal, establishedBy, ctx) {
@@ -90,9 +97,9 @@ function settle(w, code, signal, establishedBy, ctx) {
     // launch) names the launch this close-wait was armed for; a record no test ever relaunches keeps it
     // unchanged, so this resolves exactly as before.
     const stillCurrent = () => w.settledChild === child;
-    const timer = setTimeout(() => { if (!done) { done = true; if (stillCurrent()) resolveExitedWaiters(w, code, signal, establishedBy); } }, EXIT_CLOSE_BOUND_MS);
+    const timer = setTimeout(() => { setImmediate(() => dropPipes(child)); /* after a poll phase, so a read already pending is ingested first */ if (!done) { done = true; if (stillCurrent()) resolveExitedWaiters(w, code, signal, establishedBy); } }, EXIT_CLOSE_BOUND_MS);
     if (timer.unref) timer.unref();
-    child.once('close', () => { if (done) return; done = true; clearTimeout(timer); if (stillCurrent()) resolveExitedWaiters(w, code, signal, establishedBy); });
+    child.once('close', () => { dropPipes(child); if (done) return; done = true; clearTimeout(timer); if (stillCurrent()) resolveExitedWaiters(w, code, signal, establishedBy); });
   } else {
     resolveExitedWaiters(w, code, signal, establishedBy);
   }
@@ -124,4 +131,4 @@ function lifeWrite(w, ctx, state, where, opts) {
 
 // 6i-2 fix round (item 5, the bound-timer half): exported so its own test (h15b, park-6.test.cjs) waits
 // the real bound rather than a hand-copied guess of it.
-module.exports = { terminalState, noteStoppedWhileSettled, settle, EXIT_CLOSE_BOUND_MS };
+module.exports = { dropPipes, terminalState, noteStoppedWhileSettled, settle, EXIT_CLOSE_BOUND_MS };
