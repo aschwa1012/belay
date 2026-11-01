@@ -3,6 +3,7 @@
 // those pipes (destroyed === true), not keep them for the life of the adapter. The 2,000 ms close bound is advanced by the mock
 // clock, so nothing here waits on wall time. The descendant is never signalled: it lives only while a flag file exists, and the
 // test removes the file.
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 
 const test = require('node:test');
 const assert = require('node:assert');
