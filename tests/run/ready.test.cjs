@@ -177,7 +177,8 @@ test('a core that refuses running with E_WORKER_NOT_LIVE still reaches the calle
       (e) => {
         assert.equal(e.code, 'E_NO_READY', 'E_WORKER_NOT_LIVE is the core talking to the manager, not to the caller');
         assert.equal(typeof e.detail.stderr_tail, 'string');
-        assert.match(e.detail.death_established_by, /core-refused-running/);
+        // The refused write holds for the exit event (the child is attached and the event is coming), so the real exit settles it.
+        assert.equal(e.detail.death_established_by, 'exit-event');
         return true;
       }
     );

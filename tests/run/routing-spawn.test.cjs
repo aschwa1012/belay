@@ -35,7 +35,7 @@ test('a spawn writes its agent type on the worker row, and a spawn without one w
     const none = await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w-none' });
     assert.strictEqual(none.agent_type, null);
     assert.strictEqual((await core.worker.get({ worker_id: 'w-rev' })).agent_type, 'reviewer', 'the store row says it, not only the answer');
-    const adopted = await W.adopt({ core, workerId: 'w-rev', dataDir: sb.data });
+    const adopted = await W.adopt({ core, workerId: 'w-rev', dataDir: sb.data, runId: null });
     assert.strictEqual(adopted.agentType, 'reviewer', 'an adopting adapter keeps the type from the harness row');
     await assert.rejects(m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w-bad', agent_type: 'orchestrator' }), (e) => e.code === 'E_ARGS', 'a worker cannot be spawned as the orchestrator type');
   } finally { await m.shutdown().catch(() => {}); cleanup(sb.data); }

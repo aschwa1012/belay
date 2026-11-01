@@ -13,6 +13,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execFile } = require('node:child_process');
+const { gitPath, PRE, withoutInjected } = require('./git-safe.cjs');
 const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
 
@@ -42,7 +43,7 @@ function holds(raw, forms) {
 // A file cite reads a blob only: `git show` of a directory prints its tree listing, which would make file names citable.
 function gitType(worktree, head, rel) {
   return new Promise(resolve => {
-    execFile('git', ['cat-file', '-t', `${head}:${rel}`], { cwd: worktree, timeout: GIT_BOUND_MS, windowsHide: true, encoding: 'utf8' }, (e, stdout) => resolve(e ? null : String(stdout).trim()));
+    execFile(gitPath(), ['cat-file', '-t', `${head}:${rel}`], { cwd: worktree, env: withoutInjected(), timeout: GIT_BOUND_MS, windowsHide: true, encoding: 'utf8' }, (e, stdout) => resolve(e ? null : String(stdout).trim()));
   });
 }
 async function gitShow(worktree, head, rel) {
@@ -52,7 +53,7 @@ async function gitShow(worktree, head, rel) {
 }
 function gitShowBlob(worktree, head, rel) {
   return new Promise(resolve => {
-    execFile('git', ['show', `${head}:${rel}`], { cwd: worktree, timeout: GIT_BOUND_MS, maxBuffer: FILE_MAX, windowsHide: true, encoding: 'utf8' },
+    execFile(gitPath(), ['show', `${head}:${rel}`], { cwd: worktree, env: withoutInjected(), timeout: GIT_BOUND_MS, maxBuffer: FILE_MAX, windowsHide: true, encoding: 'utf8' },
       (e, stdout) => resolve(e ? { error: e.code === 128 || /exists on disk|does not exist|bad object|unknown revision/i.test(String(e.stderr || e.message)) ? 'not at that commit' : `git did not answer (${e.code || e.signal || 'error'})` } : { text: stdout }));
   });
 }
@@ -61,7 +62,7 @@ function gitShowBlob(worktree, head, rel) {
 // ignored file is not an oracle; git never lists .git), and read only when its real path stays inside the worktree.
 async function worktreeShow(worktree, rel) {
   const listed = await new Promise(resolve => {
-    execFile('git', ['--literal-pathspecs', 'ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', rel], { cwd: worktree, timeout: GIT_BOUND_MS, windowsHide: true, encoding: 'utf8' }, (e, stdout) => resolve(e ? null : String(stdout)));
+    execFile(gitPath(), [...PRE, '--literal-pathspecs', 'ls-files', '-z', '--cached', '--others', '--exclude-standard', '--', rel], { cwd: worktree, env: withoutInjected(), timeout: GIT_BOUND_MS, windowsHide: true, encoding: 'utf8' }, (e, stdout) => resolve(e ? null : String(stdout)));
   });
   if (listed === null) return { error: 'git did not answer' };
   if (!listed.split('\0').includes(rel)) return { error: 'not a file git lists in the working tree' };

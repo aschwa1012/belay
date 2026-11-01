@@ -20,7 +20,8 @@ function createExitTracking({ child, state, t0, closeThenKillOnDeadline }) {
   async function stopForControl(reason) {
     await closeThenKillOnDeadline(reason);
     if (!exitFacts) await new Promise((resolve) => exitWaiters.push(resolve));
-    return exitFacts;
+    // The kill is recorded after its await returns, which can be after the exit event built `exitFacts`: read it here, once both are done.
+    return { ...exitFacts, kill: state.kill || null };
   }
 
   return { noteExit, stopForControl, getExitFacts: () => exitFacts };

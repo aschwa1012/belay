@@ -68,7 +68,7 @@ test('adopting a running worker from its row puts it under the stamp; adopting a
   const W = require('../../src/run/worker.cjs');
   const data = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-adopt-stamp-')).split(path.sep).join('/');
   const rowOf = (id, state, pid_created) => ({ id, run_id: 'run-s', substrate: 'claude-code', worktree: `${data}/wt`, state, seq: 3, pid: 6201, pid_created, turns: 1, session_id: 's1' });
-  const adopt = (id, state, created) => W.adopt({ core: { worker: { get: async () => rowOf(id, state, created) } }, workerId: id, dataDir: data });
+  const adopt = (id, state, created) => W.adopt({ core: { worker: { get: async () => rowOf(id, state, created) } }, workerId: id, dataDir: data, runId: null });
   try {
     await adopt('wa', 'stopped', T0);
     assert.strictEqual(SS.adoptedSize(), 0, 'a stopped row has no life');

@@ -23,7 +23,7 @@ before(async () => {
   E = new Engine({ dataDir: dir, store, getEmbedder: null, owner: null, establishedBy: 'test' });
   let prev = null;
   for (let i = 0; i < 40; i += 1) {
-    const r = await call('memory.store', { namespace: 'project/plan', text: `plan row ${i} about supersession`, type: 'decision', embed: false, ...(prev && i % 2 ? { supersedes: prev } : {}) });
+    const r = await E.handle('memory.store', { caller: callerFor('operator'), namespace: 'project/plan', text: `plan row ${i} about supersession`, type: 'decision', embed: false, ...(prev && i % 2 ? { supersedes: prev } : {}) });
     prev = r.id;
   }
   // No ANALYZE: a real store has no statistics, and without them SQLite picks ix_entries_ns_created for the plain
