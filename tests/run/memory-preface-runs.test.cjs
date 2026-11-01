@@ -24,7 +24,7 @@ test('index exclusions are scoped to the run: coder-1 of run 2 sees the row code
       return { caller, memory: { events: h('memory.events'), index: (a) => h('memory.index')({ ...a, namespaces: ['project/demo'] }), recordEvent: h('memory.recordEvent') } };
     };
     const c1 = coreFor('run-1');
-    const row = await E.handle('memory.store', { namespace: 'project/demo', type: 'decision', text: 'use sqlite wal', embedding: [1, 0, 0], embedding_model: 'm', dim: 3, caller: c1.caller });
+    const row = await E.handle('memory.store', { namespace: 'project/demo', type: 'decision', text: 'use sqlite wal', embedding: [1, 0, 0], embedding_model: 'm', dim: 3, caller: callerFor('operator') });
     const lv = { ...DEFAULTS, first_message_index: true, project: 'demo' };
 
     const r1 = await MP.memoryPreface({ id: 'coder-1' }, { core: c1, runId: 'run-1', memoryLevers: lv });
