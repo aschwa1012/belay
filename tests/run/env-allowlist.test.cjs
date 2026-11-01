@@ -14,7 +14,7 @@ const { createParser } = require('../../src/run/parsers.cjs');
 const { createRunManager } = require('../../src/run/index.cjs');
 const { createFakeCore } = require('./fake-core.cjs');
 const { cleanup } = require('../core/helpers.cjs');
-const P = require('../../src/run/process.cjs');
+const G = require('../helpers/proc-gone.cjs');
 
 const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(/\\/g, '/');
 const fwd = (p) => String(p).replace(/\\/g, '/');
@@ -146,7 +146,9 @@ test('spawn: an init reporting apiKeySource ANTHROPIC_API_KEY fails E_NO_READY n
       }
     );
     assert.ok(Number.isInteger(pid) && pid > 0);
-    assert.equal(P.pidAlive(pid), false, 'a worker refused at the gate is killed, not left behind');
+    // Gone by identity (ADR 0039): the row's recorded creation time, so a reused pid number is not read as the worker.
+    const created = core.rowsFor('w-key').map((r) => r.pid_created).filter((c) => c != null).pop();
+    assert.ok(await G.waitGone(G.recorded(pid, created), { deadlineMs: 10000 }), 'a worker refused at the gate is killed, not left behind');
     const states = core.rowsFor('w-key').map((r) => r.state);
     assert.equal(states[states.length - 1], 'dead');
   } finally {
