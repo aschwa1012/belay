@@ -14,6 +14,7 @@ const LC = require('../../src/run/lifecycle.cjs');
 const { createRunManager } = require('../../src/run/index.cjs');
 const { createFakeCore } = require('./fake-core.cjs');
 const { cleanup } = require('../core/helpers.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 
 const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(/\\/g, '/');
 const fwd = (p) => String(p).replace(/\\/g, '/');
@@ -257,9 +258,9 @@ test('adopt: a second manager stops a live worker whose settings.json was edited
     fs.writeFileSync(file, JSON.stringify({ ...settingsOf(sb, 'w-stop'), autoMemoryEnabled: true, autoMemoryDirectory: sb.mem }));
     second = mgr(sb, core);
     assert.ok(alive(row.pid));
+    const rowId = await G.identify(row.pid);
     await second.stop({ worker_id: 'w-stop', mode: 'graceful', timeout_ms: 8000 });
-    for (let i = 0; i < 100 && alive(row.pid); i++) await new Promise((r) => setTimeout(r, 50));
-    assert.equal(alive(row.pid), false, 'a stop always goes through');
+    assert.ok(await G.waitGone(rowId, { deadlineMs: 5000, intervalMs: 50 }), 'a stop always goes through');
     assert.notEqual(core.currentWorker('w-stop').death_established_by, 'native_memory_settings_mismatch', 'a stop is not rewritten as a mismatch death');
   } finally { if (second) await second.shutdown().catch(() => {}); await first.shutdown().catch(() => {}); cleanup(sb.d); }
 });
@@ -428,11 +429,11 @@ test('adopt: a stop goes through even when the recorded folder is now refused by
   process.env.FAKE_MEMORY_AUTO = 'echo';
   try {
     const row = await first.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'w-badrec', native_memory: sb.mem });
+    const rowId = await G.identify(row.pid);
     process.env.CLAUDE_CONFIG_DIR = fwd(sb.d); // the recorded folder now sits inside the config directory
     second = mgr(sb, core);
     await second.stop({ worker_id: 'w-badrec', mode: 'graceful', timeout_ms: 8000 });
-    for (let i = 0; i < 100 && alive(row.pid); i++) await new Promise((r) => setTimeout(r, 50));
-    assert.equal(alive(row.pid), false, 'a stop is never refused by the lever check');
+    assert.ok(await G.waitGone(rowId, { deadlineMs: 5000, intervalMs: 50 }), 'a stop is never refused by the lever check');
     await assert.rejects(second.restart({ worker_id: 'w-badrec', first_turn_timeout_ms: 45000 }), (e) => e.code === 'E_ARGS' && e.detail.reason === 'claude_config_dir', 'a launch is');
   } finally { if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev; delete process.env.FAKE_MEMORY_AUTO; if (second) await second.shutdown().catch(() => {}); await first.shutdown().catch(() => {}); cleanup(sb.d); }
 });
@@ -447,9 +448,9 @@ test('adopt: a stop goes through when the recorded folder can no longer be creat
     fs.writeFileSync(path.join(sb.d, 'parent'), 'a file where the folder\'s parent was'); // mkdir of the recorded folder now fails ENOTDIR
     second = mgr(sb, core);
     assert.ok(alive(row.pid));
+    const rowId = await G.identify(row.pid);
     await second.stop({ worker_id: 'w-enotdir', mode: 'graceful', timeout_ms: 8000 });
-    for (let i = 0; i < 100 && alive(row.pid); i++) await new Promise((r) => setTimeout(r, 50));
-    assert.equal(alive(row.pid), false, 'a stop always goes through, whatever the folder error');
+    assert.ok(await G.waitGone(rowId, { deadlineMs: 5000, intervalMs: 50 }), 'a stop always goes through, whatever the folder error');
     await assert.rejects(second.restart({ worker_id: 'w-enotdir', first_turn_timeout_ms: 45000 }), (e) => e.code === 'E_ARGS' && e.detail.reason === 'not_a_directory', 'a launch is refused, now before the create is tried');
   } finally { delete process.env.FAKE_MEMORY_AUTO; if (second) await second.shutdown().catch(() => {}); await first.shutdown().catch(() => {}); cleanup(sb.d); }
 });
