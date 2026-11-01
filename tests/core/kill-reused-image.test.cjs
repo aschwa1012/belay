@@ -99,3 +99,10 @@ test('rowTarget: a row with a recorded pid_image marks the image as recorded; a 
   assert.strictEqual(P.rowTarget({ pid: 7, substrate: 'claude-code', pid_image: 'node.exe' }).image_recorded, true);
   assert.strictEqual('image_recorded' in P.rowTarget({ pid: 7, substrate: 'claude-code' }), false);
 });
+
+test('killPid: no creation time and the recorded image at the pid is unverifiable, never a mismatch and never signalled', async () => {
+  const rec = recorder();
+  const r = await P.killPid({ pid: 5006, created: null, image: ['node.exe'], image_recorded: true }, 'SIGKILL', { snapshot: snapOf([[5006, 1, T, 'node.exe']]), kill: rec.kill });
+  assert.strictEqual(r.kind, 'unverifiable', 'the same image with no creation time may be the same process');
+  assert.match(r.detail, /^(?!.*reused)/);
+});
