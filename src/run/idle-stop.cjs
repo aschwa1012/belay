@@ -32,7 +32,8 @@ async function idleReason(ctx, w, workerId, launches, commit = false) {
   try { tasks = ((await ctx.core.task.list({ states: ['assigned'] })) || {}).tasks || []; } catch (e) { return `its leases could not be read: ${e && e.message}`; }
   const other = tasks.find((t) => t.lease && t.lease.holder === workerId && t.lease.holder_role === 'worker' && !t.lease.expired);
   if (other) return `it holds the lease on task ${other.id}`;
-  if (notIdle(w) || (w.assignSeq || 0) !== seq) return 'the worker was given new work';
+  if (!w.turnEnded || w.settled || w.stopRequested || w.parkRequested || w.relaunching != null) return 'the worker is not idle';
+  if ((w.assigning || 0) > 0 || (w.assignSeq || 0) !== seq) return 'the worker was given new work';
   if (w.launches !== launches) return 'the worker was relaunched';
   if (commit) w.stopCommitted = true;
   return null;

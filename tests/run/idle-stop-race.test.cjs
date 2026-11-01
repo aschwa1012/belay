@@ -93,10 +93,10 @@ test('an explicit stop that arrives during a guarded idle stop whose guard skips
   const f = fixture([null, gate]);
   const run = stopIfIdleDone(f.manager, f.ctx, done);
   await f.listed[1].p;
-  const explicit = f.manager.stop({ worker_id: 'w1' }); // worker_stop: no guard
-  const end = markAssign(f.w);
+  const end = markAssign(f.w); // the assign wins: it marked the worker before the explicit stop took the slot (after it, the assign is refused)
   f.store.leases.push(lease);
   end();
+  const explicit = f.manager.stop({ worker_id: 'w1' }); // worker_stop: no guard
   gate.resolve();
   const receipt = await explicit;
   const r = await run;
