@@ -8,6 +8,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const H = require('./stop-helpers.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity or by the child's own handle: a bare pid may be handed to another process (ADR 0039)
 const P = require('../../src/run/process.cjs');
 const cmdRun = require('../../src/cli/cmd-run.cjs');
 const cmdStop = require('../../src/cli/cmd-stop.cjs');
@@ -75,10 +76,10 @@ test('a leak line before the session is reached still fails at once and the stat
 test('F3: a gate failure ends claude with killPid on its exact pid and never a tree kill', async (t) => withRun(t, async (dir) => {
   // The pid comes from the injected killPid call, not from the fake's own record (T1). Any call to P.killTree, by
   // anyone, is a failure: the spy records it and throws (M11), and the module's own function is restored after.
-  const pidCalls = []; const treeCalls = [];
+  const pidCalls = []; const treeCalls = []; const handles = [];
   const realTree = P.killTree;
   P.killTree = (...a) => { treeCalls.push(a); throw new Error('P.killTree was called'); };
-  const deps = { killPid: (target, sig) => { pidCalls.push(target.pid); return P.killPid(target, sig); } };
+  const deps = { killPid: (target, sig) => { pidCalls.push(target.pid); handles.push(target); return P.killPid(target, sig); } };
   const gate = fakeGate({ debug: { ok: false, failed: 'skills', detail: '2 skills loaded' }, debugMs: 100 });
   const r = start(dir, { gate, deps, env: { FAKE_NEVER_EXIT: '1' } });
   try {
@@ -88,7 +89,9 @@ test('F3: a gate failure ends claude with killPid on its exact pid and never a t
     assert.strictEqual(pidCalls[0], res.json.orchestrator.pid, 'the killPid pid is not the pid the receipt names for claude');
     assert.match(res.json.ended_by, /^surface gate failed \(debug\): skills/);
     assert.strictEqual(res.code, 1);
-    assert.ok(!P.pidAlive(pidCalls[0]));
+    // killPid is handed the live child handle (ADR 0039), which is the proof it ended; a bare pid could now belong to another process.
+    assert.ok(typeof handles[0].once === 'function', 'killPid was not handed the child handle');
+    assert.ok(await G.childExited(handles[0]), `claude (pid ${pidCalls[0]}) has not exited`);
   } finally {
     P.killTree = realTree;
     const rec = r.record();
@@ -200,6 +203,7 @@ test('F7: after a SIGHUP a claude that does not exit is ended by its pid within 
   const rec = await waitUntil(() => r.record(), 15000);
   assert.ok(rec);
   assert.ok(await waitUntil(() => currentRunRow(r.dataDir, r.runId), 15000));
+  const claudeId = await G.identify(rec.pid); // while it lives, before the close ends it
   const hupAt = Date.now();
   process.emit('SIGHUP');
   try {
@@ -210,7 +214,7 @@ test('F7: after a SIGHUP a claude that does not exit is ended by its pid within 
     assert.ok(ms < 15000, `the close took ${ms} ms after the SIGHUP`);
     assert.strictEqual(res.code, 1);
     assert.match(res.json.ended_by, /^claude did not exit within the fast close budget; claude ended by its pid; then console closed \(fast close\)$/);
-    assert.ok(!P.pidAlive(rec.pid));
+    await G.assertGone(claudeId, `claude (pid ${rec.pid}) is still alive after the close`);
     assert.ok(currentRunRow(r.dataDir, r.runId).ended_at != null);
   } finally { await r.done.catch(() => {}); }
 }));

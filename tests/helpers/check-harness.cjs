@@ -11,6 +11,10 @@ const { runCommand } = require(path.join(__dirname, '..', '..', 'src', 'core', '
 const [, , how, ...args] = process.argv;
 let child = null;
 runCommand([process.execPath, ...args], process.cwd(), 120000, { register: 'check', onChild: (c) => { child = c; } });
-setTimeout(() => {
-  process.stdout.write(`${child.pid} ${Date.now()}\n`, () => { if (how === 'soft') process.exit(0); });
+// The third field is the check's creation time, read while it lives (ADR 0039), so a test can tell it from a process handed its number later.
+// The second field is taken before that read: the check was alive at that moment, and the read can take a second.
+setTimeout(async () => {
+  const aliveAt = Date.now();
+  const made = await require(path.join(__dirname, '..', '..', 'src', 'core', 'proc-identity.cjs')).createdOf(child.pid, { kind: 'test-setup' }).catch(() => null);
+  process.stdout.write(`${child.pid} ${aliveAt}${made && made.created != null ? ` ${made.created}` : ''}\n`, () => { if (how === 'soft') process.exit(0); });
 }, 300);

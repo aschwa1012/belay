@@ -14,6 +14,7 @@ const { createRunManager } = require('../../src/run/index.cjs');
 const { createFakeCore, FakeCoreError } = require('./fake-core.cjs');
 const { cleanup } = require('../core/helpers.cjs');
 const P = require('../../src/run/process.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 
 const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(/\\/g, '/');
 const FAKE_WITH_CHILD = path.join(__dirname, 'fakes', 'fake-claude-with-child.cjs').replace(/\\/g, '/');
@@ -125,9 +126,11 @@ test('stop: a worker whose resume failed to write its starting row is parked aga
     // a bind, so the failed start ends it (ADR 0045 amendment 3) and the worker reads parked again, as before the resume.
     const origWrite = core.worker.write.bind(core.worker);
     let failOnce = true;
+    let relaunchedId = null; // the relaunched child's identity, taken while it is alive: the failed start is about to end it
     core.worker.write = async (r) => {
       if (failOnce && r.id === 'w1' && r.state === 'starting') {
         failOnce = false;
+        relaunchedId = await G.identify(r.pid);
         throw new FakeCoreError('E_TIMEOUT', 'fake core: simulated starting-row write failure');
       }
       return origWrite(r);
@@ -138,13 +141,15 @@ test('stop: a worker whose resume failed to write its starting row is parked aga
     const w = m._worker('w1');
     assert.strictEqual(w.state, 'paused', 'the in-memory state must still read paused after the failed write');
     assert.notStrictEqual(await P.waitPidGone(w.pid, { timeoutMs: 10000 }), null, 'the relaunched process must have been ended');
+    assert.ok(relaunchedId && relaunchedId.pid === w.pid, 'the relaunched child was identified while alive');
+    await G.assertGone(relaunchedId, 'the relaunched process must have been ended');
     assert.ok(await pollUntil(() => !w.child && w.state === 'paused', 5000), `the worker must read parked again (state ${w.state}, child ${!!w.child})`);
     const rowBefore = await core.worker.get({ worker_id: 'w1' });
     assert.strictEqual(rowBefore.state, 'paused');
 
     const stopped = await m.stop({ worker_id: 'w1', mode: 'graceful', timeout_ms: 5000 });
     assert.strictEqual(stopped.stale, undefined, "a park this adapter returned to is not another adapter's resume");
-    assert.strictEqual(P.pidAlive(w.pid), false, 'the live process must actually have been stopped');
+    await G.assertGone(relaunchedId, 'the relaunched process must stay ended after the stop');
     const rowAfter = await core.worker.get({ worker_id: 'w1' });
     assert.strictEqual(rowAfter.state, 'stopped');
   } finally { await teardown({ m, sb }); }
@@ -165,6 +170,7 @@ test('stop: a starting row written by this adapter is not taken for another adap
     const rowNow = await core.worker.get({ worker_id: 'w1' });
     assert.notStrictEqual(rowNow.state, 'paused');
     assert.ok(w.child, 'this adapter\'s own resume must have attached a live child');
+    const liveId = await G.identify(w.pid);
 
     // The race carried item 2 names: this adapter wrote the row itself, but the in-memory record has not
     // caught up to it yet (`writeRow` sets `w.state` only once the write resolves) — simulated directly.
@@ -173,7 +179,7 @@ test('stop: a starting row written by this adapter is not taken for another adap
     const stopped = await m.stop({ worker_id: 'w1', mode: 'kill', timeout_ms: 5000 });
     assert.strictEqual(stopped.stale, undefined, 'this adapter\'s own live child must never be taken for a different adapter\'s resume');
     assert.strictEqual(w.staleSince, null, 'a live child of our own must never be recorded as staleness either');
-    assert.strictEqual(P.pidAlive(w.pid), false);
+    await G.assertGone(liveId, `the resumed worker (pid ${w.pid}) is still alive after the stop`);
     const rowAfter = await core.worker.get({ worker_id: 'w1' });
     assert.strictEqual(rowAfter.state, 'stopped');
 

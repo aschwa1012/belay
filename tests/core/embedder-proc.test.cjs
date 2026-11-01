@@ -17,6 +17,7 @@ const { Embedder } = core('embedder.cjs');
 const { pidAlive } = core('lock.cjs');
 const M = core('models.cjs');
 const K = core('model-cache.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 
 const ROOT = path.resolve(__dirname, '..', '..').split(path.sep).join('/');
 const VOYAGE = M.MODELS[M.DEFAULT_MODEL];
@@ -102,9 +103,10 @@ test('embedder: killing the owner by its exact pid mid-embed takes the embedder 
     assert.ok(pidAlive(info.embedder_pid), 'the embedder child is up and busy');
     process.kill(info.owner_pid); // the exact pid of the owner this test spawned
     const t0 = Date.now();
-    while (pidAlive(info.embedder_pid) && Date.now() - t0 < 5000) await new Promise(r => setTimeout(r, 20));
+    const embedderId = G.recorded(info.embedder_pid, info.embedder_created); // the creation time the fixture read while the child lived
+    const goneInTime = await G.waitGone(embedderId, { deadlineMs: 5000, intervalMs: 20 });
     const ms = Date.now() - t0;
-    assert.strictEqual(pidAlive(info.embedder_pid), false, 'the child outlived its owner');
+    assert.ok(goneInTime, 'the child outlived its owner');
     // The loop above already waits up to 5 s; the bug is a child that never goes (it outlives its owner), which the
     // pidAlive assertion catches. 2 s was thin for a hosted runner, so the time bound is the loop's own 5 s.
     assert.ok(ms < 5000, `the child took ${ms} ms to go`);

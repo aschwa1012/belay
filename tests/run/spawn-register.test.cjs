@@ -14,6 +14,8 @@ const SR = require('../../src/core/spawn-register.cjs');
 const P = require('../../src/run/process.cjs');
 const { createFakeCore } = require('./fake-core.cjs');
 const { cleanup } = require('../core/helpers.cjs');
+const ID = require('../../src/core/proc-identity.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 
 const USER_SETTINGS = path.join(__dirname, 'fixtures', 'user-settings.json');
 const fwd = (p) => String(p).split(path.sep).join('/');
@@ -83,7 +85,11 @@ test('a register refusal ends the worker and the helper it started during the re
   Object.assign(process.env, { FAKE_SPAWN_SCRIPT: fwd(path.join(__dirname, 'fakes', 'helper-sleeper.cjs')), FAKE_HELPER_PIDFILE: fwd(pidFile) });
   SR.io.rename = () => { throw Object.assign(new Error('operation not permitted'), { code: 'EPERM' }); };
   // The retry loop's own sleep holds the registration open until the helper exists, so the refusal comes after it, as it does on a slow machine.
-  SR.io.sleep = () => { for (const t0 = Date.now(); helperPid() === null && Date.now() - t0 < 20000;) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20); };
+  let seenSnap = null; // one snapshot, taken once the helper exists and so while the worker and it are alive (ADR 0039: the refusal ends them before the error returns)
+  SR.io.sleep = () => {
+    for (const t0 = Date.now(); helperPid() === null && Date.now() - t0 < 20000;) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+    if (!seenSnap && helperPid() !== null) seenSnap = ID.processSnapshotSync();
+  };
   const m = createRunManager({ core: createFakeCore(), dataDir: data, runId: 'run-sr3', paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: USER_SETTINGS } });
   try {
     let err = null;
@@ -92,8 +98,10 @@ test('a register refusal ends the worker and the helper it started during the re
     const parent = err.detail.pid; const helper = helperPid();
     assert.ok(Number.isInteger(helper), 'the helper never started');
     // No waiting here: the error is handed back only once the teardown has finished.
-    assert.ok(!P.pidAlive(parent), `the worker (pid ${parent}) is still alive when the refusal arrives`);
-    assert.ok(!P.pidAlive(helper), `the helper (pid ${helper}) of the refused worker is still alive when the refusal arrives`);
+    assert.ok(seenSnap, 'the process snapshot could not be read while the worker and its helper lived');
+    const identityIn = (pid) => { const e = seenSnap.get(pid); assert.ok(e && e.created != null, `no creation time for pid ${pid} in the snapshot taken while it lived`); return { pid, created: e.created }; };
+    await G.assertGone(identityIn(parent), `the worker (pid ${parent}) is still alive when the refusal arrives`);
+    await G.assertGone(identityIn(helper), `the helper (pid ${helper}) of the refused worker is still alive when the refusal arrives`);
     assert.strictEqual(err.detail.teardown.parent_gone, true);
   } finally {
     SR.io.rename = keepRename; SR.io.sleep = keepSleep; process.env.BELAY_SPAWN_REGISTRY = keepDir;
