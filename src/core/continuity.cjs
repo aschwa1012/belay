@@ -38,7 +38,7 @@ async function checkpoint(E, caller, args) {
   if (isWorker) {
     workerId = caller.worker_id; // forced to the caller; args.worker_id is never consulted
     source = 'worker';
-    if (!heldLease(E, args.task_id, workerId)) {
+    if (!heldLease(E, args.task_id, workerId, caller.run_id)) {
       throw err('E_NO_LEASE', `worker ${workerId} does not hold the current unexpired lease on task ${args.task_id}, so it cannot write a checkpoint against it`, { task_id: args.task_id, worker_id: workerId });
     }
     stated = {

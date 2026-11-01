@@ -79,10 +79,11 @@ async function amend(E, caller, args) {
 // a fix the judged task's tree. A removed tree is not given. A conflict fix made this way does not use `repairs`, so it spends no
 // fix round; its own `base` (task.create base) is the base its evaluations default to.
 // `runTop` is the run's repository (runRepo): a tree in another repository is the operator's to name (task.worktreeCreate's repoOf).
-function treeOf(E, id, runTop) {
+function treeOf(E, id, runTop, caller) {
   if (typeof id !== 'string' || !id) throw err('E_ARGS', 'task.create tree_of must be the id of a task whose worktree the new task is worked in');
   const src = rows.current(E.store, 'task', id);
   if (!src) throw err('E_NOT_FOUND', `task.create tree_of names ${id}, which has no row in this store`, { tree_of: id });
+  if (caller) require('./worker-run-guard.cjs').refuseOtherRunTask(E, caller, src); // a live run's tree is that run's
   const rec = require('./methods-worktree.cjs').inheritable(src);
   if (!rec) throw err('E_PRECONDITION', `task ${id} has no worktree${src.worktree && src.worktree.removed_at ? ' (it was removed)' : ''}, so there is no tree to work the new task in`, { tree_of: id });
   if (!require('./git.cjs').samePath(rec.repo, runTop)) {
