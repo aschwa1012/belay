@@ -326,7 +326,9 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const old_pid = w.pid;
     RG.refuseIfRelaunching(w, 'restart'); // a Codex message's relaunch owns the window; this one waits its turn
     if (w.substrate === 'codex' && appendMessage) { // before anything is stopped or written: the caller's text alone (a floor of the line) over the cap is refused with the worker untouched
-      const floor = LS.buildSpec(w, exeFor, { resume: w.sessionId, prompt: appendMessage });
+      // the branch is not known yet, so measure both shapes (resume and fresh) and take the smaller: the real line is never shorter than it
+      const shapes = [null, w.sessionId].filter((r, i) => i === 0 || r).map((resume) => LS.buildSpec(w, exeFor, { resume, prompt: appendMessage }));
+      const floor = shapes.reduce((a, b) => (AL.commandLineLength(b.exe, b.args) < AL.commandLineLength(a.exe, a.args) ? b : a));
       AL.checkCommandLine(floor.exe, floor.args, { workerId: w.id, path: 'restart' });
     }
     // ADR 0026 amendment 2 (proposed): from here until launch() has moved w.launches, a death of this worker keeps its lease.
