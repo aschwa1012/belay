@@ -15,7 +15,7 @@ async function awaitStopping(dataDir, method, e) {
   if (!d.owner_stopping) return;
   const held = d.owner_pid ? { pid: d.owner_pid, token: d.owner_token } : readOwnerLock(dataDir);
   if (held && !(await waitOwnerGone(dataDir, held, STOP_WAIT_MS))) {
-    throw err('E_OWNER_LOST', `the store owner was still stopping after ${STOP_WAIT_MS} ms, so ${method} was not run and was not re-run`, { method, sent: false, owner_stopping: true, waited_ms: STOP_WAIT_MS });
+    throw err('E_OWNER_LOST', `the store owner was still stopping after ${STOP_WAIT_MS} ms, so ${method} was not run and was not re-run`, { method, sent: false, rerun: 'skipped', owner_stopping: true, waited_ms: STOP_WAIT_MS });
   }
 }
 
