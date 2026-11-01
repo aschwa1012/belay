@@ -41,22 +41,24 @@ async function closeEpochWorkers(E, runId, by, lifeClaiming, treeKill = null) {
   const t = Date.now();
   const mine = rows.currentAll(E.store, 'worker').filter((w) => w.run_id === runId && lifeClaiming.has(w.state) && !isCodexIdle(w));
   const LA = require('./live-as.cjs');
-  const ready = await LA.prepare(mine.flatMap(LA.pairsOf));
+  const ready = await LA.prepare(mine.flatMap(LA.pairsWithImage));
   for (const w of rows.currentAll(E.store, 'worker')) {
     if (w.run_id !== runId || !lifeClaiming.has(w.state)) continue;
     const codexIdle = isCodexIdle(w);
-    if (!codexIdle && ready.runsAs(w.pid, w.pid_created)) continue;
+    if (!codexIdle && ready.runsAs(w.pid, w.pid_created, w.pid_image || null)) continue;
     const head = await headOf(w.worktree);
     const cur = rows.current(E.store, 'worker', w.id);
-    if (!cur || cur.seq !== w.seq || (!codexIdle && pidAlive(cur.pid) && ready.runsAs(cur.pid, cur.pid_created))) continue;
+    if (!cur || cur.seq !== w.seq || (!codexIdle && pidAlive(cur.pid) && ready.runsAs(cur.pid, cur.pid_created, cur.pid_image || null))) continue;
     // The head the row carries: git's answer, else the head the row already had (never overwritten with null).
     const headSha = head.sha == null ? (cur.head_sha == null ? null : cur.head_sha) : head.sha;
     const killedByTree = !codexIdle && treeKill && cur.pid_created != null && treeKill.pids.get(cur.pid) === cur.pid_created; // pid and creation time, as every kill (ADR 0039); a row with no creation time keeps the plain wording
+    const reusedImage = !codexIdle && cur.pid_created == null && !!cur.pid_image && pidAlive(cur.pid); // alive, yet not the row's process: judged by its image
     const values = {
       ...cur, state: 'dead', exited_at: cur.exited_at == null ? (killedByTree ? treeKill.signalled_at : t) : cur.exited_at,
       death_established_by: codexIdle ? CODEX_IDLE_BY
         : killedByTree ? `run.end: pid ${cur.pid} was in the orchestrator's process tree that belay killed at ${treeKill.signalled_at} (named by the snapshot taken before the signal); the adapter died with it, so no adapter wrote its exit`
-          : `run.end: pid ${cur.pid} not alive when the run ended; no adapter wrote its exit`,
+          : reusedImage ? `run.end: pid ${cur.pid} is held by another image than the ${cur.pid_image} the row recorded, so the worker's process had exited and the pid was reused; no adapter wrote its exit`
+            : `run.end: pid ${cur.pid} not alive when the run ended; no adapter wrote its exit`,
       head_sha: headSha, head_error: headSha != null ? null : (cur.head_error == null ? null : cur.head_error), paused_at: null, paused_by: null,
     };
     require('./cost-estimate.cjs').apply(E.dataDir, values); // no adapter wrote this life's end: its unreported last turn comes from the stream
