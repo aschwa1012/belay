@@ -23,8 +23,9 @@ const { withSemanticFailure, onSemanticFailure } = require('./memory-search.cjs'
 const { notifyEmbedderFailure, adviseEmbedderFailure } = require('./methods-memory.cjs');
 
 const {
-  ELECTION_PING_TIMEOUT_MS, READ_TIMEOUT_MS, EMBEDDING_READ_TIMEOUT_MS, WRITE_TIMEOUT_MS, REPING_BEFORE_LOST_MS, PING_BEFORE_VECTOR_MS, EVALUATE_TIMEOUT_MS, rereadOwnerPid, rereadOwnerLock, readTimeoutFor, warmLimit, vectorLimit, writeTimeoutFor, RERUN_SAFE_AFTER_SEND, MIN_RERUN_LEFT_MS,
+  ELECTION_PING_TIMEOUT_MS, READ_TIMEOUT_MS, EMBEDDING_READ_TIMEOUT_MS, WRITE_TIMEOUT_MS, REPING_BEFORE_LOST_MS, PING_BEFORE_VECTOR_MS, EVALUATE_TIMEOUT_MS, rereadOwnerPid, rereadOwnerLock, readTimeoutFor, warmLimit, vectorLimit, writeTimeoutFor, RERUN_SAFE_AFTER_SEND,
 } = require('./call-limits.cjs');
+const { awaitStopping, rerunLeft } = require('./owner-stopping.cjs');
 
 class Core {
   constructor(opts) {
@@ -183,7 +184,7 @@ class Core {
     const lock = readOwnerLock(this.dataDir);
     if (!lock || !pidAlive(lock.pid) || lock.listening === false) return;
     const first = await ping(this.dataDir, PING_BEFORE_VECTOR_MS);
-    if (first.ok) return;
+    if (first.ok || first.code === 'E_OWNER_STOPPING') return; // a stopping owner refuses the call unsent, and the write path re-runs it on the next owner
     // E2: still a bounded request and response (invariant 7), asked twice. A busy owner (a CreateProcess on
     // its loop) answers the second; a wedged one does not, and is then reported lost naming both pings.
     const p = pidAlive(lock.pid) ? await ping(this.dataDir, REPING_BEFORE_LOST_MS) : first;
@@ -283,14 +284,8 @@ class Core {
         throw err('E_OWNER_LOST', `the owner was lost after ${method} was sent; the owner may already have committed it, so re-read before retrying`, { method, sent: true, may_have_committed: true, outcome: 'unknown' });
       }
       const notSent = !!(e.detail && e.detail.sent === false);
-      let left;
-      if (method === 'memory.store') {
-        left = timeoutMs - (Date.now() - t0);
-        if (left < MIN_RERUN_LEFT_MS) {
-          if (notSent) throw err('E_OWNER_LOST', `the owner was lost before ${method} was sent and too little of its limit was left to re-run it`, { method, sent: false, rerun: 'skipped', left_ms: left });
-          throw err('E_OWNER_LOST', `the owner was lost after ${method} was sent; too little of its limit was left to re-run it, so re-read before retrying`, { method, sent: true, may_have_committed: true, outcome: 'unknown', rerun: 'skipped', left_ms: left });
-        }
-      }
+      await awaitStopping(this.dataDir, method, e); // before `left`, so the wait is charged to memory.store's limit
+      const left = rerunLeft(method, notSent, timeoutMs, t0);
       await this._ensureWriter(method);
       let result;
       try {
@@ -454,6 +449,7 @@ class Core {
     catch (e) {
       if (!e || e.code !== 'E_OWNER_LOST' || !(e.detail && e.detail.sent === false)) throw e;
       await this._dropClient();
+      await awaitStopping(this.dataDir, method, e);
       await this._ensureWriter(method, { noElect: true });
       return call();
     }
