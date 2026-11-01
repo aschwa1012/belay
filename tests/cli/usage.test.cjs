@@ -78,16 +78,17 @@ test('usage: --by groups; a group mixing priced and unpriced turns says partial,
   } finally { cleanup(dir); }
 });
 
-test('usage: an unknown run id and an empty ledger answer with no rows, exit 0', async () => {
+test('usage: an unknown run id is refused with exit 1 and E_NOT_FOUND', async () => {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   try {
     await plant(dataDir);
     const r = cli(['run-nope'], dataDir);
-    assert.strictEqual(r.status, 0);
-    assert.match(r.stdout, /\(no usage rows\)/);
+    assert.strictEqual(r.status, 1);
+    assert.match(r.stderr, /no run row exists for run-nope/);
     const g = cli(['run-nope', '--by', 'model', '--json'], dataDir);
-    assert.deepStrictEqual(JSON.parse(g.stdout).groups, []);
+    assert.strictEqual(g.status, 1);
+    assert.strictEqual(JSON.parse(g.stdout).error.code, 'E_NOT_FOUND');
   } finally { cleanup(dir); }
 });
 
@@ -106,7 +107,7 @@ test('usage: usage errors exit 2 and open nothing', () => {
 test('usage: a store without a ledger says so instead of printing zero', async () => {
   const dir = sandbox();
   try {
-    const core = { run: { list: async () => ({ runs: [{ id: 'r', alive: false }] }) }, usage: { list: async () => ({ rows: [], totals: { turns: 0 }, table_absent: true }) }, close: async () => {} };
+    const core = { run: { list: async () => ({ runs: [{ id: 'r', alive: false }] }) }, usage: { list: async () => ({ rows: [], totals: { turns: 0 }, table_absent: true }) }, readBatch: (fn) => fn(), close: async () => {} };
     const r = await usage.run({ argv: [], cwd: dir, dataDir: `${dir}/.belay`, dataDirGiven: true, json: false, openCore: async () => core });
     assert.strictEqual(r.code, 0);
     assert.match(r.text, /no usage table in this store/);
@@ -117,7 +118,7 @@ test('usage: a store without a ledger says so instead of printing zero', async (
 test('usage: a core refusal exits 1 naming the code', async () => {
   const dir = sandbox();
   try {
-    const core = { run: { list: async () => ({ runs: [] }) }, usage: { list: async () => { const e = new Error('bad group'); e.code = 'E_ARGS'; throw e; } }, close: async () => {} };
+    const core = { run: { list: async () => ({ runs: [{ id: 'run-1' }] }) }, usage: { list: async () => { const e = new Error('bad group'); e.code = 'E_ARGS'; throw e; } }, readBatch: (fn) => fn(), close: async () => {} };
     const r = await usage.run({ argv: ['run-1', '--by', 'task'], cwd: dir, dataDir: `${dir}/.belay`, dataDirGiven: true, json: false, openCore: async () => core });
     assert.strictEqual(r.code, 1);
     assert.match(r.text, /bad group \(E_ARGS\)/);

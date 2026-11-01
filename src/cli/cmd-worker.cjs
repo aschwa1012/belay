@@ -180,7 +180,7 @@ async function runRm(core, dataDir, workerId) {
     if (e.code === 'E_WORKER_LIVE') {
       return {
         worker_id: workerId, forgotten: false,
-        reason: `${e.detail.state} with pid ${e.detail.pid} alive; run belay worker kill ${workerId} first (if that refuses because the pid now belongs to another process, the row clears when that process exits or the next run attach supersedes it)`,
+        reason: `${e.detail.state} with pid ${e.detail.pid} alive; run belay worker kill ${workerId} first (if that refuses because the pid now belongs to another process, worker rm succeeds once that process exits)`,
         error: { code: e.code, message: e.message, detail: e.detail },
       };
     }

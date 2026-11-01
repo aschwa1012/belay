@@ -116,7 +116,7 @@ function commandUsage(name) {
 //   dataDir absolute, forward slashes; defaults to <cwd>/.belay
 //   dataDirGiven true only when --data was on the command line
 //   json    true when --json was given; the dispatcher prints ctx.json ? result.json : result.text
-//   fix     true when --fix was given (doctor only; every other command ignores it)
+//   fix     true when --fix was given (doctor only; the dispatcher refuses it for every other command with exit 2)
 //   command the matched command name (build step 6d: cmd-decide.cjs serves both approve and deny and
 //           tells them apart by this field)
 //   emit    ctx.emit(text) writes text to stdout immediately; defined only when --json was not given,

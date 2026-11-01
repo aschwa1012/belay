@@ -79,13 +79,13 @@ test('memory: search against a store with no live owner is refused E_NO_EMBEDDER
   assert.strictEqual(jDef.modes_failed.length, 1);
   assert.strictEqual(jDef.modes_failed[0].mode, 'semantic');
 
-  const rStats = checked(() => memoryStatsJson(['run-x'], dataDir), dataDir, 'memory stats (dead store)');
+  const rStats = checked(() => memoryStatsJson([], dataDir), dataDir, 'memory stats (dead store)');
   assert.strictEqual(rStats.status, 0, `memory stats: ${rStats.stdout} / ${rStats.stderr}`);
   const jStats = JSON.parse(rStats.stdout);
   assert.strictEqual(jStats.owner.alive, false);
   assert.match(jStats.owner.established_by, /no owner\.lock in the data dir/);
 
-  const rStatsText = checked(() => memoryStatsText(['run-x'], dataDir), dataDir, 'memory stats (dead store, text)');
+  const rStatsText = checked(() => memoryStatsText([], dataDir), dataDir, 'memory stats (dead store, text)');
   assert.strictEqual(rStatsText.status, 0);
   assert.match(rStatsText.stdout, /^owner: /m, 'the stats owner line must be present');
   assert.match(rStatsText.stdout, /alive=false/);
@@ -112,7 +112,7 @@ async function withLiveOwner(envExtra, body) {
     await core.task.create({ spec: 'planted per B5, so this file is sensitive to a task.create regression too' });
     const afterExit = await body({ core, dataDir, runId, runCliProc, dir });
 
-    const rs = checked(() => memoryStatsJson([runId], dataDir), dataDir, 'memory stats (live owner)');
+    const rs = checked(() => memoryStatsJson([], dataDir), dataDir, 'memory stats (live owner)');
     assert.strictEqual(rs.status, 0, `memory stats: ${rs.stdout} / ${rs.stderr}`);
     const js = JSON.parse(rs.stdout);
     assert.strictEqual(js.owner.alive, true, 'the live owner must report alive');
