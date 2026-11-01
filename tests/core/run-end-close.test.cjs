@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // run-end-close.test.cjs — ADR 0029 decisions 1 and 2: run.end closes the ending epoch's worker rows that
 // claim a life over a dead pid, and run.attach's suspect set gains `stopping`. Every store lives under the
 // OS temp dir; every worktree is a temp directory, a real git repo or not.

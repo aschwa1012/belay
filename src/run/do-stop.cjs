@@ -29,7 +29,7 @@ function createDoStop({ ctx, writeRow }) {
       if (!skipRowWrite && !['stopped', 'dead', 'idle'].includes(w.state)) await writeRow(w, state);
       return { worker_id, pid, exit_code: w.exitCode, exit_signal: w.exitSignal, ms_to_exit: 0, graceful: false, killed: false, session_id: w.sessionId, stale: skipRowWrite || undefined,
         // B9: nothing was stopped, because the process was already gone (a parked worker has no process by design, so it is not this).
-        ...(treatPidAsDead ? {} : { already_exited: true, state_before: stateBefore, note: `worker ${worker_id} had already exited${!pid ? ' (it has no process)' : P.pidAlive(pid) ? ` (its process ended; pid ${pid} now belongs to another process)` : ` (pid ${pid} is not running)`}; nothing was stopped` }) };
+        ...(treatPidAsDead ? {} : { already_exited: true, state_before: stateBefore, ...(w.launching ? { launch_abandoned: true } : {}), note: `worker ${worker_id} ${w.launching && !pid ? 'had no process yet: its launch in flight is abandoned, and no process will start' : `had already exited${!pid ? ' (it has no process)' : P.pidAlive(pid) ? ` (its process ended; pid ${pid} now belongs to another process)` : ` (pid ${pid} is not running)`}; nothing was stopped`}` }) };
     }
     // Fix round (6f-2): pause.cjs's own step 1b already wrote this row `stopping` — never repeated here.
     if (w.state !== 'stopping') await writeRow(w, 'stopping');
@@ -44,8 +44,13 @@ function createDoStop({ ctx, writeRow }) {
       const tb = now();
       bgStops = await BG.stopTasks(w, { boundMs: Math.min(BG_STOP_MS, Math.floor(timeout_ms / 2)) }).catch(() => []);
       const bgMs = now() - tb;
-      const g = await P.gracefulStop(w.child, Math.max(1, timeout_ms - bgMs));
-      graceful = g.graceful; if (!graceful) gracefulTimedOutMs = bgMs + g.ms; // the total spent
+      // The worker may have exited inside that await (its exit settles the record and drops the child): then there is nothing to close
+      // and no exit left to wait for, and the receipt is the settled record's.
+      if (!w.child) graceful = true;
+      else {
+        const g = await P.gracefulStop(w.child, Math.max(1, timeout_ms - bgMs));
+        graceful = g.graceful; if (!graceful) gracefulTimedOutMs = bgMs + g.ms; // the total spent
+      }
     }
     if (!graceful) {
       if (gracefulTimedOutMs != null) blockedBy = BG.runningTasks(w).map((t) => ({ task_id: t.task_id, description: t.description })); // what still held the worker open when the wait ran out

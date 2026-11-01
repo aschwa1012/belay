@@ -81,7 +81,7 @@ function createWriteRow(ctx, flags) {
       written = await ctx.core.worker.write(row);
     } catch (e) {
       if (state === 'running' && e && e.code === 'E_WORKER_NOT_LIVE') {
-        if (!w.settled && !opts.refresh) W.settle(w, w.exitCode, w.exitSignal, 'core-refused-running', ctx);
+        if (!w.settled && !opts.refresh && !W.holdForExitEvent(w)) W.settle(w, w.exitCode, w.exitSignal, 'core-refused-running', ctx); // the process died in flight: hold for the exit event's code, as the pid-check branch above
         return null;
       }
       throw e;
@@ -115,6 +115,8 @@ function restateBase(w, ctx) {
   const launches = w.launches;
   w.queue = w.queue.then(() => {
     if (w.launches !== launches || w.lastRowHadBase) return null;
+    // As restatePidCreated: a process gone before its exit was processed is not restated (a `starting` row opens a new life for dead-pids.cjs).
+    if (!w.settled && w.pid != null && !P.pidAlive(w.pid)) return null;
     return ctx.writeRow(w, w.settledState || w.state, { guard: true, refresh: true });
   }).catch((e) => {
     w.lastError = { where: 'worker.write/base-sha', code: e && e.code, message: e && e.message };

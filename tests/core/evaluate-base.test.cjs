@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // evaluate-base.test.cjs — build step S3, ADR 0010 amendment 3: `files_within_owned` is judged against
 // a base, so a commit is seen as well as a dirty tree. Each test builds a throwaway repository in OS
 // temp (`git init -b main`, a committed base, a branch) and removes it in `finally`. The core is the

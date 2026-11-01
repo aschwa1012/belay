@@ -49,7 +49,7 @@ function one(E, caller, args, own, runTop) {
   const id = args.id || rows.newId();
   if (rows.current(E.store, 'task', id)) throw err('E_ARGS', `a task with id ${id} already exists in this store; choose another id, leave id out for a generated one, or pass amend: true to revise its acceptance`, { task_id: id });
   if (args.tree_of != null && own.worktree) throw err('E_ARGS', 'task.create tree_of: this task already inherits a tree');
-  const tree = args.tree_of != null ? AM.treeOf(E, args.tree_of, runTop) : own.worktree;
+  const tree = args.tree_of != null ? AM.treeOf(E, args.tree_of, runTop, caller) : own.worktree;
 
   const deps = dependsOn ? [...new Set(dependsOn)] : null;
   if (deps) {
