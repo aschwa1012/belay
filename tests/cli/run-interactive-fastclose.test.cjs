@@ -69,12 +69,14 @@ test('fast close: a live worker with pid_created is killed through the SIGHUP sn
   } finally { require('../crash.cjs').crash(w); }
 }));
 
-test('fast close: a row whose pid_created is not the process\'s own is refused as a mismatch on the SIGHUP snapshot, and survives', async (t) => withRun(t, async (dir) => {
+test('fast close: a row whose pid_created is not the process\'s own is refused as a mismatch on the SIGHUP snapshot: the row\'s worker is gone, the holder survives', async (t) => withRun(t, async (dir) => {
   const w = sleeper();
   try {
     const { res, k, counts } = await fastCloseWith(dir, w, (s, m) => ({ pid: s.pid, pid_created: m.created - 1, pid_image: 'node.exe', state: 'starting' }));
     assert.ok(k && k.refused === 'identity' && k.kind === 'mismatch', JSON.stringify(res.json.workers_closed) + ' ' + res.json.ended_by);
-    assert.strictEqual(k.gone, false);
+    // A recorded creation time that differs from the live holder's proves the row's own process is gone (a reused pid):
+    // the row counts as gone, and the holder is never signalled.
+    assert.strictEqual(k.gone, true, JSON.stringify(k));
     assert.strictEqual(w.exitCode, null, 'the process another row names wrongly must survive');
     assert.ok(counts.hup >= 1, JSON.stringify(counts));
     assert.strictEqual(counts.killDefault, 0, JSON.stringify(counts));
