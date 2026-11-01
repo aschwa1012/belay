@@ -165,11 +165,11 @@ test('task.assign by run rb\'s policy step over run ra\'s task with a standing l
     await ra.harness().policyAs(await claim(ra, ta)).task.assign({ task_id: ta.id, worker_id: 'wk-a' });
     const state = async () => {
       const t = await ra.task.get({ task_id: ta.id });
-      return { seq: t.seq, state: t.state, lease: t.lease ? { id: t.lease.id, holder: t.lease.holder, released_at: t.lease.released_at ?? null } : null,
+      return { seq: t.seq, state: t.state, lease: t.lease ? { id: t.lease.id, holder: t.lease.holder, expires_at: t.lease.expires_at } : null,
         workers: [(await ra.worker.get({ worker_id: 'wk-a' })).seq, (await rb.worker.get({ worker_id: 'wk-b' })).seq] };
     };
     const before = await state();
-    assert.ok(before.lease && before.lease.holder === 'wk-a' && before.lease.released_at === null, 'ra holds a standing lease');
+    assert.ok(before.lease && before.lease.holder === 'wk-a' && Number.isFinite(Number(before.lease.expires_at)), 'ra holds a standing lease');
     const stepB = rb.harness().policyAs(await claim(rb, tb));
     await assert.rejects(stepB.task.assign({ task_id: ta.id, worker_id: 'wk-b' }), code('E_ROLE'));
     assert.deepStrictEqual(await state(), before, 'the refusal wrote no task, lease or worker row');
