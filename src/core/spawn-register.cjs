@@ -109,6 +109,11 @@ const bootMs = (now = Date.now()) => now - Math.round(os.uptime() * 1000);
 // The last moment the harness knew the record's process was alive: a stamp the adapter holding it wrote, else the record's own time.
 const lastSeen = (rec) => Number.isFinite(rec.seen_at) ? rec.seen_at : (Number(rec.at) || startOf(rec));
 
+// Where a dead record's lifetime ends, never before the process could have been alive. A stamped process (finite seen_at) can live up
+// to one refresh interval past its last stamp, since the stamp is written at most that often; the lifetime ends there, or at `now` when
+// that is earlier. A record with no stamp has no such bound: it ends at `now`, the moment it was found dead.
+const untilOf = (rec, now) => Number.isFinite(rec.seen_at) ? Math.min(rec.seen_at + SEEN_REFRESH_MS, now) : now;
+
 // Is the record's process the one running under its pid in `snap`? A recorded creation time must match the snapshot's; a record without
 // one is the process only if it was created no later than the record was written (a reused pid is younger).
 function sameProcess(rec, snap) {
@@ -137,13 +142,20 @@ function touch(pid, now = Date.now()) {
 }
 
 // Retire the record of a process a caller has found dead (run.end closing a row whose adapter never wrote its exit). A pid that still
-// answers is left alone. The lifetime closes at the last moment the process was seen alive (the record's stamp, or `seenFloor`, a time a
-// writer recorded such as the row's last event), not now. -> true when a record was retired.
-function retire(pid, now = Date.now(), seenFloor = null, { checked = false } = {}) {
+// answers is left alone. The lifetime closes at `untilOf`: for a stamped record, one refresh interval after its stamp (a stamped process
+// can live that long past it), capped at `now`; for an unstamped one, `now`. It never closes before the process could have been alive.
+// `seenFloor` is accepted for the callers that pass it and does not move the close. `expect` ({ workerId, created }), when given, names
+// the record the caller judged: retire only if the record is that worker's and, when both creation times are known, the same process's;
+// another spawn's record under a reused pid stays. -> true when a record was retired.
+function retire(pid, now = Date.now(), seenFloor = null, { checked = false, expect = null } = {}) {
   let rec;
   try { rec = readJson(fileOf(pid)); } catch { return false; }
+  if (expect) {
+    if (rec.worker_id !== expect.workerId) return false;
+    if (Number.isFinite(expect.created) && Number.isFinite(rec.created) && rec.created !== expect.created) return false;
+  }
   if (!checked && pidAlive(pid)) return false; // `checked`: the caller has shown the process under this pid is not the record's
-  try { saveTombstone(tombstoneOf(rec, Math.min(Math.max(lastSeen(rec), Number.isFinite(seenFloor) ? seenFloor : 0), now))); } catch { return false; }
+  try { saveTombstone(tombstoneOf(rec, untilOf(rec, now))); } catch { return false; }
   try { fs.unlinkSync(fileOf(pid)); } catch { /* someone else removed it */ }
   return true;
 }
@@ -152,8 +164,8 @@ function retire(pid, now = Date.now(), seenFloor = null, { checked = false } = {
 // or a record cannot be read. Given `snap` (a process snapshot) the check is by identity, not by pid alone: a record is alive only when
 // the process under its pid is the one it names (creation time; a record with none, only if the process is no younger than the record),
 // and never when it began before the current boot. Without one, a pid check as before. A dead record carries the tombstone that keeps
-// its lifetime, closed at the last moment it was seen alive (a stamp the harness wrote, see touch), never at the time it is read; a
-// pre-boot record has none (its lifetime ended with the boot).
+// its lifetime, closed at `untilOf`: one refresh interval after its stamp (see touch), capped at the time it is read, and at that time
+// for an unstamped record; never before the process could have been alive. A pre-boot record has none (its lifetime ended with the boot).
 function scan({ snap = null, now = Date.now(), boot = bootMs(now) } = {}) {
   let names;
   try { names = fs.readdirSync(dir()); } catch (e) { if (e && e.code === 'ENOENT') return { live: [], dead: [] }; throw e; }
@@ -167,7 +179,7 @@ function scan({ snap = null, now = Date.now(), boot = bootMs(now) } = {}) {
     const preBoot = !!snap && startOf(rec) + BOOT_SLACK_MS < boot;
     const alive = snap ? !preBoot && sameProcess(rec, snap) : pidAlive(rec.pid);
     if (alive) out.live.push(rec);
-    else out.dead.push({ rec, file, tomb: preBoot ? null : tombstoneOf(rec, Math.min(lastSeen(rec), now)) });
+    else out.dead.push({ rec, file, tomb: preBoot ? null : tombstoneOf(rec, untilOf(rec, now)) });
   }
   return out;
 }
@@ -219,4 +231,4 @@ function runSpawned(interactive, orchestratorPid) {
   return !interactive && Number.isInteger(orchestratorPid) ? [{ pid: orchestratorPid, created: null, kind: 'orchestrator' }] : [];
 }
 
-module.exports = { register, registerProcess, update, unregister, retire, touch, scan, settle, list, live, tombFile, startOf, bootMs, BOOT_SLACK_MS, tombstones, saveTombstone, dropTombstone, dir, runSpawned, io };
+module.exports = { register, registerProcess, update, unregister, retire, touch, scan, settle, list, live, tombFile, startOf, bootMs, BOOT_SLACK_MS, SEEN_REFRESH_MS, tombstones, saveTombstone, dropTombstone, dir, runSpawned, io };
