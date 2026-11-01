@@ -99,6 +99,10 @@ async function assign(E, caller, args) {
     // whichever worker was named, an open dependency is the answer, and the refusal names what would
     // clear it (ADR 0013 §1). Only `done` opens the gate, and `done` is earned by executable evidence
     // (api.md §2), so a worker cannot talk its way past this by saying it finished.
+    // Cross-run guards first: a standing lease below must not answer another run's ask as success.
+    require('./worker-run-guard.cjs').refuseOtherRunTask(E, caller, task); // a live run's task is that run's: no move of it or its lease by another run
+    const worker = checkOnly ? null : rows.current(E.store, 'worker', args.worker_id);
+    require('./worker-run-guard.cjs').refuseOtherRunWorker(E, caller, worker); // a live run's worker is that run's: no lease on another run's work
     // One trigger, one step: a worker's lease on this task that a policy step granted answers the orchestrator that asks for the same
     // worker, and any live worker lease answers a policy step (the orchestrator's stands, or the policy's own: PS.duplicate). A task the
     // orchestrator hands to another worker than the policy chose is the orchestrator's reassignment, and goes on below.
@@ -115,9 +119,6 @@ async function assign(E, caller, args) {
     // of a run that came back to life after this task's run did yields, so the run live now keeps the paths.
     // The hold belongs to a live run: a task whose own run has ended is taken over by the run of the worker that takes it
     // (the calling orchestrator's run for a check_only), and is refused when no live run can own it.
-    require('./worker-run-guard.cjs').refuseOtherRunTask(E, caller, task); // a live run's task is that run's: no move of it or its lease by another run
-    const worker = checkOnly ? null : rows.current(E.store, 'worker', args.worker_id);
-    require('./worker-run-guard.cjs').refuseOtherRunWorker(E, caller, worker); // a live run's worker is that run's: no lease on another run's work
     // ADR 0058 amendment 1: a worker runs in one directory for its whole life, so a task with its own worktree goes only to a
     // worker that runs there. A check_only call checks the directory the spawn will run in, when it names one. Checked before
     // the hold, so a worker in the wrong tree is told that, not a hold's remedy (ADR 0059).
