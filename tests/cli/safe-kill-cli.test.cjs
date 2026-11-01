@@ -22,7 +22,7 @@ const sleeper = () => spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000
 const running = (c) => c.exitCode === null && c.signalCode === null;
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-test('run close: a worker row whose pid another process holds is refused by identity and left running, and the block names it', async () => {
+test('run close: a worker row whose pid another process holds is refused by identity and counted gone, the holder is not signalled, and the block names it', async () => {
   const s = sleeper();
   try {
     const row = { id: 'w1', run_id: 'r1', substrate: 'claude-code', state: 'running', pid: s.pid, pid_created: 1 };
@@ -31,9 +31,10 @@ test('run close: a worker row whose pid another process holds is refused by iden
     assert.strictEqual(out.killed.length, 1);
     assert.strictEqual(out.killed[0].refused, 'identity', JSON.stringify(out.killed));
     assert.strictEqual(out.killed[0].signalled, false);
-    assert.strictEqual(out.killed[0].gone, false);
-    assert.deepStrictEqual(out.still_alive.map((x) => ({ worker_id: x.worker_id, pid: x.pid, outcome: x.outcome })), [{ worker_id: 'w1', pid: s.pid, outcome: 'refused_mismatch' }]);
-    assert.strictEqual(out.still_alive[0].manual, undefined, 'another process provably holds the pid: no advice to kill it');
+    assert.strictEqual(out.killed[0].gone, true, 'a differing creation time proves the worker exited');
+    assert.strictEqual(out.killed[0].kind, 'mismatch');
+    assert.strictEqual(out.killed[0].outcome, 'closed');
+    assert.deepStrictEqual(out.still_alive, [], 'nothing is left alive, so the close does not fail');
     await sleep(200);
     assert.strictEqual(running(s), true, 'the bystander must still be running');
   } finally { s.kill(); }

@@ -163,4 +163,24 @@ async function killWorker(w) {
   return P.killProcess(targetOf(w)).catch((e) => ({ tree: null, pidKill: { signalled: false, error: 'EIDENTITY' }, identity: null, refused: { refused: 'identity', kind: 'unverifiable', detail: (e && e.message) || String(e) } }));
 }
 
-module.exports = { RETRY_SCHEDULE_MS, RETRY_EVERY_MS, killWorker, noteSpawn, registerSpawn, stampWhileAlive, adoptFromRow, rowFields, targetOf, noProcess, pidLive, verifiedLive };
+// What a relaunch may do after killing an adopted record's old process (invariant 1, ADR 0039). Two outcomes leave the old
+// process possibly running, and a relaunch on the same session would then race it, so both refuse and launch nothing: the kill
+// was refused as 'unverifiable' (it proves nothing), or the kill was sent but the pid is still alive after the wait. A 'mismatch'
+// or 'absent' refusal proves the worker is not at that pid and goes on. `hold` is what the launch's task hold already did
+// before this point; the refusal names it, since those rows stay.
+async function settleAdoptedKill(w, kr, verb, hold = null, { waitMs = 5000 } = {}) {
+  const r = kr && kr.refused;
+  let why;
+  if (r) {
+    if (r.kind !== 'unverifiable' || !P.pidAlive(w.pid)) return;
+    why = `could not be proven to be this worker's old process (${r.detail}), so it was not killed`;
+  } else {
+    if ((await P.waitProcessGone(w.pid, w.pidCreated, { timeoutMs: waitMs })) !== null) return;
+    why = 'did not end after the kill was sent';
+  }
+  const manual = (r && r.manual) || `End pid ${w.pid} by hand once you have checked it is the worker (belay worker kill ${w.id}), then run ${verb} again.`;
+  const held = hold ? ` The task's files were already held for this run (task ${hold.task_id || w.taskId}) and stay held.` : '';
+  throw err('E_PRECONDITION', `worker ${w.id}: ${verb} refused, nothing was launched: pid ${w.pid} is still running and ${why}, and a second process on session ${w.sessionId || 'none'} would race it. ${manual}${held}`, { worker_id: w.id, pid: w.pid, ...(r ? { refused: r.refused, kind: r.kind, detail: r.detail } : { kill_sent: true }), ...(r && r.manual ? { manual: r.manual } : {}), old_process_may_be_live: true, task_hold_made: !!hold });
+}
+
+module.exports = { RETRY_SCHEDULE_MS, RETRY_EVERY_MS, settleAdoptedKill, killWorker, noteSpawn, registerSpawn, stampWhileAlive, adoptFromRow, rowFields, targetOf, noProcess, pidLive, verifiedLive };

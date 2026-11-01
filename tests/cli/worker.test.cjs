@@ -7,6 +7,7 @@ process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP =
 // process stands in for a live adapter when the detector's own dead row matters.
 
 const { readCreated } = require('../helpers/created.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -105,8 +106,9 @@ test('worker kill: kills the exact pid a planted starting row names, writes noth
   try {
     const plantCore = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: 'run-a', pid: process.pid } });
     let planted;
+    let made;
     try {
-      const made = await readCreated(hung.pid); // ADR 0039: the identity a real spawn records
+      made = await readCreated(hung.pid); // ADR 0039: the identity a real spawn records
       planted = await plantCore.worker.write({ id: 'w1', substrate: 'claude-code', pid: hung.pid, pid_created: made.created, pid_image: 'node.exe', state: 'starting', turns: 0, started_at: Date.now() });
     } finally {
       await plantCore.shutdownOwner();
@@ -125,7 +127,7 @@ test('worker kill: kills the exact pid a planted starting row names, writes noth
     // build step 6c item 8: a real kill never claims already_gone.
     assert.ok(r.receipt.already_gone === undefined || r.receipt.already_gone === false, JSON.stringify(r.receipt));
 
-    assert.strictEqual(P.pidAlive(hung.pid), false, 'the hung child must actually be dead');
+    await G.assertGone({ pid: hung.pid, created: made.created }, 'the hung child must actually be dead');
     assert.strictEqual(countWorkerRows(dataDir), before, 'kill with no adapter alive must write nothing to the store');
   } finally {
     await killHung(hung);

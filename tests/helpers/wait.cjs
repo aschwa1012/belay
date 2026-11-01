@@ -5,7 +5,6 @@
 // injected clock (fake-timers.cjs), or, for an upper bound on real time, with upTo().
 
 const { CLOSE_GRACE_MS, KILL_WAIT_MS } = require('../../src/core/gpu.cjs');
-const { pidAlive } = require('../../src/core/lock.cjs');
 
 const UP_DEADLINE = 30000; // a child is up: a cold node start with a virus scan, on a loaded machine
 const GRACE = 3000; // slack on a product's own upper bound, for a slow runner
@@ -54,11 +53,14 @@ function waitLine(stream, key, { deadlineMs = UP_DEADLINE } = {}) {
   });
 }
 
-// Resolves true once the pid is not alive, false at the deadline (which defaults to a close's worst case plus slack).
-async function waitGone(pid, { deadlineMs = GONE_DEADLINE } = {}) {
-  const t0 = Date.now();
-  while (pidAlive(pid) && Date.now() - t0 < deadlineMs) await tick(20);
-  return !pidAlive(pid);
+// Resolves true once the process is gone, false at the deadline (which defaults to a close's worst case plus slack). `target` is a
+// ChildProcess handle the test holds, or an identity from proc-gone.identify() taken while the process was alive. A bare pid is refused:
+// once the process exits, Windows may hand its number to an unrelated one, which a pid check reads as "still alive" (ADR 0039).
+async function waitGone(target, { deadlineMs = GONE_DEADLINE } = {}) {
+  const G = require('./proc-gone.cjs');
+  if (target && typeof target.once === 'function') return G.childExited(target, { deadlineMs });
+  if (!target || typeof target !== 'object' || !Number.isInteger(target.pid)) throw new TypeError('waitGone needs a child handle or an identity from proc-gone.identify(), not a bare pid');
+  return G.waitGone(target, { deadlineMs, intervalMs: 20 });
 }
 
 module.exports = { waitLine, waitFor, waitEvent, waitGone, countProgress, upTo, tick, UP_DEADLINE, GRACE, GONE_DEADLINE };

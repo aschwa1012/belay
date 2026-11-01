@@ -20,6 +20,7 @@ const USER_SETTINGS = path.join(__dirname, 'fixtures', 'user-settings.json').rep
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // ADR 0039: a kill needs the creation time the manager restates about a second after spawn; an adopter acts long after that.
 const { waitCreated } = require('../helpers/created.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 
 function sandbox() {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-run-adopt-'));
@@ -44,6 +45,7 @@ test('a new adapter restarts a worker of a session that has ended', async () => 
   let second = null;
   try {
     const born = await first.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w-a3', task_id: 't-a3' });
+    const bornId = await G.identify(born.pid);
     await first._waitTurn('w-a3', SLOW);
     await sleep(120);
     const checkpointBefore = core.checkpoints[core.checkpoints.length - 1].id;
@@ -51,7 +53,7 @@ test('a new adapter restarts a worker of a session that has ended', async () => 
     // The session ends the way A3 ends it: the worker is gone and the adapter with it. What is left
     // is the store and the worker directory.
     await first.stop({ worker_id: 'w-a3', mode: 'kill', timeout_ms: 8000 });
-    assert.equal(P.pidAlive(born.pid), false);
+    await G.assertGone(bornId, `the worker pid ${born.pid} is still alive after the stop`);
 
     // A new adapter, which has never heard of this worker.
     second = mgr(sb, core);
@@ -101,13 +103,14 @@ test('an adopted worker whose pid is still alive is taken by that exact pid befo
     // still there. belay is not its parent any more, so it cannot be resumed in place — and two
     // workers must never share one worktree.
     assert.equal(P.pidAlive(born.pid), true);
+    const bornId = await G.identify(born.pid);
     await waitCreated(core, 'w-live');
 
     second = mgr(sb, core);
     const r = await second.restart({ worker_id: 'w-live', first_turn_timeout_ms: SLOW });
     assert.equal(r.old_pid, born.pid);
     assert.ok(r.new_pid !== born.pid);
-    assert.equal(P.pidAlive(born.pid), false, "the previous adapter process must not outlive the restart");
+    await G.assertGone(bornId, "the previous adapter process must not outlive the restart");
     assert.equal(P.pidAlive(r.new_pid), true);
     assert.equal(core.currentWorker('w-live').pid, r.new_pid);
   } finally {
@@ -171,13 +174,14 @@ test('stop and message reach a worker that exists only in the store', async () =
     // A worker whose adapter died without stopping it: the row says running and the process is
     // still there. A second adapter must be able to stop it by its exact pid.
     const born = await first.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w-orphan' });
+    const bornId = await G.identify(born.pid);
     await waitCreated(core, 'w-orphan');
     second = mgr(sb, core);
     const s = await second.stop({ worker_id: 'w-orphan', mode: 'kill', timeout_ms: 8000 });
     assert.equal(s.pid, born.pid);
     assert.equal(s.killed, true, 'nothing else was going to end it');
     assert.equal(s.graceful, false, 'there was no stdin of ours to close');
-    assert.equal(P.pidAlive(born.pid), false);
+    await G.assertGone(bornId, `the orphaned worker pid ${born.pid} is still alive after the stop`);
     assert.equal(core.currentWorker('w-orphan').state, 'stopped', 'the stop wrote the row, because no exit event would');
 
     // message on an adopted claude-code worker has no stdin to write to and says so.
@@ -221,10 +225,11 @@ test('a write failure after a relaunch still leaves no live child once shutdown 
     pid = second._worker('w-wfail').pid;
     child = second._worker('w-wfail').child; // ADR 0039: the live handle, for the safety net below
     assert.ok(Number.isInteger(pid), 'the relaunch started a child');
+    const pidId = await G.identify(pid); // the product ends this child at once; if it already has, any later holder is another process
     assert.notEqual(await P.waitPidGone(pid, { timeoutMs: 10000 }), null, 'the failed start ended the relaunched child by its exact pid');
 
     await second.shutdown();
-    assert.equal(P.pidAlive(pid), false, 'and nothing is alive once shutdown returns');
+    await G.assertGone(pidId, 'and nothing is alive once shutdown returns');
     core.worker.write = realWrite;
   } finally {
     if (child) require('../crash.cjs').crash(child); // the live handle, only if the assertion above failed

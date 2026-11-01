@@ -10,6 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { err } = require('./errors.cjs');
 const G = require('./git.cjs');
+const { safeGit } = require('./git-safe.cjs');
 const rows = require('./rows.cjs');
 const T = require('./trace-sweep.cjs');
 
@@ -88,8 +89,10 @@ async function mustAdd(cwd, args, what, undo) {
 
 // The tree a merge of `sha` into HEAD would write with no hook, or null when git cannot say (an old git, a conflict).
 async function expectedTree(tree, sha) {
-  const r = await G.run(tree, ['merge-tree', '--write-tree', '--no-messages', 'HEAD', sha]);
-  return r.ok && /^[0-9a-f]{40,64}$/.test(r.stdout.trim().split('\n')[0]) ? r.stdout.trim().split('\n')[0] : null;
+  // Through git-safe: a merge driver or filter the repository's own config names must not run for a forecast of the merge.
+  const r = await safeGit(['merge-tree', '--write-tree', '--no-messages', 'HEAD', sha], tree, G.GIT_TIMEOUT_MS);
+  const first = r.executable && r.exit_code === 0 ? String(r.stdout).trim().split('\n')[0] : '';
+  return /^[0-9a-f]{40,64}$/.test(first) ? first : null;
 }
 
 // What a hook did to a merge that went through: `{ task_id, judged_tree, merged_tree, files, uncommitted_files? }`, or null when

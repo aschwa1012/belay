@@ -9,6 +9,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { core, sandbox, cleanup, callerFor, FIXTURES, sleep, startOwnerProcess, stopOwnerProcesses } = require('./helpers.cjs');
 
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 const { openCore, pidAlive } = core('index.cjs');
 const { Engine } = core('engine.cjs');
 const { Store } = core('store.cjs');
@@ -116,6 +117,7 @@ test('a timed-out acceptance command takes its grandchildren with it', async () 
   const dir = sandbox();
   const orch = await openCore({ dataDir: dir, caller: callerFor('orchestrator'), embed: false });
   let gpid = 0;
+  let gId = null;
   try {
     // The deadline must outlast the command's node start and its grandchild's spawn, or the pid file is not written yet; it is a hang guard, the test waits for the deadline to hit.
     const pidFile = path.join(dir, 'grandchild.pid');
@@ -144,12 +146,16 @@ test('a timed-out acceptance command takes its grandchildren with it', async () 
 
     gpid = Number(fs.readFileSync(pidFile, 'utf8').trim());
     assert.ok(gpid > 0, 'the fixture must have recorded the pid of the child it spawned');
-    let alive = pidAlive(gpid);
-    for (let i = 0; i < 100 && alive; i++) { await sleep(100); alive = pidAlive(gpid); }
-    assert.strictEqual(alive, false, `the grandchild (pid ${gpid}) outlived the command that spawned it`);
-    gpid = 0;
+    // The creation time the fixture wrote while the grandchild lived, before the tree kill; reading it now could record a reused pid.
+    // Without it a pid that is still held is unverifiable, which fails (and the finally below then kills nothing).
+    let createdText = null;
+    try { createdText = fs.readFileSync(`${pidFile}.created`, 'utf8').trim(); } catch { /* the fixture's snapshot never landed */ }
+    gId = G.recorded(gpid, createdText ? Number(createdText) : null);
+    assert.ok(await G.waitGone(gId, { deadlineMs: 10000, intervalMs: 100 }), `the grandchild (pid ${gpid}) outlived the command that spawned it`);
+    gId = null;
   } finally {
-    if (gpid) { try { process.kill(gpid); } catch { /* already gone */ } }
+    // Only the process that was identified, and only if it is still that process; never a bare pid.
+    if (gId) { try { if (!(await G.isGone(gId))) process.kill(gId.pid); } catch { /* already gone, or unreadable */ } }
     await orch.shutdownOwner();
     await orch.close();
     cleanup(dir);

@@ -12,6 +12,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { launch, sandboxDir, ROOT } = require('./rpc.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 
 const FAKE_CLAUDE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
 const USER_SETTINGS = `${ROOT}/tests/run/fixtures/user-settings.json`;
@@ -102,6 +103,7 @@ test('A8 worker_message, worker_stop and worker_restart return their process fac
   console.log(`real worker_restart: ${rr.branch}, ${rr.old_pid} -> ${rr.new_pid}, ${rr.reason.slice(0, 70)}`);
 
   const live = rr.new_pid;
+  const liveId = await G.identify(live); // while it lives, before the stop ends it
   const s = await a.call('worker_stop', { worker_id: w.id, mode: 'graceful' });
   assert.strictEqual(s.isError, false, `worker_stop refused: ${JSON.stringify(s.structuredContent)}`);
   const ss = s.structuredContent;
@@ -114,7 +116,7 @@ test('A8 worker_message, worker_stop and worker_restart return their process fac
   console.log(`real worker_stop: exit ${ss.exit_code} in ${ss.ms_to_exit} ms`);
 
   // No success without effect: the process named in the row is actually gone.
-  assert.throws(() => process.kill(live, 0), 'the stopped pid is still alive');
+  await G.assertGone(liveId, 'the stopped pid is still alive');
 });
 
 test('worker_spawn fails with a code rather than a row when no ready event arrives', { timeout: 90000 }, async (t) => {
@@ -155,11 +157,12 @@ test('the orchestrator stops its workers and releases the owner on stdin end', {
   await a.initialize();
   const w = (await a.call('worker_spawn', spawnArgs(worktree))).structuredContent;
   assert.ok(fs.existsSync(`${data}/owner.lock`), 'spawning elected an owner');
+  const workerId = await G.identify(w.pid); // while it lives, before the adapter shuts down
 
   const code = await a.close();
   assert.strictEqual(code, 0, `exit ${code}, stderr: ${a.stderr}`);
   // Invariant 1: no worker outlives the harness that spawned it.
-  assert.throws(() => process.kill(w.pid, 0), 'the worker outlived the orchestrator adapter');
+  await G.assertGone(workerId, 'the worker outlived the orchestrator adapter');
   assert.strictEqual(fs.existsSync(`${data}/owner.lock`), false, 'shutdown must release the owner lock');
   a.kill();
 });

@@ -13,6 +13,7 @@ const { spawn, fork } = require('node:child_process');
 const { core, sandbox, cleanup, FIXTURES } = require('./helpers.cjs');
 const { waitGone, waitEvent, waitLine, countProgress, UP_DEADLINE } = require('../helpers/wait.cjs');
 const { fakeTimers, outcome } = require('../helpers/fake-timers.cjs');
+const G = require('../helpers/proc-gone.cjs'); // waitGone takes the identity of a process taken while it lived: a bare pid may be handed to another process (ADR 0039)
 const { writeStubPackage, writeCache, fakeEntry } = require('./fixtures/rerank-stub-pkg.cjs');
 
 const { CpuRerankClient } = core('rerank-cpu.cjs');
@@ -36,8 +37,10 @@ function rig(stub = {}) {
 
 test('start forks the child by handle; ping answers within its bound; close ends it and is safe twice', async () => {
   const r = rig(), c = r.mk();
+  let id = null;
   try {
     assert.ok(Number.isInteger(c.pid) && pidAlive(c.pid));
+    id = await G.identify(c.pid);
     const p = await c.ping(UP_DEADLINE);
     assert.strictEqual(p.ok, true);
     assert.strictEqual(p.pid, c.pid);
@@ -45,7 +48,7 @@ test('start forks the child by handle; ping answers within its bound; close ends
     await c.load(r.id);
     assert.deepStrictEqual((await c.ping(UP_DEADLINE)).models, [r.id]);
   } finally { await c.close(); }
-  assert.ok(await waitGone(c.pid), 'close ended the child');
+  assert.ok(await waitGone(id), 'close ended the child');
   await c.close();
   assert.strictEqual((await c.ping(200)).ok, false, 'a ping after close does not hang');
   await assert.rejects(c._call({ op: 'ping' }, 1000), (e) => e.code === 'E_MODEL_ABSENT' && e.detail.reranker === true && e.detail.cause === 'dead');
@@ -198,8 +201,9 @@ test('killing the owner by its exact pid takes the REAL rerank child with it pro
     owner = spawn(process.execPath, [OWNER, r.pkg, r.cache, r.tableFile], { windowsHide: true, stdio: ['ignore', 'pipe', 'inherit'], env: { ...process.env, BELAY_TEST_MODE: '1' } });
     const info = await waitLine(owner.stdout, 'rerank_pid'); // printed once the child announced its op is in flight
     assert.ok(pidAlive(info.rerank_pid), 'the child is up and busy');
+    const rerankId = await G.identify(info.rerank_pid);
     process.kill(info.owner_pid); // the exact pid of the owner this test spawned
-    assert.ok(await waitGone(info.rerank_pid), 'the child outlived its owner');
+    assert.ok(await waitGone(rerankId), 'the child outlived its owner');
   } finally { if (owner && owner.exitCode === null) { try { process.kill(owner.pid); } catch { /* gone */ } } r.done(); }
 });
 
@@ -216,8 +220,8 @@ test('the real rerank-worker ends itself when its owner\'s channel closes, thoug
     kid.send({ id: 1, op: 'load', model: r.id, dir: path.join(r.cache, `${r.id}@${r.entry.sha}`), dtype: 'int8', maxLength: 32 });
     const reply = await answered;
     assert.strictEqual(reply.ok, true, JSON.stringify(reply));
-    const pid = kid.pid;
+    const kidId = await G.identify(kid.pid);
     kid.disconnect();
-    assert.ok(await waitGone(pid), 'the worker stayed alive after its owner\'s channel closed');
+    assert.ok(await waitGone(kidId), 'the worker stayed alive after its owner\'s channel closed');
   } finally { if (kid && kid.exitCode === null) { try { process.kill(kid.pid); } catch { /* gone */ } } r.done(); }
 });

@@ -14,6 +14,7 @@ const { openCore } = require('../../src/core/index.cjs');
 const { cleanup } = require('../core/helpers.cjs');
 const { pidAlive, killPid, waitPidGone } = require('../../src/run/process.cjs');
 const { createFakeCore } = require('./fake-core.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 
 const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(/\\/g, '/');
 const PASS = { commands: [{ argv: [process.execPath, '-e', 'process.exit(0)'], timeout_ms: 20000 }] };
@@ -149,7 +150,9 @@ test('two concurrent spawns with one worker_id and a task_id: one wins, the othe
   }
   assert.ok(pids.length >= 1, 'a pid was recorded');
   assert.ok(gone.every((g) => g !== null), 'waitPidGone timed out on a surviving pid');
-  for (const pid of pids) assert.strictEqual(pidAlive(pid), false, 'shutdown left no live child');
+  // `pids` holds { pid, created } records (a bare pid check on the object read false for any input). A held pid with no recorded
+  // creation time fails: it cannot be told from a reused number.
+  for (const { pid, created } of pids) await G.assertGone(G.recorded(pid, created), 'shutdown left no live child');
 });
 
 test('a refused spawn releases the id reservation: a retry with the same worker_id is not E_ARGS', async () => {
