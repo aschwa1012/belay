@@ -21,13 +21,20 @@ function commandLineLength(exe, args) {
 }
 
 // Throws E_ARGS when the command line would pass the Windows limit. `limit` is a seam for tests.
-function checkCommandLine(exe, args, { substrate = 'codex', workerId = null, limit = SAFE_LIMIT, windows = process.platform === 'win32' } = {}) {
+// `path` is how the line came about, and the advice follows it: 'spawn' (a first launch), 'message' or 'restart' (a relaunch).
+function adviceFor(path, workerId) {
+  if (path === 'message') return `shorten the message (put the detail in a file in the worktree and name it); worker ${workerId} keeps its state and no process was started`;
+  if (path === 'restart') return `shorten the appended message, or restart without one; worker ${workerId} was not stopped and is still running`;
+  return `shorten the task spec or the prompt (put the detail in a file in the worktree and name it) and spawn again with a new worker id, since ${workerId} is used up; no process was started`;
+}
+
+function checkCommandLine(exe, args, { substrate = 'codex', workerId = null, limit = SAFE_LIMIT, windows = process.platform === 'win32', path = 'spawn' } = {}) {
   if (!windows) return;
   const length = commandLineLength(exe, args);
   if (length <= limit) return;
-  const e = new Error(`${substrate} worker ${workerId}: the launch command line would be ${length} characters, over the Windows limit of ${WIN_CMDLINE_LIMIT}; a ${substrate} worker's message travels in its command line, so shorten the task spec or the prompt (put the detail in a file in the worktree and name it) and spawn again. No process was started`);
+  const e = new Error(`${substrate} worker ${workerId}: the launch command line is about ${length} characters by belay's conservative count, over belay's cap of ${limit} (Windows allows ${WIN_CMDLINE_LIMIT}); a ${substrate} worker's message travels in its command line, so ${adviceFor(path, workerId)}`);
   e.code = 'E_ARGS';
-  e.detail = { field: 'prompt', reason: 'argv_too_long', command_line_chars: length, limit: WIN_CMDLINE_LIMIT, worker_id: workerId, substrate };
+  e.detail = { field: 'prompt', reason: 'argv_too_long', command_line_chars_estimate: length, belay_cap: limit, limit: WIN_CMDLINE_LIMIT, path, worker_id: workerId, substrate };
   throw e;
 }
 

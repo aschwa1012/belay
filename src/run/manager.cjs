@@ -44,7 +44,7 @@ const LG = require('./launch-gate.cjs'); const RG = require('./relaunch-guard.cj
 const { waitTurnOrLanded } = require('./turn-wait.cjs'); // a turn that ended before the wait began is answered
 
 const { POLL_MS } = require('./exit-hold.cjs');
-const AL = require('./argv-limit.cjs'); const now = () => Date.now(); // AL: the Windows command-line limit, and a spawn that throws
+const AL = require('./argv-limit.cjs'); const LS = require('./launch-spec.cjs'); const now = () => Date.now(); // AL: the Windows command-line limit, and a spawn that throws
 
 // `memoryLevers`: the run's levers when the caller holds the run row (ADR 0041); `worktree`: the run's (ADR 0043).
 function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = null, memoryLevers = null, worktree = null, agentDefaults = null, stopIdleOnDone = false, permissionPrompt = false }) {
@@ -128,24 +128,8 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   }
   const launch = (w, o) => require('./bind-launch.cjs').launchBound({ core, runId, root, mcpPath, writeRow }, w, () => launchNow(w, o)); // ADR 0045: one launch of a worker at a time, its bind opened first
   async function launchNow(w, { resume = null, prompt = null } = {}) {
-    try { NM.checkLaunch(w); } catch (e) { await NM.refuseLaunch(ctx, w, e, () => PI.pidLive(w)); } let args; // sync and first (Codex's check-then-spawn stays one tick); only a refusal awaits
-    if (w.substrate === 'claude-code') {
-      args = L.claudeLaunchArgv({
-        workerId: w.id, mcpJsonPath: w.mcpJsonPath, settingsPath: w.workerSettingsPath,
-        model: w.model || L.DEFAULT_CLAUDE_MODEL, allowedTools: w.allowedTools,
-        permissionMode: w.permissionMode, resumeSessionId: resume,
-        permissionPromptTool: w.permissionPrompt, appendSystemPromptFile: w.instructions && w.instructions.path,
-        effort: w.effort, tools: w.tools, maxBudgetUsd: w.maxBudgetUsd, // ADR 0028 decision 2: every launch, fresh or resumed; ADR 0024: a narrowed list too
-      });
-    } else if (resume) {
-      args = L.codexResumeArgv({ threadId: resume, adapterArgs: w.adapterArgs, prompt, model: w.model, scratchDir: w.scratchDir });
-    } else {
-      args = L.codexLaunchArgv({
-        worktree: w.worktree, adapterArgs: w.adapterArgs, prompt, sandbox: w.sandbox, model: w.model, scratchDir: w.scratchDir,
-      });
-    }
-    const { command, prefixArgs } = L.resolveExe(exeFor(w.substrate));
-    const spec = { exe: command, args: [...prefixArgs, ...args], cwd: w.worktree }; if (w.substrate === 'codex') AL.checkCommandLine(spec.exe, spec.args, { workerId: w.id }); // before any state change: an oversized text is refused, not thrown by spawn
+    try { NM.checkLaunch(w); } catch (e) { await NM.refuseLaunch(ctx, w, e, () => PI.pidLive(w)); } // sync and first (Codex's check-then-spawn stays one tick); only a refusal awaits
+    const spec = LS.buildSpec(w, exeFor, { resume, prompt }); if (w.substrate === 'codex') AL.checkCommandLine(spec.exe, spec.args, { workerId: w.id, path: w.launches > 0 ? 'message' : 'spawn' }); // before any state change: an oversized text is refused, not thrown by spawn
     w.argvHash = L.writeArgvJson(w.dir, spec);
     w.settled = false; w.pidGoneAt = null; w.pidGonePid = null; w.settleWaitedMs = 0; // the exit-event hold is per launch
     w.settledState = null; // the last process's end; a restatement of this one's row must never carry it
@@ -346,17 +330,27 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       await w.queue; // the life before's rows land first (a death meanwhile keeps the lease: relaunch-guard.cjs)
       const d = decideBranch(w); const hold = await holdForLaunch(w, core); // the task's files are held for this run, or nothing is touched; a death-released lease is granted back or reported
       W.settleHeld(w, ctx, 'pid-check-on-restart'); await w.queue; // a held death gets its dead row, and every row of the life before lands, before the relaunch
-      if (w.child && P.pidAlive(w.pid)) await doStop(w, 'graceful', 10000);
-      // Fix round, should-fix finding: `skipDeadPidKill` (resume, pause.cjs) skips this branch — a park's own
-      // pid is dead by construction, so treating it as a still-alive orphan risks killing a bystander that reused it.
-      else if (!skipDeadPidKill && !w.child && PI.pidLive(w)) { // a record with no process by construction is never killed by its pid number
-        const kr = await PI.killWorker(w); w.adoptedKill = kr.tree; await PI.settleAdoptedKill(w, kr, 'restart', hold);
-      }
-      w.stopRequested = false;
-
-      const overridden = firstTextOverride ? await firstTextOverride(d.branch) : undefined;
-      let firstText = overridden !== undefined ? overridden : await restartFirstText(w, d.branch, { core, ctx, hold });
-      firstText = (await MP.relaunch(w, ctx, firstText, { fresh: d.branch === 'replace', message: appendMessage })) + leaseNote(hold); // ADR 0042 decision 3: minus the rows already shown, only where that conversation still holds them
+      const stopOld = async () => {
+        if (w.child && P.pidAlive(w.pid)) await doStop(w, 'graceful', 10000);
+        // Fix round, should-fix finding: `skipDeadPidKill` (resume, pause.cjs) skips this branch — a park's own
+        // pid is dead by construction, so treating it as a still-alive orphan risks killing a bystander that reused it.
+        else if (!skipDeadPidKill && !w.child && PI.pidLive(w)) { // a record with no process by construction is never killed by its pid number
+          const kr = await PI.killWorker(w); w.adoptedKill = kr.tree; await PI.settleAdoptedKill(w, kr, 'restart', hold);
+        }
+        w.stopRequested = false;
+      };
+      const buildText = async () => {
+        const overridden = firstTextOverride ? await firstTextOverride(d.branch) : undefined;
+        const text = overridden !== undefined ? overridden : await restartFirstText(w, d.branch, { core, ctx, hold });
+        return (await MP.relaunch(w, ctx, text, { fresh: d.branch === 'replace', message: appendMessage })) + leaseNote(hold); // ADR 0042 decision 3: minus the rows already shown, only where that conversation still holds them
+      };
+      let firstText;
+      if (w.substrate === 'codex') { // the whole text is in argv: refuse an oversized command line while the old worker still runs, then stop it
+        firstText = await buildText();
+        const spec = LS.buildSpec(w, exeFor, { resume: d.branch === 'resume' ? w.sessionId : null, prompt: firstText });
+        AL.checkCommandLine(spec.exe, spec.args, { workerId: w.id, path: 'restart' });
+        await stopOld();
+      } else { await stopOld(); firstText = await buildText(); }
       if (d.branch === 'replace') {
         w.sessionId = null;
         w.costBase = w.costUsd; // a fresh session's total_cost_usd starts at zero: what the earlier sessions reported stays in the row
