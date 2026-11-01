@@ -65,7 +65,7 @@ function catBlob(top, id) {
     // The absolute git and an environment without the repository-locating GIT_* variables (git-safe), as every other core spawn. `top`
     // is the repository's main checkout, not a worker's tree, and cat-file reads the object database only (no hook, no filter), so
     // there is no check process to register.
-    execFile(gitPath(), ['--no-replace-objects', 'cat-file', 'blob', id], { cwd: top, encoding: 'buffer', timeout: 10000, windowsHide: true, maxBuffer: 4 * 1024 * 1024, env: { ...withoutInjected(), ...SAFE_ENV, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0' } },
+    execFile(gitPath(), ['--no-replace-objects', 'cat-file', 'blob', id], { cwd: top, encoding: 'buffer', timeout: 10000, windowsHide: true, maxBuffer: 4 * 1024 * 1024, env: { ...withoutInjected(), ...SAFE_ENV, GIT_OPTIONAL_LOCKS: '0', GIT_TERMINAL_PROMPT: '0', GIT_NO_LAZY_FETCH: '1' } },
       (e, stdout, stderr) => resolve(e ? { ok: false, stderr: String(stderr || e.message) } : { ok: true, bytes: stdout }));
   });
 }
