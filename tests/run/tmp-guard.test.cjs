@@ -23,7 +23,7 @@ const BAD_PATHS = [
 ];
 const OK_PATHS = [
   'tmp/x', './tmp/x', 'C:\\Work\\a\\tmp\\x', 'C:/repo/tmp/x', '/home/tmp/x', '/tmpfoo/x', 'C:/tmpfoo', 'C:\\tmp-old\\x',
-  'C:/tmp.old/x', 'C:/repo/tmp./x', 'C:/.../tmp/x', 'C:/Work/AppData/Local/Temp/x', `${TEMP}/x`, 'C:/repo/src/../src/tmp.js', '/c/Users/tmp', '', undefined, 5,
+  'C:/tmp.old/x', 'C:/repo/tmp./x', 'C:/.../tmp/x', 'C:/Work/AppData/Local/Temp/x', `${TEMP}/x`, 'C:/repo/src/../src/tmp.js', '/c/Work/tmp', '', undefined, 5,
 ];
 
 test('Write, Edit, MultiEdit and NotebookEdit to a rooted tmp path are refused, in every spelling and case', () => {
