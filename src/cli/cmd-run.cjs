@@ -248,11 +248,14 @@ async function run(ctx) {
   let attachRow = null;
   let routingPin = null; // the retrieval routing the run was pinned with (run-routing.cjs), or null when it pinned nothing
   const RID = require('./run-identity.cjs').createRunIdentity(process.pid);
+  // The main checkout's HEAD, fixed before the orchestrator (or any worker) exists; a spawn only reads it, and with none a reviewer's
+  // spawn names why it copied nothing (silent here: a run outside a git repository has no reviews). Not inside onAttached: its git
+  // calls there would delay the attach past an early startup timeout, which then ends a run that has no attached row.
+  await require('../run/trusted-instructions.cjs').fixAnchor({ dataDir, runId: parsed.runId, projectDir: found.found ? found.dir : C.writeDirOf(ctx.cwd) });
   async function onAttached({ pid }) {
     try {
       clearRunStart(orchestratorDir); // before this launch's attach: no marker of an earlier life of this run id survives
       RID.watchOrchestrator(pid); // ADR 0039: run-identity.cjs; the attach never waits on a snapshot
-      await require('../run/trusted-instructions.cjs').fixAnchor({ dataDir, runId: parsed.runId, projectDir: found.found ? found.dir : C.writeDirOf(ctx.cwd) }); // the main checkout's HEAD, fixed before any worker exists; a spawn only reads it, and with none a reviewer's spawn names why it copied nothing (silent here: a run outside a git repository has no reviews)
       attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, max_follow_ups: parsed.levers.max_follow_ups, fix_hard_cap: parsed.levers.fix_hard_cap, fix_hard_cap_source: parsed.levers.fix_hard_cap_source, max_parallel_evaluations: parsed.levers.max_parallel_evaluations === undefined ? null : parsed.levers.max_parallel_evaluations, merge_into: parsed.levers.merge_into === undefined ? null : parsed.levers.merge_into, run_mode: mode, budget_usd: parsed.levers.budget_usd || null, budget_explicit: /^spec/.test(parsed.levers.budget_source || ''), project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
       await budget.loadAttach(attachRow.run); for (const w of attachRow.warnings || []) process.stderr.write("belay run: warning: " + w + String.fromCharCode(10));
       // ADR 0050: the routing is resolved once, here, before the orchestrator's first prompt (a heavy backlog is drained or fallen back from first).
