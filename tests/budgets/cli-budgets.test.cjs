@@ -178,6 +178,9 @@ before(async () => {
   const core = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: 'run-budgets', pid: process.pid } });
   let epoch;
   try { epoch = (await core.run.list({})).runs.find((r) => r.id === 'run-budgets').epoch; } finally { await core.shutdownOwner(); await core.close(); }
+  // The synthetic stream's first line is dated before the run row, so the stream alone cannot tell the mode; the closing receipt does,
+  // and panel-read reads the transcript only for a run it knows to be headless.
+  fs.writeFileSync(`${orchDir}/run.json`, JSON.stringify({ run_id: 'run-budgets', mode: 'headless', store: { attach: { epoch } } }));
   fs.writeFileSync(`${txDir}/run-start.json`, JSON.stringify({ run_id: 'run-budgets', epoch, mode: 'interactive', started_at: 1, launcher_pid: 1, session_id: 's', session_file: session }));
   // ADR 0066 amendment (a turn in flight): a budgeted run with 10 live workers, each in one long turn whose stream is 9 MB with no result
   // line, and the in-flight figures the run process would have published. A read must show them without parsing a stream.
