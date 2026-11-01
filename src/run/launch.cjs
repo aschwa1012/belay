@@ -33,6 +33,8 @@ const { SCRUB_EXACT, SCRUB_PREFIXES, SCRUB_CWD, CODEX_RUST_LOG, buildEnv, fwd } 
 const { wireLogPath, wireLogHasToolsList, WIRE_LOG_NAME, TOOLS_LIST } = require('./wire-log.cjs');
 const S = require('./surface.cjs'); // ADR 0024: the tool list, setting-sources and cwd hygiene.
 const KG = require('./kill-guard.cjs'); // ADR 0024 amendment 7: the PreToolUse hook that refuses kill-by-name
+const TG = require('./tmp-guard.cjs'); // proposed: the PreToolUse hook that refuses a write to the drive-root \tmp
+const guardHooks = () => ({ PreToolUse: [...KG.hooksBlock().PreToolUse, ...TG.hooksBlock().PreToolUse] }); // the kill guard first
 const CP = require('./compaction.cjs'); // ADR 0007 decision 3: the compact_at_tokens lever's hooks block
 
 
@@ -159,7 +161,7 @@ function writeWorkerFiles({ dir, workerId, runId, dataDir, mcpPath, settingsPath
     JSON.stringify(mcpConfig({ workerId, runId, dataDir, mcpPath, logPath, permit, permitWaitMs, notes, bind }), null, 2) + '\n'
   );
   const plugins = readPluginConfig(settingsPath);
-  const hooks = { ...(CP.hooksBlock({ dir, compactAt }) || {}), ...KG.hooksBlock() }; // the kill guard always; the compaction hooks only with the lever on
+  const hooks = { ...(CP.hooksBlock({ dir, compactAt }) || {}), ...guardHooks() }; // the kill and tmp guards always; the compaction hooks only with the lever on
   fs.writeFileSync(workerSettingsPath, JSON.stringify({ ...workerSettings(plugins.names, { cwd, nativeMemory }), hooks }, null, 2) + '\n');
   return { mcpJsonPath, settingsPath: workerSettingsPath, plugins };
 }
@@ -360,7 +362,7 @@ function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, lo
   // context experiment that is not hygiene but the measurement itself — a plugin's hooks would
   // inject bytes into the very token series being compared.
   const plugins = readPluginConfig(settingsPath);
-  fs.writeFileSync(orchSettingsPath, JSON.stringify({ ...workerSettings(plugins.names, { cwd }), ...(killGuard ? { hooks: KG.hooksBlock() } : {}) }, null, 2) + '\n'); // headless only: the interactive orchestrator is the operator's own session
+  fs.writeFileSync(orchSettingsPath, JSON.stringify({ ...workerSettings(plugins.names, { cwd }), ...(killGuard ? { hooks: guardHooks() } : {}) }, null, 2) + '\n'); // headless only: the interactive orchestrator is the operator's own session
   return { mcpJsonPath, settingsPath: orchSettingsPath, plugins, dir: outDir };
 }
 
