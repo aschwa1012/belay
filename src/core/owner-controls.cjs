@@ -27,6 +27,11 @@ function dispatchRunControl(owner, method, c, req) {
     return fail('E_ROLE', `${method} is available to operator and this call came from role ${JSON.stringify(role === undefined ? null : role)}`,
       { method, role: role === undefined ? null : role, allowed: ['operator'] });
   }
+  // Like every other call family: once stop() has begun a new control is not run, since it could take effect after stop() took its
+  // list of controls to answer and have its reply destroyed with the connection.
+  if (owner.stopped) {
+    return fail('E_OWNER_STOPPING', `the store owner is stopping, so ${method} was not run`, { method, sent: false, owner_stopping: true });
+  }
   const control = owner.controls[method];
   if (typeof control !== 'function') {
     return fail('E_NOT_FOUND', `this owner (pid ${process.pid}) registers no ${method} control: it is not a belay run process`,
