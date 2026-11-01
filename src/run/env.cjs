@@ -65,7 +65,7 @@ const ALLOW_EXACT = new Set([
 const INTERACTIVE_EXACT = new Set(['WT_SESSION', 'TERM_PROGRAM_VERSION']);
 // BELAY_ENV_ALLOW (comma-separated names, in belay's own environment) passes extra operator variables (JAVA_HOME, VIRTUAL_ENV, GOPATH
 // and the like) to every launch. Billing, credential and redirect names are refused, loudly, whatever the list says.
-const ENV_ALLOW_REFUSED = [/^ANTHROPIC_/i, /^OPENAI_/i, /^CLAUDE_CODE_USE_/i, /_API_KEY$/i, /_TOKEN$/i, /_BASE_URL$/i, /_SECRET$/i, /_PASSWORD$/i, /^GH_/i, /^GITHUB_/i, /^VSCODE_/i, /^GIT_ASKPASS$/i];
+const ENV_ALLOW_REFUSED = [/^ANTHROPIC_/i, /^OPENAI_/i, /^CLAUDE_CODE_USE_/i, /_API_KEY$/i, /_KEY$/i, /_TOKEN$/i, /_BASE_URL$/i, /_SECRET$/i, /_PASSWORD$/i, /^GH_/i, /^GITHUB_/i, /^VSCODE_/i, /^GIT_ASKPASS$/i];
 function parseEnvAllow(src) {
   const raw = src && src.BELAY_ENV_ALLOW;
   const names = typeof raw === 'string' ? raw.split(',').map((s) => s.trim()).filter(Boolean) : [];
@@ -106,6 +106,7 @@ function buildEnv(base, { substrate = 'claude-code', cwd = null, mcpToolTimeoutM
     if (SCRUB_ENV_EXTRA.includes(k)) continue;
     if (SCRUB_PREFIXES.some((p) => k.startsWith(p))) continue;
     if (!allowed(k) && !extra.has(k.toUpperCase()) && !(interactive && INTERACTIVE_EXACT.has(k.toUpperCase()))) continue;
+    if (k.toUpperCase() === 'CLAUDE_CODE_OAUTH_TOKEN' && substrate !== 'claude-code') continue; // Claude's credential, not Codex's
     out[k] = v;
   }
   // A git credential prompt in a headless child waits on an invisible console forever; make it fail instead.

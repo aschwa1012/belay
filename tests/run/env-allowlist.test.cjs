@@ -72,6 +72,18 @@ test('buildEnv keeps the PowerShell and git/ssh plumbing and the subscription OA
   assert.equal(env.GCM_INTERACTIVE, 'never');
 });
 
+test('the Claude Code OAuth token reaches a Claude Code launch only, never a Codex one', () => {
+  const base = { PATH: 'x', CLAUDE_CODE_OAUTH_TOKEN: 'synthetic-sub' };
+  assert.equal(L.buildEnv(base, { substrate: 'claude-code' }).CLAUDE_CODE_OAUTH_TOKEN, 'synthetic-sub');
+  assert.ok(!('CLAUDE_CODE_OAUTH_TOKEN' in L.buildEnv(base, { substrate: 'codex' })), 'a Codex worker gets no Claude credential');
+});
+
+test('BELAY_ENV_ALLOW refuses a name ending in _KEY, as it does _TOKEN and _SECRET', () => {
+  assert.throws(() => L.buildEnv({ PATH: 'x', AWS_SECRET_ACCESS_KEY: 's', BELAY_ENV_ALLOW: 'AWS_SECRET_ACCESS_KEY,JAVA_HOME' }),
+    (e) => e.code === 'E_ARGS' && /AWS_SECRET_ACCESS_KEY/.test(e.message));
+  assert.equal(L.buildEnv({ PATH: 'x', JAVA_HOME: 'C:/jdk', BELAY_ENV_ALLOW: 'JAVA_HOME' }).JAVA_HOME, 'C:/jdk');
+});
+
 test('WT_SESSION and TERM_PROGRAM_VERSION reach an interactive launch only', () => {
   const base = { PATH: 'x', WT_SESSION: 'w', TERM_PROGRAM_VERSION: '1.2' };
   assert.ok(!('WT_SESSION' in L.buildEnv(base)));
