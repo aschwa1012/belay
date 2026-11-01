@@ -241,7 +241,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     try { writeFilesFor(w); } catch (e) { await discardUnstarted(workers, w, dirExisted); throw e; } // no row, nothing launched: leave no record and no directory, so a corrected retry with the same id is free
     const scratch = agent_type === 'reviewer' ? require('./review-scratch.cjs').ensure(root, id, runId) : null; // ADR 0054 amendment 1: outside every worktree
     w.scratchDir = scratch; // a Codex launch adds it as a writable root
-    if (substrate === 'claude-code') w.instructions = I.snapshotInstructions(w.worktree, w.dir); // spawn only
+    if (substrate === 'claude-code') w.instructions = await require('./trusted-instructions.cjs').snapshotFor({ core, worktree: w.worktree, dir: w.dir, agentType: agent_type, taskId: task_id, dataDir: root, runId }); // spawn only; a reviewer's comes from the reviewed work's base commit, never its working copy
 
     // The worker row comes first, with no pid yet: `task.assign` refuses a worker with no row, and the
     // resume line needs the lease it creates. Only `running` is pid-checked, so this is legitimate.

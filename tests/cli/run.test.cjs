@@ -158,6 +158,12 @@ test('run: the orchestrator is a child of the CLI, the run row is written, stdin
     assert.ok(row, 'the run row never appeared within 10,000 ms of the CLI spawning');
     assert.strictEqual(row.adapter_pid, cliProc.pid, "adapter_pid must be the CLI process's own pid");
     assert.ok(Number.isInteger(row.orchestrator_pid) && row.orchestrator_pid > 0, 'orchestrator_pid must be a positive integer');
+    // The reviewer instructions anchor (trusted-instructions.cjs) is fixed before the orchestrator exists: the checkout's HEAD now.
+    const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: ROOT, encoding: 'utf8', windowsHide: true });
+    if (head.status === 0) {
+      const anchor = JSON.parse(fs.readFileSync(require('../../src/run/trusted-instructions.cjs').anchorFile(dataDir, runId), 'utf8'));
+      assert.strictEqual(anchor.sha, head.stdout.trim(), 'belay run did not fix the instructions anchor at the checkout HEAD before launch');
+    }
 
     fakeWorker = spawn(process.execPath, [FAKE_CLAUDE], {
       cwd: wt, env: { ...process.env, FAKE_HANG: '1' }, stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true,
