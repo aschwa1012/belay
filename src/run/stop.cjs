@@ -29,7 +29,7 @@ function createStopControl({ runId, core, closeGraceMs, pauseSettled = async () 
     const t0 = Date.now();
     // ADR 0039: the row's own identity (pid_created), never the bare pid; a refusal is reported, not hidden.
     const { tree, pidKill, identity, refused } = await P.withKillLock(() => P.killProcess(P.rowTarget(w))).catch((e) => ({ tree: { ok: false, terminated: 0, ms: Date.now() - t0 }, pidKill: { signalled: false, error: 'EIDENTITY' }, identity: null, refused: { refused: 'identity', detail: (e && e.message) || String(e) } }));
-    const gone = await P.waitPidGone(w.pid, { timeoutMs: 2000 });
+    const gone = await P.waitProcessGone(w.pid, P.rowTarget(w).created, { timeoutMs: 2000 }); // identity re-check at the deadline: a reused pid is not the worker
     return {
       killed: {
         tree: { ok: tree.ok, terminated: tree.terminated, ms: tree.ms },

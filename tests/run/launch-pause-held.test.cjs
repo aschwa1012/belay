@@ -14,6 +14,7 @@ const path = require('node:path');
 const { createRunManager } = require('../../src/run/index.cjs');
 const { createRunPauseControl } = require('../../src/run/run-pause.cjs');
 const P = require('../../src/run/process.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 const { cleanup } = require('../core/helpers.cjs');
 const { createFakeCore, FakeCoreError } = require('./fake-core.cjs');
 
@@ -61,19 +62,19 @@ const parkedIds = (r) => ((r.runRow.pause_parks && r.runRow.pause_parks.parked) 
 for (const mode of ['before', 'after']) {
   test(`a run pause landing ${mode} the spawn's pid row: the worker is parked once up and named in this pause's parks`, async () => {
     const r = rig();
-    let pausePromise = null; let seen = false;
+    let pausePromise = null; let seen = false; let bornId = null; // bornId: the process's identity, taken while it is alive and before the pause parks it
     const write = r.core.worker.write;
     try {
       // `before`: the pause starts inside the pid row's write; it cannot finish until the spawn does, so it is not awaited there.
       if (mode === 'before') {
         r.core.worker.write = async (row) => {
-          if (!seen && row.state === 'starting' && row.pid) { seen = true; pausePromise = r.rp.pause({ run_id: 'run-fake', caller: CALLER }); while (!(r.m._worker('w1') && r.m._worker('w1').pauseOnLaunch)) await new Promise((res) => setImmediate(res)); }
+          if (!seen && row.state === 'starting' && row.pid) { seen = true; bornId = await G.identify(row.pid); pausePromise = r.rp.pause({ run_id: 'run-fake', caller: CALLER }); while (!(r.m._worker('w1') && r.m._worker('w1').pauseOnLaunch)) await new Promise((res) => setImmediate(res)); }
           return write(row);
         };
       } else {
         r.core.worker.write = async (row) => {
           const out = await write(row);
-          if (!seen && row.state === 'starting' && row.pid) { seen = true; pausePromise = r.rp.pause({ run_id: 'run-fake', caller: CALLER }); while (!(r.m._worker('w1') && r.m._worker('w1').pauseOnLaunch)) await new Promise((res) => setImmediate(res)); }
+          if (!seen && row.state === 'starting' && row.pid) { seen = true; bornId = await G.identify(row.pid); pausePromise = r.rp.pause({ run_id: 'run-fake', caller: CALLER }); while (!(r.m._worker('w1') && r.m._worker('w1').pauseOnLaunch)) await new Promise((res) => setImmediate(res)); }
           return out;
         };
       }
@@ -84,7 +85,8 @@ for (const mode of ['before', 'after']) {
       assert.deepStrictEqual(receipt.not_paused, []);
       assert.ok(parkedIds(r).includes('w1'), `in pause_parks.parked: ${JSON.stringify(r.runRow.pause_parks)}`);
       assert.strictEqual(stateOf(r, 'w1'), 'paused');
-      assert.ok(!P.pidAlive(r.m._worker('w1').pid), 'the parked worker has no process');
+      assert.ok(bornId, 'the spawned process was identified while alive');
+      await G.assertGone(bornId, 'the parked worker has no process');
     } finally { await r.done(); }
   });
 }
@@ -125,6 +127,7 @@ test('a run pause landing during a restart of a live worker: the pause is held, 
   r.core.worker.write = async (row) => { if (armed && row.state === 'stopping') { armed = false; entered(); await gate; } return write(row); }; // the old process is still live and listable
   try {
     const pidBefore = r.m._worker('w1').pid;
+    const beforeId = await G.identify(pidBefore); // the old process, while it is still live and listable
     const rs = r.m.restart({ worker_id: 'w1' }).then((x) => ({ ok: x }), (e) => ({ err: e }));
     await stalled;
     const { pending: pausePromise } = await pauseWhenHeld(r, 'w1');
@@ -135,7 +138,8 @@ test('a run pause landing during a restart of a live worker: the pause is held, 
     assert.match(out.err.message, /stopped, not parked/);
     assert.strictEqual(out.err.detail.old_pid, pidBefore);
     assert.notStrictEqual(r.m._worker('w1').pid, undefined);
-    assert.ok(!r.m._worker('w1').child || !P.pidAlive(r.m._worker('w1').child.pid), 'no new process was started');
+    const kept = r.m._worker('w1').child; // no handle, or the old one (its process stopped); any other pid is a new process
+    assert.ok(!kept || (kept.pid === pidBefore && await G.isGone(beforeId)), 'no new process was started');
     const np = receipt.not_paused.find((x) => x.worker_id === 'w1');
     assert.ok(np && np.error.code === 'E_PAUSED', JSON.stringify(receipt.not_paused));
   } finally { await r.done(); }

@@ -162,7 +162,7 @@ test('every Core method is reachable over the pipe against an owner in another p
     const stop = await orch.shutdownOwner();
     assert.strictEqual(stop.stopped, 'remote');
     await owner.exited;
-    assert.strictEqual(pidAlive(owner.child.pid), false);
+    assert.ok(owner.child.exitCode !== null || owner.child.signalCode !== null, 'the owner process has not exited'); // the handle, not a bare pid that may be reused
     assert.ok(!fs.existsSync(path.join(dir, 'owner.lock')), 'a pipe shutdown releases the lock too');
     owner = null;
 
@@ -201,7 +201,7 @@ test('a worker cannot stop the owner over the pipe, and an operator can', async 
     // owner.exited was attached at spawn. Waiting on a listener added here instead would miss the
     // event whenever the owner exits before this line runs, and wait for it for ever.
     await owner.exited;
-    assert.strictEqual(pidAlive(owner.child.pid), false);
+    assert.ok(owner.child.exitCode !== null || owner.child.signalCode !== null, 'the owner process has not exited');
     assert.ok(!fs.existsSync(path.join(dir, 'owner.lock')));
   }
 });

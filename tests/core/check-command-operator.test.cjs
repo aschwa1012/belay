@@ -15,6 +15,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 const { core, sandbox, cleanup, ownSpawnRegistry } = require('./helpers.cjs');
 
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 const SR = core('spawn-register.cjs');
 const { Owner } = core('owner.cjs');
 const { runAcceptance, runCommand } = core('evaluate.cjs');
@@ -83,7 +84,6 @@ const waitFor = async (ok, ms, what) => {
   for (const end = Date.now() + ms; Date.now() < end;) { if (ok()) return; await new Promise((r) => setTimeout(r, 25)); }
   assert.fail(`timed out waiting for ${what}`);
 };
-const alive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } }; // signal 0 sends nothing
 
 test('a harness that exits mid-check retires the record at that moment, so the tombstone covers an orphan started late', { timeout: 60000 }, async () => {
   ownSpawnRegistry();
@@ -91,7 +91,7 @@ test('a harness that exits mid-check retires the record at that moment, so the t
   let out = '';
   harness.stdout.on('data', (d) => { out += d; });
   await new Promise((res) => harness.once('close', res));
-  const [pidText, aliveAt] = out.trim().split(' ');
+  const [pidText, aliveAt, createdText] = out.trim().split(' ');
   const pid = Number(pidText);
   assert.ok(pid > 0, `the harness named no check pid: ${out}`);
   assert.deepStrictEqual(SR.list({ persist: false }).filter((r) => r.pid === pid), [], 'no live record is left for the check');
@@ -99,7 +99,8 @@ test('a harness that exits mid-check retires the record at that moment, so the t
   assert.ok(tomb, 'a tombstone names the check');
   assert.strictEqual(tomb.kind, 'check');
   assert.ok(tomb.until >= Number(aliveAt), `the lifetime closed at ${tomb.until}, before the check was seen alive at ${aliveAt}`);
-  await waitFor(() => !alive(pid), 15000, 'the check to end by itself'); // it ends by its own timer; nothing is killed by pid
+  // It ends by its own timer; nothing is killed by pid. Gone by identity: the creation time the harness read, so a reused number is not the check.
+  assert.ok(await G.waitGone(G.recorded(pid, createdText ? Number(createdText) : null), { deadlineMs: 15000 }), 'the check did not end by itself');
 });
 
 test('a live check record is stamped at spawn and every second after', { timeout: 60000 }, async () => {
@@ -127,12 +128,13 @@ test('a hard-killed owner mid-check: a process the check started after its first
   const closed = new Promise((res) => harness.once('close', res));
   try {
     await waitFor(() => /\n/.test(out), 20000, 'the harness to report its check');
-    const checkPid = Number(out.trim().split(' ')[0]);
+    const [checkPidText, , checkCreatedText] = out.trim().split(' ');
+    const checkPid = Number(checkPidText);
     await waitFor(() => fs.existsSync(f('started')), 20000, 'the check to start its detached process');
     harness.kill(); // a hard kill on Windows
     await closed;
     fs.writeFileSync(f('flag'), 'x'); // the check ends now, with nothing to observe it
-    await waitFor(() => !alive(checkPid), 20000, 'the check to end');
+    assert.ok(await G.waitGone(G.recorded(checkPid, checkCreatedText ? Number(checkCreatedText) : null), { deadlineMs: 20000 }), 'the check did not end');
     await withOwner(async (o) => {
       fs.writeFileSync(f('port'), String(o.tcpPort));
       await waitFor(() => fs.existsSync(f('out')), 60000, 'the detached process to get an answer');
