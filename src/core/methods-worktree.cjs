@@ -355,15 +355,25 @@ async function assertOnBranch(rec, what) {
 // Null when the task has no tree to remove now.
 async function removeForSweep(E, caller, task0) {
   return exclusive(`task:${task0.id}`, `a worktree call for task ${task0.id}`, async () => {
-    const task = requireTask(E, task0.id, 'task.worktreeSweep');
-    const rec = active(task);
+    let task = requireTask(E, task0.id, 'task.worktreeSweep');
+    let rec = active(task);
     if (!rec) return null;
+    const key = G.fwd(rec.path).toLowerCase();
+    // A sharer's removal of this tree in flight is waited for, as task.worktreeRemove does: the sweep then finds the tree
+    // removed (null) or, if that removal failed, removes it itself. Waiting reports the tree's true end state; skipping would not.
+    while (removing.has(key)) {
+      await removing.get(key).done.catch(() => {});
+      task = requireTask(E, task0.id, 'task.worktreeSweep');
+      rec = active(task);
+      if (!rec) return null;
+    }
     const open = openSharer(E, task);
     if (open) throw err('E_PRECONDITION', `task ${open.id} (${open.state}) is worked in the same tree or branch ${rec.path}`, { task_id: open.id, state: open.state, path: rec.path });
-    const key = G.fwd(rec.path).toLowerCase();
+    // Claimed in this turn, before any await, so a call that arrives from here on waits for this one.
     let finish;
-    removing.set(key, { task_id: task.id, done: new Promise((r) => { finish = r; }) });
-    try { return await removeShared(E, caller, { force: false, noRecordLeftover: true }, task, rec); } finally { removing.delete(key); finish(); }
+    const mine = { task_id: task.id, done: new Promise((r) => { finish = r; }) };
+    removing.set(key, mine);
+    try { return await removeShared(E, caller, { force: false, noRecordLeftover: true }, task, rec); } finally { if (removing.get(key) === mine) removing.delete(key); finish(); }
   });
 }
 
