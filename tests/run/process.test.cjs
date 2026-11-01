@@ -20,7 +20,7 @@ test('pidAlive is true for this process and false for a pid that cannot exist', 
   assert.equal(P.pidAlive('4'), false, 'a string is not a pid');
 });
 
-test('pidAlive follows a real child from alive to gone', async () => {
+test('pidAlive reads a live child alive, and a killed child exits', async () => {
   const child = spawn(process.execPath, ['-e', 'setTimeout(()=>{},60000)'], { windowsHide: true });
   await sleep(150);
   assert.equal(P.pidAlive(child.pid), true);
