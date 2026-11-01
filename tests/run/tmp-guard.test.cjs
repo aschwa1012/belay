@@ -67,6 +67,9 @@ const BAD_COMMANDS = [
   `node --require x --no-warnings -e "fs.writeFileSync('/tmp/x','')"`,
   `python -X utf8 -c "open('/tmp/x','w')"`,
   `python -W ignore -c "open('/tmp/x','w')"`,
+  `python -u -X utf8 -c "open('/tmp/x','w')"`,
+  `node --inspect --require x -p "'/tmp/x'"`,
+  `pwsh -NoProfile -ExecutionPolicy Bypass -c "Set-Content '/tmp/x' 1"`,
   `node -e 'fs.writeFileSync("it'\\''s","");fs.writeFileSync("/tmp/x","")'`,
   `python -c 'import os'"; open('/tmp/x','w')"`,
   `node -e "$(printf %s "/tmp/x")"`,
@@ -96,7 +99,7 @@ const OK_COMMANDS = [
   `node -r dotenv/config -e "console.log(1)" ; ls /tmp/x`,
   `python -X utf8 -c "print(1)" | tee /tmp/out`,
   `node -e "console.log(\\"a\\")" && cat /tmp/out`,
-  'python -X utf8 run.py -c /tmp/x',
+  'python -X utf8 run.py -c /tmp/x', 'python -u run.py -c /tmp/x', 'node --inspect app.js -p /tmp/x', 'python -m x -c /tmp/y',
   'python run.py -c /tmp/x', 'node a.js -p /tmp/x', 'perl -c /tmp/x.pl', 'grep -c foo /tmp/x', 'tar -c -f /tmp/a.tar src',
   'cat <<EOF\nuse $TMPDIR/tmp and ${TEMP}/tmp\nEOF',
 ];

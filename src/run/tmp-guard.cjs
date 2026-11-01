@@ -39,11 +39,18 @@ function rootedTmp(p) {
 // `${TEMP}/tmp` and `http://host/tmp` pass; the character after must not extend the name, so `/tmpfoo` passes.
 const LITERAL = /(?:^|[^\w.\-/$~}])(?:[a-z]:)?[\\/]{1,2}tmp(?![\w-])/i;
 // An inline-script flag directly after the interpreter (its path may be quoted: `"C:/Program Files/nodejs/node.exe"`) and its
-// own options, each with at most one separate value word (`node -r dotenv/config`, `python -X utf8`). So `python run.py -c /tmp/x`
-// and `node a.js -p` are the script's arguments, not the interpreter's. `-c` only after python or pwsh, `-p` only after node,
-// never `perl -c`. The cost: `python -m x -c /tmp/y` reads `x` as -m's value and `-c` as the flag (a rare false positive).
-const flag = (exe, flags) => new RegExp(String.raw`(?<![\w.\-])(?:${exe})(?:\.exe)?(?![\w.\-])["']?(?:\s+-\S+(?:\s+[^-\s"']\S*)?)*?\s+(?:${flags})(?=[\s"'=]|$)`, 'gi');
-const INLINE = [flag('node(?:js)?|bun|deno', '-e|--eval|-p|--print'), flag('python[\\d.]*|py', '-c'), flag('perl|ruby', '-e'), flag('pwsh|powershell', '-c|-command')];
+// own options. Only an option known to take a separate value word may be followed by one (`node -r dotenv/config`, `python -X utf8`);
+// any other word ends the interpreter's options. So `python run.py -c /tmp/x`, `python -u run.py -c /tmp/x`, `python -m x -c /tmp/y`
+// and `node --inspect app.js -p /tmp/x` are the script's arguments, not the interpreter's. `-c` only after python or pwsh, `-p`
+// only after node, never `perl -c`. An option not listed here that takes a separate value hides a following flag (fails open).
+const flag = (exe, flags, withValue) => new RegExp(String.raw`(?<![\w.\-])(?:${exe})(?:\.exe)?(?![\w.\-])["']?(?:\s+(?:-(?:${withValue})(?=\s)\s+[^-\s"']\S*|-\S+))*?\s+(?:${flags})(?=[\s"'=]|$)`, 'gi');
+const INLINE = [
+  flag('node(?:js)?|bun|deno', '-e|--eval|-p|--print', 'r|C|-require|-import|-loader|-experimental-loader|-conditions|-env-file|-input-type|-preload|-cwd|-config'),
+  flag('python[\\d.]*|py', '-c', 'X|W'),
+  flag('perl', '-e', 'I'),
+  flag('ruby', '-e', 'I|r|C'),
+  flag('pwsh|powershell', '-c|-command', 'executionpolicy|ep|workingdirectory|wd|configurationname|config|outputformat|o|of|inputformat|in|if|windowstyle|w'),
+];
 const HEREDOC = /(?<!<)<<(-?)\s*(["']?)([A-Za-z_][\w.-]*)\2/;
 
 // The interpreter's own script argument from `text` (just after the flag): the whole shell word, as written. Adjacent quoted
