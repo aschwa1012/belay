@@ -23,3 +23,18 @@ test('identifyTree names a live process and heldAmong holds it until it exits', 
     assert.deepStrictEqual(await G.heldAmong([me]), [], 'gone once it has exited');
   } finally { if (child.exitCode === null) child.kill(); }
 });
+
+test('a timed sample counts a process that exits while the snapshot runs as held; a plain check does not', { timeout: 60000 }, async () => {
+  const ID = require('../../src/core/proc-identity.cjs');
+  const orig = ID.processSnapshot;
+  const run = async (opts) => {
+    const child = sleeper();
+    try {
+      const me = (await G.identifyTree([child.pid])).find((i) => i.pid === child.pid);
+      ID.processSnapshot = async (o) => { child.kill(); await new Promise((r) => child.once('exit', r)); return orig(o); }; // it ends during the snapshot's latency
+      return (await G.heldAmong([me], opts)).map((i) => i.pid);
+    } finally { ID.processSnapshot = orig; if (child.exitCode === null) child.kill(); }
+  };
+  assert.strictEqual((await run({ sampled: true })).length, 1, 'alive when asked, so held at the sample');
+  assert.strictEqual((await run({})).length, 0, 'a plain check judges it by the snapshot');
+});

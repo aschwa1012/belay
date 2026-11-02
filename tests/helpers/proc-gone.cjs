@@ -86,17 +86,19 @@ function identifyOnWrite(core) {
 // Which of these identities are still held, from ONE process snapshot taken after a cheap signal-0 filter (a pid nothing holds is gone for
 // certain, so a set that has all exited costs no snapshot). Asking one identity at a time would cost a snapshot each and spread the sample
 // over seconds. A held pid with a recorded identity that has no creation time fails, as in `isGone`.
-async function heldAmong(identities) {
+// `sampled: true` is for a timed sample ("still alive at 1,000 ms"): a pid that passed the signal-0 filter was held when asked, so one the
+// snapshot no longer lists (it exited while the snapshot ran) still counts as held; only another creation time clears it.
+async function heldAmong(identities, { sampled = false } = {}) {
   const live = identities.filter((id) => pidAlive(id.pid));
   if (!live.length) return [];
   const snap = await readSnapshot(live[0].pid, 'checking the identified set');
   return live.filter((id) => {
     const e = snap.get(id.pid);
-    if (!e) return false;
     if (id.created == null) {
       assert.ok(!id.recorded, `pid ${id.pid} is held and no creation time was recorded for it, so it cannot be told from a reused number`);
       return false;
     }
+    if (!e) return sampled;
     assert.ok(e.created != null, `no creation time in the process snapshot for the held pid ${id.pid}`);
     return e.created === id.created;
   });
