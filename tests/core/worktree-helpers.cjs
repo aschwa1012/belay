@@ -57,6 +57,13 @@ async function stageRuns(dataDir, names) {
     const c = await openCore({ dataDir, caller: { role: 'operator', run_id: name, pid: process.pid }, embed: false });
     try { await c.run.attach({ adapter_pid: process.pid }); } finally { await c.close(); }
   }
+  // The suite's standing orchestrator run merges into these staged runs' branches, so its launching process allows cross-run merges
+  // (cross_run_merge is off by default; tests/core/cross-run-merge.test.cjs covers the refusal). Its other settings are carried.
+  const c = await openCore({ dataDir, caller: { role: 'operator', run_id: 'test-run', pid: process.pid }, embed: false });
+  try {
+    const cur = (await c.run.get({})).run;
+    if (cur) await c.run.attach({ adapter_pid: process.pid, cross_run_merge: true, ...(cur.merge_into ? { merge_into: cur.merge_into } : {}), ...(cur.run_mode ? { run_mode: cur.run_mode } : {}) });
+  } finally { await c.close(); }
 }
 
 // The runner's 60 s per-test cap (scripts/test.cjs) is a hang guard, not a budget. A test over real repositories costs 2 to 13 s alone
