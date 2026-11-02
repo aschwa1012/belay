@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // stop-before-ready.test.cjs — a stop that lands between a spawn's launch and its ready event. The worker was stopped on purpose, so the
 // spawn's failed-start path must leave the `stopped` row as it is (no `dead` row, no death wake, no lease release) and its error must
 // name the stop, not the startup window. The fake never sends `system/init` (FAKE_HANG) and exits when its stdin closes.

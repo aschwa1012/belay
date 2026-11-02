@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // effort.test.cjs — build step S6b, ADR 0028: a worker's effort is a spawn argument, kept on the worker
 // and passed as --effort on every launch, a relaunch after a park included. A real RunManager over
 // tests/run/fakes/fake-claude.cjs and tests/run/fake-core.cjs, the shape of tests/run/park-2.test.cjs.

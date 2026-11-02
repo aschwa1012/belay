@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // receipts.test.cjs — build step S4c. Drives the built CLI's
 // `receipts` as a subprocess against a sandbox store planted through the core the way
 // tests/cli/observe.test.cjs plants rows, never through a live run. Every sandbox is removed in finally.

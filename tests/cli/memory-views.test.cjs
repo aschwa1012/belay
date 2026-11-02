@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-views.test.cjs — ADR 0043 decision 3, the read-only memory views: additive `belay diff` fields,
 // `belay logs --memory`, a wrap-up in `belay notices`, and the doctor's `memory-index` rung. Everything runs
 // the built CLI as a subprocess against a sandbox store planted through the core; nothing here touches the

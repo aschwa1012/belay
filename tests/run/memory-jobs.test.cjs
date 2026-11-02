@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-jobs.test.cjs — ADR 0041 decisions 4 to 6 and ADR 0043 decision 2: the work after a turn and at a
 // run's end. A spy core records every call; no process, store or model is involved.
 

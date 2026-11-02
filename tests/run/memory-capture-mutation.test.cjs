@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-capture-mutation.test.cjs — claims of memory-capture.cjs that a mutation run showed no other test pins
 // down: the turn buffer holds 4000 events and no more, each turn's dropped count starts at zero, a plan is null
 // when no lever wants it, a failed write names its message, and a failed build reports the plain message.

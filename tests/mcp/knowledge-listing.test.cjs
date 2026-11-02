@@ -3,6 +3,7 @@
 // existed; with it on the tool is listed and the listing is under the 10 KB budget. The worker never lists it.
 // The adapter reads the run row once, through the core, and creates nothing to do so.
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 
 const test = require('node:test');
 const assert = require('node:assert');

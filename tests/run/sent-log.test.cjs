@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // sent-log.test.cjs — ADR 0042 decision 4, the sent record: what the harness writes to a worker's stdin is
 // recorded in workers/<id>/sent.jsonl only with memory.bottle on, numbered by the turn it starts or is
 // folded into, redacted before it is written, and a failure to record never fails the write it records.

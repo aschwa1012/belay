@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // adapter-pipe-bounds.test.cjs — the CLI's read timeouts for a restart and a resume include the relaunch's index embedding (up to
 // SPAWN_EMBED_MS before the process starts), so a verb that took effect is never reported failed because the CLI stopped
 // waiting first. The bounds are sums of the manager's own nested waits; this pins each addition.

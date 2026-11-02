@@ -19,6 +19,10 @@ delete process.env.BELAY_WORKER_ID;
 // when it exits. A targeted `node --test --require tests/helpers/tmp.cjs file` therefore never writes into the real temp dir. Child
 // processes and nested runs inherit the variables, see a scratch name, and make no second one. Under scripts/test.cjs, which sets
 // TEMP itself, nothing changes. BELAY_TEST_TMP_ISOLATE=0 turns the redirect off (a test of this helper that must watch a given temp dir).
+// A temp root inside the user's home (Projects, eval-lines, ...) is refused first and replaced by the real OS temp dir
+// (tests/helpers/temp-root.cjs), so a TEMP an agent pointed at an indexed folder never receives the sandboxes.
+require('./temp-root.cjs').enforceSafeTemp(process.env);
+
 let ownScratch = null;
 if (process.env.BELAY_TEST_TMP_ISOLATE !== '0' && !/^belay-(suite|test)-tmp-/.test(path.basename(os.tmpdir()))) {
   try {
