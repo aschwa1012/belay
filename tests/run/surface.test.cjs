@@ -219,7 +219,7 @@ test('launch: writeWorkerFiles writes the excludes for its cwd and still disable
   // No cwd: exactly today's object, unchanged.
   const r2 = L.writeWorkerFiles({ dir: path.join(dir, 'workers', 'w2'), workerId: 'w2', runId: 'run-1', dataDir: dir, settingsPath: userSettings });
   const settings2 = JSON.parse(fs.readFileSync(r2.settingsPath, 'utf8'));
-  assert.deepStrictEqual(settings2, { enabledPlugins: { 'example-plugin@example': false }, hooks: { PreToolUse: GUARD.hooksBlock().PreToolUse } }); // plus the guard hook
+  assert.deepStrictEqual(settings2, { enabledPlugins: { 'example-plugin@example': false }, hooks: { PreToolUse: GUARD.hooksBlock({ push: true }).PreToolUse } }); // plus the guard hook
 
   fs.rmSync(dir, { recursive: true, force: true });
 });

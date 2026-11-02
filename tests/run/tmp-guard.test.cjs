@@ -181,7 +181,7 @@ test('worker settings and the headless orchestrator settings register the one gu
       const pre = JSON.parse(fs.readFileSync(f, 'utf8')).hooks.PreToolUse;
       assert.strictEqual(pre.length, 1);
       for (const t of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash']) assert.ok(pre[0].matcher.split('|').includes(t), t);
-      assert.match(pre[0].hooks[0].command, /guard-hook.cjs"$/);
+      assert.match(pre[0].hooks[0].command, /guard-hook.cjs"(?: --push)?$/);
       assert.ok(pre[0].hooks[0].timeout <= 10);
     }
     assert.strictEqual(JSON.parse(fs.readFileSync(i.settingsPath, 'utf8')).hooks, undefined);

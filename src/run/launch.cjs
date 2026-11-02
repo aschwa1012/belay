@@ -159,7 +159,7 @@ function writeWorkerFiles({ dir, workerId, runId, dataDir, mcpPath, settingsPath
     JSON.stringify(mcpConfig({ workerId, runId, dataDir, mcpPath, logPath, permit, permitWaitMs, notes, bind }), null, 2) + '\n'
   );
   const plugins = readPluginConfig(settingsPath);
-  const hooks = { ...(CP.hooksBlock({ dir, compactAt }) || {}), ...guardHooks() }; // the guard hook always; the compaction hooks only with the lever on
+  const hooks = { ...(CP.hooksBlock({ dir, compactAt }) || {}), ...guardHooks({ push: true }) }; // the guard hook always, with the push check (ADR 0085: a worker, not the orchestrator); the compaction hooks only with the lever on
   fs.writeFileSync(workerSettingsPath, JSON.stringify({ ...workerSettings(plugins.names, { cwd, nativeMemory }), hooks }, null, 2) + '\n');
   return { mcpJsonPath, settingsPath: workerSettingsPath, plugins };
 }
