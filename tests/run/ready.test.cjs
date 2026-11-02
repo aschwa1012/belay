@@ -364,7 +364,7 @@ test('an unreadable user settings file fails the launch with E_ARGS naming the f
   // ADR 0024, build step S2: writeFilesFor passes the worker's own cwd, so settings.json also carries
   // the hygiene block, computed the same way here.
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(sb.data, 'workers', 'wq', 'settings.json'), 'utf8')), {
-    enabledPlugins: {}, ...require('../../src/run/surface.cjs').hygieneSettings(sb.worktree), hooks: { PreToolUse: [...require('../../src/run/kill-guard.cjs').hooksBlock().PreToolUse, ...require('../../src/run/tmp-guard.cjs').hooksBlock().PreToolUse] }, // plus the kill guard and the tmp guard
+    enabledPlugins: {}, ...require('../../src/run/surface.cjs').hygieneSettings(sb.worktree), hooks: { PreToolUse: [...require('../../src/run/guard.cjs').hooksBlock().PreToolUse] }, // the guard hook
   });
   await m2.shutdown();
   await m.shutdown();

@@ -12,8 +12,7 @@ const path = require('node:path');
 
 const S = require('../../src/run/surface.cjs');
 const L = require('../../src/run/launch.cjs');
-const KG = require('../../src/run/kill-guard.cjs');
-const TG = require('../../src/run/tmp-guard.cjs');
+const GUARD = require('../../src/run/guard.cjs');
 const { createParser } = require('../../src/run/parsers.cjs');
 
 const S0_STREAM = path.join(__dirname, 'fixtures', 'surface-baseline-init.jsonl');
@@ -220,7 +219,7 @@ test('launch: writeWorkerFiles writes the excludes for its cwd and still disable
   // No cwd: exactly today's object, unchanged.
   const r2 = L.writeWorkerFiles({ dir: path.join(dir, 'workers', 'w2'), workerId: 'w2', runId: 'run-1', dataDir: dir, settingsPath: userSettings });
   const settings2 = JSON.parse(fs.readFileSync(r2.settingsPath, 'utf8'));
-  assert.deepStrictEqual(settings2, { enabledPlugins: { 'example-plugin@example': false }, hooks: { PreToolUse: [...KG.hooksBlock().PreToolUse, ...TG.hooksBlock().PreToolUse] } }); // plus the kill guard and the tmp guard
+  assert.deepStrictEqual(settings2, { enabledPlugins: { 'example-plugin@example': false }, hooks: { PreToolUse: GUARD.hooksBlock().PreToolUse } }); // plus the guard hook
 
   fs.rmSync(dir, { recursive: true, force: true });
 });
