@@ -30,7 +30,7 @@ const REFUSED = [
   'git push -o -h origin main',
   'Set-Location C:\\\ngit push origin main',
   'cd C:\\work\\\ngit push',
-  'dir C:\\Work\\\ngh pr create -t x',
+  'dir D:\\work\\\ngh pr create -t x',
   'git ^\n push origin main',
   'git -C C:/repo \\\n  push origin main', // bash line continuation
   'git push \\\r\n  origin main',
