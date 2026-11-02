@@ -195,6 +195,25 @@ async function runMem(argv, core) {
 }
 const callOf = (core, name) => core.calls.find(c => c[0] === name);
 
+test('memory search with no flags covers the project notes of the run, not its own records', async () => {
+  const mk = (runs) => { const c = fakeCore(); c.run.list = async () => ({ runs }); return c; };
+  const proj = mk([{ id: 'run-p', alive: true, project: 'acme' }]);
+  const r = await runMem(['search', 'loader'], proj);
+  assert.deepStrictEqual(callOf(proj, 'memory.search')[1], { query: 'loader', namespace: 'project/acme', filter: { types: ['note'] } });
+  assert.strictEqual(r.json.scope, 'project');
+  assert.ok(r.text.endsWith("searched project/acme notes (the project of run run-p); --namespace run/run-p searches that run's own records\n"), r.text);
+  const named = mk([{ id: 'run-p', alive: true, project: 'acme' }]);
+  await runMem(['search', 'loader', 'run-p', '--type', 'decision'], named);
+  assert.deepStrictEqual(callOf(named, 'memory.search')[1], { query: 'loader', namespace: 'project/acme', filter: { types: ['decision'] } }, 'a stated type is kept; a run id names the run whose project it is');
+  const own = mk([{ id: 'run-p', alive: true, project: 'acme' }]);
+  const o = await runMem(['search', 'loader', '--namespace', 'run/run-p'], own);
+  assert.deepStrictEqual(callOf(own, 'memory.search')[1], { query: 'loader', namespace: 'run/run-p' }, 'a named namespace is taken as given');
+  assert.strictEqual(o.json.scope, undefined);
+  const none = mk([{ id: 'run-n', alive: true, project: null }]);
+  await runMem(['search', 'loader'], none);
+  assert.deepStrictEqual(callOf(none, 'memory.search')[1], { query: 'loader', namespace: 'run/run-n' }, 'a run with no project has no notes to search');
+});
+
 test('memory flag table: every flag reaches the core call as the filter or argument the ADR names', async () => {
   const core = fakeCore();
   const r = await runMem(['search', 'pidAlive', 'run-q', '--mode', 'keyword', '--index', '--type', 'note', '--type', 'decision', '--status', 'verified',
