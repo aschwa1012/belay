@@ -94,3 +94,26 @@ test('belay run: a current copy has an empty prompt_warnings; without --json a s
     assert.match(bad.stderr, /copy src\/run\/prompts\/orchestrator\.md again/);
   } finally { cleanup(bad.dir); }
 });
+
+// The run row records the build, the prompt hash and the template version the run process stated at start (the wiring in cmd-run).
+test('belay run: the run row carries the harness record, and a different prompt gives a different hash', () => {
+  const ST = require('../../src/core/schema-stamp.cjs');
+  const harnessOf = (r) => {
+    const out = spawnSync(process.execPath, [CLI, 'receipts', '--json', '--data', `${r.dir}/.belay`], { cwd: r.dir, encoding: 'utf8', windowsHide: true });
+    assert.strictEqual(out.status, 0, out.stderr);
+    return JSON.parse(out.stdout).run.harness;
+  };
+  const a = go(shipped('headless'), { project: 'p', notes: true }), b = go('plain brief\n', { notes: false });
+  try {
+    assert.strictEqual(a.status, 0, a.stderr.slice(-600));
+    assert.strictEqual(b.status, 0, b.stderr.slice(-600));
+    const ha = harnessOf(a), hb = harnessOf(b);
+    assert.strictEqual(ha.build, ST.writtenBy());
+    assert.strictEqual(ha.run_build, ST.writtenBy());
+    assert.match(ha.prompt_sha, /^[0-9a-f]{64}$/);
+    assert.strictEqual(ha.prompt_marker, markerVersion(shipped('headless')));
+    assert.ok(ha.dirty === true || ha.dirty === false || ha.dirty === null);
+    assert.notStrictEqual(ha.prompt_sha, hb.prompt_sha);
+    assert.strictEqual(hb.prompt_marker, null, 'a copy without the marker records none');
+  } finally { cleanup(a.dir); cleanup(b.dir); }
+});

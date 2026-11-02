@@ -146,4 +146,4 @@ async function run(ctx) {
   }
 }
 
-module.exports = { run };
+module.exports = { run, descriptorOf };

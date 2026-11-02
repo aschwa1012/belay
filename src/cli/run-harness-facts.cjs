@@ -24,7 +24,8 @@ const promptSha = (text) => (typeof text === 'string' ? crypto.createHash('sha25
 
 // `promptText`: what the orchestrator is sent; `marker`: the copy's belay-prompt version (null when it has none).
 async function collect({ promptText, marker = null, root = ROOT } = {}) {
-  return { dirty: await dirtyOf(root), prompt_sha: promptSha(promptText), prompt_marker: marker || null };
+  const ok = typeof marker === 'string' && /^[0-9.]{1,32}$/.test(marker); // a marker the core would refuse is left out: this record never refuses a run
+  return { run_build: require('../core/schema-stamp.cjs').writtenBy(), dirty: await dirtyOf(root), prompt_sha: promptSha(promptText), prompt_marker: ok ? marker : null };
 }
 
 module.exports = { collect, dirtyOf, promptSha };

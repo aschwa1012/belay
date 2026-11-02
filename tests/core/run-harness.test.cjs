@@ -18,6 +18,7 @@ const HF = require('../../src/cli/run-harness-facts.cjs');
 const RH = require('../../src/core/run-harness.cjs');
 
 const SHA = 'a'.repeat(64);
+const { descriptorOf } = require('../../src/cli/cmd-diff.cjs');
 const open = (dir, role, run) => openCore({ dataDir: `${dir}/data`, caller: { role, run_id: run, pid: process.pid }, embed: false });
 
 test('the run process states the facts, the build comes from the stamp, and a later epoch carries them under its own build', async () => {
@@ -25,7 +26,7 @@ test('the run process states the facts, the build comes from the stamp, and a la
   const op = await open(dir, 'operator', 'r1');
   try {
     const a = await op.run.attach({ adapter_pid: process.pid, harness: { dirty: false, prompt_sha: SHA, prompt_marker: '0.4.0' } });
-    assert.deepStrictEqual(a.run.harness, { build: ST.writtenBy(), schema_version: ST.SCHEMA_VERSION, dirty: false, prompt_sha: SHA, prompt_marker: '0.4.0' });
+    assert.deepStrictEqual(a.run.harness, { build: ST.writtenBy(), schema_version: ST.SCHEMA_VERSION, dirty: false, prompt_sha: SHA, prompt_marker: '0.4.0', run_build: null });
     const orch = await open(dir, 'orchestrator', 'r1');
     try {
       const b = await orch.run.attach({ adapter_pid: process.pid });
@@ -44,7 +45,7 @@ test('an attach without the facts records the build alone, with the facts null',
   const op = await open(dir, 'operator', 'r2');
   try {
     const a = await op.run.attach({ adapter_pid: process.pid });
-    assert.deepStrictEqual(a.run.harness, { build: ST.writtenBy(), schema_version: ST.SCHEMA_VERSION, dirty: null, prompt_sha: null, prompt_marker: null });
+    assert.deepStrictEqual(a.run.harness, { build: ST.writtenBy(), schema_version: ST.SCHEMA_VERSION, dirty: null, prompt_sha: null, prompt_marker: null, run_build: null });
   } finally { await op.shutdownOwner(); await op.close(); cleanup(dir); }
 });
 
@@ -107,4 +108,25 @@ test('belay receipts prints the build on the run line, in text and in JSON; a ru
     assert.ok(out.stdout.split(String.fromCharCode(10)).map((l) => l.replace(String.fromCharCode(13), "")).includes(want), out.stdout);
     assert.match(RH.line(null), /^not recorded$/);
   } finally { cleanup(dir); }
+});
+
+test('belay diff names a build change between epochs on the run descriptor', () => {
+  const h = (build) => JSON.stringify({ build });
+  assert.strictEqual(descriptorOf('run', { epoch: 1, harness: h('belay@0.3.2+aaaaaaaaaaaa') }), 'epoch 1 build belay@0.3.2+aaaaaaaaaaaa');
+  assert.strictEqual(descriptorOf('run', { epoch: 2, harness: h('belay@0.3.3+bbbbbbbbbbbb') }), 'epoch 2 build belay@0.3.3+bbbbbbbbbbbb');
+  assert.strictEqual(descriptorOf('run', { epoch: 3, harness: null }), 'epoch 3', 'a row from before the column');
+});
+
+test('when the store owner and the run process are different builds the line labels each; a marker the core would refuse is left out, not sent', async () => {
+  const h = { build: 'belay@0.3.3+bbbbbbbbbbbb', run_build: 'belay@0.3.2+aaaaaaaaaaaa', dirty: true, prompt_sha: SHA, prompt_marker: '0.4.0' };
+  assert.strictEqual(RH.line(h), `store owner belay@0.3.3+bbbbbbbbbbbb; run process belay@0.3.2+aaaaaaaaaaaa (dirty checkout), prompt template 0.4.0 sha ${SHA.slice(0, 12)}`);
+  assert.strictEqual(RH.line({ ...h, run_build: h.build }).startsWith('belay@0.3.3+bbbbbbbbbbbb (dirty checkout)'), true);
+  const f = await HF.collect({ promptText: 'x', marker: '1'.repeat(40), root: __dirname });
+  assert.strictEqual(f.prompt_marker, null);
+  assert.strictEqual(f.run_build, ST.writtenBy());
+  const dir = sandbox(), op = await open(dir, 'operator', 'r9');
+  try {
+    const a = await op.run.attach({ adapter_pid: process.pid, harness: { run_build: 'belay@0.0.1+aaaaaaaaaaaa', dirty: false } });
+    assert.strictEqual(a.run.harness.run_build, 'belay@0.0.1+aaaaaaaaaaaa');
+  } finally { await op.shutdownOwner(); await op.close(); cleanup(dir); }
 });
