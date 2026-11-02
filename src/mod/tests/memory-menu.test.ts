@@ -130,7 +130,7 @@ describe('the Profiles tab', () => {
     expect(await m.text()).toContain('GPU runtime not installed')
     await m.ui.press({ key: 'probe' })
     expect(m.wd.toasts.at(-1)).toContain('belay memory embed --model Qwen/Qwen3-Embedding-4B-GGUF --project acme')
-    expect(await m.text()).toContain('run: belay memory embed --model Qwen/Qwen3-Embedding-4B-GGUF --project acme')
+    expect(await m.text()).toContain('run in a terminal: belay memory embed --model Qwen/Qwen3-Embedding-4B-GGUF --project acme')
     expect(m.wd.menuWrites).toEqual([])
   })
 
