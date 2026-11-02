@@ -43,3 +43,23 @@ test('a vouched connection carries no operator_reason', { skip: !OC.SUPPORTED &&
   const e = await refused(new Map([[4242, { ppid: 4000, created: T0 - 5000, image: 'node.exe' }], [4000, { ppid: 1, created: OLD_ROOT_CREATED, image: 'pwsh.exe' }]]));
   assert.ok(!e || !(e.detail && e.detail.operator_reason), e && e.message);
 });
+
+test('the owner\'s own refusal of a write bounds the reason the same way', { skip: !OC.SUPPORTED && 'bound mode needs the Windows peer check', timeout: 60000 }, async () => {
+  const dir = sandbox();
+  const ports = new Set();
+  const snap = new Map([[4242, { ppid: 4000, created: T0 + 60000, image: 'node.exe' }], [4000, { ppid: 1, created: T0 + 60000, image: 'pwsh.exe\n' + 'y'.repeat(1000) }]]);
+  const o = new Owner(dir, { embed: false, mode: 'bound', operatorCheckDeps: {
+    table: async () => [...ports].map(p => `  TCP    127.0.0.1:${p}        127.0.0.1:${o.tcpPort}        ESTABLISHED     4242\r\n`).join(''),
+    snapshot: async () => snap,
+  } });
+  await o.start();
+  const c = new Client(dir, { caller, elect: false, connectRetries: 1 });
+  try {
+    await c.connect(); ports.add(c.sock.localPort);
+    const e = await c.call('memory.store', { text: 'x', namespace: 'project/p', embed: false, caller }).then(() => null, (err) => err);
+    assert.ok(e && e.code === 'E_UNBOUND', e && e.message);
+    const reason = /\((the peer's chain.*)\)$/s.exec(e.message);
+    assert.ok(reason, e.message);
+    assert.ok(reason[1].length <= 300 && !/[\r\n]/.test(reason[1]), String(reason[1].length));
+  } finally { await c.close().catch(() => {}); await o.stop().catch(() => {}); cleanup(dir); }
+});
