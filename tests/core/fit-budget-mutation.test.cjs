@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // fit-budget-mutation.test.cjs — claims of fit-budget.cjs that a mutation run showed no other test pins down.
 
 const test = require('node:test');

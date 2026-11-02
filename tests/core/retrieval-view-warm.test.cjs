@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // retrieval-view-warm.test.cjs — what a run's reranker warm-up records look like to belay status, the run receipt and the panel (pure view).
 
 const { test } = require('node:test');

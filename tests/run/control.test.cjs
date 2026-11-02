@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // control.test.cjs — build step 6c, item 7 first bullet.
 // A real createRunManager over tests/run/fakes/fake-claude.cjs in this process, exactly as
 // tests/run/manager.test.cjs builds one, with createWorkerControl over it. The client is

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // run-trees.test.cjs — the close's task-tree sweep step: when it is skipped, which workers it names as unproven, that a failure
 // never throws, and the text lines. The sweep itself is tested against real repositories in tests/core/worktrees-sweep.test.cjs.
 

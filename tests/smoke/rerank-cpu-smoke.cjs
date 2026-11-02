@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // rerank-cpu-smoke.cjs — a real run of the CPU rerank tier on this machine. NOT part of npm test: it loads the two real
 // ONNX rerankers (jina-reranker-v1-tiny-en and gte-reranker-modernbert-base, int8) through belay's pinned transformers.js
 // in the forked child, so run it only when the machine is free.

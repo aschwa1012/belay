@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // A pause refuses a run that turns finishing (idle rule or timeout) while its store writes are pending, and parks nothing.
 const { test } = require('node:test');
 const assert = require('node:assert');

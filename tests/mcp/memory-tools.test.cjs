@@ -3,6 +3,7 @@
 // harness-only refusals naming the field, and the listing bytes printed for both roles and kept under
 // their budgets (20,480 orchestrator, 7,168 worker).
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 
 const test = require('node:test');
 const assert = require('node:assert');

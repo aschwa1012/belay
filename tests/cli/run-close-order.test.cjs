@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 process.env.BELAY_TEST_MODE = '1';
 // run-close-order.test.cjs — the ordering inside closeRunWorkers (src/cli/run-close.cjs), forced with a stalled
 // adapter wait and a stalled listing. No process, no store, no timer: the fake core and the wait seam hold each

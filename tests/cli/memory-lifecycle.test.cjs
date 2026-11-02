@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-lifecycle.test.cjs — `belay memory proposals|restore|archive purge`. The built CLI as a subprocess against a
 // sandbox store planted straight into the tables; proposals and restore --candidates are reads (no process, no file),
 // restore and purge write and leave no owner behind.

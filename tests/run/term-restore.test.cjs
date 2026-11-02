@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const { RESET_SEQUENCE, restoreTerminal } = require('../../src/run/term-restore.cjs');

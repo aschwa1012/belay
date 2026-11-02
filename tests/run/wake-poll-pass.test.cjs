@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // The headless poll holds its in-flight guard for the whole pass, not only the worker.list read. A turn end that lands while a
 // pass still holds derived, unwritten wakes must not start a second pass: that pass would close stdin under those wakes
 // (they would be filed as suppressed), leave a second poll chain running, and write a refuted note's wake twice.

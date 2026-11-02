@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // agent-defaults.test.cjs — worker_spawn's agent_type: the config's per-agent-type model and effort fill what the
 // caller left out, an explicit model or effort always wins, and the spawn result names where each value came from.
 // A real RunManager over tests/run/fakes/fake-claude.cjs and tests/run/fake-core.cjs (the shape of effort.test.cjs).

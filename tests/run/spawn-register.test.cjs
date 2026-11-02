@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // spawn-register.test.cjs (run) — ADR 0045 decision 4 across stores, the spawning side: every worker the run manager launches is
 // recorded in the machine-wide spawn register at once and removed when it exits, and a register that cannot be written ends the child
 // and fails the launch (a worker no owner can recognise must not run). Real manager, the fake core and the fake Claude.

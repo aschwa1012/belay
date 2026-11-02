@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // park.test.cjs — build step 6e-4, ADR 0023 amendment 2, a
 // real RunManager over tests/run/fakes/fake-claude.cjs (fake-claude-with-child.cjs for p4/p12, fake-codex.cjs
 // for p6), with tests/run/fake-core.cjs standing in for the store. Replaces pause.test.cjs/pause-bg.test.cjs.

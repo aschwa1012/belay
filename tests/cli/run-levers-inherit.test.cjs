@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1';
 // What a run spec's memory block inherits from the config file's (audit L23): an explicit `memory: null` is "no block" (defaults
 // only), and a spec that turns notes off drops the notes-dependent levers it would inherit rather than being refused for them.

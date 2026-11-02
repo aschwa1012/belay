@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // park-3.test.cjs — build step 6e-6, closing what 6e-5
 // carried (earlier review items): a restart shares only its relaunch and its first-turn
 // wait ends on the worker's exit (r1, r2); stop keys "already parked" on the process this adapter holds,

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // spawn-policy.test.cjs — ADR 0054 decision 4 on the spawn path: an agent type's tool list is the worker's --tools surface,
 // allowed_tools narrows within it, web tools are pre-approved, a refusal writes nothing, a relaunch keeps the list from the
 // row, and a Codex spawn of a type whose list is not the six is refused. Driven over the fake claude, which reports exactly

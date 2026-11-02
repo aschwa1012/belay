@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // turn-memory-order.test.cjs — the turn's queued memory work (ADR 0041 decisions 3, 6 and 7) against two races.
 // (1) A later turn_end lands while an earlier turn's memory store (an embed) is still in flight: each turn's
 // observation and usage row must carry that turn's own numbers, snapshotted when it ended, never the counters

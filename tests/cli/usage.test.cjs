@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1';
 // usage.test.cjs — `belay usage` (ADR 0041 section 6). The real core plants a ledger, the owner is shut
 // down, and the built CLI reads it as a spawned process on a dead store, so every read goes through the

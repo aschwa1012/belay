@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1'; // ADR 0034: a run here has no model to warm
 // stop-tree-kill.test.cjs — a `belay stop` of a run whose orchestrator ignores its closed stdin. After close_grace_ms the run
 // kills the orchestrator's whole tree, and a worker under it (the orchestrator adapter's child, here a plain child of the fake)

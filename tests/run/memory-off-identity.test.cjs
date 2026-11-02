@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-off-identity.test.cjs — off means byte-identical (BUILD-PLAN rule 3). The same script (a spawn with a
 // task, two messages) runs on the fake-claude fixture against four cores: the plain fake core the base suites
 // use, and cores whose run row carries no memory block, the explicit defaults, and levers that feed nothing

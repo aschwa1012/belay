@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // integration-state-peers.test.cjs — ADR 0060 decision 3: a branch is one unit. A peer's merge (another task on the same branch)
 // lands a task that was done before it, marked `via`; a peer's conflict or failure carries nothing over; a task done after the
 // merge is not landed by it. Pure: integration rows are built here, no store.

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // note-review-close-race.test.cjs — the close's protections for applying a review task's verdicts, each proven alone through
 // lifecycle's real shutdown over records that look like workers and a fake core whose verdict application is held by the test
 // (no sleeps; gates and tick counts):

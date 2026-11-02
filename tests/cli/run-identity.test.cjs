@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1'; // ADR 0034: a run here has no model to warm
 // run-identity.test.cjs — ADR 0045 decisions 4 and 7 end to end, against the production run configuration (audit D06): `belay run`
 // as a subprocess, its owner as that CLI elected it, a worker the run manager launched, and a child of that worker (a stand-in for

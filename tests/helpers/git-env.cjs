@@ -9,6 +9,7 @@
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+require('./temp-root.cjs').enforceSafeTemp(process.env); // before the private config dir below is made: no scratch in an indexed folder
 
 // tmp.cjs first: it makes the spawn register this file's config is kept in, and requires this file back (a no-op for the cycle).
 require('./tmp.cjs');

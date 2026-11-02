@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-jobs-mutation.test.cjs — claims of memory-jobs.cjs that a mutation run showed no other test pins down:
 // the run-end bound split (total minus a quarter, capped at 500 ms) and what the give-up names, a wrap-up sent
 // once, a wrap-up for a task with no handoff, the summary copy's body, the named row of a refused project

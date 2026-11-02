@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // close-stages-wiring.test.cjs — what run close hands the stages, the reserved job ids, the harness-channel roles the stages' child
 // needs, and the lever checks.
 

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // ADR 0021 decisions 2 to 4: a Claude Code launch defaults to `auto`, and every launch reports the
 // mode it asked for beside the one its system/init says it got, and the Claude Code version. The
 // facts come from the substrate's own event (the fake reports what it was launched with, or what

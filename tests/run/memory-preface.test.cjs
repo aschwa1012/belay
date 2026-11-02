@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-preface.test.cjs — ADR 0042 decisions 2 and 3: the first message's memory index, inject-once on a
 // relaunch, and the rule that with the levers off the first message is today's, byte for byte. The run
 // manager runs against the fake substrate and a fake core extended with the four memory methods it calls.

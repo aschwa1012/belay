@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // observe-mutation.test.cjs — claims of observe.cjs that a mutation run showed no other test pins down: the
 // narrative and title bounds to the byte, the code-point-safe cut, the singular command count, the path field
 // that is not a string, and the error line only when there are errors.

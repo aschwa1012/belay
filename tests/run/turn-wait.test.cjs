@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // turn-wait.test.cjs — waitTurnOrLanded on stub worker records, no processes: a turn that has landed answers at
 // once; one parsed but still recording waits for its own resolution; a settled worker answers its exit; a turn
 // not yet ended waits, and a wait never sits behind the worker's queue.

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // A bind or ticket call is served like an engine call around a stop: one served before the stop gets its reply written first,
 // and one that arrives once the owner is stopping is refused E_OWNER_LOST with sent:false, so Core._callRedial dials again.
 const test = require('node:test');

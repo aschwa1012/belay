@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // pre-close-wake.test.cjs — before a headless run closes on its idle rule, the orchestrator is told once which task trees the close
 // would keep (dirty, HEAD off its branch), then the next idle turn closes as usual. A clean plan, a failed read and a plan with
 // only other reasons say nothing. Over the fakes: no Claude Code, no model.

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // retrieval-routing.test.cjs — resolveRouting: layering, every profile, per-role routing, the no-GPU notice once,
 // a heavy embedder never on the CPU, the pending-pin refusal and the gpu_models dedupe.
 

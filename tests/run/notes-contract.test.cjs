@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // notes-contract.test.cjs — ADR 0047 decision 3 on the run side: the worker contract text and the end-of-task question,
 // the lesson-question variant, the reflection turn, and the rule that with the notes lever off nothing changes. The run
 // manager runs against the fake substrate and a fake core; the reflection job against a spy core.

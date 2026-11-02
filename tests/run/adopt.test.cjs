@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // Restart across a session boundary: ADR 0009's A3 row, the one the whole design is for. A new
 // adapter, a new RunManager, an empty in-memory map, and a worker row in the store left by an
 // adapter that is gone. `restart` has to find that worker, decide resume or replace from what the

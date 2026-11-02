@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // interactive-surface-round2.test.cjs — the gate fixes of Opus review round 2 (ADR 0037): F1 (a session that ran a
 // turn is never "not reached"), F2 (the assistant wait restarts on each act of the operator), F5 (no directory
 // search before a first-message cue), F6 (a null line or a throw never escapes the timer).

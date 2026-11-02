@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // shutdown-drain.test.cjs — build step 6i-2, design item 3
 // (R4; the tests/cli/pause.test.cjs hang; src/run/lifecycle.cjs:63-86, src/run/manager.cjs:58 moved to
 // src/run/write-row.cjs). The mechanism the review recorded: after shutdown() has called

@@ -1,6 +1,7 @@
 // data-notice.test.cjs — invariant 8: a memory read result that holds a note carries `data_notice`, first; a result with no note is
 // unchanged. Unit tests on the function, then over the wire (the adapter as a child process against a fake core).
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 
 const test = require('node:test');
 const assert = require('node:assert');

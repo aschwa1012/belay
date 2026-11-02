@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1';
 // interactive-wave2-fix.test.cjs — the wave 2 review's findings (ADR 0037 amendment 5): the delivered-file
 // ordering of the mod (the real core.mjs), a throwing hold fails closed, the wake pipe cannot be squatted, and

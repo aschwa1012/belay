@@ -2,6 +2,7 @@
 // the workers of a notes run, with knowledge_ask too, inside the 20,480 and 7,168 byte budgets; with the lever off the
 // listings are those of a run without notes (4,815 and 9,870, the latter counting worker_spawn's agent_type). Every combination is measured on the module and on the wire.
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 
 const test = require('node:test');
 const assert = require('node:assert');

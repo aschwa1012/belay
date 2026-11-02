@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // The pipe names (the owner's, the worker adapter's, a bind's) come from the directory's real path, so a junction or an 8.3 short
 // spelling of the data dir reaches the same pipe as the long one. Tests that need a junction or short names skip with the reason
 // when this host cannot make them.

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // task-create-view.test.cjs — task_create's compact answer for a tree it made and for a batch (ADR 0062), and its argument check.
 
 const { test } = require('node:test');

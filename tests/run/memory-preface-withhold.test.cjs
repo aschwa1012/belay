@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-preface-withhold.test.cjs — the first-message index is delivered to a WORKER but built through the run manager's harness core
 // (an orchestrator on the harness channel). Held-note withholding is by the recipient: the worker the spawn names, so a note held on a
 // report does not reach the worker's injected index (ADR 0047 amendment, 2026-10-22). Driven through the real preface function and the

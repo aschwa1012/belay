@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // tool-name-proto.test.cjs — a tool name is looked up among the routes' own keys, so a name that a plain object answers
 // (constructor, toString, __proto__, hasOwnProperty) is no tool at all: the adapter says `no such tool`, never "belongs to undefined".
 

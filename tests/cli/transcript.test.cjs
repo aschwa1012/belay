@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // transcript.test.cjs — ADR 0036 decision 8, build step U1. Drives the built CLI's `transcript` as a
 // subprocess against a sandbox store with one planted run row and fixture stream files under the OS
 // tmp dir, never a real data dir. Every sandbox is removed in finally.

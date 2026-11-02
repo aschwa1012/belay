@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // shutdown-owner-gone.test.cjs — the order shutdown keeps around the store owner: the closed flag first, the
 // owner-gone flag next, every paired write already sent allowed to land, and only then the owner's shutdown.
 
