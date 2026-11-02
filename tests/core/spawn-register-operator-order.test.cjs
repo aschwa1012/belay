@@ -93,7 +93,7 @@ test('the register read without a snapshot closes a dead record at its last-seen
     const dead = deadPid();
     putRecord(dir, { pid: dead, created: NOW - 3 * H, at: NOW - 3 * H + 500, seen_at: NOW - 2 * H });
     assert.deepStrictEqual(SR.list(), []);
-    assert.strictEqual(SR.tombstones().find((t) => t.pid === dead).until, NOW - 2 * H);
+    assert.strictEqual(SR.tombstones().find((t) => t.pid === dead).until, NOW - 2 * H + 2 * SR.SEEN_REFRESH_MS, 'two stamp periods past the stamp');
   });
 });
 

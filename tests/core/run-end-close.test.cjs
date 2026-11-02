@@ -316,7 +316,7 @@ test('run.end retires the spawn register record of a worker it closes over a dea
   try {
     const { orch } = ctx;
     const dead = deadPid();
-    const t = Date.now() - 60000;
+    const t = Date.now() - 300000; // old enough that the stamp plus two stamp periods is before now
     await orch.worker.write({ id: 'w-gone', substrate: 'claude-code', pid: dead, state: 'starting', worktree: makePlainDir(), started_at: t });
     await orch.worker.write({ id: 'w-up', substrate: 'claude-code', pid: live.pid, state: 'running', worktree: makePlainDir(), started_at: t });
     fs.mkdirSync(reg.dir, { recursive: true });
@@ -326,7 +326,7 @@ test('run.end retires the spawn register record of a worker it closes over a dea
     assert.deepStrictEqual(ended.workers_marked_dead.map((m) => [m.worker_id, m.register_retired]), [['w-gone', true]]);
     assert.ok(!fs.existsSync(path.join(reg.dir, `${dead}.json`)), 'the dead worker\'s record is gone');
     const tomb = SR.tombstones().find((x) => x.pid === dead);
-    assert.strictEqual(tomb.until, t + 20000, 'closed at the last moment it was seen alive, not at the close');
+    assert.strictEqual(tomb.until, t + 20000 + 2 * SR.SEEN_REFRESH_MS, 'closed two stamp periods after the last stamp, not at the close');
     assert.ok(fs.existsSync(path.join(reg.dir, `${live.pid}.json`)), 'a record whose pid still answers is left');
   } finally { await live.kill(); await teardown(ctx); reg.remove(); }
 });

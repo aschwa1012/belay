@@ -1,7 +1,8 @@
 'use strict';
 // spawn-register-retire.test.cjs — retire() acts on the record its caller judged, not on whatever holds the pid number (Windows reuses
-// pids), and a dead record's lifetime is bounded: it closes at the last moment the process was seen alive, never at the time it is found
-// dead. A record from before the boot gets no lifetime at all, and a descendant tombstone without via_from (old-code output) is dropped.
+// pids), and a dead record's lifetime is bounded: it closes two stamp periods after the last moment the process was seen alive, never
+// left open to the time it is found dead. A record from before the boot gets no lifetime at all, and a descendant tombstone without
+// via_from (old-code output) is dropped.
 
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -62,11 +63,23 @@ test('the reported defect stays fixed: a pre-boot record gets no tombstone, and 
 // A machine whose uptime did not reset (Fast Startup) or a hard-killed run leaves a dead, unstamped record inside the current boot. Its
 // window must not stay open to the time it is found dead: a root (explorer-like) created long after the record was written is not its
 // descendant, or every operator check is refused until the next restart.
-test('a dead unstamped record inside the current boot covers a root made at its spawn, and none made later', () => withRegistry((dir) => {
+test('a dead unstamped record inside the current boot covers a root made within 60 s of its write, and none made later', () => withRegistry((dir) => {
   const pid = deadPid();
   put(dir, { pid, created: T, at: T + 500 });
   const root = (created) => ({ ppid: 0, created, image: 'explorer.exe' });
-  const shot = new Map([[7001, root(T + 1000)], [7002, root(T + 5 * 60000)], [7003, root(NOW - 60000)]]);
+  const shot = new Map([[7001, root(T + 30000)], [7002, root(T + 500 + 2 * SR.SEEN_REFRESH_MS + 60000)], [7003, root(NOW - 60000)]]);
   const got = Prov.refresh(shot, { now: NOW, boot: BOOT }).alive.map((a) => a.pid).sort();
   assert.deepStrictEqual(got, [7001], 'only the root made inside the window is recorded');
+}));
+
+// The stamp timer runs every SEEN_REFRESH_MS. When the harness holding a worker is hard-killed between two ticks (no exit handler runs),
+// the worker runs on unstamped; a descendant it makes 20 s after the last stamp, before it dies, is still its descendant.
+test('a worker whose harness was hard-killed covers a descendant made 20 s after its last stamp', () => withRegistry((dir) => {
+  const pid = deadPid();
+  const last = T + H; // the last tick before the kill
+  put(dir, { pid, created: T, at: T + 100, seen_at: last });
+  const child = (created) => ({ ppid: pid, created, image: 'node.exe' });
+  const shot = new Map([[7101, child(last + 20000)], [7102, child(last + 2 * SR.SEEN_REFRESH_MS + 10000)]]);
+  const got = Prov.refresh(shot, { now: NOW, boot: BOOT }).alive.map((a) => a.pid).sort();
+  assert.deepStrictEqual(got, [7101], 'the descendant made between the last stamp and the death is covered; one past two periods is not');
 }));
