@@ -71,11 +71,18 @@ function rowText(result) {
   return table(cols, [...result.rows, total]);
 }
 
-function render(runId, by, result) {
+// A run writes a ledger only when its recorded memory levers say cost_ledger (a run with a budget has it turned on). The run row carries
+// the levers as JSON text; null (an attach that recorded none) and an unreadable value say nothing, so no reason is claimed then.
+function ledgerOff(run) {
+  if (!run || typeof run.memory_levers !== 'string') return false;
+  try { const lv = JSON.parse(run.memory_levers); return !!lv && typeof lv === 'object' && lv.cost_ledger === false; } catch { return false; }
+}
+
+function render(runId, by, result, run) {
   const head = `run: ${dash(runId)}${by ? `  by: ${by}` : ''}`;
   if (result.table_absent) return `${head}\nno usage table in this store: no ledger has been written here\n`;
   const empty = by ? !result.groups.length : !result.rows.length;
-  if (empty) return `${head}\n(no usage rows)\n`;
+  if (empty) return `${head}\n(no usage rows)\n${ledgerOff(run) ? 'this run did not write a ledger: its memory lever cost_ledger was off. Set memory.cost_ledger in the run spec, or give the run a budget_usd, to record turns and cost\n' : ''}`;
   const lines = by ? groupText(by, result) : rowText(result);
   const mixed = result.totals.cost_basis_mixed ? ['partial: some turns reported no dollars (Codex); their cost is missing from the total, not zero'] : [];
   return `${[head, ...lines, ...mixed].join('\n')}\n`;
@@ -91,23 +98,25 @@ async function run(ctx) {
   try {
     return await core.readBatch(async () => { // one store copy for every read below
       let runId = parsed.runId;
+      let run = null;
       let source = runId ? 'argument' : 'none';
       if (runId) {
         const { runs } = await core.run.list({});
-        if (!runs.some(r => r.id === runId)) {
+        run = runs.find(r => r.id === runId) || null;
+        if (!run) {
           const message = `no run row exists for ${runId}; list runs with belay status`;
           return { code: 1, text: `belay usage: ${message}\n`, json: { error: { code: 'E_NOT_FOUND', message, run_id: runId } } };
         }
       } else {
         const { runs } = await core.run.list({});
         const chosen = runs.find(r => r.alive) || runs[0];
-        if (chosen) { runId = chosen.id; source = 'run.list'; }
+        if (chosen) { runId = chosen.id; source = 'run.list'; run = chosen; }
       }
       const args = {};
       if (runId) args.run_id = runId;
       if (parsed.by) args.group_by = parsed.by;
       const result = await core.usage.list(args);
-      return { code: 0, text: render(runId, parsed.by, result), json: { run_id: runId || null, run_id_source: source, ...result } };
+      return { code: 0, text: render(runId, parsed.by, result, run), json: { run_id: runId || null, run_id_source: source, ...(ledgerOff(run) ? { ledger_off: true } : {}), ...result } };
     });
   } catch (e) {
     const code = e.code || 'E_INTERNAL';

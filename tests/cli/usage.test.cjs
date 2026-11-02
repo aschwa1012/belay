@@ -124,3 +124,20 @@ test('usage: a core refusal exits 1 naming the code', async () => {
     assert.match(r.text, /bad group \(E_ARGS\)/);
   } finally { cleanup(dir); }
 });
+
+test('usage: a run whose ledger lever was off says why the ledger is empty; one that recorded no levers claims nothing', async () => {
+  const dir = sandbox();
+  try {
+    const empty = { rows: [], groups: [], totals: { turns: 0 } };
+    const withRun = (run) => ({ run: { list: async () => ({ runs: [run] }) }, usage: { list: async () => empty }, readBatch: (fn) => fn(), close: async () => {} });
+    const ask = (run) => usage.run({ argv: ['r'], cwd: dir, dataDir: `${dir}/.belay`, dataDirGiven: true, json: false, openCore: async () => withRun(run) });
+    const off = await ask({ id: 'r', alive: false, memory_levers: JSON.stringify({ cost_ledger: false }) });
+    assert.match(off.text, /\(no usage rows\)\nthis run did not write a ledger: its memory lever cost_ledger was off/);
+    assert.strictEqual(off.json.ledger_off, true);
+    const on = await ask({ id: 'r', alive: false, memory_levers: JSON.stringify({ cost_ledger: true }) });
+    assert.doesNotMatch(on.text, /did not write a ledger/);
+    const none = await ask({ id: 'r', alive: false, memory_levers: null });
+    assert.doesNotMatch(none.text, /did not write a ledger/);
+    assert.strictEqual(none.json.ledger_off, undefined);
+  } finally { cleanup(dir); }
+});
