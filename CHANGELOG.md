@@ -1,5 +1,122 @@
 # Changelog
 
+## 0.3.2
+
+Retrieval profiles: memory search can rerank its candidates with a cross-encoder
+on the CPU, or embed and rerank on a GPU, chosen per run and per agent type.
+The default is unchanged: cpu-fast, the same search as 0.3.1.
+
+Upgrade warning (from 0.3.1)
+- no default changes: with no retrieval setting, a run searches exactly as
+  0.3.1 did (voyage-4-nano, keyword and semantic fused, no reranker)
+- the first start after the upgrade fills a vector cache from the vectors
+  already stored, inside the store owner's start: about 25 ms for a few
+  hundred notes, about 1 s at 10,000 rows, several seconds beyond that. It
+  runs again after a 0.3.1 belay writes to the same store. A command that
+  connects during a start of more than about 5 s can fail with E_NO_OWNER;
+  run it again
+- the panel can now write settings: the Memory menu saves profile, routing
+  and model choices to the config file (as belay settings does)
+- the store keeps schema version 2; the first 0.3.2 start adds a table and
+  two columns in place. Going back to 0.3.1 on the same store is not
+  tested: back up .belay\ first
+
+Added
+- retrieval profiles (memory.profile): cpu-fast (the default, no reranker),
+  cpu-rerank-light and cpu-rerank (a CPU cross-encoder reranks the top 50
+  candidates), gpu-rerank-fast and gpu-rerank (a GPU reranker),
+  gpu-balanced and gpu-recall-max (a GPU embedder and a GPU reranker), and
+  custom (memory.embedder and memory.reranker). memory.profile_cpu is the
+  profile a run takes when no usable GPU is found
+- per-agent-type routing (memory.routing, memory.routing_cpu): reviewers,
+  coders or the orchestrator can search with different models
+- the GPU models run on llama.cpp with Vulkan, an opt-in install into
+  belay's cache: belay embedder fetch --gpu installs the pinned runtime,
+  belay embedder fetch --gpu --model <id> a GPU model, and
+  belay embedder fetch --reranker <id> a CPU reranker. Nothing GPU-related
+  is installed or loaded unless a profile asks for it. belay embedder
+  delete removes a model nothing in the project uses
+- the routing is pinned once at run start and recorded on the run. A GPU
+  routing is checked against free VRAM (memory.vram_headroom_gb, default
+  0.75) before anything loads
+- loud fallback (memory.on_heavy_failure): fallback (the default) moves the
+  run to the CPU profile and says so in one notice; pause turns the
+  failure into an error instead (at run start, the run does not start). A search caught by an owner stopping is answered once
+  from the fallback tier, labelled
+- memory.on_heavy_behind: when a GPU embedder has notes left to embed at
+  run start, wait (the default) embeds them first (belay memory embed
+  --model <id> does the same by hand); fallback runs on voyage-4-nano for
+  that run and keeps the reranker
+- the reranker warms up at run start. While it loads, a search returns the
+  fused order marked as warming instead of waiting. Each warm-up is
+  recorded and shown in belay status, the run receipt and belay agents; it
+  never wakes the orchestrator. A reranker whose process is gone is warmed
+  again, and a failed warm-up is retried once
+- the panel shows one line per retrieval model with its state, and the
+  Memory menu (Profiles, Routing and Models tabs) to change them. belay
+  memory menu offers the same from the command line
+- long notices and menu text wrap to the pane instead of being cut off
+- the search log (memory.search_log, off by default): records each search's
+  query, candidates and reranked order for evaluating retrieval, capped at
+  memory.search_log_cap_mb (500 MB, oldest runs pruned first). It keeps
+  query text in the store, which is why it is off. belay memory search-log
+  --export writes it out
+- a vector cache keyed by model, revision, dimensions and text template,
+  so a note embedded once by a model is not embedded again
+
+Fixed
+- a worker process seen dead stays dead for the rest of the run, so a process id the system reuses cannot make it look alive again; the wake
+  carries the same fact, an orphan whose id may have been reused is checked once in the background, and a starting worker whose
+  process is gone is not restated
+- after a restart or a crash during a run, belay could mistake the
+  system's own processes for ones its workers spawned, and then refuse
+  every operator command that needs the operator check (memory search,
+  notices and others) from any terminal, with a generic error. A spawn
+  record from before the current boot is now ignored, every recorded
+  lifetime ends at most 60 s after its process was last seen alive, the
+  headless orchestrator's record is refreshed while it runs, and a run
+  closes only the records of its own workers. Records left by an earlier
+  belay close at their write time plus 60 s on the first start
+
+Measured
+- three real runs on 2026-10-30, one per device mix: a CPU reranker, a GPU
+  embedder with a CPU reranker, and a GPU embedder with a GPU reranker.
+  In each, every search had its candidates reranked by the expected model,
+  and GPU memory stayed within the estimate (2,622 and 5,372 MiB against
+  estimates of 2,629 and 5,411 MiB)
+- not measured: whether reranking or a GPU embedder gives better results
+  than cpu-fast. The default stays cpu-fast until that is measured
+
+Known limits
+- the GPU models of a run share one child process; if it fails, every GPU
+  role falls back together
+- on an 8 GB card the larger GPU profiles leave little room: other
+  programs using the GPU can make the start-of-run check refuse, and the
+  run then takes its CPU profile
+- the warming state (a search served while the reranker loads) has been
+  seen only in tests, not in a real run
+- GPU retrieval is tested on one NVIDIA laptop GPU with Vulkan
+- Windows only
+- the panel's Models menu does not download: its download entry shows the
+  command to run in a terminal, and for a GPU model it leaves out the
+  runtime step (run belay embedder fetch --gpu first). Clearer wording
+  comes in 0.3.3
+- choosing a profile in the panel saves it for the next run; a live run
+  keeps the profile it started with, and a run spec that sets
+  memory.profile overrides the config. The panel does not yet say so
+- belay memory menu lists rerankers by short name, but belay embedder
+  fetch --reranker takes the full id (for example
+  Alibaba-NLP/gte-reranker-modernbert-base), and belay embedder delete
+  takes the model id alone, without --gpu or --model
+- a spec or config file saved with a byte order mark (Windows PowerShell's
+  Set-Content -Encoding utf8 writes one) is refused as invalid JSON; save
+  it as UTF-8 without a BOM
+- a rare race when an orchestrator exits at the moment belay writes to it
+  can end the run with a broken-pipe error; fixed in 0.3.3
+- if the process that refreshes a spawn record is killed while the spawned
+  process keeps running, that process's later children can pass the
+  operator check once 60 s have gone by
+
 ## 0.3.1
 
 Parallel work: belay now gives each task its own git worktree and branch,

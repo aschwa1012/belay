@@ -26,7 +26,7 @@ npm install -g github:aschwa1012/belay
 
 npm may print warnings about install scripts for `onnxruntime-node` and `protobufjs`. They come from the optional embedding library and are harmless.
 
-To pin a tagged release, add the tag, for example `npm install -g github:aschwa1012/belay#v0.3.1`.
+To pin a tagged release, add the tag, for example `npm install -g github:aschwa1012/belay#v0.3.2`.
 
 This installs the package `@aschwa1012/belay` and puts the `belay` command on your PATH. The installed files live under:
 
@@ -75,6 +75,16 @@ belay embedder fetch
 ```
 
 This downloads the `onnx-community/voyage-4-nano-ONNX` model (q4 weights, about 253 MB) from huggingface.co into `%LOCALAPPDATA%\belay\models`, and checks every file's size and sha256 against a table in belay's source. It is belay's only network access, and is needed once per machine. `belay embedder verify` re-hashes what is there.
+
+Optional, for the retrieval profiles that rerank or use a GPU (the default profile needs none of this):
+
+```powershell
+belay embedder fetch --reranker Alibaba-NLP/gte-reranker-modernbert-base   # cpu-rerank
+belay embedder fetch --gpu                                                 # the pinned GPU runtime (llama.cpp, Vulkan)
+belay embedder fetch --gpu --model giladgd/Qwen3-Reranker-4B-GGUF          # gpu-rerank
+```
+
+Then set a profile with `belay settings memory.profile <name>` or the panel's Memory menu. A run checks free GPU memory before it loads anything, and takes `memory.profile_cpu` when no usable GPU is found.
 
 Why it is required: belay's workers and orchestrator share a memory store with semantic search. A run warms the embedder before it spawns anything and refuses to start if it cannot load, so memory never degrades silently. Read commands work without it.
 
@@ -222,6 +232,13 @@ npm install -g github:aschwa1012/belay
 ```
 
 The embedding model stays in its cache and does not need fetching again unless a release changes it (`belay doctor` will say so). Stop any live run before updating.
+
+**From 0.3.1 to 0.3.2: back up `.belay\` first.**
+
+- No default changes: with no retrieval setting a run searches as 0.3.1 did.
+- The first start fills a vector cache from the stored vectors, inside the store owner's start: about 25 ms for a few hundred notes, about 1 s at 10,000 rows, several seconds beyond. It runs again after a 0.3.1 belay writes to the same store. A command that connects during a start of more than about 5 s can fail with `E_NO_OWNER`; run it again.
+- The panel's Memory menu writes retrieval settings to the config file.
+- The store keeps schema version 2; the first 0.3.2 start adds a table and two columns in place. Going back to 0.3.1 on the same store is not tested.
 
 **From 0.3.0 to 0.3.1: back up `.belay\` first, and copy the prompt template again.**
 
