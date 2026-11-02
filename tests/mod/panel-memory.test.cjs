@@ -135,10 +135,10 @@ test('the panel reads the live runs, and a model the config names is in use by t
 test('resultLine: a receipt, a refusal with belay\'s own words, and an unparseable answer', () => {
   const set = { kind: 'set', key: 'memory.profile', value: 'gpu-rerank' };
   const receipt = JSON.stringify({ key: 'memory.profile', old: { value: 'cpu-fast' } });
-  const scope = '; applies to the next run, and a spec's memory.profile overrides it';
+  const scope = "; applies to the next run, and a spec's memory.profile overrides it";
   assert.strictEqual(M.resultLine(set, 0, receipt, ''), `belay: memory.profile set to gpu-rerank (was "cpu-fast")${scope}`);
   assert.strictEqual(M.resultLine(set, 0, receipt, '', { liveRuns: [] }), `belay: memory.profile set to gpu-rerank (was "cpu-fast")${scope}`);
-  assert.strictEqual(M.resultLine(set, 0, receipt, '', { liveRuns: ['r-1', 'r-2'] }), 'belay: memory.profile set to gpu-rerank (was "cpu-fast"); live run r-1, r-2 keeps the profile it started with, this applies to the next run, and a spec's memory.profile overrides it');
+  assert.strictEqual(M.resultLine(set, 0, receipt, '', { liveRuns: ['r-1', 'r-2'] }), `belay: memory.profile set to gpu-rerank (was "cpu-fast"); live run r-1, r-2 keeps the profile it started with, this applies to the next run, and a spec's memory.profile overrides it`);
   assert.strictEqual(M.resultLine({ kind: 'set', key: 'memory.rerank_depth', value: '40' }, 0, JSON.stringify({ key: 'memory.rerank_depth', old: { value: 50 } }), '', { liveRuns: ['r-1'] }), 'belay: memory.rerank_depth set to 40 (was 50)', 'a key that is not a profile carries no profile note');
   assert.strictEqual(M.resultLine(set, 2, JSON.stringify({ error: 'bad value' }), ''), 'belay: memory.profile was not written: bad value');
   assert.strictEqual(M.resultLine(set, 1, 'not json\nsecond', ''), 'belay: memory.profile was not written: not json');
