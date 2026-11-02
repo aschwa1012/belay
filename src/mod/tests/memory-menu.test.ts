@@ -330,7 +330,7 @@ describe('the Models tab', () => {
     await m.ui.press({ key: `delete:${IDS.E4}` })
     await m.ui.press({ key: `delete:${IDS.E4}` })
     expect(m.wd.menuWrites).toEqual([])
-    expect(m.wd.toasts.at(-1)).toBe(`belay: ${IDS.E4} is in use by run; it was not deleted.`)
+    expect(m.wd.toasts.at(-1)).toBe(`belay: ${IDS.E4} is in use by next run (config); it was not deleted.`)
     await m.ui.press({ key: `delete:${JINA}` })
     expect(await m.text()).toContain('delete jinaai/jina-reranker-v1-tiny-en from belay\'s model cache (33 MB)')
     await m.ui.press({ key: `delete:${JINA}` })

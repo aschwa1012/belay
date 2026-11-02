@@ -327,8 +327,8 @@ async function dispatchMenu($: Host, a: MemAction, menu: BelayMenuT): Promise<vo
     try {
       const res = await $.process.run(argvFor(r.cli, argv[0]!, watch.dataDir), { timeoutMs: step.kind === 'set' || step.kind === 'setMany' ? MEM_TIMEOUT_MS.set : step.kind === 'delete' ? MEM_TIMEOUT_MS.delete : MEM_TIMEOUT_MS.verify, ...(cwd ? { cwd } : {}) })
       // A profile write names the runs that are live NOW, so the menu is read again first (the cached one is up to 10 s old).
-      const seen = step.kind === 'set' && res.exitCode === 0 && PROFILE_KEYS.includes(step.key) ? await freshMenu($, watch, menu) : menu
-      $.ui.toast(resultLine(step, res.exitCode, res.stdout, res.stderr, seen))
+      const fresh = step.kind === 'set' && res.exitCode === 0 && PROFILE_KEYS.includes(step.key) ? await freshMenu($, watch, menu) : { menu, stale: false }
+      $.ui.toast(resultLine(step, res.exitCode, res.stdout, res.stderr, fresh.menu) + (fresh.stale ? ' (the live-run list could not be re-read and may be out of date)' : ''))
       if (res.exitCode !== 0) { ok = false; break }
     } catch (err) {
       $.ui.toast(`belay: ${step.kind} did not finish: ${firstLine(err instanceof Error ? err.message : String(err)) || 'no answer'}`)
@@ -369,9 +369,10 @@ async function memPress($: Host, a: MemAction): Promise<void> {
   await update($, uiA, u => ({ ...u, confirm: null, memConfirm: { id, text: confirmText(a, menu), at: now } }))
 }
 
-async function freshMenu($: Host, watch: BelayPanelWatch, was: BelayMenuT): Promise<BelayMenuT> {
-  try { await fetchMenu($, watch, true) } catch { return was }
-  return (await read($, menuA)).menu ?? was
+async function freshMenu($: Host, watch: BelayPanelWatch, was: BelayMenuT): Promise<{ menu: BelayMenuT; stale: boolean }> {
+  try { await fetchMenu($, watch, true) } catch { return { menu: was, stale: true } }
+  const got = await read($, menuA) // a failed read leaves the old menu in place and sets `error`
+  return got.error || !got.menu ? { menu: was, stale: true } : { menu: got.menu, stale: false }
 }
 
 // One press of the Memory menu: a tab or a routing pick changes only what is drawn; a `cmd` prints the command to run (a download, an embed and the
