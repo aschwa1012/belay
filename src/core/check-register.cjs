@@ -5,8 +5,8 @@
 // (spawn-register.cjs), kind `check`:
 //   * written at spawn, before the child can reach an owner, already stamped, and retired when the child exits;
 //   * stamped every STAMP_MS (1 s, under the 2 s slack spawn-provenance.cjs allows) while the child lives, with a plain file write and no
-//     snapshot. An owner that is hard-killed (TerminateProcess runs no exit handler) leaves a record whose lifetime closes at the last
-//     stamp, so every process the check started before the kill is covered. A worker's record is stamped every 30 s (run/seen-stamp.cjs);
+//     snapshot. An owner that is hard-killed (TerminateProcess runs no exit handler) leaves a record whose lifetime closes two stamp
+//     periods of a worker's (60 s) after its last stamp (spawn-register.cjs untilOf), so every process the check started before the kill is covered. A worker's record is stamped every 30 s (run/seen-stamp.cjs);
 //     a check starts descendants of its own at once, so it needs the fresher stamp;
 //   * retired in this process's exit handler, with its lifetime closed at that moment, for an exit the process can see;
 //   * given the child's creation time lazily: one snapshot, requested only for a check still running after CREATED_AFTER_MS, so a short

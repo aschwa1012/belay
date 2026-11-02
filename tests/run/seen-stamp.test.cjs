@@ -44,7 +44,7 @@ test('an adopted worker whose pid shows its recorded creation time is stamped; o
   assert.strictEqual(seen(dir, 6001), NOW, 'stamped by pid and creation time');
   assert.ok(!fs.existsSync(path.join(dir, '6002.json')), 'the record of a pid another process holds is retired');
   const t = SR.tombstones().find((x) => x.pid === 6002);
-  assert.strictEqual(t.until, T0, 'closed at its last-seen time (never stamped: its record time), not at the pass');
+  assert.strictEqual(t.until, T0 + 2 * SR.SEEN_REFRESH_MS, 'closed two stamp periods after its last-seen time (never stamped: its record time), not at the pass');
   assert.strictEqual(SS.adoptedSize(), 1, 'and no longer followed');
 }));
 
