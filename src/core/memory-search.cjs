@@ -285,16 +285,15 @@ async function search(E, caller, args, internal = {}) {
     rows = rowsByIds(E, ranked.map(h => h.id));
     ranked = ranked.filter(h => rows.has(h.id) && gate.bodyLive(rows.get(h.id))); // (the project's legacy rows never get here: the keyword WHERE and the semantic scan leave them out)
   }
-  // A held note (an active hold on it, whoever reads: a worker is withheld the disputed ones above) ranks below every note that is not held
-  // and reaches the relevance floor, and above the ones that do not; below the floor the same order holds. Every view marks it from its hold
-  // row, never from the note's own pointer, which can outlive its hold (ADR 0047 amendment of 2026-10-25). A row with no cosine is not below it.
+  // A held note (an active hold on it, whoever reads: a worker is withheld the disputed ones above) is shown after the ranked hits, so it never
+  // pushes a relevant hit off the page; the notes that are not held keep their order, floor or no floor. Every view marks it from its hold row,
+  // never from the note's own pointer, which can outlive its hold (ADR 0047 amendment of 2026-11-02).
   const holds = W.holdsAmong(E, ranked.map(h => h.id));
-  const band = h => (sem && cosine.has(h.id) && V.belowFloor(cosine.get(h.id), floor) ? 2 : 0) + (holds.has(h.id) ? 1 : 0);
-  const byBand = list => list.map((h, i) => ({ h, i, t: band(h) })).sort((a, b) => a.t - b.t || a.i - b.i).map(x => x.h);
+  const byBand = list => list.map((h, i) => ({ h, i, t: holds.has(h.id) ? 1 : 0 })).sort((a, b) => a.t - b.t || a.i - b.i).map(x => x.h);
   const banded = holds.size > 0 && o.order === 'score';
   if (banded) ranked = byBand(ranked);
   // The rerank stage (a tier with a reranker): the top of the fused list reordered by the provider, fusion rank as the tiebreak. The reranker
-  // orders within a band, never across one: a held note stays below every note that is not held, as above (a stable sort of the reranked list).
+  // orders within a band, never across one: a held note stays after every note that is not held, as above (a stable sort of the reranked list).
   const fused = ranked, tr = Date.now();
   const rr = await ST.rerankHead(E, caller, o, ranked, ids => rows || rowsByIds(E, ids), lv);
   ranked = banded && rr.info ? byBand(rr.ranked) : rr.ranked;
