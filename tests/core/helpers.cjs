@@ -20,7 +20,11 @@ function sandbox() {
 
 // Windows can hold a handle for a moment after a store closes, so retry; but a directory that truly
 // will not go must be reported, not swallowed, or %TEMP% fills with belay-core-test-* with no signal.
-function cleanup(dir) {
+// Before a sandbox goes, every store in it is checked against its invariants (tests/helpers/store-invariants.cjs). A test whose store is broken
+// on purpose says so: cleanup(dir, { skipInvariants: 'why' }); the reason is required.
+function cleanup(dir, opts = {}) {
+  if (opts.skipInvariants !== undefined) { if (!String(opts.skipInvariants).trim()) throw new Error('cleanup: skipInvariants needs a reason'); }
+  else require('../helpers/store-invariants.cjs').assertStoresUnder(dir);
   for (let i = 0; i < 5; i++) {
     try { fs.rmSync(dir, { recursive: true, force: true }); return; }
     catch { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50); }

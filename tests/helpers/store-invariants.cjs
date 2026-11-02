@@ -9,6 +9,7 @@
 // `incomplete` is true whenever any rule errored, even when status is 'violations' (violations rank first in status).
 // The copy is bracketed by a size-and-mtime signature of the db and all its sidecars, -shm included: a live reader of the original that only
 // touches its shared-memory file can make a consistent copy read as torn. That fails safe (torn is never clean).
+// The signature is size plus mtime, so a same-size rewrite inside one file-time tick (a WAL reset, say) can pass unseen: it narrows a torn copy, it does not rule one out.
 // The original is never opened (invariant 6). Every table is an append-only version log (rows.cjs), so each rule is a linear scan in seq order.
 // Rules (the `rule` field):
 //   quick_check         PRAGMA quick_check answers 'ok'.
@@ -125,6 +126,7 @@ function runSingleEnd(db, strict) {
     const k = r.id + '#' + r.epoch;
     if (!groups.has(k)) groups.set(k, { prev: null, sets: 0, over: 0, bad: [] });
     const g = groups.get(k);
+    if (r.ended_at == null && g.prev != null) g.bad.push(`ended_at went from ${g.prev} back to null at seq ${r.seq} by ${r.written_by}`); // a lost end: a stale copy of the row written over it
     if (r.ended_at != null && r.ended_at !== g.prev) { // a transition of ended_at
       if (g.prev == null) { g.sets++; if (g.sets > 1) g.bad.push(`second null-to-set at seq ${r.seq} by ${r.written_by}`); }
       else {
@@ -208,6 +210,20 @@ function checkStore(target, opts = {}) {
 }
 
 // Teardown use: throws when the store in dir (or at a db path) breaks a rule; a missing store, an incomplete or a torn check is not a failure here.
+// Every store under dir (the sandbox itself, or a data folder inside it, at most 4 levels down), for a sandbox teardown.
+function assertStoresUnder(dir, opts = {}) {
+  const found = [];
+  (function walk(d, depth) {
+    let ents; try { ents = fs.readdirSync(d, { withFileTypes: true }); } catch { return; }
+    for (const e of ents) {
+      if (e.isDirectory() && depth < 4 && e.name !== 'node_modules' && e.name !== '.git') walk(path.join(d, e.name), depth + 1);
+      else if (e.isFile() && e.name === 'memory.db') found.push(path.join(d, e.name));
+    }
+  })(dir, 0);
+  for (const f of found) assertStoreInvariants(f, opts);
+  return found.length;
+}
+
 function assertStoreInvariants(target, opts = {}) {
   if (!fs.existsSync(resolveDb(target))) return null;
   const r = checkStore(target, opts);
@@ -215,4 +231,4 @@ function assertStoreInvariants(target, opts = {}) {
   return r;
 }
 
-module.exports = { assertStoreInvariants, checkStore, hashOf, sigOf, sha256, resolveDb, RULES, SUFFIXES };
+module.exports = { assertStoresUnder, assertStoreInvariants, checkStore, hashOf, sigOf, sha256, resolveDb, RULES, SUFFIXES };

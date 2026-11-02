@@ -35,6 +35,7 @@ for (const name of planted) {
       F.materialize(F.load('planted/' + name), d);
       const r = checkStore(d, { hashOriginals: true });
       assert.strictEqual(r.ok, false);
+      assert.deepStrictEqual(r.errors, [], 'no rule threw on the planted store');
       assert.deepStrictEqual([...new Set(r.violations.map((x) => x.rule))], [name], JSON.stringify(r.violations));
       assert.deepStrictEqual(r.hashes.before, r.hashes.after);
       assert.deepStrictEqual(fs.readdirSync(d), ['memory.db']);
@@ -88,4 +89,18 @@ test('teardown check: assertStoreInvariants throws on a planted violation, passe
     F.materialize(F.load('planted/lease_single_live'), d);
     assert.throws(() => assertStoreInvariants(d), /lease_single_live/);
   } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
+
+test('teardown check: cleanup checks the sandbox store by default, and an opt-out needs a reason', () => {
+  const H = require('./helpers.cjs');
+  const d = H.sandbox();
+  F.materialize(F.load('planted/done_evidence'), d);
+  assert.throws(() => H.cleanup(d), /done_evidence/);
+  assert.throws(() => H.cleanup(d, { skipInvariants: ' ' }), /needs a reason/);
+  H.cleanup(d, { skipInvariants: 'a planted violation' });
+  assert.strictEqual(fs.existsSync(d), false);
+  const c = H.sandbox();
+  F.materialize(F.load('clean'), path.join(c, '.belay'));
+  H.cleanup(c);
+  assert.strictEqual(fs.existsSync(c), false);
 });

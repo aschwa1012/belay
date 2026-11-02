@@ -154,3 +154,11 @@ test('N8: a store with violations and an errored rule is counted as incomplete t
     assert.strictEqual(r.ok, false);
   } finally { fs.rmSync(d, { recursive: true, force: true }); }
 });
+
+test('a run whose ended_at goes from set back to null in one epoch is a lost end', () => {
+  withStore(plus({ run: [{ id: 'r1', epoch: 1, started_at: 900, ended_at: null, written_at: 5300, written_by: 'harness' }] }), (d) => {
+    const r = checkStore(d);
+    assert.deepStrictEqual(r.violations.map((x) => x.rule), ['run_single_end']);
+    assert.match(r.violations[0].detail, /back to null/);
+  });
+});
