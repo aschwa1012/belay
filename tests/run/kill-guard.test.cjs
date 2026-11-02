@@ -12,6 +12,8 @@ const KG = require('../../src/run/kill-guard.cjs');
 const L = require('../../src/run/launch.cjs');
 
 const REFUSED = [
+  'Set-Location C:\\\ntaskkill /F /IM node.exe', // a PowerShell path ends in a backslash: two commands
+  'cd C:\\work\\\ntaskkill /F /IM node.exe',
   'taskkill \\\n  /F /IM node.exe', // bash line continuation
   'taskkill `\n  /F /IM node.exe', // PowerShell line continuation
   'taskkill /F \\\r\n /IM node.exe',

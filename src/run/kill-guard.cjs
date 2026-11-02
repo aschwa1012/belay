@@ -46,21 +46,24 @@ function normalize(command, quote, unescape) {
   return unescape ? t.replace(/[\^`]/g, '') : t; // cmd `^` and PowerShell backtick escapes; bash keeps its backticks
 }
 
-// A line continuation (bash backslash-newline, PowerShell backtick-newline) joins the lines before anything is matched.
-function joinContinuations(s) { return s.replace(/[\\`]\r?\n/g, ''); }
+// A line continuation joins the lines in some shells (bash backslash-newline, PowerShell backtick-newline, cmd caret-newline) and not in
+// others (a PowerShell or cmd path ends in a backslash: `Set-Location C:\<NL>git push` is two commands). The tool is not known here, so a
+// command is matched both ways, as the quote variants are: as written, and with every continuation joined.
+const forms = (s) => [s, s.replace(/[\\`^]\r?\n/g, '')];
 
 function refusal(rawCommand) {
   if (typeof rawCommand !== 'string' || !rawCommand) return null;
-  const command = joinContinuations(rawCommand);
-  for (const [quote, unescape] of [[' ', false], ['', false], [' ', true], ['', true]]) { // `t"ask"kill` joins, `cmd /c"taskkill` splits: try both
-    const n = normalize(command, quote, unescape);
-    if (segments(n).some(segmentRefused)) return MESSAGE;
-    // Stop-Process fed by a name lookup in an earlier segment of the same command.
-    if (/\bgetprocessesbyname\b/.test(n) && /\.kill\s*\(/.test(n)) return MESSAGE;
-    // A taskkill whose pid is a variable, in a loop over a process lookup.
-    if (/\btaskkill(?:\.exe)?\b[^;]*(?:^|\s)[/-]{1,2}pid\s+["']?[$%]/.test(n) && /(?:\$\(|`)\s*(?:tasklist|pgrep|pidof|ps|get-process|gps)\b/.test(n)) return MESSAGE;
-    if (new RegExp(String.raw`\b${STOP}\b`).test(n) || /\.kill\s*\(/.test(n) || (/(?:^|[\s;|&(])kill\s+-/.test(n) && /powershell|pwsh/.test(n))) {
-      for (const m of n.matchAll(/\b(?:get-process|gps)\b([^;|&)\n]*)/g)) if (!/\s-(?:id|pid)\s+\d/.test(m[1])) return MESSAGE;
+  for (const command of forms(rawCommand)) {
+    for (const [quote, unescape] of [[' ', false], ['', false], [' ', true], ['', true]]) { // `t"ask"kill` joins, `cmd /c"taskkill` splits: try both
+      const n = normalize(command, quote, unescape);
+      if (segments(n).some(segmentRefused)) return MESSAGE;
+      // Stop-Process fed by a name lookup in an earlier segment of the same command.
+      if (/\bgetprocessesbyname\b/.test(n) && /\.kill\s*\(/.test(n)) return MESSAGE;
+      // A taskkill whose pid is a variable, in a loop over a process lookup.
+      if (/\btaskkill(?:\.exe)?\b[^;]*(?:^|\s)[/-]{1,2}pid\s+["']?[$%]/.test(n) && /(?:\$\(|`)\s*(?:tasklist|pgrep|pidof|ps|get-process|gps)\b/.test(n)) return MESSAGE;
+      if (new RegExp(String.raw`\b${STOP}\b`).test(n) || /\.kill\s*\(/.test(n) || (/(?:^|[\s;|&(])kill\s+-/.test(n) && /powershell|pwsh/.test(n))) {
+        for (const m of n.matchAll(/\b(?:get-process|gps)\b([^;|&)\n]*)/g)) if (!/\s-(?:id|pid)\s+\d/.test(m[1])) return MESSAGE;
+      }
     }
   }
   return null;
