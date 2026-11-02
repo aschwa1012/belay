@@ -1,7 +1,7 @@
 'use strict';
 // seen-stamp.cjs — the last moment a spawned process was seen alive, kept on its spawn-register record (spawn-register.cjs touch).
-// A record is read after its harness has died, and the lifetime it keeps closes at this stamp; a record never stamped closes at its
-// spawn, and a process it left behind is then taken for the operator's. The stamp is written by the harness only, from a timer, and
+// A record is read after its harness has died, and the lifetime it keeps closes two stamp periods after this stamp; a record never
+// stamped closes that long after its spawn, and a process it left behind later is then taken for the operator's. The stamp is written by the harness only, from a timer, and
 // only for a process the harness knows is alive without a bare pid check:
 //   * stampWhile: a process whose exit this process observes (a child handle, or the run's orchestrator hook).
 //   * stampAdopted: a worker an adapter adopted from the store holds no handle, so its pid is stamped only when one process snapshot
