@@ -85,6 +85,7 @@ async function run(ctx) {
   const sub = mode === 'interactive'
     ? substituteLevers(parsed.promptText, parsed.levers, 0, { mode: 'interactive' })
     : substituteLevers(parsed.promptText, parsed.levers, parsed.timeout_ms);
+  parsed.promptMarker = require('./run-prompt-check.cjs').markerVersion(parsed.promptText); // ADR 0082: the copy's version, read before the markers are stripped
   parsed.promptText = parsed.briefText !== null ? BR.appendBrief(stripMarkers(sub.text), parsed.briefText) : stripMarkers(sub.text); // the header markers were read above; the orchestrator is not shown them
   parsed.levers.substituted = sub.substituted;
   const ce = mode === 'interactive' ? makeConsole() : null; // decision 6: the close can see a SIGHUP that arrives during it
@@ -252,11 +253,12 @@ async function run(ctx) {
   // spawn names why it copied nothing (silent here: a run outside a git repository has no reviews). Not inside onAttached: its git
   // calls there would delay the attach past an early startup timeout, which then ends a run that has no attached row.
   await require('../run/trusted-instructions.cjs').fixAnchor({ dataDir, runId: parsed.runId, projectDir: found.found ? found.dir : C.writeDirOf(ctx.cwd) });
+  const harness = await require('./run-harness-facts.cjs').collect({ promptText: parsed.promptText, marker: parsed.promptMarker }); // ADR 0082: once, here, so the attach waits on no git call
   async function onAttached({ pid }) {
     try {
       clearRunStart(orchestratorDir); // before this launch's attach: no marker of an earlier life of this run id survives
       RID.watchOrchestrator(pid); // ADR 0039: run-identity.cjs; the attach never waits on a snapshot
-      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, max_follow_ups: parsed.levers.max_follow_ups, fix_hard_cap: parsed.levers.fix_hard_cap, fix_hard_cap_source: parsed.levers.fix_hard_cap_source, max_parallel_evaluations: parsed.levers.max_parallel_evaluations === undefined ? null : parsed.levers.max_parallel_evaluations, merge_into: parsed.levers.merge_into === undefined ? null : parsed.levers.merge_into, run_mode: mode, budget_usd: parsed.levers.budget_usd || null, budget_explicit: /^spec/.test(parsed.levers.budget_source || ''), project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, ...attachMemory(parsed.levers) });
+      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, max_follow_ups: parsed.levers.max_follow_ups, fix_hard_cap: parsed.levers.fix_hard_cap, fix_hard_cap_source: parsed.levers.fix_hard_cap_source, max_parallel_evaluations: parsed.levers.max_parallel_evaluations === undefined ? null : parsed.levers.max_parallel_evaluations, merge_into: parsed.levers.merge_into === undefined ? null : parsed.levers.merge_into, run_mode: mode, budget_usd: parsed.levers.budget_usd || null, budget_explicit: /^spec/.test(parsed.levers.budget_source || ''), project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, harness, ...attachMemory(parsed.levers) });
       await budget.loadAttach(attachRow.run); for (const w of attachRow.warnings || []) process.stderr.write("belay run: warning: " + w + String.fromCharCode(10));
       // ADR 0050: the routing is resolved once, here, before the orchestrator's first prompt (a heavy backlog is drained or fallen back from first).
       try {
