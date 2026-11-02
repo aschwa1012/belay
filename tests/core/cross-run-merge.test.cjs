@@ -61,7 +61,7 @@ test('a task another run made is refused, naming the ids and the setting; nothin
   const repo = makeRepo(dir);
   const t = await doneTask(s.b, s.op, repo, 'theirs.txt');
   const e = await rejectsCode(s.a.integration.merge({ task_ids: [t.id] }), 'E_PRECONDITION');
-  assert.ok(e.message.includes(`${t.id} (run b)`), e.message);
+  assert.ok(e.message.includes(`${t.id} belongs to run b`), e.message);
   assert.match(e.message, /cross_run_merge: true/);
   assert.strictEqual(e.detail.setting, 'cross_run_merge');
   assert.deepStrictEqual((await s.a.integration.list({})).integrations, []);
