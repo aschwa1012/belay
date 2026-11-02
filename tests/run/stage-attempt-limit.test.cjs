@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // stage-attempt-limit.test.cjs — the halving after a cost overrun counts only the project's own runs. Before, one project's overrun
 // halved the next attempt of every other project's scrub or review.
 

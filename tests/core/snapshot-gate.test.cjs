@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // snapshot-gate.test.cjs — ADR 0048 decision 7.3: the share-next ordering, driven against the gate with fake
 // snapshots resolved by hand. No PowerShell and no sleeps; the only timers are the deadline and timeout cases,
 // which end on their own event.

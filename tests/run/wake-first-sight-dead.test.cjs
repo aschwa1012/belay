@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // A worker of this run first seen `dead` by the wake poll is news when it died after the baseline began: worker_spawn returned at
 // ready, and a worker that crashed or was killed before the next poll must still wake the orchestrator. A death from before the
 // baseline (a run id run again, a publisher started late) stays history. Pure function; no process is started.

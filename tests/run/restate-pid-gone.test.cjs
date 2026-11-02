@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // The creation-time restatement (write-row.cjs restatePidCreated) writes the worker's current state again once the spawn read lands.
 // A worker that died while `starting`, before the adapter processed its exit, must not be restated as `starting`: that row is a new
 // seq in a life-claiming state, and the run's dead-pid memory would read it as a new life while the dead pid may be reused.

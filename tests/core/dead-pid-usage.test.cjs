@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // A pid taken from a child that has exited is not a dead pid: Windows hands it out again within seconds (tests/helpers/dead-pid.cjs).
 // This reads the test sources for the spellings that took one and fails on any use.
 const test = require('node:test');

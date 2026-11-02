@@ -1,5 +1,6 @@
 // compose.test.cjs — ADR 0058 decisions 9 and 10 as pure functions: the compact spawn answer, and `seq` named `rev` in answers.
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 
 const test = require('node:test');
 const assert = require('node:assert');

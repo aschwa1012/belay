@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // budget-in-flight.test.cjs — the budget guard and the in-flight estimate (ADR 0066 amendment, proposed). With the lever off the guard
 // behaves as it always did: reported cost only. With it on, the headless orchestrator's turn in flight (priced from its stream lines as
 // they arrive) and the live workers' in-flight estimate are added to what it compares, the pause says so, and the turn's result line

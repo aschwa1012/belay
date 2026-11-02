@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // heavy-guard.test.cjs — ADR 0050 decision 6: a heavy-embedder failure (stage heavy_embed) pauses the run whatever nano's embedder mode is, never
 // turns nano memory off, and is never fatal (a GPU that is gone is fixed, or on_heavy_failure is set to fallback; it does not end the run).
 
