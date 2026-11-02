@@ -33,6 +33,7 @@ function shape(key) {
   if (kind === 'mod') return { type: 'enum', allowed: C.KEYS[key].allowed, text: C.KEYS[key].allowed.join(' | ') };
   if (kind === 'agents') {
     if (fieldOf(key) === AD.TOOLS_FIELD) return { type: 'tools', allowed: null, text: `comma-separated tools from ${TP.POLICY_TOOLS.join(', ')} | null (the built-in policy)` };
+    if (fieldOf(key) === AD.CODEX_EFFORT_FIELD) return { type: 'enum', allowed: [...AD.CODEX_EFFORTS, null], text: `${AD.CODEX_EFFORTS.join(' | ')} | null (no default: the Codex config decides)` };
     return fieldOf(key) === 'effort'
       ? { type: 'enum', allowed: [...AD.EFFORT_LEVELS, null], text: `${AD.EFFORT_LEVELS.join(' | ')} | null` }
       : { type: 'model', allowed: null, text: fieldOf(key) === AD.CODEX_FIELD ? 'a Codex model name | null (no default: the Codex config decides)' : 'a model name | null (no default)' };

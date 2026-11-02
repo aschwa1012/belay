@@ -19,6 +19,7 @@ const S = require('./surface.cjs'); // ADR 0024, S2 fix round F4: the surface fi
 const I = require('./instructions.cjs'); // ADR 0024 amendment 1: the spawn-time CLAUDE.md copy
 const { fail } = require('./errors.cjs');
 const { checkWorkerId, checkIdFree, validateSpawnArgs, checkMemoryQueries, discardUnstarted } = require('./spawn-args.cjs');
+const CS = require('./codex-surface.cjs'); // what belay sets on a Codex launch
 const AD = require('./agent-defaults.cjs'); // the config's per-agent-type model and effort defaults
 const TP = require('./tool-policy.cjs'); // ADR 0054 decision 4: a worker type's tool list
 const MP = require('./memory-preface.cjs'); // ADR 0042: the first-message preface and the memory hooks
@@ -201,6 +202,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       effort = agent.effort.value;
     }
     validateSpawnArgs({ substrate, worktree, prompt, task_id, permission_prompt, permit_wait_ms, effort, worker_id, native_memory: nativeMemory });
+    const codexSurface = CS.forSpawn(substrate, effort, agent); // a Codex worker: what belay set and what it left to the user's config
     const indexQueries = checkMemoryQueries(memory_queries);
 
     const id = worker_id || crypto.randomUUID();
@@ -281,11 +283,11 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
         // the row to return is the store's own (`worker.get`'s pid_alive/last_event_age_ms dropped here).
         if (w.state === 'idle') {
           const { pid_alive, last_event_age_ms, ...row } = await core.worker.get({ worker_id: id });
-          return { ...row, ready_ms, permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions), ...(agent ? { agent } : {}), ...(scratch ? { scratch } : {}), ...(w.review ? { review: w.review } : {}) };
+          return { ...row, ready_ms, permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions), ...(agent ? { agent } : {}), ...(codexSurface ? { codex_surface: codexSurface } : {}), ...(scratch ? { scratch } : {}), ...(w.review ? { review: w.review } : {}) };
         }
         await failNoReady(w, `the worker reached ready but its pid ${w.pid} was no longer alive when the running row would have been written`, { ready_ms });
       }
-      return { ...written, ready_ms, permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions), ...(agent ? { agent } : {}), ...(scratch ? { scratch } : {}), ...(w.review ? { review: w.review } : {}) }; // scratch: a reviewer's folder (ADR 0054 amendment 1); agent: the model and effort used, each with its source
+      return { ...written, ready_ms, permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions), ...(agent ? { agent } : {}), ...(codexSurface ? { codex_surface: codexSurface } : {}), ...(scratch ? { scratch } : {}), ...(w.review ? { review: w.review } : {}) }; // scratch: a reviewer's folder (ADR 0054 amendment 1); agent: the model and effort used, each with its source
     });
   }
 
