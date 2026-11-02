@@ -281,7 +281,11 @@ async function index(E, caller, c) {
       overflow = left;
     }
   }
+  const kept = new Set(fitted.kept);
+  const heldCut = caller.role === 'worker' ? [] : ranked.filter(({ r }) => holds.has(r.id) && !kept.has(r.id)).map(({ r }) => ({ id: r.id, kind: holds.get(r.id).kind || null }));
   const info = {
+    // A held note is listed last, so a tight budget cuts it first: the orchestrator and the operator are told which ones were cut. Workers never see held notes.
+    ...(heldCut.length ? { held_unlisted: heldCut } : {}),
     considered: found.length, excluded_already_injected: excluded, candidates: sel.candidates, ...(rel.info ? { relevance: rel.info } : {}),
     notes: { path: ranked.filter((x) => x.tier === 1).length, term: ranked.filter((x) => x.tier === 2).length, unlisted_path_or_term: Math.max(overflow, 0) },
   };
