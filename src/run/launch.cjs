@@ -32,9 +32,7 @@ const { SCRUB_EXACT, SCRUB_PREFIXES, SCRUB_CWD, CODEX_RUST_LOG, buildEnv, fwd } 
 // build step 6d: moved verbatim to wire-log.cjs (the 500-line rule) and re-exported below unchanged.
 const { wireLogPath, wireLogHasToolsList, WIRE_LOG_NAME, TOOLS_LIST } = require('./wire-log.cjs');
 const S = require('./surface.cjs'); // ADR 0024: the tool list, setting-sources and cwd hygiene.
-const KG = require('./kill-guard.cjs'); // ADR 0024 amendment 7: the PreToolUse hook that refuses kill-by-name
-const TG = require('./tmp-guard.cjs'); // proposed: the PreToolUse hook that refuses a write to the drive-root \tmp
-const guardHooks = () => ({ PreToolUse: [...KG.hooksBlock().PreToolUse, ...TG.hooksBlock().PreToolUse] }); // the kill guard first
+const guardHooks = require('./guard.cjs').hooksBlock; // ADR 0024 amendment 7 and ADR 0084: one PreToolUse hook that refuses kill-by-name and a write to the drive-root \tmp
 const CP = require('./compaction.cjs'); // ADR 0007 decision 3: the compact_at_tokens lever's hooks block
 
 
@@ -161,7 +159,7 @@ function writeWorkerFiles({ dir, workerId, runId, dataDir, mcpPath, settingsPath
     JSON.stringify(mcpConfig({ workerId, runId, dataDir, mcpPath, logPath, permit, permitWaitMs, notes, bind }), null, 2) + '\n'
   );
   const plugins = readPluginConfig(settingsPath);
-  const hooks = { ...(CP.hooksBlock({ dir, compactAt }) || {}), ...guardHooks() }; // the kill and tmp guards always; the compaction hooks only with the lever on
+  const hooks = { ...(CP.hooksBlock({ dir, compactAt }) || {}), ...guardHooks({ push: true }) }; // the guard hook always, with the push check (ADR 0085: a worker, not the orchestrator); the compaction hooks only with the lever on
   fs.writeFileSync(workerSettingsPath, JSON.stringify({ ...workerSettings(plugins.names, { cwd, nativeMemory }), hooks }, null, 2) + '\n');
   return { mcpJsonPath, settingsPath: workerSettingsPath, plugins };
 }
