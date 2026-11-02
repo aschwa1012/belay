@@ -45,7 +45,8 @@ function checkView(c) {
 
 function taskView(t, since = null, byId = null) {
   const checks = t.results && Array.isArray(t.results.checks) ? t.results.checks : [];
-  return { id: t.id, state: t.state, checks: checks.map(checkView), check_history: require('../core/check-history.cjs').forReceipt(t, since, t.repairs && byId ? byId.get(t.repairs) : null) }; // ADR 0069: the commands and their changes
+  const env = t.results && t.results.env && t.results.env.env_fp ? { env_fp: t.results.env.env_fp, facts: t.results.env.facts || null, changed: t.results.env.changed || null } : null; // ADR 0080
+  return { id: t.id, state: t.state, checks: checks.map(checkView), ...(env ? { env } : {}), check_history: require('../core/check-history.cjs').forReceipt(t, since, t.repairs && byId ? byId.get(t.repairs) : null) }; // ADR 0069: the commands and their changes
 }
 
 function handoffView(h) {
@@ -174,6 +175,12 @@ function checksText(checks) {
   return checks.map(c => `${v(c.kind)}:${c.executable === false ? 'n/e' : (c.passed ? 'pass' : 'fail')} ${v(c.ms)}ms`).join(', ');
 }
 
+// ADR 0080: the environment the task's commands last ran in. Names only for what changed since the evaluation before; never a value.
+function envLine(e) {
+  const f = e.facts || {};
+  return clean(`  environment ${e.env_fp}  node ${v(f.node)}${f.git_version ? `  git ${f.git_version}` : ''}${f.temp_drive ? `  temp ${f.temp_drive}` : ''}${e.changed && e.changed.length ? `  changed since the last evaluation: ${e.changed.join(', ')}` : ''}`, Infinity);
+}
+
 function wrap(prefix, text, width = WIDTH) {
   const room = width - prefix.length;
   const cps = Array.from(text);
@@ -233,6 +240,7 @@ function renderText(rc) {
     if (w.task) {
       lines.push(`  task ${v(w.task.id)} (${v(w.task.state)})`);
       lines.push(`  checks ${checksText(w.task.checks)}`);
+      if (w.task.env) lines.push(envLine(w.task.env));
       if (w.task.check_history) lines.push(`  ${clean(require('../core/check-history.cjs').line(w.task.check_history), Infinity)}`);
       if (w.task.handoff) lines.push(...handoffLines(w.task.handoff)); else lines.push('  handoff none');
     } else lines.push('  task none');
@@ -240,6 +248,7 @@ function renderText(rc) {
   if (!rc.workers.length) lines.push('(no workers)');
   for (const t of rc.unassigned_tasks) {
     lines.push(`unassigned task ${v(t.id)} (${v(t.state)})  checks ${checksText(t.checks)}`);
+    if (t.env) lines.push(envLine(t.env));
     if (t.check_history) lines.push(`  ${clean(require('../core/check-history.cjs').line(t.check_history), Infinity)}`);
   }
   for (const i of rc.integrate_checks || []) lines.push(RCK.integrateLine(i));
