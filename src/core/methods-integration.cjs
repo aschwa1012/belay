@@ -19,6 +19,7 @@ const { pidAlive } = require('./lock.cjs');
 const INC = require('./integration-incremental.cjs');
 const ID = require('./proc-identity.cjs');
 const MUG = require('./merge-user-gate.cjs');
+const { refuseCrossRun } = require('./cross-run.cjs');
 
 const MAX_TASKS = 50;
 const MAX_REASON = 300;
@@ -318,21 +319,6 @@ async function rerun(tasks, tree, reuse, head, beside = null, extra = [], until 
   return checks;
 }
 
-// ADR 0067 amendment 5: a run merges its own tasks into its own integrate branch. A task another run made, or a branch `belay/integrate/<run>`
-// of another run the store knows, is refused unless this run's spec set cross_run_merge. The operator's own calls are the person's, not a run's.
-function refuseCrossRun(E, caller, tasks, into) {
-  if (caller.role === 'operator' || !caller.run_id) return;
-  const me = rows.current(E.store, 'run', caller.run_id);
-  if (me && Number(me.cross_run_merge) === 1) return;
-  const foreign = tasks.filter((t) => t.run_id && t.run_id !== caller.run_id);
-  const m = /^belay\/integrate\/(.+)$/.exec(into);
-  const theirs = m && m[1] !== caller.run_id && rows.current(E.store, 'run', m[1]) ? m[1] : null;
-  if (!foreign.length && !theirs) return;
-  const what = [foreign.length ? `task${foreign.length > 1 ? 's' : ''} ${foreign.map((t) => `${t.id} (run ${t.run_id})`).join(', ')} belong${foreign.length > 1 ? '' : 's'} to another run` : '', theirs ? `${into} is run ${theirs}'s integrate branch` : ''].filter(Boolean).join(', and ');
-  throw err('E_PRECONDITION', `this run (${caller.run_id}) does not merge across runs: ${what}. Set cross_run_merge: true in the run spec to allow it (it is fixed at launch, so it takes a new run)`,
-    { run_id: caller.run_id, foreign_tasks: foreign.map((t) => ({ task_id: t.id, run_id: t.run_id })), into, into_run: theirs, setting: 'cross_run_merge' });
-}
-
 async function merge(E, caller, args) {
   W.ownBootProbe(E);
   args = W.present(args);
@@ -341,9 +327,9 @@ async function merge(E, caller, args) {
   const force = args.force === true;
   const { tasks, repo, targets } = await readTasks(E, args.task_ids, force);
   const into = await G.validBranch(repo, args.into === undefined ? `belay/integrate/${caller.run_id}` : args.into);
-  refuseCrossRun(E, caller, tasks, into);
   // A branch the user owns (ADR 0067): approval first (read-only, and before any slot or tree), then belay merges on a detached HEAD.
   const fold = await MUG.folder(repo);
+  refuseCrossRun(E, caller, tasks, into, repo, fold);
   await MUG.refuseVariant(repo, into, fold); // another spelling of an existing branch is that branch, on a host with case-insensitive refs
   const userBranch = await MUG.isUserBranch(E, repo, into, caller.run_id, fold);
   if (userBranch) {
