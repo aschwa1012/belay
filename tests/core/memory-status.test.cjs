@@ -31,7 +31,7 @@ before(() => {
   rows.append(store, 'task', { id: 't-open', run_id: 'test-run', spec: 's', state: 'assigned' }, 'orchestrator');
   rows.append(store, 'checkpoint', { id: 'ck-1', task_id: 't-done', worker_id: 'w-1', run_id: 'test-run', turn: 1, source: 'worker' }, 'w-1');
 });
-after(() => { store.close(); cleanup(dir); });
+after(() => { store.close(); cleanup(dir, { skipInvariants: 'the test appends a done task row by hand, with no evaluation behind it' }); });
 
 test('each receipt kind verifies a row and the answer carries the evidence, who and when', async () => {
   const other = await fresh('the evidence row');

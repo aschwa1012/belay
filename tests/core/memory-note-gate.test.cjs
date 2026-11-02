@@ -34,7 +34,7 @@ before(async () => {
   const lv = JSON.stringify({ project: 'acme', notes: true });
   for (const r of [READER, WRITER]) await call(orch(r), 'run.attach', { adapter_pid: process.pid, project: 'acme', memory_levers: lv });
 });
-after(() => { store.close(); cleanup(dir); });
+after(() => { store.close(); cleanup(dir, { skipInvariants: 'the test writes task and lease rows by hand, so the store is not one the methods made' }); });
 
 function task(id, run, state) { return rows.append(store, 'task', { id, run_id: run, spec: 'x', state }, 'test'); }
 // A lease row; `by` is who wrote the row (a hand-back is written by the holder, a take-control by the operator).
