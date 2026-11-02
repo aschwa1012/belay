@@ -180,6 +180,9 @@ function parseLevers(spec, opts = {}) {
   // Merging into a branch the user owns: "ask" (the default; absent from the levers unless the spec says it) or "allowed". Fixed for the run.
   if (spec.merge_into !== undefined && spec.merge_into !== 'ask' && spec.merge_into !== 'allowed') return { error: 'merge_into must be "ask" or "allowed"' };
   if (spec.merge_into !== undefined) out.merge_into = spec.merge_into;
+  // Merging another run's tasks, or into another run's integrate branch: off unless the spec says true. Fixed for the run.
+  if (spec.cross_run_merge !== undefined && typeof spec.cross_run_merge !== 'boolean') return { error: 'cross_run_merge must be true or false' };
+  if (spec.cross_run_merge === true) out.cross_run_merge = true;
   // ADR 0054 amendment 1: the run close deletes the reviewers' scratch folders; this opt-in keeps them. Absent unless on.
   if (spec.keep_review_scratch !== undefined && typeof spec.keep_review_scratch !== 'boolean') return { error: 'keep_review_scratch must be true or false' };
   if (spec.keep_review_scratch === true) out.keep_review_scratch = true;

@@ -250,6 +250,8 @@ const MIGRATIONS = [
   // row's kind (null reads as substrate), and the proof columns an integration row into a user branch carries.
   'ALTER TABLE run ADD COLUMN merge_into TEXT',
   'ALTER TABLE run ADD COLUMN run_mode TEXT',
+  // The run's cross_run_merge setting (1 when its spec allows merging another run's tasks, or into another run's integrate branch; null reads as off).
+  'ALTER TABLE run ADD COLUMN cross_run_merge INTEGER',
   'ALTER TABLE permission ADD COLUMN kind TEXT',
   'ALTER TABLE integration ADD COLUMN target TEXT',
   'ALTER TABLE integration ADD COLUMN head_before TEXT',
