@@ -250,6 +250,8 @@ const MIGRATIONS = [
   // row's kind (null reads as substrate), and the proof columns an integration row into a user branch carries.
   'ALTER TABLE run ADD COLUMN merge_into TEXT',
   'ALTER TABLE run ADD COLUMN run_mode TEXT',
+  // ADR 0082 decision 1: the belay that wrote the row, as JSON text: { build, schema_version, dirty, prompt_sha, prompt_marker }. Nullable; a row from before it reads as not recorded.
+  'ALTER TABLE run ADD COLUMN harness TEXT',
   'ALTER TABLE permission ADD COLUMN kind TEXT',
   'ALTER TABLE integration ADD COLUMN target TEXT',
   'ALTER TABLE integration ADD COLUMN head_before TEXT',

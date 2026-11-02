@@ -37,7 +37,7 @@ const ATTACH_SUSPECT = LIFE_CLAIMING_STATES;
 // Fix round for 6f (diff-scope): `rows.cjs` (unowned) lacks paused_at/paused_by in COLUMNS.run, so
 // rows.append would drop both. This local insert (its own shape, via exported bind/parseRow) adds them.
 function appendRun(E, values, writtenBy, at = Date.now()) {
-  const cols = [...rows.COLUMNS.run, 'paused_at', 'paused_by', 'pause_parks', 'memory_levers', 'project', 'project_dir', 'embedder_mode', 'revived_epoch', 'memory_notice', 'merge_into', 'run_mode', 'budget', 'retrieval_routing']; // item 1: 6th local column; ADR 0041 decision 1: the memory levers and the project
+  const cols = [...rows.COLUMNS.run, 'paused_at', 'paused_by', 'pause_parks', 'memory_levers', 'project', 'project_dir', 'embedder_mode', 'revived_epoch', 'memory_notice', 'merge_into', 'run_mode', 'budget', 'retrieval_routing', 'harness']; // item 1: 6th local column; ADR 0041 decision 1: the memory levers and the project
   const all = [...cols, 'written_at', 'written_by'];
   const sql = `INSERT INTO run(${all.join(', ')}) VALUES (${all.map(() => '?').join(', ')})`;
   const params = cols.map(c => rows.bind(values[c]));
@@ -104,6 +104,8 @@ async function attach(E, caller, args) {
   if ((mergeGiven || modeSet) && caller.role !== 'operator') throw err('E_ROLE', 'run.attach merge_into and run_mode are stated by the process that launched the run, never by the orchestrator', { role: caller.role });
   if (mergeGiven && args.merge_into !== null && !['ask', 'allowed'].includes(args.merge_into)) throw err('E_ARGS', 'run.attach merge_into must be null, ask or allowed', { merge_into: args.merge_into });
   if (modeSet && args.run_mode !== null && !['headless', 'interactive'].includes(args.run_mode)) throw err('E_ARGS', 'run.attach run_mode must be null, headless or interactive', { run_mode: args.run_mode });
+  const harnessGiven = args.harness !== undefined && args.harness !== null;
+  if (harnessGiven) require('./run-harness.cjs').check(args.harness, caller);
   const dirGiven = args.project_dir !== undefined;
   if (dirGiven && args.project_dir !== null && !(typeof args.project_dir === 'string' && args.project_dir.length > 0 && args.project_dir.length <= 1024)) {
     throw err('E_ARGS', 'run.attach project_dir must be null or a directory path', { project_dir: args.project_dir });
@@ -226,6 +228,7 @@ async function attach(E, caller, args) {
     merge_into: mergeGiven ? args.merge_into : (carryPause ? prev.merge_into : null), run_mode: modeSet ? args.run_mode : (carryPause ? prev.run_mode : null), // same carry rule
     budget_usd: require('./run-budget.cjs').attachLimit(args, prev, carryPause), // dollar limit; a raised limit survives a re-attach of the same life
     budget: carryPause ? prev.budget : null,
+    harness: require('./run-harness.cjs').record(harnessGiven ? args.harness : null, carryPause ? prev.harness : null), // ADR 0082: the build that wrote this epoch's row, never a caller's word
     retrieval_routing: carryPause ? prev.retrieval_routing : null, // pinned for the run's life; a re-run over an ended row pins again
     embedder_mode: modeGiven ? (args.embedder_mode === null ? null : require('./embedder-mode.cjs').normalize(args.embedder_mode)) : (carryPause ? prev.embedder_mode : null),
   }, by, t);
