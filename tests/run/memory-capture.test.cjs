@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-capture.test.cjs — ADR 0041 decisions 2, 3 and 7: the turn's event buffer and the observation row.
 // The unit tests push real parser output (tests/run/fixtures/capture-claude.jsonl) through the buffer; the
 // integration tests run the manager against the fake substrate and a fake core with the memory surface.

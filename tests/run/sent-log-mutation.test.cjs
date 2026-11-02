@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // sent-log-mutation.test.cjs — claims of sent-log.cjs that a mutation run showed no other test pins down: a
 // replaced stream starts the turn count again, the kind is checked, every failure carries a named code and a
 // message cut at 300, and a failed receipt lands on lastError.

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // B9: a stop that finds the worker's process already gone says so, and a parked worker (no process by design) is not that case.
 
 const { test } = require('node:test');

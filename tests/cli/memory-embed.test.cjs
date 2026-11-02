@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1';
 // memory-embed.test.cjs — notes stored without a vector (on_embedder_failure keyword): `belay status` and `belay notices` show the
 // count with a pointer to `belay memory embed`, and `belay memory embed` is the only thing that embeds them. The command modules run

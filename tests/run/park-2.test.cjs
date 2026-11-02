@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // park-2.test.cjs — build step 6e-5, closing 6e-4's second
 // review (FINDINGS.json review2, eedc3a6): a graceful shutdown leaving a parked worker parked, a stopped
 // parked worker reading stopped everywhere, a park writing no row before its exit, restart releasing its

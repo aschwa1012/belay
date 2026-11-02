@@ -129,12 +129,12 @@ function read(file, dir, searched) {
   };
   let raw;
   try {
-    raw = fs.readFileSync(file, 'utf8');
+    raw = fs.readFileSync(file, 'utf8'); // kept exactly as on disk: the settings writer compares it with a fresh read
   } catch (e) {
     return { ...base, raw: null, config: {}, parse_error: `could not read ${file}: ${e.message}` };
   }
   try {
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(raw.replace(/^\uFEFF/, '')); // a leading UTF-8 BOM is not part of the JSON
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return { ...base, raw, config: {}, parse_error: `${file} is valid JSON but not an object` };
     }
@@ -142,6 +142,57 @@ function read(file, dir, searched) {
   } catch (e) {
     return { ...base, raw, config: {}, parse_error: `${file} is not valid JSON: ${e.message}` };
   }
+}
+
+// The root a config's data_dir must stay inside, and what established it: the nearest ancestor of the config file with a .git
+// (a directory, or the file a linked worktree has), else the nearest with a package.json, else the config file's own directory.
+// The search stops at the home directory, which is never a root.
+function rootOf(dir) {
+  const start = fwd(path.resolve(dir));
+  const atHome = homeWalk();
+  for (const [marker, label] of [['.git', 'repository'], ['package.json', 'project']]) {
+    let d = start;
+    for (;;) {
+      if (atHome.isHome(d)) break;
+      try { if (fs.existsSync(d + '/' + marker)) return { dir: d, label, marker }; } catch { /* unreadable is not a root */ }
+      const parent = fwd(path.dirname(d));
+      if (parent === d) break;
+      d = parent;
+    }
+  }
+  return { dir: start, label: 'directory', marker: null };
+}
+
+// A path that may not exist yet, with symlinks and junctions resolved in its deepest existing part.
+function realWithTail(p) {
+  let cur = path.resolve(p);
+  const tail = [];
+  for (;;) {
+    try { return path.join(fs.realpathSync.native(cur), ...tail.reverse()); } catch { /* try the parent */ }
+    const parent = path.dirname(cur);
+    if (parent === cur) return path.resolve(p);
+    tail.push(path.basename(cur));
+    cur = parent;
+  }
+}
+
+// A data_dir that a repository's config names may only point strictly inside that repository (a data_dir elsewhere
+// comes from --data). Returns null when it is inside, else the reason it is refused. UNC, device and drive-relative
+// spellings are refused outright; `..`, absolute paths, symlinks and junctions are resolved before the comparison.
+function dataDirRefusal(value, found) {
+  const text = String(value);
+  const where = `data_dir ${JSON.stringify(text)} in ${found.path}`;
+  const allowed = 'a committed belay.config.json may only name a data_dir inside its repository; use --data <dir> on the command line for one elsewhere';
+  if (/^[\\/]{2}/.test(text) || (process.platform === 'win32' && /^[A-Za-z]:(?![\\/])/.test(text))) {
+    return `${where} is a UNC, device or drive-relative path; ${allowed}`;
+  }
+  const root = rootOf(found.dir);
+  const target = realWithTail(path.resolve(found.dir, text));
+  const rel = path.relative(realWithTail(root.dir), target);
+  if (rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    return `${where} resolves to ${fwd(target)}, which is not inside the ${root.label} ${root.dir}${root.marker ? ` (the nearest ${root.marker})` : ' (the config file directory; no .git or package.json above it)'}; ${allowed}`;
+  }
+  return null;
 }
 
 // The effective value of one key and the exact place it came from. `source` is a file path when the
@@ -172,6 +223,10 @@ function effective(found, key, { dataDirOverride = null } = {}) {
     key, value, source, describe: spec.describe,
     resolved: spec.kind === 'path' ? resolve(value, found) : null,
   };
+  if (key === 'data_dir' && fromFile) {
+    const refused = dataDirRefusal(value, found);
+    if (refused) { out.refused = refused; out.resolved = null; }
+  }
   if (spec.allowed) out.allowed = spec.allowed;
   if (invalid) out.invalid = invalid;
   return out;
@@ -215,6 +270,7 @@ function overrideOf(ctx) {
 // then `<project root or cwd>/.belay`. Always absolute, always forward slashes.
 function dataDirOf(found, ctx) {
   const eff = effective(found, 'data_dir', { dataDirOverride: overrideOf(ctx) });
+  if (eff.refused) throw Object.assign(new Error(eff.refused), { code: 'E_DATA_DIR' });
   if (eff.resolved) return eff.resolved;
   const base = found.found ? found.dir : fwd(path.resolve((ctx && ctx.cwd) || process.cwd()));
   return fwd(path.resolve(base, String(eff.value || KEYS.data_dir.default)));
@@ -236,5 +292,5 @@ function writeDirOf(cwd) {
 
 module.exports = {
   CONFIG_NAME, KEYS, KEY_NAMES, ROOT_MARKERS,
-  fwd, samePath, isProjectRoot, discover, effective, all, dataDirOf, writeDirOf, overrideOf,
+  fwd, samePath, isProjectRoot, dataDirRefusal, rootOf, discover, effective, all, dataDirOf, writeDirOf, overrideOf,
 };

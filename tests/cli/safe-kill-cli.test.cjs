@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1';
 // safe-kill-cli.test.cjs — ADR 0039 decision 4 at the two CLI kill sites: `belay run`'s worker close
 // (src/cli/run-close.cjs) and `belay worker kill` (src/cli/cmd-worker.cjs). A different live process (a

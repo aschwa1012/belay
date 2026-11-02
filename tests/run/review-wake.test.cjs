@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // review-wake.test.cjs — a review hand-back's wake carries the verdict, the counts and the finding titles inside the wake cap,
 // in both modes (the same wakeText), as data: cleaned and quoted. A task that is not a review keeps its wake byte for byte.
 

@@ -130,7 +130,7 @@ describe('the Profiles tab', () => {
     expect(await m.text()).toContain('GPU runtime not installed')
     await m.ui.press({ key: 'probe' })
     expect(m.wd.toasts.at(-1)).toContain('belay memory embed --model Qwen/Qwen3-Embedding-4B-GGUF --project acme')
-    expect(await m.text()).toContain('run: belay memory embed --model Qwen/Qwen3-Embedding-4B-GGUF --project acme')
+    expect(await m.text()).toContain('run in a terminal: belay memory embed --model Qwen/Qwen3-Embedding-4B-GGUF --project acme')
     expect(m.wd.menuWrites).toEqual([])
   })
 
@@ -143,10 +143,18 @@ describe('the Profiles tab', () => {
     await m.ui.press({ key: 'set:memory.profile:gpu-rerank' })
     await later(m.wd, 1500)
     expect(m.wd.menuWrites[0]!.slice(m.wd.menuWrites[0]!.indexOf('settings'), m.wd.menuWrites[0]!.indexOf('settings') + 3)).toEqual(['settings', 'memory.profile', 'gpu-rerank'])
-    expect(m.wd.toasts).toContain('belay: memory.profile set to gpu-rerank (was "cpu-fast")')
+    expect(m.wd.toasts).toContain(`belay: memory.profile set to gpu-rerank (was "cpu-fast"); applies to the next run, and a spec's memory.profile overrides it`)
     await later(m.wd, 11000)
     expect(m.wd.menuReads.length).toBeGreaterThan(reads)
     expect(await m.text()).not.toContain('press the same button again')
+  })
+
+  test('with a live run, the profile toast names it and says it keeps the profile it started with', async ($, on) => {
+    const m = await menuPane($, on, { menu: MENU({ live_runs: ['r-live-1'] }) })
+    await m.ui.press({ key: 'set:memory.profile:gpu-rerank' })
+    await m.ui.press({ key: 'set:memory.profile:gpu-rerank' })
+    await later(m.wd, 1500)
+    expect(m.wd.toasts).toContain(`belay: memory.profile set to gpu-rerank (was "cpu-fast"); live run r-live-1 keeps the profile it started with, this applies to the next run, and a spec's memory.profile overrides it`)
   })
 
   test('another press cancels the confirm, so the same button asks again', async ($, on) => {
@@ -275,30 +283,39 @@ describe('the Models tab', () => {
     expect(t).toContain('jina-reranker-v1-tiny-en int8 · 33 MB · cpu · ready')
     expect(t).toContain('gte-reranker-modernbert-base int8 · 148 MB · cpu · download')
     expect(t).toContain('backlog 3')
-    expect(t).toContain('[embed now]')
+    expect(t).toContain('[embed now: shows command]')
     expect(t).toContain('GPU runtime · installed')
     expect(t).toContain('disk used by models 2.6 GB in 3 models')
   })
 
-  test('a download and an embed-now print the exact command (they last minutes and a reload would end them) and run nothing', async ($, on) => {
+  test('a download and an embed-now say nothing was run and print the exact command (they last minutes and a reload would end them)', async ($, on) => {
     const m = await menuPane($, on)
     await tab(m, 'models')
+    expect(await m.text()).toContain('[download: shows command]')
     await m.ui.press({ key: `fetch:${IDS.E8}` })
-    expect(m.wd.toasts.at(-1)).toBe(`belay: run  belay embedder fetch --gpu --model ${IDS.E8}`)
+    expect(m.wd.toasts.at(-1)).toBe(`belay: nothing was run. In a terminal, run: belay embedder fetch --gpu --model ${IDS.E8}`)
     await m.ui.press({ key: 'fetch:Alibaba-NLP/gte-reranker-modernbert-base' })
-    expect(m.wd.toasts.at(-1)).toBe('belay: run  belay embedder fetch --reranker Alibaba-NLP/gte-reranker-modernbert-base')
+    expect(m.wd.toasts.at(-1)).toBe('belay: nothing was run. In a terminal, run: belay embedder fetch --reranker Alibaba-NLP/gte-reranker-modernbert-base')
     await m.ui.press({ key: `embed:${IDS.E4}` })
-    expect(m.wd.toasts.at(-1)).toBe(`belay: run  belay memory embed --model ${IDS.E4} --project acme`)
-    expect(await m.text()).toContain(`run: belay memory embed --model ${IDS.E4} --project acme`)
+    expect(m.wd.toasts.at(-1)).toBe(`belay: nothing was run. In a terminal, run: belay memory embed --model ${IDS.E4} --project acme`)
+    expect(await m.text()).toContain(`run in a terminal: belay memory embed --model ${IDS.E4} --project acme`)
     expect(m.wd.menuWrites).toEqual([])
     expect(m.wd.spawned).toEqual([])
+  })
+
+  test('a GPU model download with the runtime missing prints the runtime step, then the model', async ($, on) => {
+    const gpu = { state: 'probed', device: 'NVIDIA GeForce RTX 5060', free_mb: 7000, total_mb: 7899, ok: true, reason: null, at: '2026-10-21T14:02:00.000Z', runtime: { installed: false, ok: false, command: 'belay embedder fetch --gpu', problems: 1 } }
+    const m = await menuPane($, on, { menu: MENU({ gpu }) })
+    await tab(m, 'models')
+    await m.ui.press({ key: `fetch:${IDS.E8}` })
+    expect(m.wd.toasts.at(-1)).toBe(`belay: nothing was run. In a terminal, run: belay embedder fetch --gpu  then  belay embedder fetch --gpu --model ${IDS.E8}`)
   })
 
   test('the embed-now button is only there while there is a backlog', async ($, on) => {
     const m = await menuPane($, on, { menu: MENU({ behind: 0, models: MENU().models.map((x: any) => (x.id === IDS.E4 ? { ...x, backlog: 0 } : x)) }) })
     await tab(m, 'models')
     expect(await m.text()).toContain('backlog 0')
-    expect(await m.text()).not.toContain('[embed now]')
+    expect(await m.text()).not.toContain('[embed now')
   })
 
   test('verify runs belay embedder verify after two presses and toasts the answer', async ($, on) => {
@@ -322,7 +339,7 @@ describe('the Models tab', () => {
     await m.ui.press({ key: `delete:${IDS.E4}` })
     await m.ui.press({ key: `delete:${IDS.E4}` })
     expect(m.wd.menuWrites).toEqual([])
-    expect(m.wd.toasts.at(-1)).toBe(`belay: ${IDS.E4} is in use by run; it was not deleted.`)
+    expect(m.wd.toasts.at(-1)).toBe(`belay: ${IDS.E4} is in use by next run (config); it was not deleted.`)
     await m.ui.press({ key: `delete:${JINA}` })
     expect(await m.text()).toContain('delete jinaai/jina-reranker-v1-tiny-en from belay\'s model cache (33 MB)')
     await m.ui.press({ key: `delete:${JINA}` })

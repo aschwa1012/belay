@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // release-eval.test.cjs — ADR 0058 decision 5: a worker that releases its task with a hand-back has it evaluated by the run
 // manager once its turn's row is written, detached from the worker's queue; worker_wait and the wakes carry the result as facts,
 // and a lifecycle operation cancels an evaluation in flight without waiting on its commands. Real core, real run manager, the fake

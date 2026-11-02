@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // stop-tree-kill-stale.test.cjs — a stop's receipt names the tree kill that stop made, never one an earlier life's stop made.
 // Before, `tree_kill` was read off the worker record, so a graceful stop after a restart reported the kill of the life before it.
 

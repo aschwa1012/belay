@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // interactive-launch.test.cjs — ADR 0037 decision 2: orchestratorInteractiveArgv keeps headless's
 // hygiene and drops everything that belongs to `-p`. Argv only; no real claude is launched.
 

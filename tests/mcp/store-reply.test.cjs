@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // store-reply.test.cjs — memory_store's reply explains an unverified summary and the applies_to counts, additively.
 
 const test = require('node:test');

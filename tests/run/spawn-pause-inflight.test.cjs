@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // spawn-pause-inflight.test.cjs — a run pause that lands after a taskless spawn passed the paused gate but before it launched. The
 // pause lists only rows with a live pid, so it cannot name this worker; the spawn must therefore look again just before its launch and
 // refuse (nothing launched, the gate's own code, the row written dead). Seam: the spawn's first pidless `starting` write stalls on a

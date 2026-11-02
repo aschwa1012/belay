@@ -1,6 +1,7 @@
 // queries-listing.test.cjs — the orchestrator's worker_spawn lists `memory_queries` only when the run's first_message_index lever is
 // on (they feed that index and nothing else); the call is accepted either way. Measured on the module and on the wire.
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 
 const test = require('node:test');
 const assert = require('node:assert');

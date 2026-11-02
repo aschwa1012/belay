@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // A wake held during a run pause is re-sent on resume with the text it had when it was held. The receipt record carries no
 // text, so re-rendering from it sent an `evaluated` or `note_refuted` wake as an empty text block and dropped the release
 // evaluation from a turn_end and the released-lease clause from a death.

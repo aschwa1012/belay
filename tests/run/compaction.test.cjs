@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // compaction.test.cjs — build 12 wave 3, ADR 0007 decision 3 and 7: the `compact_at_tokens` lever. A real
 // RunManager over tests/run/fakes/fake-claude.cjs (which models per-call context, `/compact`, the hooks of the
 // worker's --settings file and an automatic compaction; see its FAKE_CTX_* knobs) and tests/run/fake-core.cjs.

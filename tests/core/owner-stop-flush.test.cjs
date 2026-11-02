@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // A reply the owner owes for a call it has served must reach the client even when the owner is stopped at once,
 // before the client has read it. `stop()` destroys every connection; a destroy that comes before the reply is written
 // (or that discards it unread) makes the client see E_OWNER_LOST (sent: true) for a write that committed.

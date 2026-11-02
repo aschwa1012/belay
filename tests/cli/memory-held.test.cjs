@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-held.test.cjs — `belay memory held` (the listing, a read: no owner, no file, bytes unchanged) and `belay memory held settle` (a write: it
 // elects, writes, returns the rows it changed and leaves no owner behind). The built CLI as a subprocess against a sandbox store planted into the tables.
 

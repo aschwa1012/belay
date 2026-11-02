@@ -83,7 +83,41 @@ function identifyOnWrite(core) {
   return out;
 }
 
+// Which of these identities are still held, from ONE process snapshot taken after a cheap signal-0 filter (a pid nothing holds is gone for
+// certain, so a set that has all exited costs no snapshot). Asking one identity at a time would cost a snapshot each and spread the sample
+// over seconds. A held pid with a recorded identity that has no creation time fails, as in `isGone`.
+// `sampled: true` is for a timed sample ("still alive at 1,000 ms"): a pid that passed the signal-0 filter was held when asked, so one the
+// snapshot no longer lists (it exited while the snapshot ran) still counts as held; only another creation time clears it.
+async function heldAmong(identities, { sampled = false } = {}) {
+  const live = identities.filter((id) => pidAlive(id.pid));
+  if (!live.length) return [];
+  const snap = await readSnapshot(live[0].pid, 'checking the identified set');
+  return live.filter((id) => {
+    const e = snap.get(id.pid);
+    if (id.created == null) {
+      assert.ok(!id.recorded, `pid ${id.pid} is held and no creation time was recorded for it, so it cannot be told from a reused number`);
+      return false;
+    }
+    if (!e) return sampled;
+    assert.ok(e.created != null, `no creation time in the process snapshot for the held pid ${id.pid}`);
+    return e.created === id.created;
+  });
+}
+
+// The identities of `rootPids` and every descendant they have now, all from the one snapshot, so a pid reused between two reads cannot
+// give a stranger's creation time. A root the snapshot does not hold is left out (it is already gone).
+async function identifyTree(rootPids) {
+  const snap = await readSnapshot(rootPids[0], 'identifying a process tree');
+  const out = new Map();
+  for (const root of rootPids.filter(Boolean)) {
+    const e = snap.get(root);
+    if (e && e.created != null) out.set(root, { pid: root, created: e.created });
+    for (const d of ID.descendantsOf(root, snap).leavesFirst) if (d.created != null) out.set(d.pid, { pid: d.pid, created: d.created });
+  }
+  return [...out.values()];
+}
+
 // Identities of several pids, in order.
 const identifyAll = (pids) => Promise.all(pids.map((p) => identify(p)));
 
-module.exports = { identify, identifyAll, identifyOnWrite, recorded, isGone, assertGone, waitGone, childExited };
+module.exports = { identify, identifyAll, heldAmong, identifyTree, identifyOnWrite, recorded, isGone, assertGone, waitGone, childExited };

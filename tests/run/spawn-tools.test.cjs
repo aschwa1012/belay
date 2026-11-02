@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // spawn-tools.test.cjs — worker_spawn's allowed_tools also narrows the worker's built-in tool surface (--tools), not only the
 // pre-approval (--allowedTools, which does nothing in auto mode). mcp__* names stay pre-approval only; any other non-built-in
 // name is refused with nothing written. Driven over the fake claude, which reports exactly its --tools plus the belay tools.

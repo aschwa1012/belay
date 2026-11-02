@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // A pending death is one hold moment, however many polls see it and however far the clock jumps between them (a host that slept):
 // the recorder keys a moment on the busy/awaiting/pending/parked/live sets, and a moment is added only when a set changes or a turn
 // ends. This drives the real diffWorkers + idleClose + createHoldRecorder over a scripted sequence of worker.list reads, so a

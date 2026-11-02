@@ -1,0 +1,1 @@
+{"rule":"run_single_end","base":"clean","append":{"run":[{"id":"r1","epoch":1,"started_at":900,"ended_at":5100,"exit_reason":"done","written_at":5100,"written_by":"orchestrator"}]}}

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // Build step H1: releaseCore() in tests/cli/stop-helpers.cjs.
 // A test core that won the election owns the store; close() only drops the client, so it must be shut
 // down. A core that is only a client of someone else's owner must never end that owner.

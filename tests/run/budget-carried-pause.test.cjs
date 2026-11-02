@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // A run process that re-attaches while the run is paused by a task budget must resume it as a task pause: the scope comes from the
 // recorded pause, not from a default of the run.
 

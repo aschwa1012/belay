@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // The wake-correlation fix: the parser turns
 // the substrate's `command_lifecycle` `completed` into `write_done` for a write it was given a uuid
 // for, and pending-writes.cjs answers a write by either route and expires one that neither answers.

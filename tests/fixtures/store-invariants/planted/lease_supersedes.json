@@ -1,0 +1,1 @@
+{"rule":"lease_supersedes","base":"clean","append":{"lease":[{"id":"l4","task_id":"t1","run_id":"r1","holder":"operator","holder_role":"operator","expires_at":9000,"released_at":null,"granted_at":1500,"supersedes":"l1","written_at":1500,"written_by":"operator"}]}}

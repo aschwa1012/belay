@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // safe-kill-sites-2.test.cjs — ADR 0039 review round: the orchestrator's killChild guard (mutation M11), and
 // what a refused stop reports. A sleeper this test spawned stands for "the process that took over the pid".
 

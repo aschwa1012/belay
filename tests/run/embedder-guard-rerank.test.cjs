@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // embedder-guard-rerank.test.cjs — ADR 0050 decision 6: a reranker failure under on_heavy_failure pause pauses the run whatever the
 // embedder mode says. Under keyword an embedder failure never pauses, and under off it turns the run's memory off; a reranker failure
 // does neither of those: it pauses and leaves memory on.

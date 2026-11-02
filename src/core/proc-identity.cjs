@@ -62,10 +62,11 @@ function psArgs(stall = envStall()) { return ['-NoProfile', '-NonInteractive', '
 // adapter Claude Code ends after its session) left them in the shared TEMP. `detached` cannot help: a detached
 // PowerShell writes nothing to its pipes. So the snapshot runs with TEMP set to this directory, and each snapshot
 // first removes the probe files in it that are older than SWEEP_AGE_MS: any left over, never one being probed.
-const SNAP_TEMP = path.join(os.tmpdir(), 'belay-snapshot');
+const snapTemp = () => path.join(os.tmpdir(), 'belay-snapshot'); // read per call: a TEMP the caller moves after this module loads is honoured
 const SWEEP_AGE_MS = 30000;
 const PROBE_FILE = /^__PSScriptPolicyTest_/;
 function snapshotEnv() {
+  const SNAP_TEMP = snapTemp();
   try {
     fs.mkdirSync(SNAP_TEMP, { recursive: true });
     const cutoff = Date.now() - SWEEP_AGE_MS;

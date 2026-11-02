@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // `worker stop` of an adopted worker whose kill was sent (not refused) but whose pid is still alive at the wait's deadline
 // must not report a stop: the receipt says not_stopped / may_be_live, killed is false, and no terminal row is written.
 const test = require('node:test');

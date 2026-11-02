@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // summarise-mutation.test.cjs — claims of summarise.cjs that a mutation run showed no other test pins down:
 // the 8192 byte limit to the byte, the code-point-safe cut of `asked`, and an error count that ignores what is
 // not a count.

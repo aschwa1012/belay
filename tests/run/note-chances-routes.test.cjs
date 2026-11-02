@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // note-chances-routes.test.cjs — the parser names the notes a memory_list or memory_timeline answer showed, as it does for a search or a
 // retrieve, so the core can tell a writer who had read a note from one who had not.
 

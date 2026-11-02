@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // lease-holder-dead.test.cjs — ADR 0026 amendment 1 (proposed), through the run manager: a worker killed by its exact pid while
 // it holds a lease gives the lease up in its death handling, its task can be assigned to another worker at once, and the death
 // wake says which lease it released. A death a restart settles on its way to relaunching keeps the lease. Real core, real run

@@ -1,10 +1,10 @@
 'use strict';
-// kill-guard.cjs — the matcher behind the kill-by-name hook (ADR 0024 amendment 7, proposed). A headless worker's or
+// kill-guard.cjs — the matcher behind the kill-by-name hook (ADR 0024 amendment 7). A headless worker's or
 // orchestrator's shell command that stops processes by name or pattern instead of by exact pid would reach every
 // process on the machine, including the store owner and the operator's other sessions. `refusal(command)` returns the
 // one-line refusal for such a command, or null. The match is textual and looks through wrappers (`cmd /c`,
 // `powershell -Command`, `bash -c`) by scanning the whole string; it is a safety net, not a parser, and a command built
-// at run time out of pieces escapes it. Plain node, no requires: the hook process is spawned for every Bash call.
+// at run time out of pieces escapes it. Plain node, no requires: guard.cjs runs it in the one hook process spawned for every Bash call.
 const MESSAGE = 'Stop a process only by its exact pid; other processes on this machine are not yours.';
 
 const STOP = String.raw`(?:stop-process|spps)`; // the PowerShell cmdlet and its alias; `kill` is handled below, it is also a shell builtin
@@ -46,17 +46,24 @@ function normalize(command, quote, unescape) {
   return unescape ? t.replace(/[\^`]/g, '') : t; // cmd `^` and PowerShell backtick escapes; bash keeps its backticks
 }
 
-function refusal(command) {
-  if (typeof command !== 'string' || !command) return null;
-  for (const [quote, unescape] of [[' ', false], ['', false], [' ', true], ['', true]]) { // `t"ask"kill` joins, `cmd /c"taskkill` splits: try both
-    const n = normalize(command, quote, unescape);
-    if (segments(n).some(segmentRefused)) return MESSAGE;
-    // Stop-Process fed by a name lookup in an earlier segment of the same command.
-    if (/\bgetprocessesbyname\b/.test(n) && /\.kill\s*\(/.test(n)) return MESSAGE;
-    // A taskkill whose pid is a variable, in a loop over a process lookup.
-    if (/\btaskkill(?:\.exe)?\b[^;]*(?:^|\s)[/-]{1,2}pid\s+["']?[$%]/.test(n) && /(?:\$\(|`)\s*(?:tasklist|pgrep|pidof|ps|get-process|gps)\b/.test(n)) return MESSAGE;
-    if (new RegExp(String.raw`\b${STOP}\b`).test(n) || /\.kill\s*\(/.test(n) || (/(?:^|[\s;|&(])kill\s+-/.test(n) && /powershell|pwsh/.test(n))) {
-      for (const m of n.matchAll(/\b(?:get-process|gps)\b([^;|&)\n]*)/g)) if (!/\s-(?:id|pid)\s+\d/.test(m[1])) return MESSAGE;
+// A line continuation joins the lines in some shells (bash backslash-newline, PowerShell backtick-newline, cmd caret-newline) and not in
+// others (a PowerShell or cmd path ends in a backslash: `Set-Location C:\<NL>git push` is two commands). The tool is not known here, so a
+// command is matched both ways, as the quote variants are: as written, and with every continuation joined.
+const forms = (s) => [s, s.replace(/[\\`^]\r?\n/g, '')];
+
+function refusal(rawCommand) {
+  if (typeof rawCommand !== 'string' || !rawCommand) return null;
+  for (const command of forms(rawCommand)) {
+    for (const [quote, unescape] of [[' ', false], ['', false], [' ', true], ['', true]]) { // `t"ask"kill` joins, `cmd /c"taskkill` splits: try both
+      const n = normalize(command, quote, unescape);
+      if (segments(n).some(segmentRefused)) return MESSAGE;
+      // Stop-Process fed by a name lookup in an earlier segment of the same command.
+      if (/\bgetprocessesbyname\b/.test(n) && /\.kill\s*\(/.test(n)) return MESSAGE;
+      // A taskkill whose pid is a variable, in a loop over a process lookup.
+      if (/\btaskkill(?:\.exe)?\b[^;]*(?:^|\s)[/-]{1,2}pid\s+["']?[$%]/.test(n) && /(?:\$\(|`)\s*(?:tasklist|pgrep|pidof|ps|get-process|gps)\b/.test(n)) return MESSAGE;
+      if (new RegExp(String.raw`\b${STOP}\b`).test(n) || /\.kill\s*\(/.test(n) || (/(?:^|[\s;|&(])kill\s+-/.test(n) && /powershell|pwsh/.test(n))) {
+        for (const m of n.matchAll(/\b(?:get-process|gps)\b([^;|&)\n]*)/g)) if (!/\s-(?:id|pid)\s+\d/.test(m[1])) return MESSAGE;
+      }
     }
   }
   return null;
@@ -67,11 +74,4 @@ function denyOutput() {
   return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: MESSAGE } });
 }
 
-// The hooks block for a worker's or headless orchestrator's settings file.
-function hooksBlock() {
-  const path = require('node:path');
-  const fwd = (p) => p.split(path.sep).join('/');
-  return { PreToolUse: [{ matcher: 'Bash|PowerShell', hooks: [{ type: 'command', command: `"${fwd(process.execPath)}" "${fwd(path.join(__dirname, 'kill-hook.cjs'))}"`, timeout: 5 }] }] };
-}
-
-module.exports = { refusal, denyOutput, hooksBlock, MESSAGE };
+module.exports = { refusal, denyOutput, MESSAGE };

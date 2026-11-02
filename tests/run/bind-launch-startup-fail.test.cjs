@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // bind-launch-startup-fail.test.cjs — ADR 0045 decision 2 and amendment 2: a failed start leaves no key and no child. launchBound
 // protects the launch itself; spawn and restart then write the `starting` and `running` rows after the child exists, and a rejected
 // row write there used to fail the operation with the child and its bind still live. Real owner, real run manager, fake Claude. The

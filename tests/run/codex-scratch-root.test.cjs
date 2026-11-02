@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // A Codex reviewer's scratch folder lies outside its worktree, and `-s workspace-write` makes only the worktree writable. The
 // launch adds the folder, and only that folder, as an extra writable root (`--add-dir`, codex-cli 0.163.0). Every other launch
 // keeps its argv.

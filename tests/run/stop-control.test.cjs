@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // stop-control.test.cjs — build step 5c-2, Done item 2.
 // Drives createStopControl in-process against tests/run/fake-core.cjs (a worker.list planted onto the
 // fake core's own object, never edited in the shared file) and a hand-built hook — no processes

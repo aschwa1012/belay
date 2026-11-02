@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // crash.test.cjs — ADR 0039: the test helper that plays "the outside world" signals only what it can prove.
 
 const { readCreated } = require('../helpers/created.cjs');

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-preface-embed.test.cjs — the first-message index uses vector search. When a worker is spawned or relaunched the run
 // manager has the store owner embed the task's own text (memory.embedQuery, with the worker id), passes the vectors to
 // memory.index, and records one JSON receipt on index_injected: { hybrid, queries: [{ label, ms, ok }], failure? }. A failure

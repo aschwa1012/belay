@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // The text side of judging "wrong" reports: the reviewer's brief carries the reports and the report_verdicts shape, and the brief stays small
 // enough for the 4096 byte hand-back. Pure text; no store, no process.
 

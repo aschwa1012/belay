@@ -60,3 +60,15 @@ test('a snapshot sweeps the stale probe files in its own TEMP and keeps a fresh 
     assert.ok(fs.existsSync(other), 'only probe files are swept');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
+
+test('a TEMP moved after the module loads is the one the snapshot directory follows', { skip: process.platform !== 'win32', timeout: 30000 }, async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-snapmove-'));
+  try {
+    const first = path.join(base, 'first');
+    const moved = path.join(base, 'moved');
+    fs.mkdirSync(first); fs.mkdirSync(moved);
+    await child(first, `process.env.TEMP=process.env.TMP=${JSON.stringify(moved)};ID.processSnapshot().then(()=>process.exit(0));`);
+    assert.ok(fs.existsSync(path.join(moved, 'belay-snapshot')), 'the snapshot directory is made under the TEMP in force at the call');
+    assert.deepStrictEqual(fs.readdirSync(first), [], 'nothing is made under the TEMP the module saw when it loaded');
+  } finally { fs.rmSync(base, { recursive: true, force: true }); }
+});

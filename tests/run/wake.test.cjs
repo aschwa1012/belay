@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // wake.test.cjs — build step 5b, Done item 1.
 // `diffWorkers` and `wakeText` are pure and store-free: every case here drives them with plain row
 // objects, the shape `worker.list` returns (methods-run.cjs `decorate` plus this step's `mid_turn`

@@ -73,8 +73,8 @@ function modelsInUse(levers, live = {}) {
     const m = typeof entry === 'string' ? (entry === RP.CUSTOM ? { embedder: levers.embedder, reranker: levers.reranker } : has(RP.PROFILES, entry) ? RP.PROFILES[entry] : null) : entry;
     if (m) { note(m.embedder, who); note(m.reranker, who); }
   };
-  named(levers.profile, 'run');
-  named(levers.profile_cpu, 'run (CPU only)');
+  named(levers.profile, 'next run (config)');
+  named(levers.profile_cpu, 'next run (config, CPU only)');
   for (const [t, e] of Object.entries(levers.routing || {})) named(e, t);
   for (const [t, e] of Object.entries(levers.routing_cpu || {})) named(e, `${t} (CPU only)`);
   note(RP.NANO, 'every note (the base)');

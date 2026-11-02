@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // spawn-self-review.test.cjs — ADR 0058 decision 2 on the spawn path: a spawn whose task_id is a review of work its own worker id
 // held a lease on is refused E_SELF_REVIEW by the spawn's check_only call, before anything is written. A worker id is reusable within
 // its run once stopped (a later adapter of the same run), which is how a coder's id can come back as a reviewer's.

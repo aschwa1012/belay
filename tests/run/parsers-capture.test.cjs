@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // ADR 0041 §2: capture fields on tool_use and tool_result, and the proof that capture off changes
 // nothing. The off-hashes were taken from the parser at the base commit (Date.now fixed to 1,
 // sha256 of JSON.stringify of every event), so they pin the pre-capture output byte for byte.

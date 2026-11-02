@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // safe-kill-sites.test.cjs — ADR 0039 decision 4 on the run side. At each site that used to kill a pid it
 // read from a row or kept after the child's exit, a DIFFERENT live process (a sleeper this test spawned)
 // holds the pid, planted with a creation time that is not its own. The kill must refuse and the sleeper must

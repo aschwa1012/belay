@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // orchestrator-bind.test.cjs — ADR 0045 decision 2 on the orchestrator's side: both launchers (headless and interactive) open a bind
 // for the orchestrator before it is spawned and write its pipe into the orchestrator's mcp.json as --bind; the interactive one asks for
 // a bind that does not expire, because Claude Code starts the MCP server only after the trust dialog is answered. A core with no bind

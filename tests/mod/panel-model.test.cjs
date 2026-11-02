@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // The panel's memory line (notes held for the archive reviewer), tested in npm test and CI. The plugin's own tests
 // (src/mod/tests/*.test.ts) run only in Claude Code's plugin harness; these load the same pure model by type stripping.
 const test = require('node:test');

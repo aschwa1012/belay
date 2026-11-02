@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // orchestrator-idle-turn.test.cjs — an idle hold names the turn whose end began the idle period. Two turn ends can arrive in one
 // chunk while a poll read is in flight; the next poll must not stamp the hold with the later turn. The read is stalled by the
 // test (no timing): the fake core's worker.list waits on a promise the test releases once both results are in the stream.

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // A start or restart that finds its worker's pid gone waits for the held exit event (awaitSettled), then failNoReady waits for the
 // exit code (awaitExitCode). The two together may not exceed EXIT_CODE_WAIT_MS, the allowance restartBoundMs makes for them.
 // An injected clock stands in for the time the first wait took, so nothing here sleeps.

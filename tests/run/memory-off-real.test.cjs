@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-off-real.test.cjs — memory-off-identity.test.cjs on the real store. One scripted worker turn pair runs through
 // the run manager with every memory lever off, against the real core on the harness view, and the rows and events it
 // leaves are compared by column with what the lever-off path wrote before ADR 0044: written_by differs, and the turn row
