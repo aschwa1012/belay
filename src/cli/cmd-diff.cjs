@@ -46,7 +46,7 @@ function parseSince(v) {
 }
 
 function descriptorOf(table, row) {
-  if (table === 'run') return `epoch ${row.epoch}`;
+  if (table === 'run') { const h = require('../core/run-harness.cjs').parsed(row.harness); return `epoch ${row.epoch}${h && h.build ? ` build ${h.build}` : ''}`; } // ADR 0082: a build change between epochs reads as one
   if (table === 'lease') return `holder ${row.holder}`;
   if (table === 'checkpoint') return `source ${row.source}`;
   return `state ${row.state}`; // worker, task

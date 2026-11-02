@@ -220,6 +220,7 @@ function renderText(rc) {
   const lines = [
     `run ${v(rc.run_id)} (chosen by ${rc.run_id_source})`,
     `  started ${iso(r.started_at)}  ${state}  exit_reason ${v(r.exit_reason)}`,
+    `  belay ${clean(require('../core/run-harness.cjs').line(r.harness), Infinity)}`, // ADR 0082
     ...(r.paused_at != null && r.ended_at == null ? [`  PAUSED${/embedder-failure [(]/.test(r.paused_by || '') ? ' for an embedder failure' : ''} ${iso(r.paused_at)} by ${v(r.paused_by)}`] : []),
     `orchestrator  model ${v(o.model)}  turns ${v(o.turns)}  wall ${wallText(o)}  cost ${money(o.cost_usd)}  (orchestrator tool calls: no column)`,
     tokensLine(o),
@@ -294,7 +295,7 @@ async function run(ctx) {
     const orchestrator = orchestratorView(chosen);
     const receipt = {
       run_id: chosen.id, run_id_source: source,
-      run: { started_at: nn(chosen.started_at), ended_at: nn(chosen.ended_at), exit_reason: nn(chosen.exit_reason), alive: !!chosen.alive, paused_at: nn(chosen.paused_at), paused_by: nn(chosen.paused_by) },
+      run: { started_at: nn(chosen.started_at), ended_at: nn(chosen.ended_at), exit_reason: nn(chosen.exit_reason), alive: !!chosen.alive, paused_at: nn(chosen.paused_at), paused_by: nn(chosen.paused_by), harness: nn(chosen.harness) },
       orchestrator, workers,
       unassigned_tasks: tasks.filter(t => !assigned.has(t.id)).map((t) => taskView(t, chosen.started_at, tasksById)),
       integrate_checks: RCK.integrateChecksOf(await core.integration.list({ run_id: chosen.id }).then((r) => r.integrations, () => []), chosen.id), // a read that fails leaves the block empty
