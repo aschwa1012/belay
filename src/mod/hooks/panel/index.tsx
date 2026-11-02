@@ -26,7 +26,7 @@ import type { BelayMenu as BelayMenuT, BelayPanelMenu, BelayPanelSettled, BelayP
 import { argvFor, buildSnapshot, fatalSnapshot, fwd, launcherLine, isWindowsPath, needsRun, parseRan, parseRunFile, projectRootOf, repoCliGuess, type Ran, type RunFileRead } from './fetch'
 import { CONFIRM_MS, normHeld, reasonProblem, reviewProject, SETTLE_ACTIONS, SETTLE_UNKNOWN, PENDING_STALE_MS, pruneSettled, settleArgs, settleKind, settleLine, settledActive, shortId, type SettleAction } from './held'
 import { DEFAULT_SETTINGS, DEFAULT_UI } from './model'
-import { actionId, confirmText, cycleDraft, draftOf, gb, modelById, normBadge, normMenu, resultLine, routeFit, routingWrites, sameDraft, writeArgv, type MemAction } from './memory'
+import { actionId, PROFILE_KEYS, confirmText, cycleDraft, draftOf, gb, modelById, normBadge, normMenu, resultLine, routeFit, routingWrites, sameDraft, writeArgv, type MemAction } from './memory'
 import { Band, BandWaiting, Fallback, Pane, type Act, type Els } from './view'
 
 const PANE = 'belay'
@@ -326,7 +326,9 @@ async function dispatchMenu($: Host, a: MemAction, menu: BelayMenuT): Promise<vo
     if ('error' in argv) { $.ui.toast(`belay: ${argv.error}`); ok = false; break }
     try {
       const res = await $.process.run(argvFor(r.cli, argv[0]!, watch.dataDir), { timeoutMs: step.kind === 'set' || step.kind === 'setMany' ? MEM_TIMEOUT_MS.set : step.kind === 'delete' ? MEM_TIMEOUT_MS.delete : MEM_TIMEOUT_MS.verify, ...(cwd ? { cwd } : {}) })
-      $.ui.toast(resultLine(step, res.exitCode, res.stdout, res.stderr, menu))
+      // A profile write names the runs that are live NOW, so the menu is read again first (the cached one is up to 10 s old).
+      const seen = step.kind === 'set' && res.exitCode === 0 && PROFILE_KEYS.includes(step.key) ? await freshMenu($, watch, menu) : menu
+      $.ui.toast(resultLine(step, res.exitCode, res.stdout, res.stderr, seen))
       if (res.exitCode !== 0) { ok = false; break }
     } catch (err) {
       $.ui.toast(`belay: ${step.kind} did not finish: ${firstLine(err instanceof Error ? err.message : String(err)) || 'no answer'}`)
@@ -365,6 +367,11 @@ async function memPress($: Host, a: MemAction): Promise<void> {
     return
   }
   await update($, uiA, u => ({ ...u, confirm: null, memConfirm: { id, text: confirmText(a, menu), at: now } }))
+}
+
+async function freshMenu($: Host, watch: BelayPanelWatch, was: BelayMenuT): Promise<BelayMenuT> {
+  try { await fetchMenu($, watch, true) } catch { return was }
+  return (await read($, menuA)).menu ?? was
 }
 
 // One press of the Memory menu: a tab or a routing pick changes only what is drawn; a `cmd` prints the command to run (a download, an embed and the

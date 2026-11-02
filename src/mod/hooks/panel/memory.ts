@@ -225,10 +225,13 @@ export function probeLine(m: BelayMenu): string {
 }
 
 // A profile setting is the config's default for the NEXT run: a live run keeps the profile it started with, and a run spec's own memory.profile overrides the config.
+export const PROFILE_KEYS = ['memory.profile', 'memory.profile_cpu']
 function profileScope(key: string, m: BelayMenu | null): string {
   if (key !== 'memory.profile' && key !== 'memory.profile_cpu') return ''
   const live = m ? m.liveRuns : []
-  return live.length ? `; live run ${live.join(', ')} keeps the profile it started with, this applies to the next run, and a spec's memory.profile overrides it` : "; applies to the next run, and a spec's memory.profile overrides it"
+  const over = `a spec's ${key} overrides it`
+  if (!live.length) return `; applies to the next run, and ${over}`
+  return `; live ${live.length === 1 ? `run ${live[0]} keeps the profile it started with` : `runs ${live.join(', ')} keep the profiles they started with`}, this applies to the next run, and ${over}`
 }
 
 // What a finished command says, as one toast line: a settings receipt (`old -> new`), an embedder receipt, or the refusal's first line.
