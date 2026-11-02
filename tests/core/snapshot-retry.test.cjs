@@ -154,3 +154,23 @@ test('an unverified row is refused with the pid, the image and the exact way to 
   assert.strictEqual(m.refused.kind, 'mismatch');
   assert.strictEqual(m.refused.manual, undefined, 'another process provably holds the pid: no by-hand advice to kill it');
 });
+
+test('the first row of a spawn says its creation time is pending, so a kill meeting it refuses instead of guessing by image', async () => {
+  const live = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
+  try {
+    let release; const gateOpen = new Promise((r) => { release = r; });
+    const w = { pid: live.pid };
+    const done = PI.noteSpawn(w, live, { createdOf: async () => { await gateOpen; return { created: Date.now() }; } });
+    // Before the read finishes: what the first row carries.
+    assert.strictEqual(w.pidCreated, null);
+    assert.match(w.pidCreatedError, /being read at spawn; retrying while the worker runs/);
+    assert.strictEqual(PI.rowFields(w).pid_created_error, w.pidCreatedError);
+    const t = P.rowTarget({ pid: 4203, substrate: 'claude-code', pid_image: 'claude.exe', pid_created_error: PI.rowFields(w).pid_created_error });
+    const k = await P.killProcess(t, { kill: noKill, snapshot: async () => mapOf([[4203, 1, T, 'claude.exe']]) });
+    assert.strictEqual(k.refused.kind, 'unverifiable', 'no kill by image for a pending row');
+    release(); await done;
+    assert.ok(Number.isFinite(w.pidCreated));
+    assert.strictEqual(w.pidCreatedError, null, 'a landed reading clears the pending error');
+    assert.strictEqual(PI.rowFields(w).pid_created_error, null);
+  } finally { live.kill(); }
+});
