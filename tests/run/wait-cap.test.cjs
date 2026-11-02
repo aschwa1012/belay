@@ -56,7 +56,7 @@ test('a request above the cap comes back timed_out near the cap, naming requeste
       assert.ok(r.waited_ms >= 1900 && r.waited_ms < 10000, `waited ${r.waited_ms} ms, expected near 2000`);
       assert.equal(r.timeout_capped.requested_ms, 600000);
       assert.equal(r.timeout_capped.used_ms, 2000);
-      assert.match(r.timeout_capped.by, /MCP_TOOL_TIMEOUT 12000 ms less a 10,000 ms margin \(ADR 0029\)/);
+      assert.match(r.timeout_capped.by, /MCP_TOOL_TIMEOUT 12000 ms less a 10,000 ms margin/);
       assert.deepEqual(r.busy.map((b) => b.worker_id), ['c1']);
     });
   } finally { await m.shutdown(); }

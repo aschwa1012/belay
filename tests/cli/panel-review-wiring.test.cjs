@@ -64,6 +64,15 @@ test('the check is not a tripwire: each way around it is found', () => {
     ['a computed host member', patched('hooks/panel/index.tsx', 'const firstLine =', "const sneak3 = ($: any) => { const k = 'pro' + 'cess'; return $[k].run(['x']) }\nconst firstLine ="), /reached by a computed member/],
     ['an alias of the host object', patched('hooks/panel/index.tsx', 'const firstLine =', 'async function sneak4($: any) { const h = $\n  return h }\nconst firstLine ='), /reached by a computed member, a cast or an alias/],
     ['the review word in a new place', patched('hooks/panel/index.tsx', 'const firstLine =', "const WORDS = ['review', 'x']\nconst firstLine ="), /the string "review" appears outside/],
+    ['a second caller of dispatchMenu', patched('hooks/panel/index.tsx', 'const firstLine =', "async function otherMenu($: Host, m: any) { await dispatchMenu($, { kind: 'delete', model: 'x/y' }, m) }\nconst firstLine ="), /dispatchMenu is called from/],
+    ['memPress called from the read round', patched('hooks/panel/index.tsx', 'const firstLine =', "async function sneakMenu($: Host) { await memPress($, { kind: 'saveRouting' }) }\nconst firstLine ="), /memPress is called from/],
+    ['memAct called from a timer-side helper', patched('hooks/panel/index.tsx', 'const firstLine =', "async function sneakAct($: Host) { await memAct($, { kind: 'refresh' }) }\nconst firstLine ="), /memAct is named in/],
+    ['writeArgv used by the read helper', patched('hooks/panel/index.tsx', 'const firstLine =', "const sneakArgv = (m: any) => writeArgv({ kind: 'set', key: 'memory.profile', value: 'x' }, m)\nconst firstLine ="), /writeArgv is named in/],
+    ['a .mem member in the wake', patched('hooks/wake/index.ts', 'for await (const chunk of $.process.spawn(', "act.mem({ kind: 'refresh' }); for await (const chunk of $.process.spawn("), /`\.mem` member is used outside/],
+    ['a .mem member in the panel\'s index', patched('hooks/panel/index.tsx', 'const firstLine =', "const sneakMem = (act: any) => act.mem({ kind: 'refresh' })\nconst firstLine ="), /`\.mem` member is used outside/],
+    ['bracket access to the mem handler', patched('hooks/panel/view.tsx', 'function Orchestrator(', "const sneakB = (act: Act) => act['mem']({ kind: 'refresh' })\nfunction Orchestrator("), /bracket access to \['mem'\]/],
+    ['the wake names the menu write chain', patched('hooks/wake/index.ts', 'for await (const chunk of $.process.spawn(', "const w = writeArgv; for await (const chunk of $.process.spawn("), /names the Memory menu's write chain/],
+    ['runJson called with the memory menu words plus a write verb', patched('hooks/panel/index.tsx', 'const firstLine =', "async function sneakM2($: Host, cli: string[]) { await runJson($, cli, ['memory', 'embed', '--model', 'x'], null) }\nconst firstLine ="), /runJson is called other than with a literal read verb/],
     ['a second caller of settlePress', patched('hooks/panel/index.tsx', 'const firstLine =', "async function other2($: Host) { await settlePress($, 'x') }\nconst firstLine ="), /settlePress is named in/],
     ['settlePress aliased in acts', patched('hooks/panel/index.tsx', '    commit: id => { void settlePress($, id) },', '    commit: id => { const go = settlePress; void go($, id) },'), /settlePress is named in/],
     ['settleArgs used by a second function', patched('hooks/panel/index.tsx', 'const firstLine =', "const sneakArgs = () => settleArgs('archive', 'x', 'y')\nconst firstLine ="), /settleArgs is used in/],
@@ -145,4 +154,21 @@ test('the command the button runs is exactly belay memory review --project <p> -
   assert.match(files['hooks/panel/index.tsx'], /const attempts: string\[\]\[\] = \[\[\], \.\.\.\(watch\.runId \? \[\[RUN_FLAG, watch\.runId\]\] : \[\]\)\]/);
   assert.match(files['hooks/panel/index.tsx'], /\[\.\.\.REVIEW_ARGS, project, START_FLAG, \.\.\.runArg\]/);
   assert.match(files['hooks/panel/index.tsx'], /if \(!needsRun\(res\.exitCode, res\.stdout, res\.stderr, watch\.runId\)\) break/);
+});
+
+test('the Memory menu writes only these settings and these commands, and a model must be one the menu lists', async () => {
+  const { loadPanelModule } = require('../mod/load-ts.cjs');
+  const M = await loadPanelModule('memory');
+  assert.deepStrictEqual(M.SETTABLE, ['memory.profile', 'memory.profile_cpu', 'memory.on_heavy_failure', 'memory.on_heavy_behind', 'memory.rerank_depth', 'memory.search_log', 'memory.search_log_cap_mb', 'memory.routing', 'memory.routing_cpu']);
+  const menu = { models: [{ id: 'jinaai/jina-reranker-v1-tiny-en', kind: 'reranker', runtime: 'onnx' }, { id: 'Qwen/Qwen3-Embedding-4B-GGUF', kind: 'embedder', runtime: 'gguf' }] };
+  assert.deepStrictEqual(M.writeArgv({ kind: 'set', key: 'memory.profile', value: 'gpu-rerank' }, menu), [['settings', 'memory.profile', 'gpu-rerank']]);
+  for (const bad of [{ kind: 'set', key: 'memory.project', value: 'x' }, { kind: 'set', key: 'agents.coder.model', value: 'x' }, { kind: 'set', key: 'mod.pane', value: 'docked' }, { kind: 'set', key: 'memory.profile', value: '' }, { kind: 'set', key: 'memory.profile', value: 'a\nb' }]) {
+    assert.ok(M.writeArgv(bad, menu).error, JSON.stringify(bad));
+  }
+  assert.deepStrictEqual(M.writeArgv({ kind: 'verify', model: null }, menu), [['embedder', 'verify', '--gpu']]);
+  assert.deepStrictEqual(M.writeArgv({ kind: 'verify', model: 'Qwen/Qwen3-Embedding-4B-GGUF' }, menu), [['embedder', 'verify', '--gpu', '--model', 'Qwen/Qwen3-Embedding-4B-GGUF']]);
+  assert.deepStrictEqual(M.writeArgv({ kind: 'delete', model: 'jinaai/jina-reranker-v1-tiny-en' }, menu), [['embedder', 'delete', 'jinaai/jina-reranker-v1-tiny-en']]);
+  for (const bad of [{ kind: 'delete', model: 'evil/model' }, { kind: 'delete', model: '--gpu' }, { kind: 'delete', model: '../../x' }, { kind: 'verify', model: 'a b/c' }, { kind: 'cmd', line: 'belay stop' }, { kind: 'saveRouting' }, { kind: 'tab', tab: 'models' }]) {
+    assert.ok(M.writeArgv(bad, menu).error, JSON.stringify(bad));
+  }
 });

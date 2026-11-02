@@ -37,16 +37,16 @@ function compareVersions(a, b) {
 function verifyClaudeReady(w, ready) {
   const version = ready && ready.claude_code_version;
   if (version && compareVersions(version, MIN_CLAUDE_CODE_VERSION) < 0) {
-    return { ok: false, reason: `the session reported Claude Code ${version} in its system/init, and belay needs ${MIN_CLAUDE_CODE_VERSION} or later (ADR 0021 amendment 3); set BELAY_CLAUDE_EXE to a newer install` };
+    return { ok: false, reason: `the session reported Claude Code ${version} in its system/init, and belay needs ${MIN_CLAUDE_CODE_VERSION} or later; set BELAY_CLAUDE_EXE to a newer install` };
   }
   const servers = ready && ready.mcp_servers;
   if (!Array.isArray(servers)) {
-    return { ok: false, reason: `the ${L.MCP_SERVER_NAME} MCP server was not verified at ready: the system/init event carried no mcp_servers list (ADR 0001 §8)` };
+    return { ok: false, reason: `the ${L.MCP_SERVER_NAME} MCP server was not verified at ready: the system/init event carried no mcp_servers list` };
   }
   const seen = servers.map((s) => ({ name: s && s.name, status: s && s.status }));
   const belay = seen.find((s) => s.name === L.MCP_SERVER_NAME);
   if (!belay || belay.status !== 'connected') {
-    return { ok: false, reason: `the system/init event listed mcp_servers ${JSON.stringify(seen)}, and ADR 0001 §8 requires ${L.MCP_SERVER_NAME} there with status connected` };
+    return { ok: false, reason: `the system/init event listed mcp_servers ${JSON.stringify(seen)}, and belay requires ${L.MCP_SERVER_NAME} there with status connected` };
   }
   // ADR 0024, build step S2: a surface other than the one it allows fails this same gate, for a
   // fresh launch, a restart, a resume and the orchestrator alike (extends the gate; adds no new one).
@@ -72,7 +72,7 @@ async function verifyReady(w, ready, deadline) {
     if (now() >= deadline || spent >= SETTLED_GRACE_MS) {
       return {
         ok: false,
-        reason: `the worker adapter logged no tools/list to ${logPath} inside the startup window, so nothing establishes that the ${L.MCP_SERVER_NAME} MCP server connected (ADR 0001 §8): ${hit.reason || 'no such line in ' + hit.new_bytes + ' bytes'}`,
+        reason: `the worker adapter logged no tools/list to ${logPath} inside the startup window, so nothing establishes that the ${L.MCP_SERVER_NAME} MCP server connected: ${hit.reason || 'no such line in ' + hit.new_bytes + ' bytes'}`,
       };
     }
     await sleep(WIRE_LOG_POLL_MS);

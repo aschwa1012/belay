@@ -27,9 +27,10 @@ function cliAsync(args, dataDir, extraEnv) {
     let stdout = ''; proc.stdout.on('data', (d) => { stdout += d; });
     let stderr = ''; proc.stderr.on('data', (d) => { stderr += d; });
     proc.once('exit', (status) => {
+      const exitAt = Date.now();
       let receipt = null;
       try { receipt = JSON.parse(status === 0 ? stdout : stderr); } catch { /* left null */ }
-      resolve({ status, stdout, stderr, receipt });
+      resolve({ status, stdout, stderr, receipt, exitAt });
     });
   });
 }
@@ -109,7 +110,7 @@ test('approve: over the owner pipe the verdict row lands allowed with verdict_by
     let waitResolvedAt = null;
     const waitPromise = w1.permission.wait({ id, timeout_ms: 10000 }).then((v) => { waitResolvedAt = Date.now(); return v; });
 
-    const t0 = Date.now();
+    const t0 = Date.now(); // recorded in the failure message only: it includes the CLI's own cold node start, which a loaded host stretches
     const r = await cliAsync(['approve', id], dataDir);
     assert.strictEqual(r.status, 0, JSON.stringify(r));
     assert.strictEqual(r.receipt.decided, true);
@@ -121,9 +122,12 @@ test('approve: over the owner pipe the verdict row lands allowed with verdict_by
 
     const waited = await waitPromise;
     assert.strictEqual(waited.timed_out, false, 'the in-flight wait must resolve, not time out');
-    // The decide lands well inside the CLI's own worker_after budget (2,000 ms), long before the CLI
-    // process itself returns; the waiter is woken the instant it commits.
-    assert.ok(waitResolvedAt - t0 < 2000, `the in-flight wait resolved ${waitResolvedAt - t0} ms after the approve began`);
+    // The waiter is woken by the commit itself, so it is timed from the commit (the verdict's decided_at), not from before the CLI
+    // spawned, and it must have resolved before the CLI process returned (that process also waits out worker_after).
+    const decidedAt = r.receipt.verdict.decided_at;
+    assert.ok(Number.isFinite(decidedAt), 'the verdict names when it was decided');
+    assert.ok(waitResolvedAt - decidedAt < 500, `the in-flight wait resolved ${waitResolvedAt - decidedAt} ms after the verdict committed (${waitResolvedAt - t0} ms after the approve began)`);
+    assert.ok(waitResolvedAt <= r.exitAt, `the in-flight wait resolved ${waitResolvedAt - r.exitAt} ms after the CLI exited`);
 
     assert.strictEqual(typeof r.receipt.worker_after_moved, 'boolean', 'worker_after names whether the row moved');
     assert.strictEqual(typeof r.receipt.worker_after_waited_ms, 'number');

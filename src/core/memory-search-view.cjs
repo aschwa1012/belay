@@ -20,20 +20,21 @@ const round = x => Math.round(x * 10000) / 10000;
 const parse = s => { if (s == null) return null; if (typeof s === 'object') return s; try { return JSON.parse(s); } catch { return null; } };
 const cut = (s, n) => (Buffer.byteLength(s) <= n ? s : Buffer.from(s).subarray(0, n).toString('utf8').replace(/�+$/, ''));
 
-// The result's description of its relevance numbers.
-function relevanceOf(sem, model) {
+// The result's description of its relevance numbers. `floor` null: the embedder's cosine has no measured floor (a heavy tier, ADR 0050).
+function relevanceOf(sem, model, floor = RELEVANCE_FLOOR) {
   if (!sem) return { by: 'none', why: 'no query vector: keyword search ranks by term match, which is not on the cosine scale' };
-  return { by: 'cosine', model: model || null, floor: RELEVANCE_FLOOR };
+  if (floor === null) return { by: 'cosine', model: model || null, floor: null, why: 'the relevance floor was measured for voyage-4-nano only; this embedder has none until it is measured, so no row is marked below it and no absence is claimed' };
+  return { by: 'cosine', model: model || null, floor };
 }
 
 // Below the floor, on the number the reader is shown (four decimals): a row shown at exactly the floor reaches it, here and in the absence claim.
-const belowFloor = cosine => round(cosine) < RELEVANCE_FLOOR;
+const belowFloor = (cosine, floor = RELEVANCE_FLOOR) => floor !== null && round(cosine) < floor;
 
 // The per-row relevance fields: { relevance, low_relevance? }.
-function relevanceFields(cosine) {
+function relevanceFields(cosine, floor = RELEVANCE_FLOOR) {
   if (typeof cosine !== 'number') return { relevance: null };
   const r = round(cosine);
-  return belowFloor(cosine) ? { relevance: r, low_relevance: true } : { relevance: r };
+  return belowFloor(cosine, floor) ? { relevance: r, low_relevance: true } : { relevance: r };
 }
 
 // A note's evidence as the reader needs it, with `checked: true` on an entry belay verified when the note was written, and `passed`, whether the
@@ -46,8 +47,8 @@ function evidenceOf(body) {
 
 // The compact row (ADR 0057 decision 1): what an orchestrator acts on, and nothing it does not. `hold` is the note's active hold
 // ({ kind, reason }, from the hold row) or null; left undefined, the note's own pointer marks it.
-function compactRow(r, cosine, superseded = false, hold = undefined) {
-  const out = { id: r.id, type: r.type, title: r.title || deriveTitle(r.text), status: r.status || 'unverified', ...relevanceFields(cosine), created_at: r.created_at };
+function compactRow(r, cosine, superseded = false, hold = undefined, floor = RELEVANCE_FLOOR) {
+  const out = { id: r.id, type: r.type, title: r.title || deriveTitle(r.text), status: r.status || 'unverified', ...relevanceFields(cosine, floor), created_at: r.created_at };
   if (r.supersedes) out.supersedes = r.supersedes; // the row this one replaced
   if (superseded) out.superseded = true; // replaced by a newer row (on the page only with include_superseded)
   if (r.type !== 'note') { out.text = r.text; return out; }
@@ -74,7 +75,7 @@ const plural = (n, one, many) => (n === 1 ? one : many);
 
 // The warning, first key of the result. Failures first; then rows the semantic scan could not see (with results or without, C4); then a
 // page whose every row is below the floor; then the reasons an empty page proves nothing.
-function warningFor(o, ran, failed, results, absence, unembedded, below) {
+function warningFor(o, ran, failed, results, absence, unembedded, below, floor = RELEVANCE_FLOOR) {
   if (failed.length) {
     const did = failed.map(f => `${f.mode} search did not run (${f.code})`).join('; ');
     const what = ran.length ? `these are ${ran.join(' and ')} matches only` : 'nothing was searched';
@@ -89,6 +90,7 @@ function warningFor(o, ran, failed, results, absence, unembedded, below) {
     return `${o.mode} search only; ${o.mode === 'semantic' ? 'keyword' : 'semantic'} search did not run; no match here does not mean no such entry`;
   }
   if (gap) return `${gap}; no match here does not mean no such entry`;
+  if (!absence && floor === null) return 'both modes ran and found nothing, but this embedder has no measured relevance floor, so absence is not claimed; an empty page does not mean no such entry';
   if (!absence) return 'both modes ran but offset or min_score narrowed the result; an empty page does not mean no such entry';
   return null;
 }

@@ -56,7 +56,7 @@ function admit(owner, c, req) {
   if (open && (!checks || !c.belayPeer)) return anonymous();
   if (sent.role !== 'operator') return refuse('unbound', `${req.method} needs a bound caller on this owner (it serves bound callers): a role is taken from a bound process or from the operator check, never from a request`);
   if (typeof owner.opts.operatorCheck !== 'function') return refuse('unverifiable', `${req.method} claims the operator, and this owner has no check that can vouch for a pipe client, so it fails closed`);
-  return Promise.resolve(owner.opts.operatorCheck({ conn: c, caller: sent, method: req.method })).then((v) => {
+  return Promise.resolve(owner.opts.operatorCheck({ conn: c, caller: sent, method: req.method, persist: !!spec && spec.kind === 'write' })).then((v) => {
     if (!v || v.ok !== true) return open ? anonymous() : refuse('operator_check', `${req.method}: the operator check refused this connection${v && v.reason ? ` (${v.reason})` : ''}`);
     c.belayVia = v.via || 'peer';
     const { peer_pid: forged, ...rest } = sent; // the checked peer's pid is the owner's finding, never the request's

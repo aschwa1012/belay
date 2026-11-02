@@ -1,5 +1,5 @@
 'use strict';
-// cmd-memory.cjs — `belay memory search|list|show|timeline|verify|stats|export|import` (ADR 0040 §5, ADR 0043 §3).
+// cmd-memory.cjs — `belay memory search|list|show|timeline|verify|stats|export|import|search-log|menu` (ADR 0040 §5, ADR 0043 §3).
 // The read verbs, `export` among them, are mode R: they read state without writing anything and never
 // `mkdir owner.lock`. `verify`, `import` and `embed` are mode W (they write rows, electing an owner on demand and
 // shutting it down again; `embed --dry-run` only reads). Parsing and text
@@ -333,6 +333,16 @@ async function run(ctx) {
 
   const found = C.discover(ctx.cwd);
   const dataDir = C.dataDirOf(found, ctx);
+
+  // search-log reads a copy of the store itself (no core, no owner): checked and run before any core is opened.
+  if (parsed.sub === 'search-log') {
+    try { return await require('./cmd-memory-searchlog.cjs').run(ctx, parsed, dataDir); } catch (e) { return failure('search-log', e); }
+  }
+
+  // menu reads the config, the model cache and a copy of the store itself (no core, no owner), like search-log.
+  if (parsed.sub === 'menu') {
+    try { return await require('./cmd-memory-menu.cjs').run(ctx, found, dataDir, parsed.opts); } catch (e) { return failure('menu', e); }
+  }
 
   // Mode W for verify, as for `worker rm`: it never creates the data dir.
   if ((parsed.sub === 'verify' || parsed.sub === 'embed' || LC.writes(parsed)) && !fs.existsSync(dataDir)) {

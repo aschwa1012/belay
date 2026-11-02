@@ -178,7 +178,7 @@ function noteModeOf(E, caller, namespace) {
 // in the per-project order the hand-back uses. Returns the note item as written (invariant 5).
 async function storeNote(E, caller, args, namespace, lv) {
   for (const k of NOTE_REFUSED.concat(HARNESS_FIELDS, HARNESS_STORE_FIELDS)) {
-    if (args[k] !== undefined) throw err('E_NOTE_SHAPE', `memory.store: ${k} is not a field of a note. A write to ${namespace} is a note here: pass kind, title, when, basis, evidence (with basis observed), and optionally applies_to and subjects${k === 'supersedes' ? `. A note replaces another through review, not by naming it (ADR 0047): write the new note, and if it matches the old one it waits in pending to be resolved as supersedes${caller.role === 'orchestrator' ? '; or report the old one with memory_report replaced_by' : ' with memory_note_resolve'}` : ''}`, { field: k, namespace });
+    if (args[k] !== undefined) throw err('E_NOTE_SHAPE', `memory.store: ${k} is not a field of a note. A write to ${namespace} is a note here: pass kind, title, when, basis, evidence (with basis observed), and optionally applies_to and subjects${k === 'supersedes' ? `. A note replaces another through review, not by naming it: write the new note, and if it matches the old one it waits in pending to be resolved as supersedes${caller.role === 'orchestrator' ? '; or report the old one with memory_report replaced_by' : ' with memory_note_resolve'}` : ''}`, { field: k, namespace });
   }
   const worker = caller.role === 'worker';
   const task = worker ? derivedTask(E, caller) : null;
@@ -306,7 +306,7 @@ async function warm(E, caller, args = {}) {
   const p = E.getEmbedder();
   if (args.wait) await p; else p.catch(() => { /* reported by state and error below */ });
   const state = o && o.embedState ? o.embedState() : 'unknown';
-  return { state, pid: o && o.embedInfo ? o.embedInfo.pid : null, error: o && o.embedError ? o.embedError : null };
+  return { state, pid: o && o.embedInfo ? o.embedInfo.pid : null, error: o && o.embedError ? o.embedError : null, rerankers: require('./retrieval-warm.cjs').warmList(E) };
 }
 
 module.exports = { leversOf, runAlpha, store, delete: del, stats, warm, nsFor, resolveNamespace, projectOf, withEmbedding, notifyEmbedderFailure, adviseEmbedderFailure, reachOf, checkReach, runEmbedderMode, scrub };

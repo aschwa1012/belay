@@ -60,17 +60,30 @@ export function clipCells(s: string, n: number): string {
 }
 
 // Break prose at spaces. A lone '·' token at a break is dropped rather than left to start or end a line.
+// A number and its unit (`~3.6 s`, `2.7 GB`, `500 MB`) are one word, and so is anything joined with a no-break space: the wrap never splits them.
+const UNIT = /^(?:ms|s|min|h|KB|MB|GB|TB|KiB|MiB|GiB|%)$/
+const NUM = /^~?\d[\d.,]*$/
+function words(text: string): string[] {
+  const out: string[] = []
+  for (const w of text.split(/[ \t\r\n]+/).filter(Boolean)) {
+    const prev = out[out.length - 1]
+    if (prev !== undefined && UNIT.test(w) && NUM.test(prev.split('\u00a0').pop()!)) out[out.length - 1] = `${prev}\u00a0${w}`
+    else out.push(w)
+  }
+  return out
+}
+
 export function wordWrap(text: string, room: number): string[] {
   const out: string[] = []
   let cur = ''
-  for (const w of text.split(/\s+/).filter(Boolean)) {
+  for (const w of words(text)) {
     if (cur === '') { cur = w; continue }
     if (cells(cur) + 1 + cells(w) <= room) { cur += ` ${w}`; continue }
     out.push(cur)
     cur = w === '·' ? '' : w
   }
   if (cur !== '') out.push(cur)
-  return out.length ? out : ['']
+  return out.length ? out.map(l => l.replace(/\u00a0/g, ' ')) : ['']
 }
 
 // Like wordWrap, but a word wider than the room (a long path or id) is broken on whole grapheme clusters instead of left to be cut.

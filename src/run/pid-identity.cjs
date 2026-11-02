@@ -46,6 +46,17 @@ async function endUnregistered(child, error) {
   return out;
 }
 
+// The record carries the last moment its process was seen alive, so a record retired after its harness died closes there and not when
+// it is read. The harness holds the child handle: while the handle says the child has not exited, a timer stamps the record every
+// SEEN_STAMP_MS, whether or not the worker writes a row (a long tool call writes none). A writer; never a read path.
+const SEEN_STAMP_MS = 30000;
+function stampWhileAlive(child, { every = SEEN_STAMP_MS, touch = (pid) => SR.touch(pid), setTimer = setInterval, clearTimer = clearInterval } = {}) {
+  const timer = setTimer(() => { if (!exitedYet(child)) { try { touch(child.pid); } catch { /* a stamp is a refinement */ } } }, every);
+  if (timer && typeof timer.unref === 'function') timer.unref();
+  child.once('exit', () => clearTimer(timer));
+  return timer;
+}
+
 function registerSpawn(w, child, dataDir, kind = 'worker') {
   if (!Number.isInteger(child.pid)) return;
   try { SR.register({ pid: child.pid, kind, dataDir, workerId: w.id, spawnedAt: child.belaySpawnStartedAt }); }
@@ -55,6 +66,7 @@ function registerSpawn(w, child, dataDir, kind = 'worker') {
     throw refusal;
   }
   child.once('exit', () => SR.unregister(child.pid));
+  stampWhileAlive(child);
 }
 
 function noteSpawn(w, child, { createdOf = P.createdOf, gate = ID.gate, schedule = RETRY_SCHEDULE_MS, every = RETRY_EVERY_MS, snapshotShared = ID.snapshotShared } = {}) {
@@ -153,4 +165,4 @@ async function killWorker(w) {
   return P.killProcess(targetOf(w)).catch((e) => ({ tree: null, pidKill: { signalled: false, error: 'EIDENTITY' }, identity: null, refused: { refused: 'identity', kind: 'unverifiable', detail: (e && e.message) || String(e) } }));
 }
 
-module.exports = { RETRY_SCHEDULE_MS, RETRY_EVERY_MS, killWorker, noteSpawn, registerSpawn, adoptFromRow, rowFields, targetOf, noProcess, pidLive, verifiedLive };
+module.exports = { RETRY_SCHEDULE_MS, RETRY_EVERY_MS, killWorker, noteSpawn, registerSpawn, stampWhileAlive, adoptFromRow, rowFields, targetOf, noProcess, pidLive, verifiedLive };

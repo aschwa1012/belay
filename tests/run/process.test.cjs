@@ -74,11 +74,23 @@ test('childPids finds a real grandchild and killTree removes the subtree', async
   await sleep(900);
   const kids = await P.childPids(parent.pid);
   assert.ok(kids.length >= 1, 'the grandchild must be visible: ' + JSON.stringify(kids));
+  const born = new Map();
+  for (const k of kids) { const c = await P.createdOf(k); if (c) born.set(k, c.created); }
   const r = await P.killTree(parent); // ADR 0039: the live handle is the identity
   assert.equal(r.method, 'snapshot-tree');
   assert.deepEqual(r.identity, { via: 'handle' });
   assert.ok(r.terminated >= 2, JSON.stringify(r));
   await P.waitPidGone(parent.pid, { timeoutMs: 8000 });
-  await sleep(300);
-  for (const k of kids) assert.equal(P.pidAlive(k), false, 'descendant ' + k + ' must be gone');
+  // TerminateProcess lands before the exit is observable, and a freed pid can be issued again within the
+  // wait, so a descendant is gone when its pid no longer answers or answers with another creation time.
+  for (const k of kids) {
+    const deadline = Date.now() + 8000;
+    let gone = false;
+    while (!gone && Date.now() < deadline) {
+      if (!P.pidAlive(k)) gone = true;
+      else if (born.has(k)) { const c = await P.createdOf(k); gone = !c || c.created !== born.get(k); }
+      if (!gone) await sleep(50);
+    }
+    assert.ok(gone, 'descendant ' + k + ' must be gone');
+  }
 });

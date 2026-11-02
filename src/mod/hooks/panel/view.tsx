@@ -10,13 +10,17 @@ import { CONFIRM_MS, confirmLine, heldCount, heldDetail, heldLine, reviewLine, r
 import { cells, cmdLines, wordWrap, wrapHard } from './wrap'
 import { clip, INDENT, Line, Section, shortModel, tp, type Act, type Ctx, type Els } from './base'
 import { Table } from './table'
+import { badgeOf } from './memory'
+import { MemoryPane } from './memview'
+import { modelRows } from './warm'
 
 export type { Act, Els }
 
 // ---- the band ----------------------------------------------------------------------------------
 
-export function Band({ E, snap, ui, now, cols, act }: Ctx) {
+export function Band({ E, snap, ui, now, cols, act, menu }: Ctx) {
   const { Box, Button } = E
+  const badge = badgeOf(menu)
   if (snap.fatal) return <Line E={E} w={cols} k="fatal" segs={[{ t: 'belay ', c: 'claude', bold: true }, { t: snap.fatal, c: 'error' }]} />
   const lines = bandLines(snap, ui, now, cols)
   const err = snap.errors[0]
@@ -28,8 +32,9 @@ export function Band({ E, snap, ui, now, cols, act }: Ctx) {
       {snap.memoryNotice && <MemoryNotice E={E} snap={snap} cols={cols} />}
       {lines.map((segs, i) => (
         <Box key={`band${i}`}>
-          <Line E={E} segs={segs} k={`l${i}`} w={i === 0 ? cols - toggle.length : cols} />
+          <Line E={E} segs={segs} k={`l${i}`} w={i === 0 ? cols - toggle.length - (badge > 0 ? String(badge).length + 3 : 0) : cols} />
           {i === 0 && <Button key="open" label={toggle} plain dimColor onPress={act.toggle} />}
+          {i === 0 && badge > 0 && <Line E={E} segs={[{ t: ` [${badge}]`, c: 'warning' }]} k="badge" />}
         </Box>
       ))}
       {stale && wrapHard(stale, cols).map((t, i) => <Line E={E} w={cols} segs={[{ t, dim: true }]} k={`stale${i}`} />)}
@@ -63,6 +68,9 @@ function IdLines({ E, ids, cols }: { E: Els; ids: string; cols: number }) {
   return <Box paddingLeft={pl} flexShrink={0} flexDirection="column">{wordWrap(ids, cols - pl).map((t, i) => <Text key={`i${i}`} dimColor wrap="truncate-end">{clip(t, cols - pl)}</Text>)}</Box>
 }
 
+// The command row sits under the text (indent 8) when every command fits there whole; a command with a long id keeps the wider indent 2 so it stays whole.
+const cpl = (cmd: string, inner: number): number => (cmd.split(/\s+·\s+/).every(c => cells(c) <= inner - 8 - 2) ? 8 : 2)
+
 // Rows are drawn at the section's inner width. One line each: the id goes beside the text when both fit, and is left out when the
 // text already names it; only an id that does not fit beside the text takes the line under it.
 function Notices({ E, snap, ui, act, cols }: Ctx) {
@@ -78,6 +86,7 @@ function Notices({ E, snap, ui, act, cols }: Ctx) {
         const seen = ui.seen.includes(n.key)
         const room = inner - 8
         const fits = cells(n.text) <= room
+        const lines = fits ? [n.text] : wrapHard(n.text, Math.max(8, room)) // the text once: its first line beside the time, the rest under it
         const named = !n.ids || n.text.includes(n.ids)
         const inline = fits && !named && cells(n.text) + 2 + cells(n.ids) <= room
         return (
@@ -85,11 +94,12 @@ function Notices({ E, snap, ui, act, cols }: Ctx) {
             <Box>
               <Box width={2} flexShrink={0}><Text color={t.color}>{t.glyph}</Text></Box>
               <Box width={6} flexShrink={0}><Text dimColor>{hhmm(n.ts)}</Text></Box>
-              <Button key={`notice:${n.key}`} label={clip(n.text, room)} plain dimColor={seen} onPress={() => act.seen(n.key)} />
+              <Button key={`notice:${n.key}`} label={clip(lines[0] ?? '', room)} plain dimColor={seen} onPress={() => act.seen(n.key)} />
               {inline ? <Text dimColor>{`  ${n.ids}`}</Text> : null}
             </Box>
+            {lines.slice(1).map((l, i) => <Line E={E} w={inner} k={`ne-${n.key}-${i}`} segs={[{ t: `${' '.repeat(8)}${l}`, dim: seen }]} />)}
             {n.ids && !inline && !(fits && named) ? <IdLines E={E} ids={n.ids} cols={inner} /> : null}
-            {n.cmd ? <Box paddingLeft={2} flexShrink={0} flexDirection="column">{cmdLines(n.cmd, inner - 2).map((t, i) => <Text key={`c${i}`} dimColor wrap="truncate-end">{clip(t, inner - 2)}</Text>)}</Box> : null}
+            {n.cmd ? <Box paddingLeft={cpl(n.cmd, inner)} flexShrink={0} flexDirection="column">{cmdLines(n.cmd, inner - cpl(n.cmd, inner)).map((t, i) => <Text key={`c${i}`} dimColor wrap="truncate-end">{clip(t, inner - cpl(n.cmd, inner))}</Text>)}</Box> : null}
           </Box>
         )
       })}
@@ -229,7 +239,7 @@ function Orchestrator({ E, snap, ui, act, cols }: Ctx) {
           return (
             <Box key={`o${i}`}>
               <Box width={6} flexShrink={0}><Text dimColor>{hhmm(it.e.ts)}</Text></Box>
-              <Box flexGrow={1} flexShrink={1}><Text dimColor={it.kind === 'line'} wrap={it.kind === 'text' ? 'wrap' : 'truncate-end'}>{it.e.text}</Text></Box>
+              <Box flexGrow={1} flexShrink={1}><Text dimColor={it.kind === 'line'} wrap="wrap">{it.e.text}</Text></Box>
             </Box>
           )
         }
@@ -237,7 +247,7 @@ function Orchestrator({ E, snap, ui, act, cols }: Ctx) {
         return (
           <Box key={`o${i}`} flexDirection="column">
             <Button key={`tools:${it.key}`} plain dimColor label={`${open ? '▾' : '·'} ${it.calls.length} tool call${it.calls.length === 1 ? '' : 's'}`} onPress={() => act.group(it.key)} />
-            {open && it.calls.map((c, j) => <Box key={`o${i}-${j}`} paddingLeft={2}><Text dimColor wrap="truncate-end">{c.text}</Text></Box>)}
+            {open && it.calls.map((c, j) => <Box key={`o${i}-${j}`} paddingLeft={2}><Text dimColor wrap="wrap">{c.text}</Text></Box>)}
           </Box>
         )
       })}
@@ -297,7 +307,7 @@ function MemoryOff({ E, n, cols }: { E: Els; n: BelayMemoryNotice; cols: number 
 // ---- the pane ----------------------------------------------------------------------------------
 
 export function Pane(c: Ctx) {
-  const { E, snap, ui, now, act, cols } = c
+  const { E, snap, ui, now, act, cols, menu } = c
   const { Box, Button } = E
   const t = snap.tasks
   const stale = staleLine(snap)
@@ -321,19 +331,26 @@ export function Pane(c: Ctx) {
     : [{ t: 'cost not read', dim: true }]
   const inner = { ...c, cols: cols - INDENT }
   const live = snap.agents.filter(isLive).length
+  const header = (
+    <Box justifyContent="space-between">
+      <Line E={E} w={cols - 6} k="ph" segs={runLine(snap, now)} />
+      <Box>
+        <Button key="legend" label="?" plain dimColor onPress={act.legend} />
+        <Button key="close" label=" ✕" plain dimColor onPress={act.close} />
+      </Box>
+    </Box>
+  )
+  if (ui.memTab !== null) return <Box flexDirection="column">{header}<MemoryPane E={E} state={menu} ui={ui} now={now} cols={cols} act={act} /></Box>
+  const badge = badgeOf(menu)
   return (
     <Box flexDirection="column">
-      <Box justifyContent="space-between">
-        <Line E={E} w={cols - 6} k="ph" segs={runLine(snap, now)} />
-        <Box>
-          <Button key="legend" label="?" plain dimColor onPress={act.legend} />
-          <Button key="close" label=" ✕" plain dimColor onPress={act.close} />
-        </Box>
-      </Box>
+      {header}
       <Line E={E} w={cols} k="pr" segs={[{ t: '─'.repeat(cols), dim: true }]} />
       {stale && wrapHard(stale, cols).map((t, i) => <Line E={E} w={cols} k={`pstale${i}`} segs={[{ t, dim: true }]} />)}
       {tasksLine.length > 0 && <Line E={E} w={cols} k="pt" segs={tasksLine} />}
+      {modelRows(snap.retrievalModels).map((segs, i) => <Line E={E} w={cols} k={`pm${i}`} segs={segs} />)}
       <Line E={E} w={cols} k="pc" segs={costLine} />
+      <Button key="mem" plain dimColor label={`◇ memory menu${badge > 0 ? ` [${badge}]` : ''}`} onPress={() => act.mem({ kind: 'tab', tab: 'profiles' })} />
       {ui.legend && <Legend {...c} />}
       <Section E={E} k="sa" title="AGENTS" cols={cols} summary={snap.agents.length ? [{ t: `${live} live`, dim: true }] : []}>
         {snap.agents.length ? <Table {...inner} /> : <Line E={E} w={cols - INDENT} k="pn" segs={[{ t: 'no agents read', dim: true }]} />}

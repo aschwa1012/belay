@@ -4,9 +4,9 @@
 
 belay is a local orchestration harness for AI coding agents. It runs Claude Code and codex sessions as worker processes on one machine, keeps every task, lease, checkpoint, review verdict and per-agent cost in one SQLite store, and lets one human watch and step in. The planner is a Claude session, headless or your own interactive one, that drives the workers through belay's MCP tools. The name is the climbing sense: belay does not do the climbing. It holds the rope, keeps the record and catches the fall.
 
-**belay is early.** It is being built toward four things: memory that lasts across sessions, several orchestrators coordinating one body of work, workers that can be any model, including open-source and local ones, and autonomy: taking a queue of work and starting its own runs to work through it. None of the four is finished. 0.2.0 added the first large piece, a shared memory you can check. 0.3.0 added [notes](#notes-experimental-new-in-030), experimental and on by default once a project is named. 0.3.1 adds a worktree and branch per task and merges finished work into an integration branch, so one run can work on many tasks at once. [Where this is going](#where-this-is-going) says what each direction stands on today and what is planned.
+**belay is early.** It is being built toward four things: memory that lasts across sessions, several orchestrators coordinating one body of work, workers that can be any model, including open-source and local ones, and autonomy: taking a queue of work and starting its own runs to work through it. None of the four is finished. 0.2.0 added the first large piece, a shared memory you can check. 0.3.0 added [notes](#notes-experimental-new-in-030), experimental and on by default once a project is named. 0.3.1 added a worktree and branch per task and merges finished work into an integration branch, so one run can work on many tasks at once. 0.3.2 adds retrieval profiles: memory search can rerank on the CPU, or embed and rerank on a GPU, per run and per agent type. [Where this is going](#where-this-is-going) says what each direction stands on today and what is planned.
 
-Status: **0.3.1, early**, built and used by one developer. Interfaces, spec keys and the store layout may change. Upgrading from 0.3.0 changes some defaults; see the upgrade warning in [CHANGELOG.md](CHANGELOG.md) and [INSTALL.md](INSTALL.md#updating).
+Status: **0.3.2, early**, built and used by one developer. Interfaces, spec keys and the store layout may change. Upgrading from 0.3.1 changes no defaults, but the first start fills a vector cache; see the upgrade warning in [CHANGELOG.md](CHANGELOG.md) and [INSTALL.md](INSTALL.md#updating).
 
 ## Why, and what it does differently
 
@@ -98,6 +98,10 @@ belay 0.2.0 built the parts of memory that can be built and checked without a mo
 | `project`, `project_writes` | Names a project namespace that outlives the run; `project_writes` copies observations, summaries and verified rows into it. Naming a project also turns on `notes`. `project_writes` together with notes is refused; set `notes: false` to keep it. |
 | `notes` | On once `project` is set (and `redact` is on); `false` turns notes off. See [Notes](#notes-experimental-new-in-030). |
 | `on_embedder_failure` | `required` (default: a failed embedder pauses the run), `keyword` (go on ranking by keywords only) or `off` (memory off for the run). The 0.2.0 values `stop` and `continue` are still accepted, as `required` and `keyword`. |
+| `profile` | The retrieval profile: `cpu-fast` (default, no reranker), `cpu-rerank-light`, `cpu-rerank`, `gpu-rerank-fast`, `gpu-rerank`, `gpu-balanced`, `gpu-recall-max`, or `custom` with `embedder` and `reranker`. `profile_cpu` is what a run takes with no usable GPU. GPU profiles need `belay embedder fetch --gpu` and the model fetched. |
+| `routing`, `routing_cpu` | A profile per agent type (for example reviewers on `gpu-rerank`, coders on `cpu-fast`). The routing is pinned once at run start and recorded on the run. |
+| `on_heavy_failure`, `on_heavy_behind` | What happens when a reranker or GPU embedder fails (`fallback`, the default, with one notice; or `pause`), and when a GPU embedder has notes left to embed at run start (`wait`, the default, embeds them first; or `fallback`). |
+| `search_log` | Records each search's query, candidates and reranked order (off; it keeps query text). `belay memory search-log --export` writes it out. |
 | `cost_ledger` | Records tokens and dollars per turn, for `belay usage`. |
 | `first_message_index` | Puts a bounded index of lasting rows (summaries, decisions, verified rows) in a worker's first message, ranked by relevance to the task. `index_bytes` sets the size (default 1,200 bytes, at most 4,096). |
 | `bottle` | When a worker is replaced, builds its resume document from its own stream: its text verbatim, tool calls as one line each, within `bottle_bytes`. |
@@ -363,12 +367,13 @@ Every command declares one mode: **R** read-only (starts no process, creates no 
 | `memory list` / `show` / `timeline` / `stats` | R | Filtered rows, full rows, what was written around a row, counts |
 | `memory export [--out file] [--all]` | R | Write rows to a file, without vectors |
 | `memory held [--awaiting]` / `memory proposals` | R | Held notes by ground; the scrubber's proposals and nominations |
+| `memory menu` / `memory search-log [--export file]` | R | The retrieval profiles, routing and models with their state; the search log, when it is on |
 | `usage [run-id] [--by task\|worker\|model\|turn]` | R | Tokens and dollars per turn (needs the `cost_ledger` lever) |
 | `mcp status [--deep]` | R | MCP server facts, one by one; `--deep` spawns one adapter and asks it to answer |
 | `pending [--all]` | R | Tool calls waiting on a verdict |
 | `init` | W | Write `belay.config.json` and create the data dir (never overwrites) |
 | `run <spec.json> [--interactive] [--effort level]` | W | Start a run; the store owner for its lifetime |
-| `embedder fetch\|verify` | W | Download or re-hash the embedding model |
+| `embedder fetch\|verify\|delete [--model <id>] [--gpu] [--reranker <id>]` | W | Download, re-hash or delete the embedding model, a CPU reranker, the GPU runtime or a GPU model |
 | `settings [<key> [<value>]]` | W | Panel display settings, memory lever defaults and per-agent-type model and effort defaults, written to the config file only |
 | `worktree create\|remove\|merge <task-id>...` | W | Make or remove a task's worktree and branch, or merge tasks into an integration branch, as the orchestrator's tools do |
 | `memory verify <id> --status s --receipt r` | W | Mark a row verified or refuted, with its evidence (a note can be refuted this way, but is verified only by a review) |
@@ -423,7 +428,7 @@ These are settled rules, not aspirations:
 
 ## Status and roadmap
 
-belay is at 0.3.1. It already drives real multi-agent runs, and parts of belay itself were built by belay: a coder, a reviewer, fix rounds and a second reviewer, run unattended with a receipt for every agent. Before 0.3.0 shipped, a pre-release 0.3.0 build drove a 40-task build of a separate product from start to finish on real Claude Code, one task per run (see [What we have measured](#what-we-have-measured)). In 0.3.1, two runs did 10 tickets of that product at once, each in its own worktree with its work merged together, in about an hour each against about 5 hours one ticket at a time (see [Autonomy](#autonomy-working-through-a-queue)).
+belay is at 0.3.2. It already drives real multi-agent runs, and parts of belay itself were built by belay: a coder, a reviewer, fix rounds and a second reviewer, run unattended with a receipt for every agent. Before 0.3.0 shipped, a pre-release 0.3.0 build drove a 40-task build of a separate product from start to finish on real Claude Code, one task per run (see [What we have measured](#what-we-have-measured)). In 0.3.1, two runs did 10 tickets of that product at once, each in its own worktree with its work merged together, in about an hour each against about 5 hours one ticket at a time (see [Autonomy](#autonomy-working-through-a-queue)).
 
 **How 0.2.0 was built.** The memory work was built in about two days by many Claude Code agents working in parallel, each on its own branch, with a lead session planning and merging. Every wave of branches was checked by an independent reviewer agent and fixed before merging. belay itself drove part of the work: the redaction commits by `belay job` came from a belay run with its own reviewers. The commit history keeps those branches, merges and timestamps as they happened. The design decisions and experiments behind it were pre-registered and measured, and are summarised under [What we have measured](#what-we-have-measured).
 

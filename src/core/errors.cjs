@@ -20,6 +20,8 @@ const CODES = new Set([
   'E_CITATION', 'E_COST_CAP', 'E_SCOPE', 'E_PRECONDITION', 'E_GROUND',
   // a write that would change a held note's visibility or status, from a caller that is neither the operator nor the archive review's cited outcome
   'E_HELD',
+  // ADR 0050: a heavy tier whose vectors are behind refuses to serve (E_TIER_BEHIND); the rerank stage failed (E_RERANK)
+  'E_TIER_BEHIND', 'E_RERANK',
   // ADR 0045: a write with no bound identity on an owner that serves only bound callers, and a bind that cannot be opened or claimed
   'E_UNBOUND', 'E_BIND',
   // ADR 0058: a review task assigned to a worker that held a lease on the work under review

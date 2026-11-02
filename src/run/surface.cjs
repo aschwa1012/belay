@@ -139,7 +139,7 @@ function checkSurface(ready, { permissionPrompt = false, tools: wanted = null, j
   if (!Array.isArray(tools)) {
     return {
       ok: false,
-      reason: `the system/init surface is not the one ADR 0024 allows: tools is not an array (system/init carried ${JSON.stringify(tools)})`,
+      reason: `the system/init surface is not the one belay allows: tools is not an array (system/init carried ${JSON.stringify(tools)})`,
     };
   }
 
@@ -152,8 +152,8 @@ function checkSurface(ready, { permissionPrompt = false, tools: wanted = null, j
   const gotSet = new Set(builtins);
   const extra = builtins.filter((t) => !wantSet.has(t));
   const missing = want.filter((t) => !gotSet.has(t));
-  if (extra.length) reasons.push(`extra built-in tool(s) beyond ADR 0024's list: ${extra.join(', ')}`);
-  if (missing.length) reasons.push(`missing built-in tool(s) from ADR 0024's list: ${missing.join(', ')}`);
+  if (extra.length) reasons.push(`extra built-in tool(s) beyond the allowed list: ${extra.join(', ')}`);
+  if (missing.length) reasons.push(`missing built-in tool(s) from the allowed list: ${missing.join(', ')}`);
 
   const foreign = mcpTools.filter((t) => !t.startsWith('mcp__belay__'));
   if (foreign.length) reasons.push(`mcp tool(s) not under mcp__belay__: ${foreign.join(', ')}`);
@@ -163,11 +163,11 @@ function checkSurface(ready, { permissionPrompt = false, tools: wanted = null, j
   // (ready.cjs) already proves the connection, but an init naming none at all names no adapter.
   const belayTools = mcpTools.filter((t) => t.startsWith('mcp__belay__'));
   if (job) {
-    if (belayTools.length) reasons.push(`a job worker lists no belay tool, and this one lists: ${belayTools.join(', ')} (ADR 0024 decision 6, amendment 2)`);
-  } else if (belayTools.length === 0) reasons.push('no mcp__belay__* tool is listed (ADR 0024 decision 6 expects at least one)');
+    if (belayTools.length) reasons.push(`a job worker lists no belay tool, and this one lists: ${belayTools.join(', ')}`);
+  } else if (belayTools.length === 0) reasons.push('no mcp__belay__* tool is listed (at least one is expected)');
 
   if (permissionPrompt && mcpTools.includes('mcp__belay__permit')) {
-    reasons.push('mcp__belay__permit is listed even though a permission-prompt tool was configured for this launch (ADR 0024 decision 7)');
+    reasons.push('mcp__belay__permit is listed even though a permission-prompt tool was configured for this launch');
   }
 
   // F1/F2 (should-fix 1 and 2): plugins must be an array, and only ever refused, never thrown on — a
@@ -201,12 +201,12 @@ function checkSurface(ready, { permissionPrompt = false, tools: wanted = null, j
     if (memoryPaths && typeof memoryPaths === 'object' && 'auto' in memoryPaths) {
       reasons.push(`memory_paths.auto is set: ${memoryPaths.auto}`);
     } else {
-      reasons.push(`memory_paths is present, and ADR 0024 decision 6 expects none: ${JSON.stringify(memoryPaths)}`);
+      reasons.push(`memory_paths is present, and none is expected: ${JSON.stringify(memoryPaths)}`);
     }
   }
 
   if (reasons.length) {
-    return { ok: false, reason: `the system/init surface is not the one ADR 0024 allows: ${reasons.join('; ')}` };
+    return { ok: false, reason: `the system/init surface is not the one belay allows: ${reasons.join('; ')}` };
   }
 
   const toolsHash = crypto.createHash('sha256').update([...tools].sort().join('\n')).digest('hex');

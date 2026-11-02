@@ -135,6 +135,10 @@ const METHODS = {
   // identity), and it is read back through the ordinary run row.
   'run.setPaused': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: run.setPaused },
   'run.setEmbedderMode': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: run.setEmbedderMode },
+  // The run's retrieval routing, resolved once (with the GPU probe) and recorded on its row; the run process calls it after run.attach.
+  'run.pinRouting': { roles: ['operator'], kind: 'write', fn: lazy('./retrieval-pin.cjs', 'pinRouting') },
+  // `belay memory embed --model <gguf id>` and the run start's wait: one bounded drain of a heavy embedder's backlog.
+  'memory.drainHeavy': { roles: ['operator'], kind: 'write', fn: lazy('./heavy-drain.cjs', 'drainMethod') },
   'run.get': { roles: ALL, kind: 'read', fn: run.getRun },
   // build step 4a: every run's current row, so a CLI with no run id argument (belay status,
   // belay workers) has a way to find the current run at all.
@@ -370,9 +374,12 @@ class Engine {
     const off = this.memoryOff(method);
     if (off === 'refuse') throw err('E_LEVER_OFF', `${method}: notes are off for this run (on_embedder_failure off, after an embedder failure), so nothing is read or written through them`, { lever: 'on_embedder_failure' });
     if (off === 'empty') return { text: '', bytes: 0, row_ids: [], dropped: 0, over_budget: false, sha256: require('node:crypto').createHash('sha256').update('', 'utf8').digest('hex'), considered: 0, excluded_already_injected: 0, memory_off: true };
+    const t0 = Date.now();
     // A write method runs inside its caller's context (held-guard.cjs), which follows it across its awaits and reaches no other call.
-    if (spec.kind === 'write') return require('./held-guard.cjs').runAs(caller, () => spec.fn(this, caller, args));
-    return spec.fn(this, caller, args);
+    const out = spec.kind === 'write' ? await require('./held-guard.cjs').runAs(caller, () => spec.fn(this, caller, args)) : await spec.fn(this, caller, args);
+    // ADR 0050 decision 4: a row written in a run whose pinned routing has heavy embedders is embedded by each of them before the call returns.
+    if (spec.kind === 'write' && this.owner && this.owner.stopped !== true) { const HN = require('./heavy-notes.cjs'); if (HN.feeds(method)) await HN.afterWrite(this, caller, method, undefined, t0); }
+    return out;
   }
 }
 

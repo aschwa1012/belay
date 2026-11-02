@@ -7,6 +7,7 @@ import type {
   BelayPanelUi, BelaySettings, BelayMemoryNotice,
 } from '../../types/index'
 import { cells, clipCells } from './wrap'
+import { normRetrievalModels } from './warm'
 
 // `brk` marks the first segment of a part that may be dropped whole when the line is too wide (fitSegs).
 export type Seg = { t: string; c?: string; dim?: boolean; bold?: boolean; brk?: true }
@@ -14,7 +15,7 @@ export type Seg = { t: string; c?: string; dim?: boolean; bold?: boolean; brk?: 
 export const DEFAULT_SETTINGS: BelaySettings = {
   pane: 'docked', marks: 'shapes', cache: 'both', context: 'both', band: 'two-lines', task: 'kind',
 }
-export const DEFAULT_UI: BelayPanelUi = { open: false, selected: null, legend: false, foldOpen: false, groups: [], placed: false, seen: [], confirm: null }
+export const DEFAULT_UI: BelayPanelUi = { open: false, selected: null, legend: false, foldOpen: false, groups: [], placed: false, seen: [], confirm: null, memTab: null, memConfirm: null, memNote: null, routeDraft: null }
 
 export const num = (x: unknown): number | null => (typeof x === 'number' && Number.isFinite(x) ? x : null)
 export const str = (x: unknown): string | null => (typeof x === 'string' && x !== '' ? x : null)
@@ -46,6 +47,12 @@ export function parseSettings(json: unknown): BelaySettings {
     if (name in ALLOWED && (ALLOWED[name] as readonly unknown[]).includes(o.value)) (out as Record<string, unknown>)[name] = o.value
   }
   return out
+}
+
+// `belay settings --json` says `memory_heavy` when any tier the settings resolve names a GPU model (the routing resolver decides, not the panel).
+// Then the panel reads the Memory menu's badge beside its rounds; a config that leaves memory at its defaults costs no extra read.
+export function heavyConfigured(json: unknown): boolean {
+  return obj(json)?.memory_heavy === true
 }
 
 // `belay settings --json` carries `memory_notice` (null once a project is set). A malformed one is no notice.
@@ -102,7 +109,7 @@ function normAgent(raw: unknown): BelayAgent | null {
   }
 }
 
-export type AgentsRead = Pick<BelayPanelSnap, 'runId' | 'mode' | 'startedAtMs' | 'pausedAtMs' | 'endedAtMs' | 'tasks' | 'maxFixRounds' | 'fixHardCap' | 'fixHardCapSource' | 'embedder' | 'agents' | 'footer'>
+export type AgentsRead = Pick<BelayPanelSnap, 'runId' | 'mode' | 'startedAtMs' | 'pausedAtMs' | 'endedAtMs' | 'tasks' | 'maxFixRounds' | 'fixHardCap' | 'fixHardCapSource' | 'embedder' | 'retrievalModels' | 'agents' | 'footer'>
 
 // Only belay's two words count; anything else is an unknown mode.
 const modeOf = (m: string | null): 'headless' | 'interactive' | null => (m === 'headless' || m === 'interactive' ? m : null)
@@ -123,7 +130,7 @@ export function normAgents(json: unknown): AgentsRead {
     runId: str(j.run_id), mode: modeOf(str(j.mode) ?? str(run.mode)),
     startedAtMs: num(j.started_at_ms), pausedAtMs: num(j.paused_at_ms), endedAtMs: num(j.ended_at_ms),
     tasks, maxFixRounds: num(j.max_fix_rounds), fixHardCap: num(j.fix_hard_cap), fixHardCapSource: str(j.fix_hard_cap_source),
-    embedder: str(j.embedder) ?? str(run.embedder), agents, footer,
+    embedder: str(j.embedder) ?? str(run.embedder), retrievalModels: normRetrievalModels(j.retrieval_models), agents, footer,
   }
 }
 

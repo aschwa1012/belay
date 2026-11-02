@@ -53,7 +53,7 @@ async function findMatches(E, caller, project, emb, lv, template = NT.TEMPLATE_N
     namespace: projectNs(project), mode: 'semantic', view: 'full', k: Math.min(50, lv.notes_match_n * 5), min_score: lv.notes_match_threshold,
     query_embedding: emb.embedding, embedding_model: emb.embedding_model,
     filter: { types: ['note'], statuses: ['unverified', 'verified'] },
-  });
+  }, { log: false, tier: require('./search-tier.cjs').NANO_TIER }); // internal: not in the search log; on nano, whose cosine the threshold is
   const ids = out.results.map(r => r.id);
   // A match the writer is withheld from is named by id and verdict only: the writer learns its text is close to a note under review, never its claim.
   const hidden = WH.withheldAmong(E, caller, out.results);
