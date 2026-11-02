@@ -34,7 +34,7 @@ test('a refused operator check puts the owner\'s reason in the client error, bou
   const e = await refused(new Map([[4242, { ppid: 4000, created: T0 + 60000, image: 'node.exe' }], [4000, { ppid: 1, created: T0 + 60000, image: 'pwsh.exe\n' + 'x'.repeat(1000) }]]));
   assert.ok(e, 'the call was refused');
   assert.strictEqual(e.code, 'E_UNBOUND', e.message);
-  assert.match(e.message, /the owner said: .*not running when this owner started/, e.message);
+  assert.match(e.message, /the owner said: the peer's chain ends at pid 4000/, e.message);
   assert.ok(typeof e.detail.operator_reason === 'string' && e.detail.operator_reason.length <= 300, String(e.detail.operator_reason && e.detail.operator_reason.length));
   assert.ok(!/[\r\n]/.test(e.detail.operator_reason));
 });
