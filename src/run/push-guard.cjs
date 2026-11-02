@@ -9,9 +9,8 @@ const MESSAGE = 'Do not push or write to a remote (git push, gh pr/issue/release
 
 const WORD = String.raw`(?:^|[\s(/\\])`; // a command word starts a segment or follows a space, `(` or a path separator, never `.git`
 const GIT_VALUE_OPTS = '-c|-C|--git-dir|--work-tree|--namespace|--exec-path|--config-env|--super-prefix|--attr-source';
-// The subcommands that send to a remote: push, send-pack, http-push, and the push of `subtree` and `lfs`. What follows is kept for the help test.
-const GIT_PUSH = new RegExp(String.raw`${WORD}git(?:\.exe)?((?:\s+(?:${GIT_VALUE_OPTS})\s+\S+|\s+-\S*)*)\s+(?:push|send-pack|http-push|(?:subtree|lfs)\s+push)(?=$|[\s);<>|&])(.*)$`);
-const HELP = /(?:^|\s)(?:--help|-h)(?=\s|$)/; // `git push --help` and `gh pr create --help` print a page and send nothing
+// The subcommands that send to a remote: push, send-pack, http-push, and the push of `subtree` and `lfs`.
+const GIT_PUSH = new RegExp(String.raw`${WORD}git(?:\.exe)?((?:\s+(?:${GIT_VALUE_OPTS})\s+\S+|\s+-\S*)*)\s+(?:push|send-pack|http-push|(?:subtree|lfs)\s+push)(?=$|[\s);<>|&])`);
 const GH_WORD = new RegExp(String.raw`${WORD}gh(?:\.exe)?(?=\s|$)(.*)$`);
 
 // gh command groups whose verbs write to the remote unless the verb is one of these readers.
@@ -21,8 +20,12 @@ const GH_READ_PAIRS = new Set(['ruleset check']); // a read whose verb is not in
 // `gh api` options that take a separate value word, so the word is not the endpoint.
 const GH_API_VALUE_OPTS = new Set(['-x', '--method', '-h', '--header', '-f', '--field', '--raw-field', '-q', '--jq', '-t', '--template', '--hostname', '--cache', '-p', '--preview', '--input']);
 
-// Segments are split at ; && || | & and newlines. A line continuation (bash backslash-newline, PowerShell backtick-newline) joins first.
-const joinContinuations = (s) => s.replace(/[\\`]\r?\n/g, '');
+// A line continuation joins the lines in some shells (bash backslash-newline, PowerShell backtick-newline, cmd caret-newline) and not in
+// others (a PowerShell or cmd path ends in a backslash: `Set-Location C:\<NL>git push` is two commands). The tool is not known here, so a
+// command is matched both ways, as the quote variants are: as written, and with every continuation joined.
+const forms = (s) => [s, s.replace(/[\\`^]\r?\n/g, '')];
+
+// Segments are split at ; && || | & and newlines.
 function segments(s) { return s.split(/;|&&|\|\||\||&|\r?\n/).map((x) => x.trim()).filter(Boolean); }
 
 // `gh api`: a write method, or fields without an explicit GET (gh sends fields as a POST body then), or a GraphQL mutation.
@@ -47,16 +50,10 @@ function ghApiWrites(tokens, seg) {
   return fields;
 }
 
-function gitPushes(seg) {
-  const m = GIT_PUSH.exec(seg);
-  return !!m && !HELP.test(m[2]);
-}
-
 function ghWrites(seg) {
   const m = GH_WORD.exec(seg);
   if (!m) return false;
   const tokens = m[1].trim().split(/\s+/).filter(Boolean);
-  if (tokens.includes('--help') || (tokens[0] !== 'api' && tokens.includes('-h'))) return false; // -H is gh api's header flag
   const words = [];
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i] === '-r' || tokens[i] === '--repo') { i++; continue; } // -R owner/repo takes a value; it is not the verb
@@ -76,10 +73,11 @@ function normalize(command, quote, unescape) {
 
 function refusal(rawCommand) {
   if (typeof rawCommand !== 'string' || !rawCommand) return null;
-  const command = joinContinuations(rawCommand);
-  for (const [quote, unescape] of [[' ', false], ['', false], [' ', true], ['', true]]) { // `g"it" push` joins, `cmd /c"git push` splits: try both
-    const n = normalize(command, quote, unescape);
-    if (segments(n).some((seg) => gitPushes(seg) || ghWrites(seg))) return MESSAGE;
+  for (const command of forms(rawCommand)) {
+    for (const [quote, unescape] of [[' ', false], ['', false], [' ', true], ['', true]]) { // `g"it" push` joins, `cmd /c"git push` splits: try both
+      const n = normalize(command, quote, unescape);
+      if (segments(n).some((seg) => GIT_PUSH.test(seg) || ghWrites(seg))) return MESSAGE;
+    }
   }
   return null;
 }

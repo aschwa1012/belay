@@ -15,6 +15,23 @@ const G = require('../../src/run/guard.cjs');
 const L = require('../../src/run/launch.cjs');
 
 const REFUSED = [
+  'git push --help',
+  'git push -h',
+  'git -C x push --help',
+  'gh pr create --help',
+  'gh release create -h',
+  'gh pr create --title "fix -h flag" --body x',
+  'gh issue create -t "add -h" -b y',
+  'gh pr comment 3 --body "see -h"',
+  'gh pr merge 3 --subject "drop --help text"',
+  'gh api -X DELETE repos/o/r/git/refs/heads/x -t --help',
+  'git push origin main # -h',
+  'git push origin main $(true -h )',
+  'git push -o -h origin main',
+  'Set-Location C:\\\ngit push origin main',
+  'cd C:\\work\\\ngit push',
+  'dir C:\\Work\\\ngh pr create -t x',
+  'git ^\n push origin main',
   'git -C C:/repo \\\n  push origin main', // bash line continuation
   'git push \\\r\n  origin main',
   'git `\n  push origin main', // PowerShell line continuation
@@ -113,14 +130,9 @@ const REFUSED = [
 ];
 
 const ALLOWED = [
-  'git push --help',
-  'git push -h',
-  'git -C x push --help',
   'git subtree split --prefix=lib',
   'git lfs ls-files',
   'git lfs pull',
-  'gh pr create --help',
-  'gh release create -h',
   'gh ruleset check main',
   'gh ruleset view 1',
   'gh api graphql -f query="{ viewer { login } }" -t graphql',
