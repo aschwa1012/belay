@@ -181,8 +181,10 @@ async function run(ctx) {
   }
 
   const found = C.discover(ctx.cwd);
-  const dataDir = C.dataDirOf(found, ctx);
-  const checks = [...configChecks(found), ...storeChecks(dataDir), ...substrateChecks(found), ...embedderChecks(), await memoryIndexCheck(dataDir), memoryProjectCheck(found)];
+  // A data_dir the config may not name is a failed check, and the store is looked at where --data or the default puts it.
+  const refused = C.effective(found, 'data_dir', { dataDirOverride: C.overrideOf(ctx) }).refused;
+  const dataDir = refused ? C.dataDirOf(found, { ...ctx, dataDir: `${found.dir}/${C.KEYS.data_dir.default}`, dataDirGiven: true }) : C.dataDirOf(found, ctx);
+  const checks = [...configChecks(found), ...(refused ? [row('config-data-dir', ERROR, refused, { path: found.path })] : []), ...storeChecks(dataDir), ...substrateChecks(found), ...embedderChecks(), await memoryIndexCheck(dataDir), memoryProjectCheck(found)];
 
   const fixed = ctx.fix ? applyFix(checks) : [];
 
