@@ -46,8 +46,12 @@ function normalize(command, quote, unescape) {
   return unescape ? t.replace(/[\^`]/g, '') : t; // cmd `^` and PowerShell backtick escapes; bash keeps its backticks
 }
 
-function refusal(command) {
-  if (typeof command !== 'string' || !command) return null;
+// A line continuation (bash backslash-newline, PowerShell backtick-newline) joins the lines before anything is matched.
+function joinContinuations(s) { return s.replace(/[\\`]\r?\n/g, ''); }
+
+function refusal(rawCommand) {
+  if (typeof rawCommand !== 'string' || !rawCommand) return null;
+  const command = joinContinuations(rawCommand);
   for (const [quote, unescape] of [[' ', false], ['', false], [' ', true], ['', true]]) { // `t"ask"kill` joins, `cmd /c"taskkill` splits: try both
     const n = normalize(command, quote, unescape);
     if (segments(n).some(segmentRefused)) return MESSAGE;

@@ -12,6 +12,9 @@ const KG = require('../../src/run/kill-guard.cjs');
 const L = require('../../src/run/launch.cjs');
 
 const REFUSED = [
+  'taskkill \\\n  /F /IM node.exe', // bash line continuation
+  'taskkill `\n  /F /IM node.exe', // PowerShell line continuation
+  'taskkill /F \\\r\n /IM node.exe',
   'taskkill /F /IM node.exe',
   'taskkill //F //IM node.exe',
   'TASKKILL /f /im node.exe /t',
@@ -151,7 +154,7 @@ test('worker settings and the headless orchestrator settings carry the hook; the
       const h = hooksOf(f);
       assert.deepStrictEqual(Object.keys(h), ['PreToolUse']);
       assert.strictEqual(h.PreToolUse.length, 1, 'one hook process per call');
-      assert.match(h.PreToolUse[0].matcher, /^Bash|PowerShell|/);
+      assert.strictEqual(h.PreToolUse[0].matcher, 'Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit');
       assert.match(h.PreToolUse[0].hooks[0].command, /guard-hook.cjs"$/);
       assert.ok(h.PreToolUse[0].hooks[0].timeout <= 10);
     }
