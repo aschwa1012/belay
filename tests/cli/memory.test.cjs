@@ -388,6 +388,13 @@ test('memory: a read verb never shuts an owner down, and a core without the new 
   assert.match(r.text, /has no memory\.timeline \(E_INTERNAL\)/);
 });
 
+test('memory search text names a held note the page cut', () => {
+  const base = { results: [], modes_run: ['keyword'], modes_failed: [] };
+  assert.ok(!/held matches/.test(RENDER.renderSearchText(base, 'full')));
+  const text = RENDER.renderSearchText({ ...base, held_matches: [{ id: 'n1', kind: 'duplicate' }, { id: 'n2', kind: null }] }, 'full');
+  assert.match(text, /held matches off this page: n1 \(duplicate\), n2 \(held\)\n$/);
+});
+
 test('memory render: parseSince accepts epoch ms and ISO only; the stats text names the new fields when the core sends them', () => {
   assert.strictEqual(RENDER.parseSince('42'), 42);
   assert.strictEqual(RENDER.parseSince('2026-01-01T00:00:00Z'), Date.parse('2026-01-01T00:00:00Z'));
