@@ -176,3 +176,14 @@ test('init --data outside the repository keeps the default data_dir in the confi
   assert.match(r.json.note, /--data .* on each command/);
   assert.ok(fs.existsSync(outside), 'the store the operator asked for was created');
 });
+
+test('doctor reports a refused data_dir as a failed check and still runs the other checks', async () => {
+  const { dir } = withDataDir('../elsewhere');
+  const r = await require('../../src/cli/cmd-doctor.cjs').run({ argv: [], cwd: dir, dataDir: `${dir}/.belay`, dataDirGiven: false, json: true });
+  assert.strictEqual(r.code, 0);
+  const row = r.json.checks.find((c) => c.check === 'config-data-dir');
+  assert.strictEqual(row.verdict, 'error');
+  assert.match(row.evidence, /not inside the repository/);
+  assert.strictEqual(r.json.data_dir, `${dir}/.belay`);
+  assert.ok(r.json.checks.some((c) => c.check === 'data-dir'));
+});
