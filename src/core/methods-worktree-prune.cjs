@@ -18,6 +18,7 @@ const PIN_PREFIX = 'refs/belay/kept/';
 // Every pin (refs/belay/kept/*) in the repositories these tasks recorded, with the local branches that already reach its commit: a pin
 // whose commit a branch keeps is redundant and droppable; one no branch reaches is the only keeper and is never dropped by belay.
 async function pinsOf(tasks) {
+  const owners = new Set(tasks.map((t) => t.id));
   const repos = [...new Set(tasks.map((t) => t.worktree && t.worktree.repo).filter(Boolean))];
   const pins = [];
   for (const repo of repos) {
@@ -25,8 +26,10 @@ async function pinsOf(tasks) {
     if (!r.ok) continue;
     for (const line of r.stdout.split('\n').filter(Boolean)) {
       const [ref, sha] = line.split(' ');
+      if (!owners.has(ref.slice(PIN_PREFIX.length).split('/')[0])) continue; // only the pins of the tasks in scope (--run)
       const b = await G.run(repo, ['for-each-ref', '--format=%(refname:short)', '--contains', sha, 'refs/heads/']);
-      const branches = b.ok ? b.stdout.split('\n').filter(Boolean) : [];
+      // a belay/ branch is the task's own, which the sweep always keeps: it does not make the pin redundant
+      const branches = (b.ok ? b.stdout.split('\n').filter(Boolean) : []).filter((n) => !n.startsWith('belay/'));
       pins.push({ repo, ref, sha, kept_by_branches: branches, droppable: branches.length > 0 });
     }
   }

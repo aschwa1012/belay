@@ -278,13 +278,20 @@ test('an idle Codex row of another run does not keep a tree', async () => {
 
 test('prune lists the pins, drops one only with yes and drop_pins and only when a branch reaches its commit', async () => {
   const a = await runWithTree('pin-list', { end: true });
+  write(a.w.path, 'a-work.txt', 'x\n'); // work only a's own belay/ branch reaches (main does not)
+  git(a.w.path, 'add', '-A');
+  git(a.w.path, '-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-q', '-m', 'a work');
   const b = await runWithTree('pin-solo', { end: true });
   git(b.w.path, 'checkout', '-q', '--detach');
   write(b.w.path, 'solo.txt', 'x\n');
   git(b.w.path, 'add', '-A');
   git(b.w.path, '-c', 'user.email=t@example.com', '-c', 'user.name=t', 'commit', '-q', '-m', 'only a pin keeps this');
   await call('task.worktreeRemove', { task_id: b.id, force: true }, op());
-  assert.ok(has((await prune({ run_id: 'pin-list', yes: true })).removed, a.id));
+  const fresh = await prune({ run_id: 'pin-list', yes: true, drop_pins: true }); // removes a's tree, pins it, and must not drop what it just wrote
+  assert.ok(has(fresh.removed, a.id));
+  assert.deepStrictEqual(fresh.pins_dropped, [], 'the task\'s own belay/ branch does not make its fresh pin redundant');
+  assert.ok(fresh.pins.every((p) => p.ref.includes(`/${a.id}/`)), '--run scopes the pins to that run');
+  git(repo, 'branch', 'user-keeps-a', fresh.pins[0].sha); // a branch of the user's reaches it
   const all = await prune({});
   const mineA = all.pins.find((p) => p.ref.includes(`/${a.id}/`)), mineB = all.pins.find((p) => p.ref.includes(`/${b.id}/`));
   assert.strictEqual(mineA.droppable, true, 'its branch reaches the commit');
