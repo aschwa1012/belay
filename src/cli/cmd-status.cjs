@@ -83,8 +83,7 @@ async function run(ctx) {
     const { runs } = await core.run.list({});
     if (runId && !runs.some(r => r.id === runId)) {
       const message = `no run row exists for ${runId}`;
-      return { code: 1, text: `belay status: ${message}
-`, json: { error: { code: 'E_NOT_FOUND', message, run_id: runId } } };
+      return { code: 1, text: `belay status: ${message}\n`, json: { error: { code: 'E_NOT_FOUND', message, run_id: runId } } };
     }
     if (!runId) {
       if (runs.length) {
