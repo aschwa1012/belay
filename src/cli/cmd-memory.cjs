@@ -213,7 +213,7 @@ function readImport(ctx, parsed) {
     if (!raw[i].trim()) continue;
     const line = i + 1;
     let row;
-    try { row = JSON.parse(raw[i]); } catch (e) { lines += 1; refused.push({ line, code: 'E_PARSE', message: e.message }); continue; }
+    try { row = JSON.parse(i === 0 ? raw[i].replace(/^\uFEFF/, '') : raw[i]); } catch (e) { lines += 1; refused.push({ line, code: 'E_PARSE', message: e.message }); continue; }
     if (!header && !lines && row && typeof row === 'object' && row.export !== undefined && row.text === undefined) { header = row; continue; }
     lines += 1;
     items.push({ line, row });
@@ -374,4 +374,4 @@ async function run(ctx) {
   }
 }
 
-module.exports = { run };
+module.exports = { run, readImport };

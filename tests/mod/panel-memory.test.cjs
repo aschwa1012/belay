@@ -123,9 +123,37 @@ test('the commands the menu prints are exactly the ones belay runs', async () =>
   assert.match(M.probeLine(menu), /^belay embedder fetch --gpu {2}then {2}belay embedder fetch --gpu --model Qwen\/Qwen3-Embedding-0\.6B-GGUF$/);
 });
 
+test('the panel reads the live runs, and a model the config names is in use by the next run, not by "run"', async () => {
+  const { json, menu } = await real({ project: 'acme', profile: 'gpu-rerank' });
+  assert.deepStrictEqual(menu.liveRuns, []);
+  assert.deepStrictEqual(M.normMenu({ ...json, live_runs: ['r-live'] }).liveRuns, ['r-live']);
+  const by = json.models.filter((m) => m.in_use_by.length).flatMap((m) => m.in_use_by);
+  assert.ok(by.includes('next run (config)'), JSON.stringify(by));
+  assert.ok(!by.includes('run'), 'a bare "run" names no run');
+});
+
+test('a download line chains the GPU runtime step only for a GPU model while the runtime is missing, and the toast says nothing was run', async () => {
+  const { menu } = await real({ project: 'acme' });
+  const gguf = menu.models.find((m) => m.id === 'Qwen/Qwen3-Embedding-8B-GGUF');
+  const onnx = menu.models.find((m) => m.id === 'Alibaba-NLP/gte-reranker-modernbert-base');
+  const fetch = 'belay embedder fetch --gpu --model Qwen/Qwen3-Embedding-8B-GGUF';
+  const without = { ...menu, gpu: { ...menu.gpu, runtimeOk: false, runtimeInstalled: false } };
+  const withRt = { ...menu, gpu: { ...menu.gpu, runtimeOk: true } };
+  assert.strictEqual(M.downloadLine(without, gguf), `belay embedder fetch --gpu  then  ${fetch}`);
+  assert.strictEqual(M.downloadLine(withRt, gguf), fetch);
+  assert.strictEqual(M.downloadLine(without, onnx), M.fetchLine(onnx), 'a CPU model needs no runtime');
+  assert.strictEqual(M.cmdToast(fetch), `belay: nothing was run. In a terminal, run: ${fetch}`);
+});
+
 test('resultLine: a receipt, a refusal with belay\'s own words, and an unparseable answer', () => {
   const set = { kind: 'set', key: 'memory.profile', value: 'gpu-rerank' };
-  assert.strictEqual(M.resultLine(set, 0, JSON.stringify({ key: 'memory.profile', old: { value: 'cpu-fast' } }), ''), 'belay: memory.profile set to gpu-rerank (was "cpu-fast")');
+  const receipt = JSON.stringify({ key: 'memory.profile', old: { value: 'cpu-fast' } });
+  const scope = "; applies to the next run, and a spec's memory.profile overrides it";
+  assert.strictEqual(M.resultLine(set, 0, receipt, ''), `belay: memory.profile set to gpu-rerank (was "cpu-fast")${scope}`);
+  assert.strictEqual(M.resultLine(set, 0, receipt, '', { liveRuns: [] }), `belay: memory.profile set to gpu-rerank (was "cpu-fast")${scope}`);
+  assert.strictEqual(M.resultLine(set, 0, receipt, '', { liveRuns: ['r-1', 'r-2'] }), `belay: memory.profile set to gpu-rerank (was "cpu-fast"); live runs r-1, r-2 keep the profiles they started with, this applies to the next run, and a spec's memory.profile overrides it`);
+  assert.strictEqual(M.resultLine({ kind: 'set', key: 'memory.profile_cpu', value: 'cpu-fast' }, 0, JSON.stringify({ key: 'memory.profile_cpu', old: { value: 'cpu-rerank' } }), '', { liveRuns: ['r-1'] }), `belay: memory.profile_cpu set to cpu-fast (was "cpu-rerank"); live run r-1 keeps the profile it started with, this applies to the next run, and a spec's memory.profile_cpu overrides it`);
+  assert.strictEqual(M.resultLine({ kind: 'set', key: 'memory.rerank_depth', value: '40' }, 0, JSON.stringify({ key: 'memory.rerank_depth', old: { value: 50 } }), '', { liveRuns: ['r-1'] }), 'belay: memory.rerank_depth set to 40 (was 50)', 'a key that is not a profile carries no profile note');
   assert.strictEqual(M.resultLine(set, 2, JSON.stringify({ error: 'bad value' }), ''), 'belay: memory.profile was not written: bad value');
   assert.strictEqual(M.resultLine(set, 1, 'not json\nsecond', ''), 'belay: memory.profile was not written: not json');
   assert.strictEqual(M.resultLine({ kind: 'delete', model: 'a/b' }, 0, JSON.stringify({ removed: true, bytes: 35000000 }), ''), 'belay: a/b removed (33 MB)');

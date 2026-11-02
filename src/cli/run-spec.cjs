@@ -37,7 +37,7 @@ const PROMPT_KEYS = ['prompt_file', 'brief_file'];
 const RUN_ID_MAX = 40;
 function parseSpec(specPath, cwd, opts = {}) {
   let raw;
-  try { raw = fs.readFileSync(specPath, 'utf8'); }
+  try { raw = fs.readFileSync(specPath, 'utf8').replace(/^\uFEFF/, ''); } // a leading UTF-8 BOM is not part of the JSON
   catch (e) { return { error: `could not read spec file ${specPath}: ${e.message}` }; }
   let spec;
   try { spec = JSON.parse(raw); }
