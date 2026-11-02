@@ -71,18 +71,20 @@ function rowText(result) {
   return table(cols, [...result.rows, total]);
 }
 
-// A run writes a ledger only when its recorded memory levers say cost_ledger (a run with a budget has it turned on). The run row carries
-// the levers as JSON text; null (an attach that recorded none) and an unreadable value say nothing, so no reason is claimed then.
+// A run writes a ledger only when its memory lever cost_ledger is on (a run with a budget has it turned on). The run row carries the
+// levers as JSON text, or null when the run's memory block was all defaults, and the default is off. An unreadable value says nothing.
 function ledgerOff(run) {
-  if (!run || typeof run.memory_levers !== 'string') return false;
-  try { const lv = JSON.parse(run.memory_levers); return !!lv && typeof lv === 'object' && lv.cost_ledger === false; } catch { return false; }
+  if (!run) return false;
+  if (run.memory_levers === null || run.memory_levers === undefined) return true;
+  if (typeof run.memory_levers !== 'string') return false;
+  try { const lv = JSON.parse(run.memory_levers); return !!lv && typeof lv === 'object' && lv.cost_ledger !== true; } catch { return false; }
 }
 
 function render(runId, by, result, run) {
   const head = `run: ${dash(runId)}${by ? `  by: ${by}` : ''}`;
   if (result.table_absent) return `${head}\nno usage table in this store: no ledger has been written here\n`;
   const empty = by ? !result.groups.length : !result.rows.length;
-  if (empty) return `${head}\n(no usage rows)\n${ledgerOff(run) ? 'this run did not write a ledger: its memory lever cost_ledger was off. Set memory.cost_ledger in the run spec, or give the run a budget_usd, to record turns and cost\n' : ''}`;
+  if (empty) return `${head}\n(no usage rows)\n${ledgerOff(run) ? 'this run did not write a ledger: its memory lever cost_ledger was off (the default). Set memory.cost_ledger to true in the run spec, or give the run a budget_usd, to record turns and cost\n' : ''}`;
   const lines = by ? groupText(by, result) : rowText(result);
   const mixed = result.totals.cost_basis_mixed ? ['partial: some turns reported no dollars (Codex); their cost is missing from the total, not zero'] : [];
   return `${[head, ...lines, ...mixed].join('\n')}\n`;

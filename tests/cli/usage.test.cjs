@@ -125,7 +125,7 @@ test('usage: a core refusal exits 1 naming the code', async () => {
   } finally { cleanup(dir); }
 });
 
-test('usage: a run whose ledger lever was off says why the ledger is empty; one that recorded no levers claims nothing', async () => {
+test('usage: a run whose ledger lever was off says why the ledger is empty; null levers are the default, off; an unreadable record claims nothing', async () => {
   const dir = sandbox();
   try {
     const empty = { rows: [], groups: [], totals: { turns: 0 } };
@@ -137,7 +137,9 @@ test('usage: a run whose ledger lever was off says why the ledger is empty; one 
     const on = await ask({ id: 'r', alive: false, memory_levers: JSON.stringify({ cost_ledger: true }) });
     assert.doesNotMatch(on.text, /did not write a ledger/);
     const none = await ask({ id: 'r', alive: false, memory_levers: null });
-    assert.doesNotMatch(none.text, /did not write a ledger/);
-    assert.strictEqual(none.json.ledger_off, undefined);
+    assert.match(none.text, /did not write a ledger: its memory lever cost_ledger was off \(the default\)\. Set memory\.cost_ledger to true/);
+    assert.strictEqual(none.json.ledger_off, true);
+    const bad = await ask({ id: 'r', alive: false, memory_levers: '{not json' }); // unreadable: no reason is claimed
+    assert.doesNotMatch(bad.text, /did not write a ledger/);
   } finally { cleanup(dir); }
 });
