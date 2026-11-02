@@ -280,7 +280,7 @@ async function run(ctx) {
   if (a.gpu && !a.model) return runRuntime(a, ctx);
   const t = table(a.gpu, !!a.reranker);
   const named = a.reranker || a.model || t.def;
-  const what = a.reranker ? 'CPU reranker' : 'embedding model';
+  const what = a.reranker ? 'CPU reranker' : a.gpu ? 'GPU model' : 'embedding model';
   const hit = require('../core/model-names.cjs').resolveModelName(named, t.models);
   if (hit && hit.ambiguous) {
     const message = `${JSON.stringify(named)} fits more than one ${what}: ${hit.ambiguous.join(', ')}; give the full id`;

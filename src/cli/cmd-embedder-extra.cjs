@@ -21,7 +21,7 @@ const MM = require('../core/memory-menu.cjs');
 
 const seams = { snapshot: null, rename: (a, b) => fs.renameSync(a, b), rm: (p) => fs.rmSync(p, { recursive: true, force: true }) };
 
-const USAGE = 'usage: belay embedder delete <model> | --model <id> | --reranker <id> [--gpu] [--json]\n  <model>  the full id, or the name the Memory menu shows (an unambiguous label or short name)\n  --gpu    look the model up in the GPU table only, as fetch does\n';
+const USAGE = 'usage: belay embedder delete <model> | [--gpu] --model <id> | --reranker <id> [--json]\n  <model>  the full id, or the name the Memory menu shows (an unambiguous label or short name)\n  --gpu    look the model up in the GPU table only, as fetch does\n';
 const fwd = (p) => String(p).replace(/\\/g, '/');
 const fail = (code, message, json = {}) => ({ code, text: `belay embedder: ${message}\n`, json: { error: message, ...json } });
 const usage = (message) => ({ code: 2, text: `belay embedder: ${message}\n\n${USAGE}`, json: { error: message } });

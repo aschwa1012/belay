@@ -79,3 +79,10 @@ test('a delete usage error names what was wrong and shows the usage', async () =
   assert.match(unknown.json.error, /unknown GPU model "nope"/);
   assert.ok(GGUF_MODELS[E4]);
 });
+
+test('with --gpu a fetch error says GPU model, and the delete usage does not offer --gpu with --reranker', async () => {
+  const r = await embedder.run(ctx(['verify', '--gpu', '--model', 'nope']));
+  assert.match(r.json.error, /unknown GPU model "nope"/);
+  const u = await extra.run(ctx(['delete']));
+  assert.ok(!/--reranker <id> \[--gpu\]/.test(u.text) && /\[--gpu\] --model <id> \| --reranker <id>/.test(u.text), u.text);
+});
