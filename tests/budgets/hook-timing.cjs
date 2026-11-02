@@ -3,7 +3,7 @@
 // what the PreToolUse guard hooks add to one Bash call: the hook process's wall time with the payload on stdin, in the shape of
 // tests/cli/budget.cjs (an empty script spawned the same way is the floor, interleaved round by round, min of n).
 // Three configurations: `before-parallel` is the two hook processes of ADR 0024 amendment 7 and ADR 0084 started together (Claude
-// Code runs the hooks of one event in parallel), `before-sequential` the same two one after the other, `after` the one guard hook.
+// Code runs the hooks of one event in parallel), `before-sequential` the same two one after the other, `after` the one guard hook as the orchestrator runs it, `after-worker` the same with `--push`, as every worker runs it.
 // The two "before" hooks are the old files kept under tests/fixtures/hooks-before.
 // Usage: node tests/budgets/hook-timing.cjs [out.json] [n]
 const fs = require('node:fs');
@@ -16,9 +16,9 @@ const BEFORE = ['kill-hook.cjs', 'tmp-hook.cjs'].map((f) => path.join(ROOT, 'tes
 const AFTER = path.join(ROOT, 'src', 'run', 'guard-hook.cjs');
 const PAYLOAD = JSON.stringify({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: { command: 'git status --short && ls src/run | head -5' } });
 
-function runOnce(script) {
+function runOnce(script, args = []) {
   return new Promise((resolve, reject) => {
-    const child = spawn(process.execPath, [script], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
+    const child = spawn(process.execPath, [script, ...args], { windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] });
     let out = '';
     child.stdout.on('data', (d) => { out += d; });
     child.on('error', reject);
@@ -34,9 +34,10 @@ async function main() {
   const floorScript = emptyScript();
   const configs = {
     floor: () => runOnce(floorScript),
-    'before-parallel': () => Promise.all(BEFORE.map(runOnce)),
+    'before-parallel': () => Promise.all(BEFORE.map((s) => runOnce(s))),
     'before-sequential': async () => { for (const s of BEFORE) await runOnce(s); },
     after: () => runOnce(AFTER),
+    'after-worker': () => runOnce(AFTER, ['--push']),
   };
   const samples = Object.fromEntries(Object.keys(configs).map((k) => [k, []]));
   for (let i = 0; i < n; i += 1) for (const [k, fn] of Object.entries(configs)) samples[k].push(await timed(fn));

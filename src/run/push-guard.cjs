@@ -9,19 +9,31 @@ const MESSAGE = 'Do not push or write to a remote (git push, gh pr/issue/release
 
 const WORD = String.raw`(?:^|[\s(/\\])`; // a command word starts a segment or follows a space, `(` or a path separator, never `.git`
 const GIT_VALUE_OPTS = '-c|-C|--git-dir|--work-tree|--namespace|--exec-path|--config-env|--super-prefix|--attr-source';
-const GIT_PUSH = new RegExp(String.raw`${WORD}git(?:\.exe)?((?:\s+(?:${GIT_VALUE_OPTS})\s+\S+|\s+-\S*)*)\s+(?:push|send-pack)(?=$|[\s);])`);
+// The subcommands that send to a remote: push, send-pack, http-push, and the push of `subtree` and `lfs`. What follows is kept for the help test.
+const GIT_PUSH = new RegExp(String.raw`${WORD}git(?:\.exe)?((?:\s+(?:${GIT_VALUE_OPTS})\s+\S+|\s+-\S*)*)\s+(?:push|send-pack|http-push|(?:subtree|lfs)\s+push)(?=$|[\s);<>|&])(.*)$`);
+const HELP = /(?:^|\s)(?:--help|-h)(?=\s|$)/; // `git push --help` and `gh pr create --help` print a page and send nothing
 const GH_WORD = new RegExp(String.raw`${WORD}gh(?:\.exe)?(?=\s|$)(.*)$`);
 
 // gh command groups whose verbs write to the remote unless the verb is one of these readers.
 const GH_GROUPS = new Set(['pr', 'issue', 'release', 'repo', 'gist', 'workflow', 'run', 'label', 'secret', 'variable', 'ssh-key', 'gpg-key', 'ruleset', 'cache', 'codespace', 'project']);
 const GH_READ_VERBS = new Set(['view', 'list', 'diff', 'status', 'checks', 'download', 'checkout', 'clone', 'get', 'watch']);
+const GH_READ_PAIRS = new Set(['ruleset check']); // a read whose verb is not in the set above
+// `gh api` options that take a separate value word, so the word is not the endpoint.
+const GH_API_VALUE_OPTS = new Set(['-x', '--method', '-h', '--header', '-f', '--field', '--raw-field', '-q', '--jq', '-t', '--template', '--hostname', '--cache', '-p', '--preview', '--input']);
 
-// Segments are split at ; && || | & and newlines.
+// Segments are split at ; && || | & and newlines. A line continuation (bash backslash-newline, PowerShell backtick-newline) joins first.
+const joinContinuations = (s) => s.replace(/[\\`]\r?\n/g, '');
 function segments(s) { return s.split(/;|&&|\|\||\||&|\r?\n/).map((x) => x.trim()).filter(Boolean); }
 
 // `gh api`: a write method, or fields without an explicit GET (gh sends fields as a POST body then), or a GraphQL mutation.
 function ghApiWrites(tokens, seg) {
-  if (tokens.includes('graphql')) return /\bmutation\b/.test(seg);
+  const api = tokens.indexOf('api');
+  let endpoint = null;
+  for (let i = api + 1; i < tokens.length && endpoint === null; i++) {
+    if (GH_API_VALUE_OPTS.has(tokens[i])) i++;
+    else if (!tokens[i].startsWith('-')) endpoint = tokens[i];
+  }
+  if (endpoint === 'graphql') return /\bmutation\b/.test(seg);
   let method = null;
   let fields = false;
   for (let i = 0; i < tokens.length; i++) {
@@ -35,10 +47,16 @@ function ghApiWrites(tokens, seg) {
   return fields;
 }
 
+function gitPushes(seg) {
+  const m = GIT_PUSH.exec(seg);
+  return !!m && !HELP.test(m[2]);
+}
+
 function ghWrites(seg) {
   const m = GH_WORD.exec(seg);
   if (!m) return false;
   const tokens = m[1].trim().split(/\s+/).filter(Boolean);
+  if (tokens.includes('--help') || (tokens[0] !== 'api' && tokens.includes('-h'))) return false; // -H is gh api's header flag
   const words = [];
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i] === '-r' || tokens[i] === '--repo') { i++; continue; } // -R owner/repo takes a value; it is not the verb
@@ -48,7 +66,7 @@ function ghWrites(seg) {
   }
   const [group, verb] = words;
   if (group === 'api') return ghApiWrites(tokens, seg);
-  return GH_GROUPS.has(group) && verb !== undefined && !GH_READ_VERBS.has(verb);
+  return GH_GROUPS.has(group) && verb !== undefined && !GH_READ_VERBS.has(verb) && !GH_READ_PAIRS.has(`${group} ${verb}`);
 }
 
 function normalize(command, quote, unescape) {
@@ -56,11 +74,12 @@ function normalize(command, quote, unescape) {
   return unescape ? t.replace(/[\^`]/g, '') : t; // cmd `^` and PowerShell backtick escapes
 }
 
-function refusal(command) {
-  if (typeof command !== 'string' || !command) return null;
+function refusal(rawCommand) {
+  if (typeof rawCommand !== 'string' || !rawCommand) return null;
+  const command = joinContinuations(rawCommand);
   for (const [quote, unescape] of [[' ', false], ['', false], [' ', true], ['', true]]) { // `g"it" push` joins, `cmd /c"git push` splits: try both
     const n = normalize(command, quote, unescape);
-    if (segments(n).some((seg) => GIT_PUSH.test(seg) || ghWrites(seg))) return MESSAGE;
+    if (segments(n).some((seg) => gitPushes(seg) || ghWrites(seg))) return MESSAGE;
   }
   return null;
 }

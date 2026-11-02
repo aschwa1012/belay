@@ -156,7 +156,7 @@ test('worker settings and the headless orchestrator settings carry the hook; the
       const h = hooksOf(f);
       assert.deepStrictEqual(Object.keys(h), ['PreToolUse']);
       assert.strictEqual(h.PreToolUse.length, 1, 'one hook process per call');
-      assert.match(h.PreToolUse[0].matcher, /^Bash|PowerShell|/);
+      assert.strictEqual(h.PreToolUse[0].matcher, 'Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit');
       assert.match(h.PreToolUse[0].hooks[0].command, /guard-hook\.cjs"(?: --push)?$/);
       assert.ok(h.PreToolUse[0].hooks[0].timeout <= 10);
     }

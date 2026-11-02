@@ -15,6 +15,19 @@ const G = require('../../src/run/guard.cjs');
 const L = require('../../src/run/launch.cjs');
 
 const REFUSED = [
+  'git -C C:/repo \\\n  push origin main', // bash line continuation
+  'git push \\\r\n  origin main',
+  'git `\n  push origin main', // PowerShell line continuation
+  'gh pr \\\n  create --title x',
+  'git push>log.txt 2>&1',
+  'git push<nul',
+  'git push>>log.txt',
+  'git subtree push --prefix=lib origin main',
+  'git lfs push origin main',
+  'git http-push https://example.com/r.git main',
+  'gh api repos/o/r/issues -f title=x -t graphql',
+  'gh api -X DELETE repos/o/r/git/refs/heads/x --jq graphql',
+  'gh api repos/o/r/issues -f title=x -H graphql',
   'git push',
   'git push origin main',
   'git push -u origin feat/x',
@@ -100,6 +113,17 @@ const REFUSED = [
 ];
 
 const ALLOWED = [
+  'git push --help',
+  'git push -h',
+  'git -C x push --help',
+  'git subtree split --prefix=lib',
+  'git lfs ls-files',
+  'git lfs pull',
+  'gh pr create --help',
+  'gh release create -h',
+  'gh ruleset check main',
+  'gh ruleset view 1',
+  'gh api graphql -f query="{ viewer { login } }" -t graphql',
   undefined, null, '', 5,
   'git status',
   'git fetch origin',
@@ -179,7 +203,7 @@ const ALLOWED = [
 // Stated limits (ADR 0085): a textual match refuses text that only names a push, and does not follow a path with a space, an alias, or a command
 // assembled at run time or written to a script first.
 const KNOWN_FALSE_POSITIVES = ['git log -S"git push" --oneline', 'echo "never run git push"', 'git commit -m "document gh pr create"'];
-const KNOWN_ESCAPES = ['git -C "D:/work/My Repo" push', 'p=push; git $p', 'git -c alias.up=push up', `node -e "require('child_process').execSync(['git', 'push'].join(' '))"`, 'sh push.sh', 'curl -X POST https://api.github.com/repos/o/r/issues'];
+const KNOWN_ESCAPES = ['git -C "D:/work/My Repo" push', 'p=push; git $p', 'git -c alias.up=push up', `node -e "require('child_process').execSync(['git', 'push'].join(' '))"`, 'sh push.sh', 'git pu\\sh', 'powershell -EncodedCommand ZwBpAHQAIABwAHUAcwBoAA==', 'curl -X POST https://api.github.com/repos/o/r/issues'];
 
 test('the stated limits: a command that only names a push is refused, and a shape the text cannot follow is allowed', () => {
   for (const c of KNOWN_FALSE_POSITIVES) assert.strictEqual(PG.refusal(c), PG.MESSAGE, c);
