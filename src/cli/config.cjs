@@ -129,7 +129,7 @@ function read(file, dir, searched) {
   };
   let raw;
   try {
-    raw = fs.readFileSync(file, 'utf8');
+    raw = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''); // a leading UTF-8 BOM is not part of the JSON
   } catch (e) {
     return { ...base, raw: null, config: {}, parse_error: `could not read ${file}: ${e.message}` };
   }
