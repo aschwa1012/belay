@@ -105,7 +105,7 @@ test('every test file, acceptance row and smoke script reaches the temp-root gua
     let src = '';
     try { src = fs.readFileSync(file, 'utf8'); } catch { return null; }
     for (const line of src.split(/\r?\n/)) {
-      if (!/^\S/.test(line)) continue;
+      if (!/^\S/.test(line) || line.startsWith('//')) continue;
       const m = /require\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)/.exec(line);
       if (m) return resolveRel(file, m[1]);
     }
