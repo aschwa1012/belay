@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // compose-assign.test.cjs — what task_assign sends the worker (wording audit): the first assignment's line carries only the task and
 // the lease; the hand-back rule is belay's, shaped for the task (a verdict task's has the verdict shape and the Review standard);
 // and a verdict task assigned to a live reviewer carries the note-review brief, as it does at a spawn.

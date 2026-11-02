@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-preface-boundary.test.cjs — where a replacement's conversation begins is read from the store, not held on the worker object:
 // the replacement's first receipt carries `convo:{"carried":[...]}` in its `key`, the earlier row ids its bottle still holds. So a failed read, a row whose
 // syntax is quoted in retained prose, and a process that adopts the worker are all judged from the receipts alone.

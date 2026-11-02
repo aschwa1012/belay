@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-report-tool.test.cjs — the orchestrator's memory_report tool: listed for the orchestrator of a notes run only, routed to memory.noteReport,
 // never on a worker's listing, inside the orchestrator listing budget.
 

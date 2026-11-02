@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // compaction-turns.test.cjs � build 12 wave 3, ADR 0007 decision 3: the compaction turn as seen by the worker and the
 // orchestrator (refusal of a message during a /compact, swallow, the waiter, receipts). Split from compaction.test.cjs
 // (500-line cap); same helpers, same fakes.

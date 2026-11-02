@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // launch-pause-held.test.cjs — a run pause that lands while a spawn or a restart is still starting. The run pause lists rows by live pid,
 // so it cannot park such a worker itself; the adapter holds the pause for the launch, and the launch answers it: refused at its last
 // pre-launch check (no process, E_PAUSED), or parked once it is up and named in this pause's parks. Every seam is a deferred on a core

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // orchestrator-leftovers.test.cjs — ADR 0054 amendment 2: what a headless orchestrator's shell left running is ended once the run's
 // own close is done, by exact pid after its identity is checked again. The orchestrator's MCP adapter, the workers belay spawned
 // (the spawn register) and their subtrees are belay's own and are never taken.

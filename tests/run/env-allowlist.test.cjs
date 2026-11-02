@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // The launch environment is an allowlist, and a launch whose system/init reports an auth source other than the
 // subscription is refused. Fake executables only; nothing here touches a real Claude Code or an API.
 
