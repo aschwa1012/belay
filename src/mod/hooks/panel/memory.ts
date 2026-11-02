@@ -216,6 +216,10 @@ export const fetchFlags = (r: BelayMenuModel): string[] => (r.runtime === 'gguf'
 // Commands too long to run from a panel that a reload ends: the person runs them, and the menu prints each exactly.
 export const fetchLine = (r: BelayMenuModel): string => `belay embedder fetch${fetchFlags(r).map(f => ` ${f}`).join('')}`
 export const runtimeLine = (m: BelayMenu): string => m.gpu.runtimeCommand
+// The download's command(s): `fetch --gpu --model` takes only the GGUF, so a GPU model with the runtime missing is the runtime step, then the model.
+export const downloadLine = (m: BelayMenu, r: BelayMenuModel): string => (r.runtime === 'gguf' && !m.gpu.runtimeOk ? `${runtimeLine(m)}  then  ${fetchLine(r)}` : fetchLine(r))
+// What a `cmd` button says: the panel ran nothing, and the line is for the person's terminal (a reload of this panel would end a command of minutes).
+export const cmdToast = (line: string): string => `belay: nothing was run. In a terminal, run: ${line}`
 export const embedLine = (m: BelayMenu, r: BelayMenuModel): string => `belay memory embed --model ${r.id}${m.project ? ` --project ${m.project}` : ' --project <p>'}`
 // The probe runs inside a GPU model's load, so the nearest command is the first heavy embedder that is fetched (it probes, then embeds its backlog).
 export function probeLine(m: BelayMenu): string {

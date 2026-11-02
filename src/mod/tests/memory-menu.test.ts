@@ -283,30 +283,39 @@ describe('the Models tab', () => {
     expect(t).toContain('jina-reranker-v1-tiny-en int8 · 33 MB · cpu · ready')
     expect(t).toContain('gte-reranker-modernbert-base int8 · 148 MB · cpu · download')
     expect(t).toContain('backlog 3')
-    expect(t).toContain('[embed now]')
+    expect(t).toContain('[embed now: shows command]')
     expect(t).toContain('GPU runtime · installed')
     expect(t).toContain('disk used by models 2.6 GB in 3 models')
   })
 
-  test('a download and an embed-now print the exact command (they last minutes and a reload would end them) and run nothing', async ($, on) => {
+  test('a download and an embed-now say nothing was run and print the exact command (they last minutes and a reload would end them)', async ($, on) => {
     const m = await menuPane($, on)
     await tab(m, 'models')
+    expect(await m.text()).toContain('[download: shows command]')
     await m.ui.press({ key: `fetch:${IDS.E8}` })
-    expect(m.wd.toasts.at(-1)).toBe(`belay: run  belay embedder fetch --gpu --model ${IDS.E8}`)
+    expect(m.wd.toasts.at(-1)).toBe(`belay: nothing was run. In a terminal, run: belay embedder fetch --gpu --model ${IDS.E8}`)
     await m.ui.press({ key: 'fetch:Alibaba-NLP/gte-reranker-modernbert-base' })
-    expect(m.wd.toasts.at(-1)).toBe('belay: run  belay embedder fetch --reranker Alibaba-NLP/gte-reranker-modernbert-base')
+    expect(m.wd.toasts.at(-1)).toBe('belay: nothing was run. In a terminal, run: belay embedder fetch --reranker Alibaba-NLP/gte-reranker-modernbert-base')
     await m.ui.press({ key: `embed:${IDS.E4}` })
-    expect(m.wd.toasts.at(-1)).toBe(`belay: run  belay memory embed --model ${IDS.E4} --project acme`)
-    expect(await m.text()).toContain(`run: belay memory embed --model ${IDS.E4} --project acme`)
+    expect(m.wd.toasts.at(-1)).toBe(`belay: nothing was run. In a terminal, run: belay memory embed --model ${IDS.E4} --project acme`)
+    expect(await m.text()).toContain(`run in a terminal: belay memory embed --model ${IDS.E4} --project acme`)
     expect(m.wd.menuWrites).toEqual([])
     expect(m.wd.spawned).toEqual([])
+  })
+
+  test('a GPU model download with the runtime missing prints the runtime step, then the model', async ($, on) => {
+    const gpu = { state: 'probed', device: 'NVIDIA GeForce RTX 5060', free_mb: 7000, total_mb: 7899, ok: true, reason: null, at: '2026-10-21T14:02:00.000Z', runtime: { installed: false, ok: false, command: 'belay embedder fetch --gpu', problems: 1 } }
+    const m = await menuPane($, on, { menu: MENU({ gpu }) })
+    await tab(m, 'models')
+    await m.ui.press({ key: `fetch:${IDS.E8}` })
+    expect(m.wd.toasts.at(-1)).toBe(`belay: nothing was run. In a terminal, run: belay embedder fetch --gpu  then  belay embedder fetch --gpu --model ${IDS.E8}`)
   })
 
   test('the embed-now button is only there while there is a backlog', async ($, on) => {
     const m = await menuPane($, on, { menu: MENU({ behind: 0, models: MENU().models.map((x: any) => (x.id === IDS.E4 ? { ...x, backlog: 0 } : x)) }) })
     await tab(m, 'models')
     expect(await m.text()).toContain('backlog 0')
-    expect(await m.text()).not.toContain('[embed now]')
+    expect(await m.text()).not.toContain('[embed now')
   })
 
   test('verify runs belay embedder verify after two presses and toasts the answer', async ($, on) => {

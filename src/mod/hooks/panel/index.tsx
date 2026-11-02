@@ -26,7 +26,7 @@ import type { BelayMenu as BelayMenuT, BelayPanelMenu, BelayPanelSettled, BelayP
 import { argvFor, buildSnapshot, fatalSnapshot, fwd, launcherLine, isWindowsPath, needsRun, parseRan, parseRunFile, projectRootOf, repoCliGuess, type Ran, type RunFileRead } from './fetch'
 import { CONFIRM_MS, normHeld, reasonProblem, reviewProject, SETTLE_ACTIONS, SETTLE_UNKNOWN, PENDING_STALE_MS, pruneSettled, settleArgs, settleKind, settleLine, settledActive, shortId, type SettleAction } from './held'
 import { DEFAULT_SETTINGS, DEFAULT_UI } from './model'
-import { actionId, PROFILE_KEYS, confirmText, cycleDraft, draftOf, gb, modelById, normBadge, normMenu, resultLine, routeFit, routingWrites, sameDraft, writeArgv, type MemAction } from './memory'
+import { actionId, PROFILE_KEYS, cmdToast, confirmText, cycleDraft, draftOf, gb, modelById, normBadge, normMenu, resultLine, routeFit, routingWrites, sameDraft, writeArgv, type MemAction } from './memory'
 import { Band, BandWaiting, Fallback, Pane, type Act, type Els } from './view'
 
 const PANE = 'belay'
@@ -386,8 +386,8 @@ async function memAct($: Host, a: MemAction): Promise<void> {
     const menu = (await read($, menuA)).menu
     if (menu) await update($, uiA, u => ({ ...calm(u), routeDraft: cycleDraft(menu, u.routeDraft ?? draftOf(menu), a.side, a.type) }))
   } else if (a.kind === 'cmd') {
-    await update($, uiA, u => ({ ...calm(u), memNote: `run: ${a.line}` }))
-    $.ui.toast(`belay: run  ${a.line}`)
+    await update($, uiA, u => ({ ...calm(u), memNote: `run in a terminal: ${a.line}` }))
+    $.ui.toast(cmdToast(a.line))
   } else if (a.kind === 'refresh') {
     menuForce = true
   } else await memPress($, a)

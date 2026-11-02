@@ -132,6 +132,19 @@ test('the panel reads the live runs, and a model the config names is in use by t
   assert.ok(!by.includes('run'), 'a bare "run" names no run');
 });
 
+test('a download line chains the GPU runtime step only for a GPU model while the runtime is missing, and the toast says nothing was run', async () => {
+  const { menu } = await real({ project: 'acme' });
+  const gguf = menu.models.find((m) => m.id === 'Qwen/Qwen3-Embedding-8B-GGUF');
+  const onnx = menu.models.find((m) => m.id === 'Alibaba-NLP/gte-reranker-modernbert-base');
+  const fetch = 'belay embedder fetch --gpu --model Qwen/Qwen3-Embedding-8B-GGUF';
+  const without = { ...menu, gpu: { ...menu.gpu, runtimeOk: false, runtimeInstalled: false } };
+  const withRt = { ...menu, gpu: { ...menu.gpu, runtimeOk: true } };
+  assert.strictEqual(M.downloadLine(without, gguf), `belay embedder fetch --gpu  then  ${fetch}`);
+  assert.strictEqual(M.downloadLine(withRt, gguf), fetch);
+  assert.strictEqual(M.downloadLine(without, onnx), M.fetchLine(onnx), 'a CPU model needs no runtime');
+  assert.strictEqual(M.cmdToast(fetch), `belay: nothing was run. In a terminal, run: ${fetch}`);
+});
+
 test('resultLine: a receipt, a refusal with belay\'s own words, and an unparseable answer', () => {
   const set = { kind: 'set', key: 'memory.profile', value: 'gpu-rerank' };
   const receipt = JSON.stringify({ key: 'memory.profile', old: { value: 'cpu-fast' } });
