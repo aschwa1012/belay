@@ -58,8 +58,9 @@ const ALLOW_EXACT = new Set([
   'CLAUDE_CODE_OAUTH_TOKEN',
   // belay's own powershell calls (process identity checks) and a Restricted-policy host need these; they hold no secret
   'PSMODULEPATH', 'PSEXECUTIONPOLICYPREFERENCE',
-  // git: the key agent socket, and the config redirects a test (or an operator) uses to keep git hermetic; belay sets neither itself
-  'SSH_AUTH_SOCK', 'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM',
+  // git: the config redirects a test (or an operator) uses to keep git hermetic; belay sets neither itself. SSH_AUTH_SOCK is not
+  // passed (operator, 2026-11-02): a worker holds no key agent. BELAY_ENV_ALLOW can still name it for a launch that needs it.
+  'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM',
 ]);
 // Added for an interactive orchestrator only: Claude Code reads them to detect the terminal (key handling, rendering).
 const INTERACTIVE_EXACT = new Set(['WT_SESSION', 'TERM_PROGRAM_VERSION']);
