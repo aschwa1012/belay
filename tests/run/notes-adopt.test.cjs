@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // notes-adopt.test.cjs — ADR 0047 review S6: the contract text is only ever sent to an adapter launched with --notes.
 // An adopted worker (a new adapter finds it in the store) gets the flag from the run's levers before its files are
 // written; a levers read that fails means off for that worker, recorded, and no contract.

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // observe-bounds.test.cjs — whatever a turn did, the observation's serialised body stays under the store's 8,192 bytes
 // (with room for redaction to lengthen a string), its embedded text under the embedder's window, and what was
 // dropped is counted. A turn is never lost because it was long.

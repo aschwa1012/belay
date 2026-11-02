@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-levers-retired.test.cjs — the note-review job's three levers were removed. A true note_review, or a model or a cost cap of any
 // value, is refused loudly (spec, config, settings, run.attach); note_review false is accepted and stored nowhere; a run row written
 // before the removal is still read, its three keys dropped.

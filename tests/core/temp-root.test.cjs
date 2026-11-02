@@ -88,25 +88,36 @@ test('indexedReason: a junction or symlink into an indexed folder is caught thro
   } finally { fs.rmSync(base, { recursive: true, force: true }); }
 });
 
-// Every test file, acceptance row and smoke script must reach the guard: it, or a helper it requires (transitively, relative requires only), loads
-// tests/helpers/tmp.cjs, git-env.cjs or temp-root.cjs. A bare `node --test file` has no --require, so this is the only way in.
-test('every test file, acceptance row and smoke script reaches the temp-root guard through its requires', () => {
+// Every test file, acceptance row and smoke script must reach the guard BEFORE anything that may use the temp dir: its first top-level
+// relative require (a line that starts in column 0, so a require inside a function body does not count) is the guard, or a file whose own
+// first top-level relative require is, and so on. A bare `node --test file` has no --require, so this is the only way in, and a guard that
+// loads after a module that reads the temp dir is too late for that module.
+test('every test file, acceptance row and smoke script reaches the temp-root guard first, through its top-level requires', () => {
   const root = path.join(__dirname, '..');
   const GUARDS = new Set(['tmp.cjs', 'git-env.cjs', 'temp-root.cjs'].map((n) => path.join(root, 'helpers', n)));
   const cache = new Map();
-  const reaches = (file, seen = new Set()) => {
+  const resolveRel = (file, rel) => {
+    let t = path.resolve(path.dirname(file), rel);
+    if (!fs.existsSync(t) || fs.statSync(t).isDirectory()) t = fs.existsSync(`${t}.cjs`) ? `${t}.cjs` : path.join(t, 'index.cjs');
+    return t;
+  };
+  const firstTopLevelRequire = (file) => {
+    let src = '';
+    try { src = fs.readFileSync(file, 'utf8'); } catch { return null; }
+    for (const line of src.split(/\r?\n/)) {
+      if (!/^\S/.test(line)) continue;
+      const m = /require\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)/.exec(line);
+      if (m) return resolveRel(file, m[1]);
+    }
+    return null;
+  };
+  const reachesFirst = (file, seen = new Set()) => {
     if (GUARDS.has(file)) return true;
     if (cache.has(file)) return cache.get(file);
     if (seen.has(file)) return false;
     seen.add(file);
-    let src = '';
-    try { src = fs.readFileSync(file, 'utf8'); } catch { return false; }
-    let hit = false;
-    for (const m of src.matchAll(/require\(\s*['"](\.{1,2}\/[^'"]+)['"]\s*\)/g)) {
-      let t = path.resolve(path.dirname(file), m[1]);
-      if (!fs.existsSync(t) || fs.statSync(t).isDirectory()) t = fs.existsSync(`${t}.cjs`) ? `${t}.cjs` : path.join(t, 'index.cjs');
-      if (reaches(t, seen)) { hit = true; break; }
-    }
+    const next = firstTopLevelRequire(file);
+    const hit = next ? reachesFirst(next, seen) : false;
     cache.set(file, hit);
     return hit;
   };
@@ -114,6 +125,13 @@ test('every test file, acceptance row and smoke script reaches the temp-root gua
   const walk = (d) => { for (const e of fs.readdirSync(d, { withFileTypes: true })) { const p = path.join(d, e.name); if (e.isDirectory()) { if (e.name !== 'fixtures' && e.name !== 'node_modules') walk(p); } else if (/\.(test|selftest)\.cjs$/.test(e.name) || (/^(acceptance|smoke)$/.test(path.basename(d)) && e.name !== 'lib.cjs')) files.push(p); } };
   walk(root);
   assert.ok(files.length > 100, `found ${files.length} test files`);
-  const missing = files.filter((f) => !reaches(f)).map((f) => path.relative(root, f).split(path.sep).join('/'));
-  assert.deepStrictEqual(missing, [], `${missing.length} files never load the temp-root guard`);
+  const missing = files.filter((f) => !reachesFirst(f)).map((f) => path.relative(root, f).split(path.sep).join('/'));
+  assert.deepStrictEqual(missing, [], `${missing.length} files do not load the temp-root guard first`);
+});
+
+test('safeTempRoot: a fallback that is itself the root in use is kept, not "refused" again on every load', { skip: !win }, () => {
+  const current = `${HOME}/Elsewhere/Local/Temp`;
+  const r = TR.safeTempRoot({ env: { LOCALAPPDATA: `${HOME}/Elsewhere/Local` }, home: HOME, current, platform: 'win32' });
+  assert.strictEqual(r.refused, false);
+  assert.strictEqual(r.dir, current);
 });

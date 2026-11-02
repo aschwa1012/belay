@@ -3,6 +3,7 @@
 // module directly, and on what a live child actually sends over the wire, because only the second is
 // what the orchestrator pays for. Every failure prints the number.
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 
 const test = require('node:test');
 const assert = require('node:assert');

@@ -55,7 +55,9 @@ function safeTempRoot(opts = {}) {
   if (env.BELAY_TEST_TEMP_ALLOW_INDEXED === '1') return { dir: current, refused: false, reason: null };
   const reason = indexedReason(current, opts);
   if (!reason) return { dir: current, refused: false, reason: null };
-  return { dir: fallbackTemp(opts), refused: true, reason, from: current };
+  const dir = fallbackTemp(opts);
+  if (norm(dir) === norm(current)) return { dir: current, refused: false, reason: null }; // the fallback is the root already in use: nothing better to move to
+  return { dir, refused: true, reason, from: current };
 }
 
 // Applies safeTempRoot to the process: on a refusal TEMP/TMP/TMPDIR move to the fallback and stderr says so.

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // bind-launch-steal.test.cjs — ADR 0045 decision 2, a stolen bind: the bind pipe's name is public (it is in the adapter's argv), so a
 // process that dials it before the genuine adapter is handed the worker's key, and the genuine adapter finds no listener. The launch
 // fails, and a failed launch must leave no key behind. A real owner and the real run manager over the fake Claude; the "thief" is a

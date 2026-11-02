@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // release-eval-tree.test.cjs — ADR 0058 amendment 1 (proposed): a task with its own worktree is worked and judged there. A reused
 // idle worker runs in the tree of its earlier task, and its directory cannot change, so task.assign refuses it a task with another
 // worktree, naming both paths; a spawn in the wrong tree is refused with nothing written; and task.evaluate refuses a worktree

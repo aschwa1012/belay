@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // surface-launch.test.cjs — build step S2, ADR 0024: the
 // ready gate's surface check, driven over the fakes (never a real Claude Code session — those cost
 // money and are the acceptance rows' job, not this suite's). fake-claude.cjs's FAKE_SURFACE and

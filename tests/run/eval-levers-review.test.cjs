@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // eval-levers-review.test.cjs: the review fixes for the two eval-only levers (native_memory, handback_question). Another run's
 // native_memory is never adopted into a run that did not opt in, a stored lever that cannot be read refuses the spawn, the hand-back
 // question closes a resume that carries an operator message, an absent lever leaves the recorded levers as they were, and a bad
