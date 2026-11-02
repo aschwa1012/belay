@@ -22,4 +22,21 @@ function notesDefaults(E, caller, args, filter) {
   return { args: { ...args, namespace: 'project' }, filter: filter.types === undefined ? { ...filter, types: [NOTE_TYPE] } : filter };
 }
 
-module.exports = { notesDefaults, NOTE_TYPE };
+// Whether the default search of run `runId` leaves out the run's own namespace (it goes to the project's notes: notesDefaults' own rule). A turn
+// row of such a run is read by the briefing, not by a default search, so a heavy tier does not embed it (ADR 0044 amendment of 2026-11-02).
+function defaultSearchSkipsRun(E, runId) {
+  return notesDefaults(E, { run_id: runId, role: 'orchestrator' }, {}, {}).args.namespace === 'project';
+}
+
+// A predicate over a memory row (type and namespace): true for a turn row a heavy tier leaves out. One answer per run.
+function heavyExemptFn(E) {
+  const memo = new Map();
+  return (r) => {
+    if (r.type !== 'turn' || typeof r.namespace !== 'string' || !r.namespace.startsWith('run/')) return false;
+    const id = r.namespace.slice(4);
+    if (!memo.has(id)) memo.set(id, defaultSearchSkipsRun(E, id));
+    return memo.get(id);
+  };
+}
+
+module.exports = { notesDefaults, defaultSearchSkipsRun, heavyExemptFn, NOTE_TYPE };

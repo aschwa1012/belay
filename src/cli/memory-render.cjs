@@ -312,6 +312,8 @@ function renderSearchText(r, view) {
   if (typeof r.absence_established === 'boolean') tail.push(`absence_established: ${r.absence_established}`);
   out.push(tail.join('  '));
   for (const f of r.modes_failed || []) out.push(`failed: ${f.mode} ${f.code}${f.message ? ` (${f.message})` : ''}`);
+  // A held note is shown after the ranked hits, so a short page can cut it: it still matched.
+  if (Array.isArray(r.held_matches) && r.held_matches.length) out.push(`held matches off this page: ${r.held_matches.map(h => `${h.id} (${h.kind || 'held'})`).join(', ')}`);
   return `${out.join('\n')}\n`;
 }
 
