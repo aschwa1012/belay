@@ -348,7 +348,7 @@ class Owner {
     if (req.method === 'ping') {
       // A stopping owner is not a serving one: it refuses every call, so its ping must not read as liveness.
       if (this.stopped) return this._refuse(c, req, { code: 'E_OWNER_STOPPING', message: 'the store owner is stopping and serves no calls', detail: { method: 'ping', sent: false, owner_stopping: true } });
-      const result = { pid: process.pid, pipe: this.pipe, uptime_ms: Date.now() - this.startedAt, calls: this.counters.calls, embedder: this.embedInfo || null, ...(c.belayVerified === undefined ? {} : { operator_verified: c.belayVerified }) };
+      const result = { pid: process.pid, pipe: this.pipe, uptime_ms: Date.now() - this.startedAt, calls: this.counters.calls, embedder: this.embedInfo || null, ...(c.belayVerified === undefined ? {} : { operator_verified: c.belayVerified }), ...(c.belayVerifyReason ? { operator_reason: c.belayVerifyReason } : {}) };
       if (!c.destroyed) c.write(JSON.stringify({ id: req.id, result }) + '\n');
       return;
     }

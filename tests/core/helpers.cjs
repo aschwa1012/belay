@@ -20,13 +20,24 @@ function sandbox() {
 
 // Windows can hold a handle for a moment after a store closes, so retry; but a directory that truly
 // will not go must be reported, not swallowed, or %TEMP% fills with belay-core-test-* with no signal.
-function cleanup(dir) {
-  for (let i = 0; i < 5; i++) {
-    try { fs.rmSync(dir, { recursive: true, force: true }); return; }
+// Before a sandbox goes, every store in it is checked against its invariants (tests/helpers/store-invariants.cjs). A test whose store is broken
+// on purpose says so, for the rules its hand-written rows break: cleanup(dir, { skipInvariants: { rules: ['done_evidence'], reason: 'why' } }); both are required,
+// and every other rule still runs. The sandbox is removed before a violation is thrown.
+function cleanup(dir, opts = {}) {
+  const sk = opts.skipInvariants;
+  if (sk !== undefined && (!sk || !String(sk.reason || '').trim() || !Array.isArray(sk.rules) || !sk.rules.length)) throw new Error('cleanup: skipInvariants needs { rules: [...], reason }');
+  let broken = null;
+  try { require('../helpers/store-invariants.cjs').assertStoresUnder(dir, { ignoreRules: sk ? sk.rules : [] }); } catch (e) { broken = e; }
+  let gone = false;
+  for (let i = 0; i < 5 && !gone; i++) {
+    try { fs.rmSync(dir, { recursive: true, force: true }); gone = true; }
     catch { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50); }
   }
-  try { fs.rmSync(dir, { recursive: true, force: true }); }
-  catch (e) { process.emitWarning(`sandbox left behind at ${dir}: ${e.code || e.message}`); }
+  if (!gone) {
+    try { fs.rmSync(dir, { recursive: true, force: true }); }
+    catch (e) { process.emitWarning(`sandbox left behind at ${dir}: ${e.code || e.message}`); }
+  }
+  if (broken) throw broken;
 }
 
 // A process root older than any spawn-register lifetime a concurrent test could have recorded (2020-01-01). An operator-check fixture that

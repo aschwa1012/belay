@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // call-wake.test.cjs — an integrate or task_evaluate that answered still_running holds the headless run open while it runs and
 // wakes the orchestrator with its result when it lands (src/run/call-wake.cjs, read from the ledger events the adapter writes).
 // Over the fakes: no Claude Code, no model.

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // call-wake.cjs — a call that ended with an error: a refusal that wrote nothing says so; an unknown outcome (ADR 0033) does not,
 // keeps the hold, and wakes again when the store shows the call settled. The bound counts from the detached event's written_at.
 const test = require('node:test');

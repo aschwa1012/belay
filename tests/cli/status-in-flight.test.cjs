@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // status-in-flight.test.cjs — `belay status` shows a live worker's turn that has not ended as "in flight (estimate)", apart from the
 // worker's reported cost, and the budget line labels the in-flight figure as counted or not. The built CLI in text mode over a store
 // planted by a core that is shut down first (the copy path); the worker is a pid the test owns and kills by exact pid.

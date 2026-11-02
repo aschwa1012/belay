@@ -145,7 +145,7 @@ test('delete removes a fetched model nothing uses, and refuses one the settings 
   writeConfig(proj, { project: 'acme', profile_cpu: 'cpu-rerank-light' });
   const used = await embedderExtra.run(ctx([JINA]));
   assert.strictEqual(used.code, 1);
-  assert.match(used.text, /in use by this project's settings or runs \(run \(CPU only\)/);
+  assert.match(used.text, /in use by this project's settings or runs \(next run \(config, CPU only\)/);
   assert.ok(fs.existsSync(dir), 'nothing was removed');
   assert.ok((await embedderExtra.run(ctx([NANO]))).json.in_use_by.includes('every note (the base)'));
   writeConfig(proj, { project: 'acme' });

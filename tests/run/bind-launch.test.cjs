@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // bind-launch.test.cjs — ADR 0045 decision 2, the spawning side: every launch of an adapter binds it first. The run manager asks the
 // core for a bind, writes its pipe name into the worker's mcp.json as --bind, and a restart opens a fresh one and revokes the last;
 // a core that cannot open a bind fails the launch E_BIND and nothing starts. The orchestrator's files carry its bind the same way.

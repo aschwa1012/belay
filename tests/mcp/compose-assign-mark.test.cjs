@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // compose-assign-mark.test.cjs — task_assign marks the worker record before the core commits the lease, so stop_idle_on_done
 // (idle-stop.cjs) sees an assign in flight; the mark is released when the core answers or fails, and an assign is refused
 // before the core is called once an idle stop has decided to go ahead.

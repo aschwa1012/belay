@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // native-memory-auth.test.cjs: who opted in to a worker's native_memory is a fact of the worker row that no later write changes. A run that
 // was refused cannot pass as the run that opted in (its dead row names it as the writer), a run id used again by a later run does not
 // inherit the grant, and a settings rewrite that fails during a denied adoption leaves the refusal in force for the cached worker.

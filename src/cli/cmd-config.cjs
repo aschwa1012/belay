@@ -76,8 +76,9 @@ function getResult(found, key, ctx) {
   };
   if (eff.allowed) payload.allowed = eff.allowed;
   if (eff.invalid) payload.invalid = eff.invalid;
+  if (eff.refused) payload.refused = eff.refused;
   if (ctx.json) return { code: 0, text: '', json: payload };
-  const warn = eff.invalid ? `warning: ${eff.key}: ${eff.invalid.reason}\n` : '';
+  const warn = (eff.invalid ? `warning: ${eff.key}: ${eff.invalid.reason}\n` : '') + (eff.refused ? `warning: ${eff.refused}\n` : '');
   return { code: 0, text: `${warn}${eff.key} = ${JSON.stringify(eff.value)}  (from ${sourceLine(eff)})\n`, json: payload };
 }
 
@@ -88,7 +89,7 @@ function summary(found, ctx) {
     path: found.path,
     parse_error: found.parse_error || null,
     values: Object.fromEntries(rows.map((r) => [r.key, {
-      value: r.value, source: r.source, resolved: r.resolved, ...(r.invalid ? { invalid: r.invalid } : {}),
+      value: r.value, source: r.source, resolved: r.resolved, ...(r.invalid ? { invalid: r.invalid } : {}), ...(r.refused ? { refused: r.refused } : {}),
     }])),
   };
   if (ctx.json) return { code: 0, text: '', json: payload };
@@ -102,6 +103,7 @@ function summary(found, ctx) {
   for (const r of rows) {
     lines.push(`  ${r.key.padEnd(width)}  ${JSON.stringify(r.value)}  (from ${sourceLine(r)})`);
     if (r.invalid) lines.push(`  ${''.padEnd(width)}  invalid in file: ${r.invalid.reason}`);
+    if (r.refused) lines.push(`  ${''.padEnd(width)}  refused: ${r.refused}`);
   }
   lines.push('');
   return { code: 0, text: lines.join('\n'), json: payload };
