@@ -8,4 +8,13 @@ function body(spec, prompt) {
 }
 // The one standing line every worker's first message carries (a spawn and a fresh restart, which start a new session; a resume, a park-resume and a task_assign to a running worker do not repeat it).
 const PROCESS_LINE = '\n\nOther processes on this machine are not yours: stop a process only by its exact pid.';
-module.exports = { body, PROCESS_LINE };
+// A worker whose built-in tools were narrowed at spawn (by its agent type or by the spawn's allowed_tools) is told what it has and why,
+// so it does not guess ("the Bash tool was disabled"). A worker with all six, or a harness job, gets nothing added.
+function toolsLine(w) {
+  if (!w || !Array.isArray(w.tools) || w.tools.length === 0) return '';
+  // toolsBy is known to the manager that made the spawn; a worker adopted from its row has not got it, and then no source is claimed.
+  const why = w.toolsBy === 'spawn' ? 'by the spawn that started you' : w.toolsBy === 'type' && w.agentType ? `by your agent type (${w.agentType})` : 'when you were spawned';
+  return `
+Your built-in tools are ${w.tools.join(', ')}, set ${why}. You cannot add one; if the task needs a tool you lack, say so in your hand-back.`;
+}
+module.exports = { body, PROCESS_LINE, toolsLine };

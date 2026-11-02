@@ -218,6 +218,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
         allowedTools, permissionMode: permission_mode, sandbox,
         permissionPrompt: permission_prompt, permitWaitMs: permit_wait_ms, effort, tools: spawnTools, maxBudgetUsd: max_budget_usd, nativeMemory, agentType: agent_type,
       });
+      w.toolsBy = allowed_tools != null ? 'spawn' : 'type'; // what narrowed w.tools: the spawn's allowed_tools, else the agent type's list (task-body.cjs toolsLine)
       w.indexQueries = indexQueries; // the orchestrator's situation lines for this worker's memory index (memory.embedQuery extra_texts)
       workers.set(id, w); w.launching = true; hold.w = w; // launching: until the spawn returns or fails, a run pause is held for it (launch-gate.cjs)
     } finally { pendingIds.delete(id); }
@@ -233,7 +234,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     await writeRow(w, 'starting');
     let first;
     try {
-      first = NR.isJob(w.id) ? prompt : (await MP.preface(w, ctx, prompt)) + require('./task-body.cjs').body(w.taskSpec, prompt) + require('./task-body.cjs').PROCESS_LINE + (scratch ? require('./review-scratch.cjs').firstLine(scratch) : '') + require('./review-scratch.cjs').treeLine(w.review) + (w.handbackRule || '') + (await MP.contractTail(ctx, w)) + (await NR.reviewTail(ctx, w)); await LG.refuseIfPaused(ctx.core, ctx.runId, w); // the resume line, then the memory index, against the `starting` row (ADR 0007 §2, 0042 §2); then the paused gate once more, and the pause held for this launch: refused here (the catch drops the worker); a pause after this is parked at ready
+      first = NR.isJob(w.id) ? prompt : (await MP.preface(w, ctx, prompt)) + require('./task-body.cjs').body(w.taskSpec, prompt) + require('./task-body.cjs').PROCESS_LINE + require('./task-body.cjs').toolsLine(w) + (scratch ? require('./review-scratch.cjs').firstLine(scratch) : '') + require('./review-scratch.cjs').treeLine(w.review) + (w.handbackRule || '') + (await MP.contractTail(ctx, w)) + (await NR.reviewTail(ctx, w)); await LG.refuseIfPaused(ctx.core, ctx.runId, w); // the resume line, then the memory index, against the `starting` row (ADR 0007 §2, 0042 §2); then the paused gate once more, and the pause held for this launch: refused here (the catch drops the worker); a pause after this is parked at ready
     } catch (e) {
       // The task refused the assignment (an open dependency, ADR 0013 §1; the operator's lease; no such
       // task). Nothing has launched, so the `starting` row is written `dead` before the refusal is handed

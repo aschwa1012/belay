@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // run-wording-audit.test.cjs — the run lever permission_prompt (ADR 0020 decision 1 as amended): the permission tools and the prompt line
 // that goes with them exist only for a run that turns the channel on; and the template header markers are not shown to the model.
 // Pure: levers, templates and argv are built here, nothing is launched.

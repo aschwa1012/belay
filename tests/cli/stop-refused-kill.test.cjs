@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // `belay stop` must not print "killed" for a worker whose kill was refused or whose pid is still alive
 // after the kill (no success without effect). A pure test of the receipt -> text/exit decision: the
 // receipt shapes are the ones src/run/stop.cjs's killWorkerRow and tree-kill attribution produce.

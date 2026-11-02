@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // restart-fast-turn.test.cjs — a relaunch whose first turn ends before `restart` starts waiting for it.
 // On a slow runner the fake's reply was parsed and its turn end processed while doRestart was still writing
 // the relaunch's `running` row; the turn's waiters were resolved with nobody registered, and `restart` then

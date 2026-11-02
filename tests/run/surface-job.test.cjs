@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // surface-job.test.cjs — the ADR 0024 surface gate for belay's own job workers (reserved id prefixes). Their adapter lists no belay tool by
 // design, so the gate expects none and exactly the job's built-ins. The fake follows its argv (--tools, --mcp-config), so the gate runs
 // through the real launch path: a real run found every job failing at launch while the old fake hid it.

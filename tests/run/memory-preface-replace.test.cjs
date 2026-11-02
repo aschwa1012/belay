@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-preface-replace.test.cjs — inject-once (ADR 0042 decision 3) holds only where the new conversation still holds the rows:
 // a resumed session, or a replacement whose bottle carries the recorded first message. A replacement that starts from nothing
 // of the old session (bottle off, a bottle that fell back, a Codex worker) is shown the whole index again.

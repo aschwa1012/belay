@@ -134,6 +134,7 @@ async function runPhases({ globs1 = PHASE1_GLOBS, glob2 = PHASE2_GLOB, timeout1 
   // Review 3, finding F: phase 1 runs with an EMPTY model cache unless the caller has named one, because
   // the run path stores every turn's text and would otherwise load the 243 MB model in every owner. The
   // files that need the model opt back in (tests/core/helpers.cjs optInModel) by seeing the marker.
+  if (guard) require('../tests/helpers/temp-root.cjs').enforceSafeTemp(process.env); // never put the suite's scratch in an indexed folder
   const scratch = guard ? fs.mkdtempSync(path.join(os.tmpdir(), 'belay-suite-tmp-')) : null;
   const tmpEnv = scratch ? { TEMP: scratch, TMP: scratch, TMPDIR: scratch } : {};
   const named = !!process.env.BELAY_MODEL_CACHE;

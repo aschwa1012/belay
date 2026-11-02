@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-promote.test.cjs — `belay memory promote` and the nominations in `belay memory proposals`. The built CLI as a
 // subprocess against a sandbox store planted straight into the tables, with a sandbox working directory standing in for
 // the project (the instruction files live there). proposals is a read (no process, no file); promote writes and leaves
