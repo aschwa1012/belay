@@ -19,6 +19,7 @@ const { pidAlive } = require('./lock.cjs');
 const INC = require('./integration-incremental.cjs');
 const ID = require('./proc-identity.cjs');
 const MUG = require('./merge-user-gate.cjs');
+const { refuseCrossRun } = require('./cross-run.cjs');
 
 const MAX_TASKS = 50;
 const MAX_REASON = 300;
@@ -329,6 +330,7 @@ async function merge(E, caller, args) {
   const into = await G.validBranch(repo, args.into === undefined ? `belay/integrate/${caller.run_id}` : args.into);
   // A branch the user owns (ADR 0067): approval first (read-only, and before any slot or tree), then belay merges on a detached HEAD.
   const fold = await MUG.folder(repo);
+  refuseCrossRun(E, caller, tasks, into, repo, fold);
   await MUG.refuseVariant(repo, into, fold); // another spelling of an existing branch is that branch, on a host with case-insensitive refs
   const userBranch = await MUG.isUserBranch(E, repo, into, caller.run_id, fold);
   if (userBranch) {

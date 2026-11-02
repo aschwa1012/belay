@@ -53,6 +53,13 @@ test('levers: parseLevers defaults and validation', () => {
   }
 });
 
+test('levers: cross_run_merge is off unless the spec says true, and must be a boolean', () => {
+  assert.strictEqual(parseLevers({}).cross_run_merge, undefined);
+  assert.strictEqual(parseLevers({ cross_run_merge: false }).cross_run_merge, undefined);
+  assert.strictEqual(parseLevers({ cross_run_merge: true }).cross_run_merge, true);
+  assert.match(parseLevers({ cross_run_merge: 'yes' }).error, /cross_run_merge must be true or false/);
+});
+
 test('levers: substituteLevers replaces every placeholder, counts them, and passes a plain prompt through', () => {
   const lv = { max_fix_rounds: 3, fix_cutoff: 'cap-only' };
   const out = substituteLevers('a {{max_fix_rounds}} b {{max_fix_rounds}} c {{fix_cutoff_rule}} d', lv, 0);
