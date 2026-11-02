@@ -40,6 +40,14 @@ test('buildEnv drops credentials, billing and redirect variables, the askpass br
   }
 });
 
+test('buildEnv hands the ssh agent socket to an orchestrator and to no worker', () => {
+  for (const substrate of ['claude-code', 'codex']) {
+    const base = { PATH: 'x', SSH_AUTH_SOCK: '/s' };
+    assert.ok(!('SSH_AUTH_SOCK' in L.buildEnv(base, { substrate, workerId: 'w1' })), `${substrate} worker`);
+    assert.equal(L.buildEnv(base, { substrate, orchestrator: true }).SSH_AUTH_SOCK, '/s', `${substrate} orchestrator keeps it`);
+  }
+});
+
 test('buildEnv keeps what a launch needs, under the spelling it came in', () => {
   const env = L.buildEnv({ ...REQUIRED, ...SECRETS }, { substrate: 'claude-code', cwd: 'C:/wt' });
   for (const [k, v] of Object.entries(REQUIRED)) assert.equal(env[k], v, `${k} must still be present`);
@@ -59,14 +67,17 @@ test('buildEnv still scrubs CLAUDE_CODE_EFFORT_LEVEL and BELAY_FAKE_ (the allowl
   assert.equal(env.BELAY_CLAUDE_EXE, 'e');
 });
 
-test('buildEnv keeps the PowerShell and git/ssh plumbing and the subscription OAuth token, and turns git prompts off', () => {
+test('buildEnv keeps the PowerShell and git plumbing and the subscription OAuth token, drops the ssh key agent socket for a worker, and turns git prompts off', () => {
   const env = L.buildEnv({
     PATH: 'x', PSModulePath: 'C:/ps', PSExecutionPolicyPreference: 'Bypass', SSH_AUTH_SOCK: '/s', GIT_CONFIG_GLOBAL: 'C:/g', CLAUDE_CODE_OAUTH_TOKEN: 'synthetic-sub',
     GIT_TERMINAL_PROMPT: '1', GCM_INTERACTIVE: 'always',
   });
   assert.equal(env.PSModulePath, 'C:/ps');
   assert.equal(env.PSExecutionPolicyPreference, 'Bypass');
-  assert.equal(env.SSH_AUTH_SOCK, '/s');
+  assert.ok(!('SSH_AUTH_SOCK' in env), 'a worker gets no key agent');
+  for (const substrate of ['claude-code', 'codex']) {
+    assert.ok(!('SSH_AUTH_SOCK' in L.buildEnv({ PATH: 'x', SSH_AUTH_SOCK: '/s' }, { substrate })), substrate);
+  }
   assert.equal(env.GIT_CONFIG_GLOBAL, 'C:/g');
   assert.equal(env.CLAUDE_CODE_OAUTH_TOKEN, 'synthetic-sub', 'a subscription credential is kept on purpose');
   assert.equal(env.GIT_TERMINAL_PROMPT, '0');
