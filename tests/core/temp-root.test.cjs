@@ -13,7 +13,7 @@ const TR = require('../helpers/temp-root.cjs');
 
 const HELPER = path.join(__dirname, '..', 'helpers', 'tmp.cjs');
 const win = process.platform === 'win32';
-const HOME = win ? 'C:/fakehome/someone' : '/home/fakeuser';
+const HOME = win ? 'C:/fakehome/someone' : '/fakehome/someone';
 
 test('indexedReason: Projects and other folders under the home are indexed, AppData and outside paths are not', () => {
   const o = { env: {}, home: HOME };
