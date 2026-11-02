@@ -144,16 +144,23 @@ function read(file, dir, searched) {
   }
 }
 
-// The project root a config's data_dir must stay inside: the nearest directory at or above the config file that
-// carries a root marker, else the config file's own directory.
-function projectRootOf(dir) {
-  let d = fwd(path.resolve(dir));
-  for (;;) {
-    if (isProjectRoot(d)) return d;
-    const parent = fwd(path.dirname(d));
-    if (parent === d) return fwd(path.resolve(dir));
-    d = parent;
+// The root a config's data_dir must stay inside, and what established it: the nearest ancestor of the config file with a .git
+// (a directory, or the file a linked worktree has), else the nearest with a package.json, else the config file's own directory.
+// The search stops at the home directory, which is never a root.
+function rootOf(dir) {
+  const start = fwd(path.resolve(dir));
+  const atHome = homeWalk();
+  for (const [marker, label] of [['.git', 'repository'], ['package.json', 'project']]) {
+    let d = start;
+    for (;;) {
+      if (atHome.isHome(d)) break;
+      try { if (fs.existsSync(d + '/' + marker)) return { dir: d, label, marker }; } catch { /* unreadable is not a root */ }
+      const parent = fwd(path.dirname(d));
+      if (parent === d) break;
+      d = parent;
+    }
   }
+  return { dir: start, label: 'directory', marker: null };
 }
 
 // A path that may not exist yet, with symlinks and junctions resolved in its deepest existing part.
@@ -175,15 +182,15 @@ function realWithTail(p) {
 function dataDirRefusal(value, found) {
   const text = String(value);
   const where = `data_dir ${JSON.stringify(text)} in ${found.path}`;
-  const allowed = 'a repository config (belay.config.json) may only name a data_dir inside that repository; use --data <dir> on the command line for one elsewhere';
+  const allowed = 'a committed belay.config.json may only name a data_dir inside its repository; use --data <dir> on the command line for one elsewhere';
   if (/^[\\/]{2}/.test(text) || (process.platform === 'win32' && /^[A-Za-z]:(?![\\/])/.test(text))) {
     return `${where} is a UNC, device or drive-relative path; ${allowed}`;
   }
-  const root = projectRootOf(found.dir);
+  const root = rootOf(found.dir);
   const target = realWithTail(path.resolve(found.dir, text));
-  const rel = path.relative(realWithTail(root), target);
+  const rel = path.relative(realWithTail(root.dir), target);
   if (rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
-    return `${where} resolves to ${fwd(target)}, which is not inside the repository ${root}; ${allowed}`;
+    return `${where} resolves to ${fwd(target)}, which is not inside the ${root.label} ${root.dir}${root.marker ? ` (the nearest ${root.marker})` : ' (the config file directory; no .git or package.json above it)'}; ${allowed}`;
   }
   return null;
 }
@@ -285,5 +292,5 @@ function writeDirOf(cwd) {
 
 module.exports = {
   CONFIG_NAME, KEYS, KEY_NAMES, ROOT_MARKERS,
-  fwd, samePath, isProjectRoot, dataDirRefusal, discover, effective, all, dataDirOf, writeDirOf, overrideOf,
+  fwd, samePath, isProjectRoot, dataDirRefusal, rootOf, discover, effective, all, dataDirOf, writeDirOf, overrideOf,
 };

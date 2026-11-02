@@ -125,7 +125,7 @@ const withDataDir = (value) => {
   return { dir, found: C.discover(dir) };
 };
 
-test('a committed data_dir inside the repository is accepted, relative or absolute', () => {
+test('a committed data_dir inside the repository is accepted when relative', () => {
   const { dir, found } = withDataDir('state/store');
   assert.strictEqual(C.dataDirOf(found, { cwd: dir, dataDir: `${dir}/.belay`, dataDirGiven: false }), `${dir}/state/store`);
   const abs = withDataDir(`${sandbox()}/x`); // another sandbox: outside
@@ -186,4 +186,53 @@ test('doctor reports a refused data_dir as a failed check and still runs the oth
   assert.match(row.evidence, /not inside the repository/);
   assert.strictEqual(r.json.data_dir, `${dir}/.belay`);
   assert.ok(r.json.checks.some((c) => c.check === 'data-dir'));
+});
+
+test('a package with its own package.json takes the .git above it as the root, so the shared store at the root is allowed', () => {
+  const dir = project(sandbox());
+  fs.mkdirSync(`${dir}/packages/app`, { recursive: true });
+  fs.writeFileSync(`${dir}/packages/app/package.json`, '{}');
+  fs.writeFileSync(`${dir}/packages/app/${C.CONFIG_NAME}`, JSON.stringify({ data_dir: '../../.belay' }), 'utf8');
+  const found = C.discover(`${dir}/packages/app`);
+  assert.strictEqual(C.dataDirOf(found, { cwd: `${dir}/packages/app`, dataDir: 'x', dataDirGiven: false }), `${dir}/.belay`);
+});
+
+test('a .git file (a linked worktree) is a repository root, and the refusal names the root it used', () => {
+  const dir = sandbox();
+  fs.writeFileSync(`${dir}/.git`, 'gitdir: elsewhere');
+  fs.writeFileSync(`${dir}/${C.CONFIG_NAME}`, JSON.stringify({ data_dir: '../out' }), 'utf8');
+  const e = C.effective(C.discover(dir), 'data_dir', {});
+  assert.ok(e.refused.includes(`not inside the repository ${dir} (the nearest .git)`), e.refused);
+  const bare = sandbox();
+  fs.writeFileSync(`${bare}/${C.CONFIG_NAME}`, JSON.stringify({ data_dir: '../out' }), 'utf8');
+  assert.match(C.effective(C.discover(bare), 'data_dir', {}).refused, /not inside the directory .*no \.git or package\.json above it/);
+});
+
+test('an absolute data_dir inside the repository is accepted', () => {
+  const dir = project(sandbox());
+  fs.writeFileSync(`${dir}/${C.CONFIG_NAME}`, JSON.stringify({ data_dir: `${dir}/in/store` }), 'utf8');
+  assert.strictEqual(C.dataDirOf(C.discover(dir), { cwd: dir, dataDir: 'x', dataDirGiven: false }), `${dir}/in/store`);
+});
+
+test('belay config (the summary) shows a refused data_dir in text and json', () => {
+  const { dir, found } = withDataDir('../elsewhere');
+  const cfg = require('../../src/cli/cmd-config.cjs');
+  return Promise.resolve(cfg.run({ argv: [], cwd: dir, dataDir: `${dir}/.belay`, dataDirGiven: false, json: false })).then(async (t) => {
+    assert.match(t.text, /refused: data_dir "\.\.\/elsewhere"/);
+    const j = await cfg.run({ argv: [], cwd: dir, dataDir: `${dir}/.belay`, dataDirGiven: false, json: true });
+    assert.match(j.json.values.data_dir.refused, /not inside/);
+  });
+});
+
+test('init --data the repository root itself, or through a junction that leaves it, is not written into the config', async () => {
+  const dir = project(sandbox());
+  const r = await require('../../src/cli/cmd-init.cjs').run({ argv: [], cwd: dir, dataDir: dir, dataDirGiven: true, json: true });
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(`${dir}/${C.CONFIG_NAME}`, 'utf8')), { data_dir: '.belay' });
+  assert.ok(r.json.note && !/outside the repository/.test(r.json.note), r.json.note);
+  const d2 = project(sandbox());
+  const out = sandbox();
+  fs.symlinkSync(out, `${d2}/link`, 'junction');
+  await require('../../src/cli/cmd-init.cjs').run({ argv: [], cwd: d2, dataDir: `${d2}/link/x`, dataDirGiven: true, json: true });
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(`${d2}/${C.CONFIG_NAME}`, 'utf8')), { data_dir: '.belay' });
+  fs.rmdirSync(`${d2}/link`);
 });

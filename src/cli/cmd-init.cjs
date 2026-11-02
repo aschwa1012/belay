@@ -23,12 +23,12 @@ const C = require('./config.cjs');
 // told where its binaries are when it does not.
 function seedConfig(dataDirOverride, writeDir) {
   if (!dataDirOverride) return { data_dir: C.KEYS.data_dir.default };
-  // An override inside the project is written relative to the config file, so the file stays portable. One outside it is
-  // not written: a repository's config may only name a data_dir inside the repository, so the file keeps the default and the
-  // outside store is named by --data on each command.
+  // An override the config could name (inside the repository once symlinks and junctions are resolved, and not the root itself)
+  // is written relative to the config file, so the file stays portable. Any other is not written: a repository's config may only
+  // name a data_dir inside the repository, so the file keeps the default and --data names the store on each command.
+  const refused = C.dataDirRefusal(dataDirOverride, { path: writeDir + '/' + C.CONFIG_NAME, dir: writeDir });
   const rel = path.relative(writeDir, dataDirOverride).split(path.sep).join('/');
-  const inside = rel && rel !== '..' && !rel.startsWith('../') && !path.isAbsolute(rel);
-  return { data_dir: inside ? rel : C.KEYS.data_dir.default, outside: !inside };
+  return refused ? { data_dir: C.KEYS.data_dir.default, outside: refused } : { data_dir: rel };
 }
 
 async function run(ctx) {
@@ -57,7 +57,7 @@ async function run(ctx) {
   let outsideNote = null;
   if (!existed) {
     const seed = seedConfig(override, writeDir);
-    if (seed.outside) outsideNote = `--data ${override} is outside the repository, so the config keeps data_dir ${JSON.stringify(seed.data_dir)}; pass --data ${override} on each command that should use it`;
+    if (seed.outside) outsideNote = `--data ${override} cannot be the config's data_dir (${seed.outside}), so the config keeps data_dir ${JSON.stringify(seed.data_dir)}; pass --data ${override} on each command that should use it`;
     delete seed.outside;
     const body = JSON.stringify(seed, null, 2) + '\n';
     // `wx` rather than a bare write: between the check above and this line another process may have
