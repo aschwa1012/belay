@@ -120,3 +120,34 @@ test("a review spawn's answer carries the assign answer's review block, and work
   const c = await spawn(m, sb, 'cv1', { agent_type: 'coder' });
   assert.strictEqual(c.review, undefined);
 }));
+
+test('a researcher\'s first message names its tools and why; a worker with all six is told nothing of the kind', async () => {
+  const firstOf = async (id, extra) => {
+    let text = null;
+    await withMgr(async ({ sb, m }) => {
+      const recv = path.join(sb.data, 'recv.jsonl');
+      const saved = process.env.FAKE_RECV_FILE;
+      process.env.FAKE_RECV_FILE = recv;
+      try { await spawn(m, sb, id, extra); await m._waitTurn(id, 8000); } finally { if (saved === undefined) delete process.env.FAKE_RECV_FILE; else process.env.FAKE_RECV_FILE = saved; }
+      text = JSON.parse(fs.readFileSync(recv, 'utf8').split(String.fromCharCode(10)).filter(Boolean)[0]).text;
+    });
+    return text;
+  };
+  const r = await firstOf('t1', { agent_type: 'researcher' });
+  assert.ok(r.includes('Your built-in tools are Read, Glob, Grep, WebFetch, WebSearch, set by your agent type (researcher). You cannot add one'), r);
+  const c = await firstOf('t2', { agent_type: 'coder' });
+  assert.ok(!c.includes('Your built-in tools are'), c);
+  const n = await firstOf('t3', { allowed_tools: ['Read', 'Grep'] });
+  assert.ok(n.includes('Your built-in tools are Read, Grep, set by the spawn that started you. You cannot add one'), n);
+  const typed = await firstOf('t4', { agent_type: 'coder', allowed_tools: ['Read', 'Grep'] }); // the coder type has all six: the spawn narrowed them
+  assert.ok(typed.includes('Your built-in tools are Read, Grep, set by the spawn that started you.') && !typed.includes('agent type (coder)'), typed);
+});
+
+test('toolsLine says nothing for all six, a harness job or no worker, and names a narrowed list (the fresh-session restart prints the same line)', () => {
+  const { toolsLine } = require('../../src/run/task-body.cjs');
+  assert.strictEqual(toolsLine(null), '');
+  assert.strictEqual(toolsLine({ tools: null, agentType: 'coder' }), '');
+  assert.strictEqual(toolsLine({ tools: [], agentType: 'coder' }), '');
+  assert.ok(toolsLine({ tools: ['Read'], agentType: 'coder' }).includes('Read, set when you were spawned.'), 'an adopted worker claims no source');
+  assert.strictEqual(toolsLine({ tools: ['Read', 'Grep'], agentType: null, toolsBy: 'spawn' }), '\nYour built-in tools are Read, Grep, set by the spawn that started you. You cannot add one; if the task needs a tool you lack, say so in your hand-back.');
+});

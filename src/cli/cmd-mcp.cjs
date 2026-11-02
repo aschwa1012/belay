@@ -34,7 +34,7 @@ const DEEP_MS = 5000;
 const fact = (verdict, evidence, extra = {}) => ({ verdict, evidence, ...extra });
 
 function readJson(p) {
-  try { return { ok: true, value: JSON.parse(fs.readFileSync(p, 'utf8')) }; }
+  try { return { ok: true, value: JSON.parse(fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, '')) }; }
   catch (e) { return { ok: false, error: e.code === 'ENOENT' ? 'not found' : e.message }; }
 }
 
