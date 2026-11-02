@@ -23,7 +23,7 @@ before(() => {
   store = new Store(`${dir}/memory.db`, { stamp: true });
   E = new Engine({ dataDir: dir, store, getEmbedder: null, owner: fakeOwner, establishedBy: 'test' });
 });
-after(() => { store.close(); cleanup(dir, { skipInvariants: 'the test writes task and lease rows by hand, so the store is not one the methods made' }); });
+after(() => { store.close(); cleanup(dir, { skipInvariants: { rules: ['lease_supersedes'], reason: 'the test writes lease rows by hand, without the supersedes a grant would carry' } }); });
 
 const attach = (extra = {}) => call('run.attach', operator, { adapter_pid: process.pid, ...extra });
 const lease = (id, task, holder, granted, released = null) => rows.append(store, 'lease', {

@@ -227,6 +227,8 @@ function assertStoresUnder(dir, opts = {}) {
 function assertStoreInvariants(target, opts = {}) {
   if (!fs.existsSync(resolveDb(target))) return null;
   const r = checkStore(target, opts);
+  const skip = new Set(opts.ignoreRules || []);
+  r.violations = r.violations.filter((x) => !skip.has(x.rule));
   if (r.violations.length) throw new Error('store invariants broken in ' + target + ': ' + r.violations.slice(0, 5).map((x) => x.rule + ' ' + (x.ids || []).join(',') + ' (' + x.detail + ')').join('; '));
   return r;
 }
