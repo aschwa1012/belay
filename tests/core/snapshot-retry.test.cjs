@@ -200,8 +200,9 @@ test('a first read that fails is restated with its error, not left as the try-0 
     const writes = [];
     const w = { pid: live.pid, state: 'running', launches: 1, queue: Promise.resolve(), settled: false };
     w.ctx = { writeRow: async (ww, st) => { writes.push(PI.rowFields(ww)); ww.lastRowHadPidCreated = rowHadPidCreated(ww); return {}; } };
-    await w.ctx.writeRow(w, 'running');
-    await PI.noteSpawn(w, live, { createdOf: async () => { throw new Error('boom'); } });
+    const done = PI.noteSpawn(w, live, { createdOf: async () => { throw new Error('boom'); } });
+    await w.ctx.writeRow(w, 'running'); // the first row goes out after noteSpawn marked it pending, before the read fails
+    await done;
     await w.queue;
     assert.match(writes[writes.length - 1].pid_created_error, /boom/);
   } finally { live.kill(); }
