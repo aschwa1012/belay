@@ -34,6 +34,13 @@ const REQUIRED = {
 
 test('buildEnv drops credentials, billing and redirect variables, the askpass bridge and lead-session handles, for both substrates', () => {
   for (const substrate of ['claude-code', 'codex']) {
+    const env = L.buildEnv({ ...REQUIRED, ...SECRETS }, { substrate });
+    for (const k of Object.keys(SECRETS)) assert.ok(!(k in env), `${k} must not reach a ${substrate} launch`);
+  }
+});
+
+test('buildEnv hands the ssh agent socket to an orchestrator and to no worker', () => {
+  for (const substrate of ['claude-code', 'codex']) {
     const base = { PATH: 'x', SSH_AUTH_SOCK: '/s' };
     assert.ok(!('SSH_AUTH_SOCK' in L.buildEnv(base, { substrate, workerId: 'w1' })), `${substrate} worker`);
     assert.equal(L.buildEnv(base, { substrate, orchestrator: true }).SSH_AUTH_SOCK, '/s', `${substrate} orchestrator keeps it`);

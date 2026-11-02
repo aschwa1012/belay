@@ -61,11 +61,11 @@ const ALLOW_EXACT = new Set([
   // git: the config redirects a test (or an operator) uses to keep git hermetic; belay sets neither itself
   'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM',
 ]);
-// Added for an interactive orchestrator only: Claude Code reads them to detect the terminal (key handling, rendering).
 // The orchestrator keeps the key agent socket, because it pushes (operator, 2026-11-02: the ruling names workers only). A worker is no
 // longer handed it. That is not a boundary: the Windows agent pipe is reachable without the variable, and BELAY_ENV_ALLOW (which
 // applies to every launch) can name it for workers too.
 const ORCHESTRATOR_EXACT = new Set(['SSH_AUTH_SOCK']);
+// Added for an interactive orchestrator only: Claude Code reads them to detect the terminal (key handling, rendering).
 const INTERACTIVE_EXACT = new Set(['WT_SESSION', 'TERM_PROGRAM_VERSION']);
 // BELAY_ENV_ALLOW (comma-separated names, in belay's own environment) passes extra operator variables (JAVA_HOME, VIRTUAL_ENV, GOPATH
 // and the like) to every launch. Billing, credential and redirect names are refused, loudly, whatever the list says.
