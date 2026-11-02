@@ -120,6 +120,21 @@ test('a note written after the backlog check is refused by the scan itself, neve
   } finally { undrain(); }
 });
 
+test('a turn row is not behind a heavy tier: it is never embedded there, and a heavy scan leaves it out', async () => {
+  drain();
+  const m = ST.binding(T.E, HEAVY, NS);
+  const o = { filterSql: { where: '', params: [] }, includeSuperseded: false, hidden: null };
+  try {
+    const turn = T.store.store({ namespace: NS, worker_id: 'w-turn', type: 'turn', text: 'the worker finished the loader change', embedding: [1, 0, 0], embedding_model: 'nano', embedding_revision: 'r', dim: 3 });
+    ST.assertServable(T.E, HEAVY, [NS]); // a note written the same way would be behind and refused
+    const got = ST.candidates(T.E, HEAVY, NS, m, o);
+    assert.strictEqual(got.length, FIX.length);
+    assert.ok(!got.some((c) => c.id === turn.id));
+    assert.deepStrictEqual(MV.backlog(T.store.db, { model: 'heavy/x', revision: '', dims: 3 }, { namespaces: [NS] }).map((r) => r.id), [], 'not in the heavy backlog');
+    T.store.delete(turn.id);
+  } finally { undrain(); }
+});
+
 test('a heavy tier loads its vectors once per namespace and reloads after a write', async () => {
   drain();
   const q = { embedding_model: 'heavy/x', query_embedding: [0, 0, 1] };

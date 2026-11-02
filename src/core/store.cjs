@@ -414,9 +414,9 @@ class Store {
     let c = this.cache.get(ns);
     if (c) return c;
     c = { rows: [], superseded: new Set() };
-    for (const r of this.p('SELECT id, embedding, ttl_at, supersedes, typeof(text) AS tt FROM memory_entries WHERE namespace = ?').all(ns)) {
+    for (const r of this.p('SELECT id, type, embedding, ttl_at, supersedes, typeof(text) AS tt FROM memory_entries WHERE namespace = ?').all(ns)) {
       const vec = r.embedding ? new Float32Array(r.embedding.buffer, r.embedding.byteOffset, r.embedding.byteLength / 4) : null;
-      c.rows.push({ id: r.id, vec, ttl_at: r.ttl_at, ...(r.tt !== 'text' ? { unrenderable: true } : {}) }); // a row with no renderable text can never have a vector under any tier
+      c.rows.push({ id: r.id, vec, ttl_at: r.ttl_at, ...(r.tt !== 'text' ? { unrenderable: true } : {}), ...(r.type === 'turn' ? { exempt: true } : {}) }); // a row with no renderable text can never have a vector under any tier
       if (r.supersedes) c.superseded.add(r.supersedes);
     }
     this.cache.set(ns, c);

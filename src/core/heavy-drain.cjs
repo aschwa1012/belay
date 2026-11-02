@@ -35,6 +35,7 @@ async function embedIds(E, key, impl, ids, opts) {
   const rowsOf = db.prepare('SELECT * FROM memory_entries WHERE id IN (SELECT value FROM json_each(?))').all(JSON.stringify(ids));
   const want = new Map();
   for (const r of rowsOf) {
+    if (MV.heavyExempt(r)) continue; // a turn row is never embedded by a heavy tier
     const template = MV.renderTemplateOf(r), hash = MV.embedHashOf(r, template), text = MV.embedTextOf(r, template);
     if (hash === null || text === null) continue;
     want.set(`${template}\u0000${hash}`, { template, hash, text });

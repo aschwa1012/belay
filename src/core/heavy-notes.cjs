@@ -29,7 +29,7 @@ function heavyOf(E, runId) {
 
 // The ids of the run's scope created or changed since `t0` (the call began).
 function touchedSince(E, scope, t0) {
-  return E.store.db.prepare('SELECT id FROM memory_entries WHERE namespace IN (SELECT value FROM json_each(?)) AND (created_at >= ? OR updated_at >= ?)').all(JSON.stringify(scope), t0, t0).map((r) => r.id);
+  return E.store.db.prepare("SELECT id FROM memory_entries WHERE namespace IN (SELECT value FROM json_each(?)) AND type != 'turn' AND (created_at >= ? OR updated_at >= ?)").all(JSON.stringify(scope), t0, t0).map((r) => r.id);
 }
 
 const scopeOfRun = (E, runId) => require('./retrieval-pin.cjs').scopeOf(require('./rows.cjs').current(E.store, 'run', runId));
