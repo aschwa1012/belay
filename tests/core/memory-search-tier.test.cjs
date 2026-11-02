@@ -125,7 +125,7 @@ test('a turn row is not behind a heavy tier: it is never embedded there, and a h
   const m = ST.binding(T.E, HEAVY, NS);
   const o = { filterSql: { where: '', params: [] }, includeSuperseded: false, hidden: null };
   try {
-    const turn = T.store.store({ namespace: NS, worker_id: 'w-turn', type: 'turn', text: 'the worker finished the loader change', embedding: [1, 0, 0], embedding_model: 'nano', embedding_revision: 'r', dim: 3 });
+    const turn = T.store.store({ namespace: NS, worker_id: 'w-turn', type: 'turn', text: 'the worker finished the loader change', embedding: [1, 0, 0], embedding_model: 'm', embedding_revision: 'r', dim: 3 });
     ST.assertServable(T.E, HEAVY, [NS]); // a note written the same way would be behind and refused
     const got = ST.candidates(T.E, HEAVY, NS, m, o);
     assert.strictEqual(got.length, FIX.length);

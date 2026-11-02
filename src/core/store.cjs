@@ -213,7 +213,7 @@ class Store {
         // An update with no vector keeps the one the row has (COALESCE above), so the cache keeps it too (audit 0.3.1 C2).
         let cvec = vec;
         if (!cvec && dup) { const r = this.p('SELECT embedding FROM memory_entries WHERE id = ?').get(id); if (r && r.embedding) cvec = new Float32Array(r.embedding.buffer, r.embedding.byteOffset, r.embedding.byteLength / 4); }
-        const row = { id, vec: cvec, ttl_at: ttl };
+        const row = { id, vec: cvec, ttl_at: ttl, ...(a.type === 'turn' ? { exempt: true } : {}) };
         if (i >= 0) c.rows[i] = row; else c.rows.push(row);
         if (a.supersedes) c.superseded.add(a.supersedes);
         c.heavy = null; // search-tier.cjs keeps a heavy tier's vectors on this object

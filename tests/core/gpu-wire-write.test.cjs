@@ -74,6 +74,15 @@ test('B1: a memory.store in a pinned heavy run is embedded by the heavy embedder
   }
 });
 
+test('B1: a turn row written in a pinned heavy run is not embedded by the heavy embedder and is not in its backlog', async () => {
+  const MV = core('memory-vectors.cjs'), key = HD.keyOfModel(EMB4);
+  const turn = await E.handle('memory.store', { caller: operator('wr-a'), text: 'the worker finished the loader change', type: 'turn', namespace: 'run/wr-a', embed: false });
+  const kept = await store('wr-a', 'wra', 'a note stored beside the turn row');
+  assert.strictEqual(HD.backlogOf(E, EMB4, ['run/wr-a']).length, 0, 'no heavy backlog for the run namespace');
+  assert.strictEqual(MV.vectorsFor(T.store.db, key, [turn.id]).size, 0, 'the turn row has no heavy vector');
+  assert.strictEqual(MV.vectorsFor(T.store.db, key, [kept.id]).size, 1, 'the note beside it has one');
+});
+
 test('B1: a failing heavy embed under on_heavy_failure fallback leaves the row behind, records the fallback on the run row, and the next search is served on nano with tier_fallback', async () => {
   await R.restore(); fresh({ fake: { load_fail: true }, probe: { load_fail: false } }); // the shared child will not load; the probe's own child does
   const stored = await store('wr-a', 'wra', 'a note whose heavy embed fails');
