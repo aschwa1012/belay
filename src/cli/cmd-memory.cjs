@@ -19,6 +19,7 @@ const crypto = require('node:crypto');
 const C = require('./config.cjs');
 const { openCore } = require('../core/index.cjs');
 const R = require('./memory-render.cjs');
+const { defaultSearchProject } = require('../core/notes-scope-rule.cjs');
 const { SCHEMA_VERSION } = require('../core/schema-stamp.cjs');
 
 function usageError(message) {
@@ -26,11 +27,13 @@ function usageError(message) {
 }
 
 async function resolveRunId(core, argRunId) {
-  if (argRunId) return { runId: argRunId, runIdSource: 'argument' };
-  const { runs } = await core.run.list({});
-  if (!runs.length) return { runId: null, runIdSource: 'none' };
+  let runs = [];
+  try { ({ runs } = await core.run.list({})); } catch (e) { if (!argRunId) throw e; } // a named run needs the list only for its project
+  const projectOf = (r) => (r ? defaultSearchProject(r.project, r.memory_levers) : null); // the core's own rule for where a run's default search goes
+  if (argRunId) return { runId: argRunId, runIdSource: 'argument', project: projectOf(runs.find(r => r.id === argRunId)) };
+  if (!runs.length) return { runId: null, runIdSource: 'none', project: null };
   const chosen = runs.find(r => r.alive) || runs[0];
-  return { runId: chosen.id, runIdSource: 'run.list' };
+  return { runId: chosen.id, runIdSource: 'run.list', project: projectOf(chosen) };
 }
 
 // Namespaces default exactly as the core would default them (run/<run_id>), for the chosen run; a
@@ -54,19 +57,24 @@ function need(core, group, name) {
 
 async function doSearch(core, parsed) {
   const { opts } = parsed;
-  const { runId, runIdSource } = await resolveRunId(core, parsed.positional[1]);
-  const args = { query: parsed.positional[0], ...namespaceArgs(opts, runId) };
+  const { runId, runIdSource, project } = await resolveRunId(core, parsed.positional[1]);
+  // With no --namespace a search covers what the core's default covers for that run (notes-scope-rule.cjs): its project's notes when the run has
+  // the notes lever on and a project, else the run's own records. --namespace run/<id> asks for those on purpose.
+  const projectScope = !opts.namespaces && project !== null;
+  const args = { query: parsed.positional[0], ...(projectScope ? { namespace: `project/${project}` } : namespaceArgs(opts, runId)) };
   if (opts.k != null) args.k = opts.k;
   if (opts.mode) args.mode = opts.mode;
   if (opts.index) args.view = 'index';
   const filter = R.filterOf(opts);
+  if (projectScope && filter.types === undefined) filter.types = ['note'];
   if (Object.keys(filter).length) args.filter = filter;
   const result = await core.memory.search(args);
   // The warning stays the first key of the JSON, as the core put it first in its result.
   const { warning, ...rest } = result;
-  const json = { ...(warning !== undefined ? { warning } : {}), run_id: runId, run_id_source: runIdSource, ...rest };
+  const json = { ...(warning !== undefined ? { warning } : {}), run_id: runId, run_id_source: runIdSource, ...(opts.namespaces ? {} : { scope: projectScope ? 'project' : (runId ? 'run' : 'none') }), ...rest };
   const noneRan = Array.isArray(result.modes_run) && result.modes_run.length === 0;
-  return { code: noneRan ? 1 : 0, text: R.renderSearchText(result, opts.index ? 'index' : 'full'), json };
+  const scopeLine = !projectScope && !opts.namespaces && runId ? `searched run/${runId} (its own records: the run has no project or its notes lever is off)\n` : projectScope ? `searched project/${project}${filter.types.length === 1 && filter.types[0] === 'note' ? ' notes' : ''} (the project of run ${runId}); --namespace run/${runId} searches that run's own records\n` : '';
+  return { code: noneRan ? 1 : 0, text: R.renderSearchText(result, opts.index ? 'index' : 'full') + scopeLine, json };
 }
 
 async function doList(core, parsed) {
