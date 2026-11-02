@@ -10,6 +10,7 @@ const rows = require('./rows.cjs');
 const G = require('./git.cjs');
 const W = require('./methods-worktree.cjs');
 const holds = require('./task-holds.cjs');
+const { pidAlive } = require('./lock.cjs');
 
 const SWEEP_BUDGET_MS = 120000;
 const NAMED = 20;
@@ -52,10 +53,15 @@ async function keepReason(E, group, ctx) {
   }
   // A Codex worker between turns has no process by design, and its thread can be resumed in this tree: run.end marks it dead at a
   // close, so only a run that lapsed with no close shows it here.
-  const idle = ctx.closePending ? null : ctx.workers.find((x) => x.state === 'idle' && x.worktree && W.under(x.worktree, rec.path));
+  const idle = ctx.closePending ? null : ctx.workers.find((x) => x.state === 'idle' && x.run_id === ctx.runId && x.worktree && W.under(x.worktree, rec.path));
   if (idle) return { reason: 'codex_resumable', detail: `worker ${idle.id} (idle) can be resumed in this tree` };
   const unproven = ctx.workers.find((x) => ctx.unproven.has(x.id) && x.worktree && W.under(x.worktree, rec.path));
   if (unproven) return { reason: 'kill_unproven', detail: `worker ${unproven.id} was not proven ended by the close` };
+  // What a close could not prove ended is written on the tree's task rows (recordUnproven), so a later prune keeps the tree until those
+  // processes no longer answer a pid check: a worker row says dead while its process may still hold the tree.
+  const named = new Set(group.tasks.flatMap((t) => (t.worktree && t.worktree.unproven_workers) || []));
+  const held = ctx.workers.find((x) => named.has(x.id) && x.pid != null && pidAlive(x.pid));
+  if (held) return { reason: 'kill_unproven', detail: `worker ${held.id} was not proven ended by an earlier close, and pid ${held.pid} still answers` };
   if (!fs.existsSync(rec.path)) return { reason: 'already_gone', detail: 'the path is not on disk; belay worktree remove <task-id> records it' };
   if (!(await G.worktrees(rec.repo)).some((x) => G.samePath(x.path, rec.path))) return { reason: 'not_listed', detail: 'the path is on disk but git no longer lists it as a worktree; belay deletes nothing and writes no row' };
   {
@@ -89,6 +95,22 @@ async function findOrphans(repos, recorded) {
     }
   }
   return out;
+}
+
+// Writes the workers a close could not prove ended on the tree's task rows (the row's worktree record), so the tree stays kept by a
+// later prune. Nothing is written when a row already names them.
+function recordUnproven(E, caller, g, ctx) {
+  const ids = ctx.workers.filter((x) => ctx.unproven.has(x.id) && x.worktree && W.under(x.worktree, g.rec.path)).map((x) => x.id).sort();
+  if (!ids.length) return;
+  E.store.tx(() => {
+    for (const t of g.tasks) {
+      const fresh = rows.current(E.store, 'task', t.id);
+      const wt = W.active(fresh);
+      if (!wt || JSON.stringify(wt.unproven_workers || []) === JSON.stringify(ids)) continue;
+      rows.append(E.store, 'task', { ...fresh, worktree: { ...wt, unproven_workers: ids } }, E.writtenBy(caller), Date.now());
+    }
+  });
+  E.noteWrite();
 }
 
 async function removeOne(E, caller, g, base) {
@@ -165,7 +187,7 @@ async function sweep(E, caller, args) {
     if (Date.now() - t0 >= budget) { out.skipped = 'budget'; out.kept.push({ ...base, reason: 'budget', detail: `the sweep's ${budget} ms ran out before this tree` }); continue; }
     try {
       const why = await keepReason(E, g, ctx);
-      if (why) { out.kept.push({ ...base, ...why }); continue; }
+      if (why) { out.kept.push({ ...base, ...why }); if (why.reason === 'kill_unproven') recordUnproven(E, caller, g, ctx); continue; }
       if (cancelRequested.has(runId)) { out.skipped = 'interrupted'; out.kept.push({ ...base, reason: 'interrupted', detail: 'the close was cut before this tree' }); continue; }
       mine.path = g.rec.path;
       const t1 = Date.now();

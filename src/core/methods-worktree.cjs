@@ -176,7 +176,7 @@ function liveWorkerIn(E, dir) {
   for (const w of rows.currentAll(E.store, 'worker')) {
     if (!w.worktree || TERMINAL_WORKER.has(w.state) || !(w.state === 'paused' || (w.pid != null && pidAlive(w.pid)))) continue;
     const runLive = () => { liveness = liveness || require('./task-holds.cjs').runLiveness(E.store); return !!w.run_id && liveness(w.run_id).live; };
-    const hit = T.workerInTree(w.worktree, dir, runLive());
+    const hit = T.workerInTree(w.worktree, dir, runLive);
     if (hit.match) return hit.unresolved ? { ...w, path_unresolved: true } : w;
   }
   return null;

@@ -8,7 +8,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
-const { core, sandbox, cleanup, callerFor } = require('../core/helpers.cjs');
+const { core, sandbox, cleanup, callerFor, deadPid } = require('../core/helpers.cjs');
 const { makeRepo, git, guarded } = require('../core/worktree-helpers.cjs');
 const test = guarded(nodeTest);
 
@@ -33,9 +33,11 @@ before(async () => {
   repo = makeRepo(dir);
   owner = await openCore({ dataDir: data, caller: callerFor('orchestrator'), embed: false });
   await owner.run.attach({ adapter_pid: process.pid });
+  // the run process (an operator attach) is gone; the orchestrator's adapter is this process, which answers
+  operator = await openCore({ dataDir: data, caller: callerFor('operator', { run_id: 'cli-prune' }), embed: false });
+  await operator.run.attach({ adapter_pid: deadPid() });
   orch = await openCore({ dataDir: data, caller: callerFor('orchestrator', { run_id: 'cli-prune' }), embed: false });
   await orch.run.attach({ adapter_pid: process.pid });
-  operator = await openCore({ dataDir: data, caller: callerFor('operator', { run_id: 'cli-prune' }), embed: false });
 });
 
 after(async () => {
@@ -63,7 +65,7 @@ test('the preview removes nothing; --yes removes the ended run\'s tree and says 
 
   const live = await belay(['worktree', 'prune', '--data', data, '--json'], repo);
   assert.strictEqual(live.code, 0, live.err);
-  assert.strictEqual(live.json.runs.find((r) => r.run_id === 'cli-prune').lapsed, false, 'the run is not ended');
+  assert.strictEqual(live.json.runs.find((r) => r.run_id === 'cli-prune').lapsed, false, 'the run is not ended and its adapter answers');
   assert.deepStrictEqual(live.json.would_remove, []);
 
   await operator.run.end({ exit_reason: 'test' });

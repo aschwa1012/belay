@@ -7,6 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const { err } = require('./errors.cjs');
 const G = require('./git.cjs');
+const { NO_HOOKS } = require('./git-safe.cjs');
 
 const same = (a, b) => G.samePath(a, b);
 const below = (p, dir) => { const a = G.fwd(p).replace(/\/+$/, ''), b = G.fwd(dir).replace(/\/+$/, ''); return same(a, b) || same(a.slice(0, b.length + 1), `${b}/`); };
@@ -34,7 +35,7 @@ function workerInTree(cwd, dir, runLive) {
   if (!rd) return { match: false, unresolved: false };
   const rw = real(cwd);
   if (rw) return { match: below(rw, rd), unresolved: false };
-  if (!runLive) return { match: false, unresolved: false };
+  if (!(typeof runLive === 'function' ? runLive() : runLive)) return { match: false, unresolved: false };
   const anc = nearestReal(cwd);
   return anc && below(anc, rd) ? { match: true, unresolved: true } : { match: false, unresolved: false };
 }
@@ -72,7 +73,8 @@ async function pinHead(rec, owner) {
   const ref = `refs/belay/kept/${owner}/${sha.slice(0, 12)}`;
   const ok = await G.run(rec.repo, ['check-ref-format', ref]);
   if (!ok.ok) throw fail(`${ref} is not a valid ref name`);
-  const w = await G.run(rec.repo, ['update-ref', ref, sha, '']);
+  // hooks off, as every belay git read has them (a reference-transaction hook is the repository's code): a rejecting hook cannot make a pin fail
+  const w = await G.run(rec.repo, ['-c', `core.hooksPath=${NO_HOOKS}`, 'update-ref', ref, sha, '']);
   const back = await G.run(rec.repo, ['rev-parse', '--verify', '--quiet', ref]);
   if (!back.ok || back.stdout.trim() !== sha) throw fail(w.ok ? `${ref} reads back as another value` : `git update-ref: ${(w.stderr || '').split('\n')[0]}`);
   return { ref, sha };
