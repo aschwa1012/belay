@@ -46,7 +46,7 @@ const K = require('../core/model-cache.cjs');
 const READ_TIMEOUT_MS = 60000;
 const MAX_REDIRECTS = 5;
 
-const USAGE = 'usage: belay embedder fetch|verify|delete [--model <id>] [--gpu] [--reranker <id>] [--json]\n  --gpu       with no --model, the GPU runtime; with --model, a model of the GPU table\n  --reranker  a CPU reranker of the reranker table (not with --model or --gpu)\n';
+const USAGE = 'usage: belay embedder fetch|verify|delete [--model <id>] [--gpu] [--reranker <id>] [--json]\n  <id>        the full id, or the name the Memory menu shows (an unambiguous label or short name)\n  --gpu       with no --model, the GPU runtime; with --model, a model of the GPU table\n  --reranker  a CPU reranker of the reranker table (not with --model or --gpu)\n';
 
 const testMode = () => process.env.BELAY_TEST_MODE === '1';
 const idleMs = () => (testMode() && Number(process.env.BELAY_FETCH_IDLE_MS) > 0 ? Number(process.env.BELAY_FETCH_IDLE_MS) : READ_TIMEOUT_MS);
@@ -279,11 +279,18 @@ async function run(ctx) {
   if (a.error) return { code: 2, text: `belay embedder: ${a.error}\n\n${USAGE}`, json: { error: a.error } };
   if (a.gpu && !a.model) return runRuntime(a, ctx);
   const t = table(a.gpu, !!a.reranker);
-  const id = a.reranker || a.model || t.def;
-  if (!Object.prototype.hasOwnProperty.call(t.models, id)) {
-    const message = `unknown ${a.reranker ? 'CPU reranker' : 'embedding model'} ${JSON.stringify(id)}; the known ids are ${Object.keys(t.models).join(', ')}`;
+  const named = a.reranker || a.model || t.def;
+  const what = a.reranker ? 'CPU reranker' : 'embedding model';
+  const hit = require('../core/model-names.cjs').resolveModelName(named, t.models);
+  if (hit && hit.ambiguous) {
+    const message = `${JSON.stringify(named)} fits more than one ${what}: ${hit.ambiguous.join(', ')}; give the full id`;
+    return { code: 2, text: `belay embedder: ${message}\n`, json: { error: message, candidates: hit.ambiguous } };
+  }
+  if (!hit) {
+    const message = `unknown ${what} ${JSON.stringify(named)}; the known ids are ${Object.keys(t.models).join(', ')}`;
     return { code: 2, text: `belay embedder: ${message}\n`, json: { error: message } };
   }
+  const id = hit.id;
   const entry = t.models[id];
   const problems = a.reranker ? require('../core/onnx-rerankers.cjs').rerankerProblems(entry)
     : a.gpu ? require('../core/gguf-models.cjs').ggufProblems(entry) : M.entryProblems(entry);
