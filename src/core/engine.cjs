@@ -177,6 +177,8 @@ const METHODS = {
   // ADR 0065: the run's close removes the task trees it can prove finished; the operator's only, with no MCP tool.
   'task.worktreeSweep': { roles: ['operator'], kind: 'write', fn: lazy('./methods-worktree-sweep.cjs', 'sweep') },
   'task.worktreeSweepCancel': { roles: ['operator'], kind: 'write', fn: lazy('./methods-worktree-sweep.cjs', 'cancel') },
+  // ADR 0065 amendment 3: the same removal for the trees of runs that lapsed; without yes, the preview.
+  'task.worktreePrune': { roles: ['operator'], kind: 'write', fn: lazy('./methods-worktree-prune.cjs', 'prune') },
   'integration.merge': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-integration.cjs', 'merge') },
   'integration.remove': { roles: ['operator'], kind: 'write', fn: lazy('./methods-integration.cjs', 'remove') },
   'integration.list': { roles: ALL, kind: 'read', fn: lazy('./methods-integration.cjs', 'list') },

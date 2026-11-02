@@ -18,7 +18,7 @@ const path = require('node:path');
 // runs a post-index-change hook; core.hooksPath names a path under this file, which can never be a directory, so no
 // hook runs at all.
 const NO_HOOKS = `${__filename.split(path.sep).join('/')}/no-hooks`;
-const PRE = Object.freeze(['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'log.showSignature=false', '-c', 'core.pager=cat', '-c', 'diff.autoRefreshIndex=false', '-c', `core.hooksPath=${NO_HOOKS}`]);
+const PRE = Object.freeze(['--no-pager', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', '-c', 'log.showSignature=false', '-c', 'core.pager=cat', '-c', 'diff.autoRefreshIndex=false', '-c', `core.hooksPath=${NO_HOOKS}`]);
 
 // The child's environment: the parent's without any GIT_* variable, plus belay's fixed ones.
 function gitEnv(env = process.env) {
