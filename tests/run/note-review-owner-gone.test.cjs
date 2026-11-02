@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // note-review-owner-gone.test.cjs — a review task that ends after the close began writes nothing (audit D66). A verdict application is a
 // write; one begun after the owner is marked gone would elect a second store owner inside the adapter (invariant 2). The turn path drops
 // it once the closed flag is up (afterTurn names the drop on the worker), and the run's store-only sweep applies it later. Proven with a

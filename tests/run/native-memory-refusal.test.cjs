@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // native-memory-refusal.test.cjs — follow-ups to the native_memory lever: a refused launch settles the worker as dead (worker_wait
 // must not answer the paused or stopped state of the life before), and a folder that is not a directory is refused before anything is
 // created, with a failed file write leaving no phantom worker. Driven over the fake executable.

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1';
 // `belay stop` against a live run whose worker's process cannot be proven (no creation time on its row):
 // the kill is refused, the pid stays alive, so the command must exit 1, say NOT killed and list the failure

@@ -2,6 +2,7 @@
 // `notes` required in its schema and memory_note_resolve, inside the worker budget; without the flag the listing is the
 // one it always was. The orchestrator's listing does not change.
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 
 const test = require('node:test');
 const assert = require('node:assert');

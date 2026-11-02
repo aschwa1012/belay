@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1'; // ADR 0034: a run here has no model to warm; the one suite that tests the warm-up opts in
 // memory.test.cjs — build step 4b, amended by the
 // orchestrator's Amendment section (B2, B3, B5). Drives the built CLI's `memory search` and
@@ -195,6 +196,31 @@ async function runMem(argv, core) {
 }
 const callOf = (core, name) => core.calls.find(c => c[0] === name);
 
+test('memory search with no flags covers what the core\'s default covers for the run: its project notes, else its own records', async () => {
+  const mk = (runs) => { const c = fakeCore(); c.run.list = async () => ({ runs }); return c; };
+  const on = { id: 'run-p', alive: true, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true }) };
+  const proj = mk([on]);
+  const r = await runMem(['search', 'loader'], proj);
+  assert.deepStrictEqual(callOf(proj, 'memory.search')[1], { query: 'loader', namespace: 'project/acme', filter: { types: ['note'] } });
+  assert.strictEqual(r.json.scope, 'project');
+  assert.ok(r.text.endsWith('searched project/acme notes (the project of run run-p); --namespace run/run-p searches that run\'s own records\n'), r.text);
+  const named = mk([on]);
+  await runMem(['search', 'loader', 'run-p', '--type', 'decision'], named);
+  assert.deepStrictEqual(callOf(named, 'memory.search')[1], { query: 'loader', namespace: 'project/acme', filter: { types: ['decision'] } }, 'a stated type is kept; a run id names the run whose project it is');
+  const own = mk([on]);
+  const o = await runMem(['search', 'loader', '--namespace', 'run/run-p'], own);
+  assert.deepStrictEqual(callOf(own, 'memory.search')[1], { query: 'loader', namespace: 'run/run-p' }, 'a named namespace is taken as given');
+  assert.strictEqual(o.json.scope, undefined);
+  // A project run with the notes lever off, and a run with no project: the core's default reads run/<id>, so the CLI does too, and says so.
+  for (const run of [{ id: 'run-q', alive: true, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: false }) }, { id: 'run-q', alive: true, project: null, memory_levers: null }]) {
+    const off = mk([run]);
+    const x = await runMem(['search', 'loader'], off);
+    assert.deepStrictEqual(callOf(off, 'memory.search')[1], { query: 'loader', namespace: 'run/run-q' });
+    assert.strictEqual(x.json.scope, 'run');
+    assert.ok(x.text.endsWith('searched run/run-q (its own records: the run has no project or its notes lever is off)\n'), x.text);
+  }
+});
+
 test('memory flag table: every flag reaches the core call as the filter or argument the ADR names', async () => {
   const core = fakeCore();
   const r = await runMem(['search', 'pidAlive', 'run-q', '--mode', 'keyword', '--index', '--type', 'note', '--type', 'decision', '--status', 'verified',
@@ -386,6 +412,13 @@ test('memory: a read verb never shuts an owner down, and a core without the new 
   const r = await runMem(['timeline', 'a'], fakeCore({ timeline: null }));
   assert.strictEqual(r.code, 1);
   assert.match(r.text, /has no memory\.timeline \(E_INTERNAL\)/);
+});
+
+test('memory search text names a held note the page cut', () => {
+  const base = { results: [], modes_run: ['keyword'], modes_failed: [] };
+  assert.ok(!/held matches/.test(RENDER.renderSearchText(base, 'full')));
+  const text = RENDER.renderSearchText({ ...base, held_matches: [{ id: 'n1', kind: 'duplicate' }, { id: 'n2', kind: null }] }, 'full');
+  assert.match(text, /held matches off this page: n1 \(duplicate\), n2 \(held\)\n$/);
 });
 
 test('memory render: parseSince accepts epoch ms and ISO only; the stats text names the new fields when the core sends them', () => {

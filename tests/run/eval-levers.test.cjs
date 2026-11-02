@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // eval-levers.test.cjs — the two eval-only, off-by-default run-spec levers of the 0.3.2 memory eval: `native_memory` (every Claude
 // Code worker of the run shares one auto-memory folder; the orchestrator never gets it) and `handback_question` (with notes off, the
 // hand-back question reaches each eligible worker exactly once). Spec validation and refusal, the worker spawn, and the message.

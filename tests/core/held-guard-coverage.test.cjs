@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // held-guard-coverage.test.cjs — every write of a note's visibility or status goes through a guarded store method. This scans src/core for a raw
 // UPDATE or DELETE of memory_entries outside store.cjs, by whole SQL statement (case and whitespace normalised, so a multiline or lowercase write is
 // found): the only ones allowed are the archive purge (archive rows only, operator only) and the retitle of a pending note (pending rows are never

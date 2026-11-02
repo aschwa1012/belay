@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // one-row-per-turn-real.test.cjs — a turn leaves one row on the real store. With observations on, the observation
 // is that row: embedded, tagged and with the provenance of the turn row it replaces, no turn row is written, and
 // continuity.resumeDoc still finds the turn through its tags. With observations off the turn row is written as it

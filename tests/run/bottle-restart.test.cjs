@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // bottle-restart.test.cjs — ADR 0042 decision 4, delivery: on the replace branch with memory.bottle on,
 // resume.md is the bottle (written atomically) and a `bottle` memory_event is the receipt; with the lever off
 // it is today's continuity.resumeDoc, byte for byte; any failure falls back to that document with an event;

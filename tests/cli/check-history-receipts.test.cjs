@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // check-history-receipts.test.cjs — ADR 0069: the run-end receipt (text and JSON) and `belay receipts` list each task's check
 // commands once and any change made to them during the run, as facts. A store is planted through the core; `belay receipts` is
 // driven as a subprocess, and the run receipt's pieces (collect and the text lines) are driven directly.

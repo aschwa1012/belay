@@ -7,6 +7,7 @@
 // of its sentence and the sentence after it (a sentence ending in a colon takes the list under it) or to the next mention,
 // and only backticked words in the window are read. Anything that is not an input is named in NOT_FIELDS, kept small.
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 
 const test = require('node:test');
 const assert = require('node:assert');

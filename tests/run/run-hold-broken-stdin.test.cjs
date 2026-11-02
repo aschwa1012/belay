@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // run-hold.cjs resume(): when the orchestrator's stdin pipe has broken between the pause and the resume, the
 // resume line and every held wake are refused by the write, so none is recorded as written; each is a suppressed wake.
 

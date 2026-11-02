@@ -93,7 +93,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   const fullArgs = [...prefixArgs, ...argv];
   const argvHash = L.writeArgvJson(written.dir, { exe: command, args: fullArgs, cwd: worktree });
 
-  const env = L.buildEnv(process.env, { substrate: 'claude-code', cwd: worktree });
+  const env = L.buildEnv(process.env, { substrate: 'claude-code', cwd: worktree, orchestrator: true });
   env.MCP_TOOL_TIMEOUT = String(mcpToolTimeoutMs);
 
   const child = P.spawnWorker({ exe: command, args: fullArgs, cwd: worktree, env, stdin: 'pipe' });

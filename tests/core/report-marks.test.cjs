@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // report-marks.test.cjs — one identity and one settlement for a report. Pure: no store.
 
 const { test } = require('node:test');
