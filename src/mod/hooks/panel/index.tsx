@@ -326,7 +326,7 @@ async function dispatchMenu($: Host, a: MemAction, menu: BelayMenuT): Promise<vo
     if ('error' in argv) { $.ui.toast(`belay: ${argv.error}`); ok = false; break }
     try {
       const res = await $.process.run(argvFor(r.cli, argv[0]!, watch.dataDir), { timeoutMs: step.kind === 'set' || step.kind === 'setMany' ? MEM_TIMEOUT_MS.set : step.kind === 'delete' ? MEM_TIMEOUT_MS.delete : MEM_TIMEOUT_MS.verify, ...(cwd ? { cwd } : {}) })
-      $.ui.toast(resultLine(step, res.exitCode, res.stdout, res.stderr))
+      $.ui.toast(resultLine(step, res.exitCode, res.stdout, res.stderr, menu))
       if (res.exitCode !== 0) { ok = false; break }
     } catch (err) {
       $.ui.toast(`belay: ${step.kind} did not finish: ${firstLine(err instanceof Error ? err.message : String(err)) || 'no answer'}`)
