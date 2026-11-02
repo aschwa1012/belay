@@ -1,6 +1,6 @@
 'use strict';
 // memory-held-visibility.test.cjs — the proposed ADR 0047 amendment of 2026-10-25: a worker sees no held note on any read path (search, list,
-// get, timeline, index), however it was held; the orchestrator and the operator see it marked from its hold row, ranked below every note that is
+// get, timeline, index), however it was held; the orchestrator and the operator see it marked from its hold row, shown after every note that is
 // not held; and the operator's settle still brings the note back, unmarked. Real core against a sandbox store, notes reported through lease.release.
 
 const { test, before, after } = require('node:test');
@@ -29,8 +29,8 @@ function direct(title, k) {
     body: { kind: 'lesson', basis: 'observed', evidence: [], applies_to: [], subjects: [], model: 'm', state: 'live', seen_in: [], seen_total: 0, reported_wrong: [] },
     embedding: v, embedding_model: 'fake', embedding_revision: 'r', dim: 64, run_id: null, task_id: null, source: 'model', written_by: 'worker:w-direct' }).id;
 }
-// Each result's tier: 0 not held and at the floor, 1 held at the floor, 2 not held below it, 3 held below it. A page is in tier order.
-const tiers = (results) => results.map((x) => (x.low_relevance ? 2 : 0) + (x.held ? 1 : 0));
+// Each result's tier: 0 not held, 1 held. A page is in tier order: the held notes follow every note that is not held, floor or no floor.
+const tiers = (results) => results.map((x) => (x.held ? 1 : 0));
 const inOrder = (t) => t.every((v, i) => i === 0 || t[i - 1] <= v);
 const NONE = [false, false, false, false, false];
 const ALL = [true, true, true, true, true];
@@ -81,7 +81,8 @@ test('a note the scrubber held as a duplicate is withheld from a worker too, and
   const o = await X.call('memory.search', X.orch, { namespaces: NS, query: 'K22 loader', view: 'compact', k: 50 });
   assert.strictEqual(o.results.find((x) => x.id === b.note).held.kind, 'duplicate');
   assert.ok(inOrder(tiers(o.results)), JSON.stringify(tiers(o.results)));
-  assert.strictEqual(o.results[0].id, b.note, 'no other note reaches the floor, so the held best match leads the page, marked');
+  const at = o.results.findIndex((x) => x.id === b.note);
+  assert.ok(o.results.filter((x) => !x.held).every((x) => o.results.indexOf(x) < at), 'the held best match is shown after every note that is not held, marked');
 });
 
 test('a pointer that outlived its hold marks nothing and demotes nothing', async () => {
@@ -146,20 +147,20 @@ test('a long hold reason is cut to the compact row\'s bound in every view', asyn
 
 test('a held note among the candidates never pushes a below-floor keyword hit off the page', async () => {
   const vecAt = (c, axis) => { const v = new Array(64).fill(0); v[5] = c; v[axis] = Math.sqrt(1 - c * c); return v; };
-  const put = (text, v) => X.store.storeIn({ namespace: 'project/zk', worker_id: 'w-direct', type: 'note', text, title: text,
+  const put = (text, v) => X.store.storeIn({ namespace: 'project/acme', worker_id: 'w-direct', type: 'note', text, title: text,
     body: { kind: 'lesson', basis: 'observed', evidence: [], applies_to: [], subjects: [], model: 'm', state: 'live', seen_in: [], seen_total: 0, reported_wrong: [] },
     embedding: v, embedding_model: 'fake', embedding_revision: 'r', dim: 64, run_id: null, task_id: null, source: 'model', written_by: 'worker:w-direct' }).id;
   const K = put('the zq_frobnicate_lock guard is taken before the write', vecAt(0.30, 10)); // an exact keyword hit, below the floor
   for (let i = 0; i < 10; i++) put(`unrelated alpha${i} beta${i} gamma${i} row`, vecAt(0.36 + i * 0.01, 20 + i)); // ten rows above the floor
   const H = put('another unrelated delta epsilon row', vecAt(0.10, 40));
-  const q = { namespaces: ['project/zk'], query: 'zq_frobnicate_lock K5', k: 10, mode: 'hybrid', view: 'debug' };
+  const q = { namespaces: ['project/acme'], query: 'zq_frobnicate_lock K5', k: 10, mode: 'hybrid', view: 'debug' };
   const plain = await X.call('memory.search', X.orch, q);
   assert.strictEqual(plain.results[0].id, K, 'without a hold the keyword hit is first');
-  X.store.storeIn({ namespace: 'held/zk', worker_id: 'harness', type: 'held', text: `held duplicate ${H}`, title: 'h',
+  X.store.storeIn({ namespace: 'held/acme', worker_id: 'harness', type: 'held', text: `held duplicate ${H}`, title: 'h',
     body: { state: 'held', note_id: H, kind: 'duplicate', of: K, ground: 'same_claim', reason: 'probe', rev: 0 }, run_id: X.RUN, source: 'harness', written_by: 'harness' });
   const held = await X.call('memory.search', X.orch, q);
   assert.deepStrictEqual(held.results.map((r) => r.id), plain.results.map((r) => r.id).filter((id) => id !== H), 'the rows that are not held keep their order');
   assert.ok(held.results.some((r) => r.id === K), 'the keyword hit is still on the page');
   const wide = await X.call('memory.search', X.orch, { ...q, k: 50 });
-  assert.strictEqual(wide.results[wide.results.length - 1].id, H, 'the held note is last');
+  assert.ok(inOrder(tiers(wide.results)) && wide.results.find((r) => r.id === H).held, 'the held note is in the held tail');
 });
