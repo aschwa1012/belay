@@ -462,7 +462,7 @@ async function remove(E, caller, args) {
   const fold = await MUG.folder(cur.repo); // the key a merge into this branch holds: the name as refs compare it on this host
   return W.exclusive(`integrate:${cur.repo}:${fold(cur.into_branch)}`, `an integration call for ${cur.into_branch}`, async () => {
     if (cur.state === 'merging') await abandonStale(E, caller, cur.repo, cur.into_branch, takeOver);
-    const removal = await W.removeTree(E, { repo: cur.repo, path: cur.worktree, junctions: cur.junctions, branch: cur.into_branch }, { force: args.force }, `integration ${cur.id}`);
+    const removal = await W.removeTree(E, { repo: cur.repo, path: cur.worktree, junctions: cur.junctions, branch: cur.into_branch }, { force: args.force, owner: `integration-${cur.id}` }, `integration ${cur.id}`);
     const row = E.store.tx(() => rows.append(E.store, 'integration', { ...rows.current(E.store, 'integration', cur.id), removed_at: Date.now() }, E.writtenBy(caller), Date.now()));
     E.noteWrite();
     return { ...view(row), removal };
