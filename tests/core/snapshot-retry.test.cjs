@@ -163,7 +163,7 @@ test('the first row of a spawn says its creation time is pending, so a kill meet
     const done = PI.noteSpawn(w, live, { createdOf: async () => { await gateOpen; return { created: Date.now() }; } });
     // Before the read finishes: what the first row carries.
     assert.strictEqual(w.pidCreated, null);
-    assert.match(w.pidCreatedError, /being read at spawn; retrying while the worker runs/);
+    assert.match(w.pidCreatedError, /pending at spawn; retrying while the worker runs/);
     assert.strictEqual(PI.rowFields(w).pid_created_error, w.pidCreatedError);
     const t = P.rowTarget({ pid: 4203, substrate: 'claude-code', pid_image: 'claude.exe', pid_created_error: PI.rowFields(w).pid_created_error });
     const k = await P.killProcess(t, { kill: noKill, snapshot: async () => mapOf([[4203, 1, T, 'claude.exe']]) });
@@ -172,5 +172,37 @@ test('the first row of a spawn says its creation time is pending, so a kill meet
     assert.ok(Number.isFinite(w.pidCreated));
     assert.strictEqual(w.pidCreatedError, null, 'a landed reading clears the pending error');
     assert.strictEqual(PI.rowFields(w).pid_created_error, null);
+  } finally { live.kill(); }
+});
+
+test('the landed first read is restated onto the row after a first row that carried the pending error', async () => {
+  const { rowHadPidCreated } = require('../../src/run/write-row.cjs');
+  const live = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
+  try {
+    const writes = [];
+    const w = { pid: live.pid, state: 'running', launches: 1, queue: Promise.resolve(), settled: false };
+    w.ctx = { writeRow: async (ww, st) => { writes.push({ st, ...PI.rowFields(ww) }); ww.lastRowHadPidCreated = rowHadPidCreated(ww); return {}; } };
+    let release; const gateOpen = new Promise((r) => { release = r; });
+    const done = PI.noteSpawn(w, live, { createdOf: async () => { await gateOpen; return { created: Date.now() }; } });
+    await w.ctx.writeRow(w, 'running'); // the first row, before the read lands
+    assert.match(writes[0].pid_created_error, /pending at spawn/);
+    release(); await done; await w.queue;
+    const last = writes[writes.length - 1];
+    assert.ok(writes.length >= 2, 'a restating row was written');
+    assert.ok(Number.isFinite(last.pid_created) && last.pid_created_error === null, 'the restating row carries the landed value');
+  } finally { live.kill(); }
+});
+
+test('a first read that fails is restated with its error, not left as the try-0 text', async () => {
+  const { rowHadPidCreated } = require('../../src/run/write-row.cjs');
+  const live = spawn(process.execPath, ['-e', 'setInterval(()=>{},1000)'], { stdio: 'ignore' });
+  try {
+    const writes = [];
+    const w = { pid: live.pid, state: 'running', launches: 1, queue: Promise.resolve(), settled: false };
+    w.ctx = { writeRow: async (ww, st) => { writes.push(PI.rowFields(ww)); ww.lastRowHadPidCreated = rowHadPidCreated(ww); return {}; } };
+    await w.ctx.writeRow(w, 'running');
+    await PI.noteSpawn(w, live, { createdOf: async () => { throw new Error('boom'); } });
+    await w.queue;
+    assert.match(writes[writes.length - 1].pid_created_error, /boom/);
   } finally { live.kill(); }
 });

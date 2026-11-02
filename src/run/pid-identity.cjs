@@ -73,7 +73,7 @@ function noteSpawn(w, child, { createdOf = P.createdOf, gate = ID.gate, schedule
   const spawnSeq = gate.stamp(); // a snapshot counts for this spawn only if it started after this
   // The first row goes out before the read finishes. It says so, so a process that meets that row (an adapter that died inside the
   // window leaves it behind) refuses by the pending error rather than killing by image name for a row with no creation time.
-  w.pidCreated = null; w.pidCreatedError = `the creation time of pid ${child.pid} is being read at spawn; retrying while the worker runs (try 0)`;
+  w.pidCreated = null; w.pidCreatedError = `creation time of pid ${child.pid} pending at spawn; retrying while the worker runs (try 0)`;
   w.pidImage = child.spawnfile ? path.basename(String(child.spawnfile)) : null;
   if (!Number.isInteger(pid)) { w.pidCreatedError = 'the spawn gave no pid'; w.pidCreatedPromise = null; return null; }
   const mine = () => w.pid === pid; // a relaunch took the record over; a read for the old life belongs to nobody
