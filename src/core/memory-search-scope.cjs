@@ -5,7 +5,7 @@
 // no project, or no run (the operator's CLI), nothing here applies and the search is what it always was.
 // A read: every statement is a SELECT.
 
-const { leversOf, projectOf } = require('./methods-memory.cjs');
+const { defaultSearchProject } = require('./notes-scope-rule.cjs');
 
 const NOTE_TYPE = 'note';
 
@@ -13,8 +13,9 @@ const NOTE_TYPE = 'note';
 // project/<p>), `filter` may gain types ['note']. Returns the inputs unchanged when the default does not apply.
 function notesDefaults(E, caller, args, filter) {
   if (!caller || !caller.run_id || (caller.role !== 'worker' && caller.role !== 'orchestrator')) return { args, filter }; // the operator's window is not scoped
-  const lv = leversOf(E, caller);
-  if (!lv || lv.notes !== true || !projectOf(E, caller)) return { args, filter };
+  let run = null;
+  try { run = E.store.p('SELECT project, memory_levers FROM run WHERE id = ? ORDER BY seq DESC LIMIT 1').get(caller.run_id); } catch { run = null; }
+  if (!run || !defaultSearchProject(run.project, run.memory_levers)) return { args, filter };
   const named = (args.namespace !== undefined && args.namespace !== null) || (args.namespaces !== undefined && args.namespaces !== null);
   if (named) return { args, filter };
   if (typeof filter !== 'object' || filter === null || Array.isArray(filter)) return { args, filter }; // a malformed filter is refused by filterSql, not hidden
