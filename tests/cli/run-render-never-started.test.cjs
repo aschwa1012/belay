@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 process.env.BELAY_TEST_MODE = '1';
 // run-render-never-started.test.cjs — a belay run that never started (election, live-run or warm-up refusal)
 // carries an all-null orchestrator block. The text says "never started: <reason>" and prints no pid,

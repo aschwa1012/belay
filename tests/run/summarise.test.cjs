@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // summarise.test.cjs — the summariser seam (ADR 0041 §4): the mechanical kind, the refusing model kind, the
 // classifier, and the one-policy-per-class table.
 

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-embed-heavy.test.cjs — `belay memory embed --model <gguf embedder>` (ADR 0050 decision 4): refuses a model that is not a heavy
 // embedder, loops bounded drain passes with progress, and reports a failure by name with how far it got. A fake core: no owner, no GPU.
 

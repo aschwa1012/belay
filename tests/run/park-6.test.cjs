@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // park-6.test.cjs — build step 6i-2, design items 2, 5 and
 // 7. (h12) and (h13) drive a real RunManager over tests/run/fakes/fake-claude.cjs, reading every row from
 // the store (never built by hand), the way park-4.test.cjs's (r8)-(r10) do. (h15) drives worker.cjs's

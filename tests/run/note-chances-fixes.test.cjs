@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // note-chances-fixes.test.cjs — regression tests for the review of the notes sink record, run side: a Codex release that
 // failed is not a task end, the task id is captured at the trigger, what is shown is tagged with its task and stops
 // being kept after the send, full search rows are marked, and the contract asks for memory_ids with the sink on.

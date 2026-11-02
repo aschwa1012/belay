@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // transcript-tail.test.cjs — `belay transcript --tail N` (ADR 0036 decision 8): the last N panel
 // entries read from the end of the stream in a bounded, growing window. The CLI is driven as a
 // subprocess against a sandbox store with one planted run row; the window logic is also driven

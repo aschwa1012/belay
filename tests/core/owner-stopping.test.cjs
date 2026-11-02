@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // A stopping owner: a write that meets it waits for it to finish and goes to the next owner, its ping is not liveness, and a run
 // control that arrives after stop() began is refused and never runs. Deterministic: stop() is held by a promise the test releases.
 const test = require('node:test');

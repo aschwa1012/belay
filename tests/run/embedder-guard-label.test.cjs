@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // embedder-guard-label.test.cjs — the ADR 0034 hook is told the call name and, for a run-manager call, the worker the call is
 // for, so a pause caused by embedding a spawn's index query names memory.embedQuery and that worker in paused_by.
 

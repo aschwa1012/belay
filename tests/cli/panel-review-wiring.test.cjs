@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // The panel's one write action (the memory line's archive review button) is reachable from the button's onPress and from nothing else:
 // no command, hook, notice, tool call, model output or message can reach it. The mod's own test kit cannot see a code path it does not
 // run, so this reads the sources of ALL of src/mod, structurally (panel-review-guard.cjs masks comments and strings, names each top-level

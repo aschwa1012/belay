@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // relaunch-hold.test.cjs — a worker launched again (restart, resume, a Codex turn) is first checked with the core: its task's
 // files are held for this run, or nothing is launched (ADR 0046 decision 1). The fake core refuses task.ensureHold the way the
 // real one refuses an overlap with another run's holding task, and the tests assert that no process started and no row was

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // idle-remind.test.cjs — ADR 0058, the idle-workers amendment (proposed): worker_wait's answer names the workers left idle with no task;
 // a wake does not (an idle coder may be kept for a fix round). The real core and run manager with the fake substrate.
 // The threshold is a parameter here, and BELAY_IDLE_REMIND_MS (test mode only) for the run manager: nothing waits it out.

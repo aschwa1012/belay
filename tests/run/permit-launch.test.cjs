@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // permit-launch.test.cjs — build step 6d, design item 4,
 // ADR 0020 decision 1. Golden argv for the launch table's own opt-in flags (the shape of
 // tests/run/launch.test.cjs), then the run manager's own spawn/restart plumbing over the fake core

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // handback-rule.test.cjs — belay itself ends a worker's first message with the hand-back rule (and, for a verdict task, the Review
 // standard), at a spawn as well as at a task_assign; the orchestrator no longer writes either into its prompts. The rule is one module
 // (src/run/handback.cjs) and the standard one file (src/run/prompts/review-standard.md). Pure checks, then a real manager spawn.

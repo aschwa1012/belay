@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // A wait that times out leaves no waiter on the worker record, and a wait holding for a release evaluation that a stop cancels
 // answers as the stop, while one cancelled any other way says so. Plain records through createWait: nothing here is timed.
 

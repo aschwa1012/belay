@@ -3,6 +3,7 @@
 // line. Not a test file: `node --test tests/mcp` will not pick this name up.
 'use strict';
 
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // sandboxDir below must not land in an indexed folder
 const { spawn } = require('node:child_process');
 const fs = require('node:fs');
 const os = require('node:os');
