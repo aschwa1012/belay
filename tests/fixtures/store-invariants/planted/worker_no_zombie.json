@@ -1,0 +1,1 @@
+{"rule":"worker_no_zombie","base":"clean","append":{"worker":[{"id":"w5","run_id":"r1","state":"dead","pid":20,"pid_created":3,"started_at":1000,"written_at":1900,"written_by":"w5"},{"id":"w5","run_id":"r1","state":"running","pid":20,"pid_created":3,"started_at":1000,"written_at":1950,"written_by":"w5"}]}}

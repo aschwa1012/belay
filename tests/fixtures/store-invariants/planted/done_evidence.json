@@ -1,0 +1,1 @@
+{"rule":"done_evidence","base":"clean","append":{"task":[{"id":"t2","run_id":"r1","state":"done","results":"{\"executable\":true,\"passed\":false}","written_at":1700,"written_by":"operator"}]}}
