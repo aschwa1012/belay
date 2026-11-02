@@ -117,3 +117,62 @@ test('init writes at the project root from a nested cwd, and at the cwd when the
     assert.strictEqual(C.writeDirOf(bare), bare, 'with no project root, init writes where it stands');
   } finally { fs.rmSync(bare, { recursive: true, force: true }); }
 });
+
+// A repository's config may only name a data_dir inside that repository (--data is the way to name one elsewhere).
+const withDataDir = (value) => {
+  const dir = project(sandbox());
+  fs.writeFileSync(`${dir}/${C.CONFIG_NAME}`, JSON.stringify({ data_dir: value }), 'utf8');
+  return { dir, found: C.discover(dir) };
+};
+
+test('a committed data_dir inside the repository is accepted, relative or absolute', () => {
+  const { dir, found } = withDataDir('state/store');
+  assert.strictEqual(C.dataDirOf(found, { cwd: dir, dataDir: `${dir}/.belay`, dataDirGiven: false }), `${dir}/state/store`);
+  const abs = withDataDir(`${sandbox()}/x`); // another sandbox: outside
+  assert.throws(() => C.dataDirOf(abs.found, { cwd: abs.dir, dataDir: `${abs.dir}/.belay`, dataDirGiven: false }), { code: 'E_DATA_DIR' });
+});
+
+test('a committed data_dir that leaves the repository is refused, naming the path and the allowed source', () => {
+  const cases = ['..', '../elsewhere', '.', `${sandbox()}/other`, '//server/share/store', '\\server\share\store', 'sub/../../out'];
+  if (process.platform === 'win32') cases.push('C:store', 'C:');
+  for (const value of cases) {
+    const { dir, found } = withDataDir(value);
+    const ctx = { cwd: dir, dataDir: `${dir}/.belay`, dataDirGiven: false };
+    assert.throws(() => C.dataDirOf(found, ctx), (e) => e.code === 'E_DATA_DIR' && e.message.includes(JSON.stringify(value)) && e.message.includes('--data'), `data_dir ${value} was accepted`);
+    assert.ok(C.effective(found, 'data_dir', {}).refused, `effective() did not flag ${value}`);
+  }
+});
+
+test('--data names a store anywhere, even when the config names one that would be refused', () => {
+  const { dir, found } = withDataDir('../elsewhere');
+  const elsewhere = `${sandbox()}/store`;
+  assert.strictEqual(C.dataDirOf(found, { cwd: dir, dataDir: elsewhere, dataDirGiven: true }), elsewhere);
+});
+
+test('a junction inside the repository that points out of it is followed before the check', () => {
+  const dir = project(sandbox());
+  const outside = sandbox();
+  fs.symlinkSync(outside, `${dir}/link`, 'junction');
+  fs.writeFileSync(`${dir}/${C.CONFIG_NAME}`, JSON.stringify({ data_dir: 'link/store' }), 'utf8');
+  const found = C.discover(dir);
+  assert.throws(() => C.dataDirOf(found, { cwd: dir, dataDir: `${dir}/.belay`, dataDirGiven: false }), { code: 'E_DATA_DIR' });
+  fs.rmdirSync(`${dir}/link`); // unlink the junction only
+});
+
+test('a data_dir in a config below the project root may be anywhere inside the project', () => {
+  const dir = project(sandbox());
+  fs.mkdirSync(`${dir}/pkg`, { recursive: true });
+  fs.writeFileSync(`${dir}/pkg/${C.CONFIG_NAME}`, JSON.stringify({ data_dir: '../shared/.belay' }), 'utf8');
+  const found = C.discover(`${dir}/pkg`);
+  assert.strictEqual(C.dataDirOf(found, { cwd: `${dir}/pkg`, dataDir: `${dir}/pkg/.belay`, dataDirGiven: false }), `${dir}/shared/.belay`);
+});
+
+test('init --data outside the repository keeps the default data_dir in the config and says how to name the store', async () => {
+  const dir = project(sandbox());
+  const outside = `${sandbox()}/store`;
+  const r = await require('../../src/cli/cmd-init.cjs').run({ argv: [], cwd: dir, dataDir: outside, dataDirGiven: true, json: true });
+  assert.strictEqual(r.code, 0);
+  assert.deepStrictEqual(JSON.parse(fs.readFileSync(`${dir}/${C.CONFIG_NAME}`, 'utf8')), { data_dir: '.belay' });
+  assert.match(r.json.note, /--data .* on each command/);
+  assert.ok(fs.existsSync(outside), 'the store the operator asked for was created');
+});

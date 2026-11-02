@@ -76,8 +76,9 @@ function getResult(found, key, ctx) {
   };
   if (eff.allowed) payload.allowed = eff.allowed;
   if (eff.invalid) payload.invalid = eff.invalid;
+  if (eff.refused) payload.refused = eff.refused;
   if (ctx.json) return { code: 0, text: '', json: payload };
-  const warn = eff.invalid ? `warning: ${eff.key}: ${eff.invalid.reason}\n` : '';
+  const warn = (eff.invalid ? `warning: ${eff.key}: ${eff.invalid.reason}\n` : '') + (eff.refused ? `warning: ${eff.refused}\n` : '');
   return { code: 0, text: `${warn}${eff.key} = ${JSON.stringify(eff.value)}  (from ${sourceLine(eff)})\n`, json: payload };
 }
 

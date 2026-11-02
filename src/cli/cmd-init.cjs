@@ -23,11 +23,12 @@ const C = require('./config.cjs');
 // told where its binaries are when it does not.
 function seedConfig(dataDirOverride, writeDir) {
   if (!dataDirOverride) return { data_dir: C.KEYS.data_dir.default };
-  // An override inside the project is written relative to the config file, so the file stays
-  // portable; anywhere else is written absolute, because a relative path out of the tree is worse.
-  const rel = path.relative(writeDir, dataDirOverride).split('\\').join('/');
-  const inside = rel && !rel.startsWith('..') && !path.isAbsolute(rel);
-  return { data_dir: inside ? rel : dataDirOverride };
+  // An override inside the project is written relative to the config file, so the file stays portable. One outside it is
+  // not written: a repository's config may only name a data_dir inside the repository, so the file keeps the default and the
+  // outside store is named by --data on each command.
+  const rel = path.relative(writeDir, dataDirOverride).split(path.sep).join('/');
+  const inside = rel && rel !== '..' && !rel.startsWith('../') && !path.isAbsolute(rel);
+  return { data_dir: inside ? rel : C.KEYS.data_dir.default, outside: !inside };
 }
 
 async function run(ctx) {
@@ -53,8 +54,12 @@ async function run(ctx) {
   const existed = fs.existsSync(configPath);
 
   let created = false;
+  let outsideNote = null;
   if (!existed) {
-    const body = JSON.stringify(seedConfig(override, writeDir), null, 2) + '\n';
+    const seed = seedConfig(override, writeDir);
+    if (seed.outside) outsideNote = `--data ${override} is outside the repository, so the config keeps data_dir ${JSON.stringify(seed.data_dir)}; pass --data ${override} on each command that should use it`;
+    delete seed.outside;
+    const body = JSON.stringify(seed, null, 2) + '\n';
     // `wx` rather than a bare write: between the check above and this line another process may have
     // created the file, and losing someone's config to that race is exactly what this refuses to do.
     try {
@@ -82,6 +87,7 @@ async function run(ctx) {
     parse_error: found.parse_error || null,
     data_dir: dataDir,
     data_dir_created: !dataDirExisted,
+    ...(outsideNote ? { note: outsideNote } : {}),
   };
 
   if (ctx.json) return { code: 0, text: '', json: payload };
@@ -93,6 +99,7 @@ async function run(ctx) {
     payload.data_dir_created ? `created ${dataDir}` : `data dir already present at ${dataDir}`,
   ];
   if (found.parse_error) lines.push(`warning: ${found.parse_error}`);
+  if (outsideNote) lines.push(`note: ${outsideNote}`);
   lines.push('');
   return { code: 0, text: lines.join('\n'), json: payload };
 }

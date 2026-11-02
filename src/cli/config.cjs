@@ -144,6 +144,50 @@ function read(file, dir, searched) {
   }
 }
 
+// The project root a config's data_dir must stay inside: the nearest directory at or above the config file that
+// carries a root marker, else the config file's own directory.
+function projectRootOf(dir) {
+  let d = fwd(path.resolve(dir));
+  for (;;) {
+    if (isProjectRoot(d)) return d;
+    const parent = fwd(path.dirname(d));
+    if (parent === d) return fwd(path.resolve(dir));
+    d = parent;
+  }
+}
+
+// A path that may not exist yet, with symlinks and junctions resolved in its deepest existing part.
+function realWithTail(p) {
+  let cur = path.resolve(p);
+  const tail = [];
+  for (;;) {
+    try { return path.join(fs.realpathSync.native(cur), ...tail.reverse()); } catch { /* try the parent */ }
+    const parent = path.dirname(cur);
+    if (parent === cur) return path.resolve(p);
+    tail.push(path.basename(cur));
+    cur = parent;
+  }
+}
+
+// A data_dir that a repository's config names may only point strictly inside that repository (a data_dir elsewhere
+// comes from --data). Returns null when it is inside, else the reason it is refused. UNC, device and drive-relative
+// spellings are refused outright; `..`, absolute paths, symlinks and junctions are resolved before the comparison.
+function dataDirRefusal(value, found) {
+  const text = String(value);
+  const where = `data_dir ${JSON.stringify(text)} in ${found.path}`;
+  const allowed = 'a repository config (belay.config.json) may only name a data_dir inside that repository; use --data <dir> on the command line for one elsewhere';
+  if (/^[\\/]{2}/.test(text) || (process.platform === 'win32' && /^[A-Za-z]:(?![\\/])/.test(text))) {
+    return `${where} is a UNC, device or drive-relative path; ${allowed}`;
+  }
+  const root = projectRootOf(found.dir);
+  const target = realWithTail(path.resolve(found.dir, text));
+  const rel = path.relative(realWithTail(root), target);
+  if (rel === '' || rel === '..' || rel.startsWith(`..${path.sep}`) || path.isAbsolute(rel)) {
+    return `${where} resolves to ${fwd(target)}, which is not inside the repository ${root}; ${allowed}`;
+  }
+  return null;
+}
+
 // The effective value of one key and the exact place it came from. `source` is a file path when the
 // file set it, the literal 'default' when it did not, and '--data' when the operator overrode it on
 // the command line. There is no fourth possibility, which is the whole point of §6's last sentence.
@@ -172,6 +216,10 @@ function effective(found, key, { dataDirOverride = null } = {}) {
     key, value, source, describe: spec.describe,
     resolved: spec.kind === 'path' ? resolve(value, found) : null,
   };
+  if (key === 'data_dir' && fromFile) {
+    const refused = dataDirRefusal(value, found);
+    if (refused) { out.refused = refused; out.resolved = null; }
+  }
   if (spec.allowed) out.allowed = spec.allowed;
   if (invalid) out.invalid = invalid;
   return out;
@@ -215,6 +263,7 @@ function overrideOf(ctx) {
 // then `<project root or cwd>/.belay`. Always absolute, always forward slashes.
 function dataDirOf(found, ctx) {
   const eff = effective(found, 'data_dir', { dataDirOverride: overrideOf(ctx) });
+  if (eff.refused) throw Object.assign(new Error(eff.refused), { code: 'E_DATA_DIR' });
   if (eff.resolved) return eff.resolved;
   const base = found.found ? found.dir : fwd(path.resolve((ctx && ctx.cwd) || process.cwd()));
   return fwd(path.resolve(base, String(eff.value || KEYS.data_dir.default)));
@@ -236,5 +285,5 @@ function writeDirOf(cwd) {
 
 module.exports = {
   CONFIG_NAME, KEYS, KEY_NAMES, ROOT_MARKERS,
-  fwd, samePath, isProjectRoot, discover, effective, all, dataDirOf, writeDirOf, overrideOf,
+  fwd, samePath, isProjectRoot, dataDirRefusal, discover, effective, all, dataDirOf, writeDirOf, overrideOf,
 };
