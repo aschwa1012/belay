@@ -44,6 +44,13 @@ test('a changed BELAY_ variable changes env_fp and names the input; the value is
 });
 
 test('a credential-named variable is listed by name and changes nothing', async () => {
+  const names = ['CLAUDE_X_COOKIE', 'MCP_X_CREDENTIALS', 'BELAY_X_PASS', 'CODEX_SESSION_ID', 'BELAY_PRIVATE_THING', 'NODE_EXTRA_CERT', 'NODE_EXTRA_CA_CERTS'];
+  const env1 = { ...base() }, env2 = { ...base() };
+  for (const n of names) { env1[n] = 'one-' + n; env2[n] = 'two-' + n; }
+  const x = await CE.capture(NODE, { salt: 's', env: env1 }), y = await CE.capture(NODE, { salt: 's', env: env2 });
+  assert.strictEqual(x.env_fp, y.env_fp, 'no value of these is hashed');
+  for (const n of names) assert.ok(x.facts.withheld.includes(n), n);
+  assert.ok(!JSON.stringify(x).includes('one-'));
   const a = await CE.capture(NODE, { salt: 's', env: { ...base(), CLAUDE_CODE_OAUTH_TOKEN: 'secret-one' } });
   const b = await CE.capture(NODE, { salt: 's', env: { ...base(), CLAUDE_CODE_OAUTH_TOKEN: 'secret-two' } });
   assert.strictEqual(a.env_fp, b.env_fp);
@@ -63,16 +70,20 @@ test('node_modules/.package-lock.json and the resolved binary are inputs', async
   assert.strictEqual(a.facts.node, process.version);
 });
 
-test('a bare name resolves the way the spawn does: the cwd before PATH on Windows, PATH only elsewhere', () => {
+test('a bare name resolves the way the spawn does: the cwd before PATH on Windows, PATH only elsewhere', async () => {
   const cwdDir = path.join(dir, 'cwdbin'), pathDir = path.join(dir, 'pathbin');
   fs.mkdirSync(cwdDir, { recursive: true }); fs.mkdirSync(pathDir, { recursive: true });
   const ext = process.platform === 'win32' ? '.exe' : '';
   fs.writeFileSync(path.join(cwdDir, `zzprobe${ext}`), 'x');
   fs.writeFileSync(path.join(pathDir, `zzprobe${ext}`), 'x');
   const env = { PATH: pathDir };
-  const got = CE.resolveBinary('zzprobe', cwdDir, env);
+  const got = (await CE.resolveBinary('zzprobe', cwdDir, env)).file;
   assert.strictEqual(got, path.join(process.platform === 'win32' ? cwdDir : pathDir, `zzprobe${ext}`));
-  assert.strictEqual(CE.resolveBinary('zz-not-here', cwdDir, env), null);
+  assert.strictEqual(await CE.resolveBinary('zz-not-here', cwdDir, env), null);
+  if (process.platform === 'win32') {
+    fs.writeFileSync(path.join(cwdDir, 'zzbare'), 'x'); // libuv tries a name as written only when it has an extension
+    assert.strictEqual(await CE.resolveBinary('zzbare', cwdDir, env), null);
+  }
 });
 
 test('task.evaluate records the environment on the results, names what changed on the next evaluation, and decides nothing by it', async () => {
@@ -137,4 +148,21 @@ test('belay receipts shows the environment of a task\'s last evaluation, in JSON
   const out = cli();
   assert.strictEqual(out.status, 0, out.stderr);
   assert.match(out.stdout + out.stderr, new RegExp(`environment ${ev.results.env.env_fp} node ${process.version.replace(/\./g, '\.')}`));
+});
+
+test('a git or node a worker placed in the worktree is never spawned, bare or by path; only only the owner own git and node are asked a version', async () => {
+  const E = require('../../src/core/evaluate.cjs');
+  const wt = path.join(dir, 'wt-spawn');
+  fs.mkdirSync(path.join(wt, 'tools'), { recursive: true });
+  const ext = process.platform === 'win32' ? '.exe' : '';
+  for (const rel of [`node${ext}`, `git${ext}`, `tools/git${ext}`]) fs.writeFileSync(path.join(wt, rel), 'not a program');
+  const real = E.runCommand, asked = [];
+  E.runCommand = (argv, ...rest) => { asked.push(argv[0]); return real(argv, ...rest); };
+  try {
+    const r = await CE.capture([{ argv: ['node', '--test'], cwd: wt }, { argv: [`./tools/git${ext}`, 'status'], cwd: wt }, { argv: [`./git${ext}`, 'status'], cwd: wt }], { salt: 's', env: { ...base() } });
+    assert.ok(r.env_fp);
+  } finally { E.runCommand = real; }
+  assert.deepStrictEqual(asked.filter((a) => path.resolve(a).startsWith(path.resolve(wt))), [], 'nothing under the worktree was run');
+  const file = (await CE.capture([{ argv: [`./tools/git${ext}`], cwd: wt }], { salt: 's', env: { ...base() } })).inputs;
+  assert.ok(file[`bin_file:./tools/git${ext}`], 'its path, size and mtime are recorded instead');
 });

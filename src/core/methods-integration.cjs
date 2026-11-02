@@ -305,10 +305,10 @@ async function rerun(tasks, tree, reuse, head, beside = null, extra = [], until 
     const mark = { ...(c.source ? { source: c.source } : {}), ...declared };
     const from = reuse(c.argv, c.cwd, c.timeout_ms);
     if (from) { checks.push({ argv: c.argv, cwd: c.cwd, timeout_ms: c.timeout_ms, task_ids: c.task_ids, ...mark, reused_from: from, head_sha: head, passed: true }); continue; }
+    const CE = require('./check-env.cjs'), env = store && until - Date.now() > 0 ? await CE.forCommands(store, [{ argv: c.argv, cwd: c.cwd }]) : null; // ADR 0080: recorded, never read; taken before the budget is measured, so it is charged to it
     const t0 = Date.now();
     if (until - t0 <= 0) { checks.push({ argv: c.argv, cwd: c.cwd, timeout_ms: c.timeout_ms, task_ids: c.task_ids, ...mark, executable: false, exit_code: null, ms: 0, timed_out: false, passed: false, not_run: `the call's commands share a budget of ${ACCEPTANCE_BUDGET_MS} ms and it was spent` }); continue; }
     const allowed = Math.min(c.timeout_ms, until - t0);
-    const CE = require('./check-env.cjs'), env = store ? await CE.forCommands(store, [{ argv: c.argv, cwd: c.cwd }]) : null; // ADR 0080: recorded, never read
     const r = await runCommand(c.argv, c.cwd, allowed, { keep: 'ends', register: 'check' }); // the ends and the failure section, as task.evaluate keeps
     const concurrent = beside ? beside(t0, Date.now()) : [];
     checks.push({

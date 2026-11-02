@@ -95,7 +95,7 @@ const SUMMARY_DROP = new Set(['seq', 'run_id', 'written_at', 'written_by', 'file
 function summaryResults(facts, checks) {
   const out = { passed: facts.passed, executable: facts.executable };
   for (const k of ['trigger', 'flaky', 'timed_out', 'uncommitted', 'stale']) if (facts[k] !== undefined && facts[k] !== null) out[k] = facts[k];
-  if (facts.env && facts.env.env_fp) { out.env_fp = facts.env.env_fp; if (Array.isArray(facts.env.changed) && facts.env.changed.length) out.env_changed = facts.env.changed; }
+  if (facts.env && facts.env.env_fp) { out.env_fp = facts.env.env_fp; if (Array.isArray(facts.env.changed) && facts.env.changed.length) out.env_changed = facts.env.changed.length > 8 ? [...facts.env.changed.slice(0, 8), `and ${facts.env.changed.length - 8} more`] : facts.env.changed; }
   out.checks = checks.length;
   out.failing = checks.filter((c) => c && !c.passed).map(label);
   const flaky = checks.filter((c) => c && c.passed && c.flaky).map(label);
