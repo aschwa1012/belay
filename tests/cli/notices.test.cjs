@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // notices.test.cjs — ADR 0036 decision 5, build step U1. Drives the built CLI's `notices` as a
 // subprocess against a sandbox store planted through the core; the verdict and run-state events are
 // also checked as pure functions over row-shaped input. Never a real data dir.

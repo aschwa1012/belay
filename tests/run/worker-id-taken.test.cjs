@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // worker-id-taken.test.cjs — a caller-named worker id is fresh only when no row in the store has it under any case (another run's row would be
 // restated, and NTFS gives W1 and w1 one directory) and no directory holds it. A fresh id still spawns.
 

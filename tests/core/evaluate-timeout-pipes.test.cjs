@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // A command that times out while a process outside the killed tree holds its pipes. The tree kill is stubbed (the seam is
 // PROC.killTree, read at call time): it stops the direct child by its handle and reports ok, as a real kill does when the
 // holder was reparented away from the tree. runCommand must still resolve, with its ends of the pipes dropped. The holder lives

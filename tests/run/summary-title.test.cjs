@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // summary-title.test.cjs — ADR 0044 decisions 4.2 to 4.5: the summary's title, its `final` field, the checkpoint
 // next step and body v2. The pure cases call the summariser; the rest run through a real core in a sandbox.
 

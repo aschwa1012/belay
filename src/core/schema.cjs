@@ -252,6 +252,8 @@ const MIGRATIONS = [
   'ALTER TABLE run ADD COLUMN run_mode TEXT',
   // The run's cross_run_merge setting (1 when its spec allows merging another run's tasks, or into another run's integrate branch; null reads as off).
   'ALTER TABLE run ADD COLUMN cross_run_merge INTEGER',
+  // ADR 0082 decision 1: the belay that wrote the row, as JSON text: { build, schema_version, dirty, prompt_sha, prompt_marker }. Nullable; a row from before it reads as not recorded.
+  'ALTER TABLE run ADD COLUMN harness TEXT',
   'ALTER TABLE permission ADD COLUMN kind TEXT',
   'ALTER TABLE integration ADD COLUMN target TEXT',
   'ALTER TABLE integration ADD COLUMN head_before TEXT',

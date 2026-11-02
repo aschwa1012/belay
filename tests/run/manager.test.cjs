@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // The run manager against a fake substrate and the in-memory fake core. Every assertion is about
 // an effect: a row written, a checkpoint written, a memory entry written, a file on disk. A
 // returned status word on its own is never treated as proof (invariant 5).

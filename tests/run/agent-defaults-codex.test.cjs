@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // agents.<type>.codex_model (audit L24): the model a type's Codex workers use, a field apart from the Claude roster's `model`. The
 // config validates it separately, a Codex spawn takes it (named in the spawn result and passed as -m), a Claude Code spawn never does,
 // and a Codex model under `model` is refused rather than handed to Claude Code coders.

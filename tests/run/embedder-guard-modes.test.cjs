@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // embedder-guard-modes.test.cjs — the guard under each value of on_embedder_failure (ADR 0034 amendment 1): required pauses the run
 // loudly, keyword records and goes on, off records and turns the run memory off; stop and continue are the old names; the mode can
 // be chosen at a resume; a warm-up that failed under keyword or off is the run's first event.

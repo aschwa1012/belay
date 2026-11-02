@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // relaunch-restate.test.cjs — a relaunched worker's rows never carry the last process's end. About a second after
 // each launch the process's creation time is read and the current row restated with it (ADR 0039). The restatement
 // wrote `w.settledState || w.state`, and settledState (the last process's paused, stopped or dead) was never cleared
