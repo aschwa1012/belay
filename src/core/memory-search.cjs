@@ -19,7 +19,7 @@ const gate = require('./memory-note-gate.cjs');
 const ST = require('./search-tier.cjs');
 const HB = require('./heavy-behind.cjs');
 const W = require('./memory-withhold.cjs');
-const { notesDefaults } = require('./memory-search-scope.cjs');
+const { notesDefaults, defaultSearchSkipsRun } = require('./memory-search-scope.cjs');
 const V = require('./memory-search-view.cjs');
 const { semanticStage } = require('./search-semantic.cjs'); // the query vector and the cosine scan
 const { nsFor, resolveNamespace, runAlpha, reachOf, checkReach, runEmbedderMode } = require('./methods-memory.cjs');
@@ -235,6 +235,9 @@ async function search(E, caller, args, internal = {}) {
   const base = baseWhere(o);
   const db = E.store.db;
   const considered = db.prepare(`SELECT COUNT(*) AS n FROM memory_entries e WHERE ${base.where}`).get(...base.params).n;
+  // The rows the semantic half is asked to cover: a heavy tier leaves out a run's turn rows when its default search goes to the project (search-tier.cjs).
+  const leftOut = ST.isNano(o.tier) ? [] : o.namespaces.filter(n => n.startsWith('run/') && defaultSearchSkipsRun(E, n.slice(4)));
+  const semConsidered = !leftOut.length ? considered : considered - db.prepare(`SELECT COUNT(*) AS n FROM memory_entries e WHERE ${base.where} AND e.type = 'turn' AND e.namespace IN (SELECT value FROM json_each(?))`).get(...base.params, JSON.stringify(leftOut)).n;
 
   const ran = [], failed = [];
   let sem = null, kw = null;
@@ -249,9 +252,9 @@ async function search(E, caller, args, internal = {}) {
     ms.semantic = Date.now() - ts;
     // ADR 0057 decision 5: rows in scope and not one with a vector is a semantic half that saw nothing. It is degraded, not run. Not an
     // embedder failure (nothing to resume), so no run is paused and no hybrid search refused; a semantic-mode search answers it too.
-    if (sem && sem.scanned === 0 && considered > 0) {
+    if (sem && sem.scanned === 0 && semConsidered > 0) {
       ran.pop();
-      failed.push({ mode: 'semantic', code: 'E_NO_VECTORS', message: `none of the ${considered} in-scope rows has a vector (written without the embedder, or in a namespace bound to no model), so semantic search had nothing to compare` });
+      failed.push({ mode: 'semantic', code: 'E_NO_VECTORS', message: `none of the ${semConsidered} in-scope rows has a vector (written without the embedder, or in a namespace bound to no model), so semantic search had nothing to compare` });
       sem = null;
     }
   }
@@ -339,7 +342,7 @@ async function search(E, caller, args, internal = {}) {
   // keyword index sees every row; a row with no vector is named, and one left out establishes nothing), no scanned row reaches the floor,
   // and the keyword half matched no row: a keyword hit can be the exact identifier the query names, whatever its cosine. offset and
   // min_score narrow the page, never the claim, which is about every in-scope row.
-  const unembedded = sem ? Math.max(0, considered - sem.scanned) : 0;
+  const unembedded = sem ? Math.max(0, semConsidered - sem.scanned) : 0;
   let top = -Infinity;
   for (const v of cosine.values()) if (v > top) top = v;
   // The floor is measured for nano only (ADR 0057), so a heavy tier, which has no floor, never establishes absence.

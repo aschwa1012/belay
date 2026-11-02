@@ -241,9 +241,6 @@ function visibleRows(db, opts) {
 // A row whose embed text cannot be rendered (its text is not a string) can never have a vector under any tier. It is left out of the backlog and
 // of a heavy tier's candidates, with ONE warning per row, so it does not keep every search on nano for ever.
 const unrenderable = (r) => typeof r.text !== 'string';
-// A turn row (the harness's record of a worker turn's final text) is kept for the briefing and the run's listings but is never embedded by a heavy
-// tier: it has no heavy vector by design, so it is not behind either, and no warning names it (ADR 0044 amendment of 2026-11-02).
-const heavyExempt = (r) => r.type === 'turn';
 const warned = new Set();
 function warnUnrenderable(r) {
   if (warned.has(r.id)) return;
@@ -251,7 +248,7 @@ function warnUnrenderable(r) {
   try { process.emitWarning(`memory row ${r.id} has no renderable text, so no embedder can embed it; it is left out of every heavy backlog`, { code: 'BELAY_UNRENDERABLE_ROW' }); } catch { /* a warning is a courtesy */ }
 }
 
-function scan(db, tier, { namespaces, includeSuperseded = false, at = Date.now(), hidden = null, bodyLive = false } = {}) {
+function scan(db, tier, { namespaces, includeSuperseded = false, at = Date.now(), hidden = null, bodyLive = false, exempt = null } = {}) {
   needTable(db);
   const out = { rows: [], missing: [] };
   if (!namespaces || !namespaces.length) return out;
@@ -259,10 +256,10 @@ function scan(db, tier, { namespaces, includeSuperseded = false, at = Date.now()
   const k = keyOf(tier), get = db.prepare(VEC_BY_KEY);
   for (const r of visibleRows(db, { namespaces, includeSuperseded, at })) {
     if (skip && skip.has(r.id)) continue;
+    if (exempt && exempt(r)) continue; // a turn row this run's heavy tier leaves out, embedded or not
     if (bodyLive && !gate.bodyLive(r)) continue; // as search does after ranking, for a gated caller
     const found = lookup(get, k, r);
     if (found) out.rows.push({ id: r.id, namespace: r.namespace, ...found });
-    else if (heavyExempt(r)) continue;
     else if (unrenderable(r)) warnUnrenderable(r); // no text to embed: it can never have a vector, so it is not behind
     else out.missing.push(r);
   }
@@ -344,5 +341,5 @@ function sweepRows(db, gone) {
 
 module.exports = {
   TABLE_SQL, embedTextOf, embedHashOf, renderTemplateOf, templatesOf, hasTable, migrateVectors, lastWriterMaintainedCache, catchUp, putVector, putRowVector,
-  unrenderable, heavyExempt, warnUnrenderable, generation, bump, vectorsFor, visibleRowFilter, selectSearchable, backlog, sweep, sweepRows,
+  unrenderable, warnUnrenderable, generation, bump, vectorsFor, visibleRowFilter, selectSearchable, backlog, sweep, sweepRows,
 };

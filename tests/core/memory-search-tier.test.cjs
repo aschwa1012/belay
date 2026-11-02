@@ -120,19 +120,32 @@ test('a note written after the backlog check is refused by the scan itself, neve
   } finally { undrain(); }
 });
 
-test('a turn row is not behind a heavy tier: it is never embedded there, and a heavy scan leaves it out', async () => {
-  drain();
-  const m = ST.binding(T.E, HEAVY, NS);
+// A turn row is left out of a run's heavy tier only when that run's default search goes to the project (a project and the notes lever);
+// otherwise the default search reads run/<id> and the turn row is heavy-embedded as any row is.
+test('a turn row of a project run with notes on is not behind a heavy tier, and is not counted as a row without a vector', async () => {
+  const RUN = 'run/lc-propose', m = ST.binding(T.E, HEAVY, RUN);
   const o = { filterSql: { where: '', params: [] }, includeSuperseded: false, hidden: null };
+  const turn = T.store.store({ namespace: RUN, worker_id: 'w-turn', type: 'turn', text: 'the worker finished the zq_loader change', embedding: [1, 0, 0], embedding_model: 'm', embedding_revision: 'r', dim: 3 });
   try {
-    const turn = T.store.store({ namespace: NS, worker_id: 'w-turn', type: 'turn', text: 'the worker finished the loader change', embedding: [1, 0, 0], embedding_model: 'm', embedding_revision: 'r', dim: 3 });
-    ST.assertServable(T.E, HEAVY, [NS]); // a note written the same way would be behind and refused
-    const got = ST.candidates(T.E, HEAVY, NS, m, o);
-    assert.strictEqual(got.length, FIX.length);
-    assert.ok(!got.some((c) => c.id === turn.id));
-    assert.deepStrictEqual(MV.backlog(T.store.db, { model: 'heavy/x', revision: '', dims: 3 }, { namespaces: [NS] }).map((r) => r.id), [], 'not in the heavy backlog');
-    T.store.delete(turn.id);
-  } finally { undrain(); }
+    ST.assertServable(T.E, HEAVY, [RUN]); // a note written the same way would be behind and refused
+    assert.deepStrictEqual(ST.candidates(T.E, HEAVY, RUN, m, o), []);
+    // Once embedded by an earlier build, a heavy scan still leaves it out.
+    const r = T.store.db.prepare('SELECT * FROM memory_entries WHERE id = ?').get(turn.id), t = MV.renderTemplateOf(r);
+    MV.putVector(T.store.db, { model: 'heavy/x', revision: '', dims: 3, template: t }, MV.embedHashOf(r, t), blob([1, 0, 0]));
+    assert.deepStrictEqual(ST.candidates(T.E, HEAVY, RUN, m, o), [], 'an already embedded turn row is left out too');
+    const got = await ask({ namespaces: [RUN], query: 'zq_loader', mode: 'hybrid' }, { tier: HEAVY });
+    assert.ok(!(got.modes_failed || []).some((f) => f.code === 'E_NO_VECTORS'), JSON.stringify(got.modes_failed));
+    assert.ok(!got.rows_without_vector, 'not counted as a row without a vector');
+    assert.ok(got.results.some((x) => x.id === turn.id), 'the keyword half still finds it');
+  } finally { T.store.delete(turn.id); undrain(); }
+});
+
+test('a turn row of a run whose default search reads run/<id> is behind a heavy tier like any row', async () => {
+  const RUN = 'run/lc-plain';
+  const turn = T.store.store({ namespace: RUN, worker_id: 'w-turn', type: 'turn', text: 'the worker finished the change', embedding: [1, 0, 0], embedding_model: 'm', embedding_revision: 'r', dim: 3 });
+  try {
+    assert.throws(() => ST.assertServable(T.E, HEAVY, [RUN]), (e) => e.code === 'E_TIER_BEHIND' && e.detail.ids.includes(turn.id));
+  } finally { T.store.delete(turn.id); }
 });
 
 test('a heavy tier loads its vectors once per namespace and reloads after a write', async () => {

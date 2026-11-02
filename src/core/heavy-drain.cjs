@@ -25,7 +25,7 @@ function keyOfModel(model) {
 
 // The visible notes of `namespaces` with no vector under `model`: [{ id, namespace, type, title, created_at }].
 function backlogOf(E, model, namespaces) {
-  return MV.backlog(E.store.db, keyOfModel(model), { namespaces });
+  return MV.backlog(E.store.db, keyOfModel(model), { namespaces, exempt: require('./memory-search-scope.cjs').heavyExemptFn(E) });
 }
 
 // Embeds the rows `ids` through `impl` and writes one vector per distinct (template, text hash): rows with the same text share it.
@@ -33,9 +33,10 @@ function backlogOf(E, model, namespaces) {
 async function embedIds(E, key, impl, ids, opts) {
   const db = E.store.db;
   const rowsOf = db.prepare('SELECT * FROM memory_entries WHERE id IN (SELECT value FROM json_each(?))').all(JSON.stringify(ids));
+  const exempt = require('./memory-search-scope.cjs').heavyExemptFn(E);
   const want = new Map();
   for (const r of rowsOf) {
-    if (MV.heavyExempt(r)) continue; // a turn row is never embedded by a heavy tier
+    if (exempt(r)) continue; // a turn row this run's heavy tier leaves out
     const template = MV.renderTemplateOf(r), hash = MV.embedHashOf(r, template), text = MV.embedTextOf(r, template);
     if (hash === null || text === null) continue;
     want.set(`${template}\u0000${hash}`, { template, hash, text });
@@ -71,7 +72,8 @@ async function drainHeavy(E, tierKey, { namespaces, onProgress, boundMs = DEFAUL
   const db = E.store.db;
   const t0 = now();
   if (probe) await probeFirst(key.model, headroomGb);
-  const missing = MV.backlog(db, key, { namespaces });
+  const exempt = require('./memory-search-scope.cjs').heavyExemptFn(E);
+  const missing = MV.backlog(db, key, { namespaces, exempt });
   const total = missing.length;
   const impl = total ? EP.get({ embedder: key.model }, { owner: E.owner || false }) : null;
   if (total && !impl) throw err('E_NO_EMBEDDER', `no embedder for ${key.model} is available here (only the store owner loads a heavy embedder)`, { embedder: key.model });
@@ -79,12 +81,12 @@ async function drainHeavy(E, tierKey, { namespaces, onProgress, boundMs = DEFAUL
     if (i > 0 && now() - t0 >= boundMs) break;
     if (cancelled && cancelled()) break; // the owner is stopping (or the catch-up was ended): no further batch
     try { await embedIds(E, key, impl, missing.slice(i, i + batch).map((r) => r.id), { deadline: t0 + boundMs, cancelled, now }); } catch (e) {
-      e.detail = { ...(e.detail || {}), written: total - MV.backlog(db, key, { namespaces }).length, embedder: key.model };
+      e.detail = { ...(e.detail || {}), written: total - MV.backlog(db, key, { namespaces, exempt }).length, embedder: key.model };
       throw e;
     }
     if (onProgress) { try { onProgress({ embedder: key.model, done: Math.min(i + batch, total), total }); } catch { /* a progress sink never stops the drain */ } }
   }
-  const remaining = MV.backlog(db, key, { namespaces }).length;
+  const remaining = MV.backlog(db, key, { namespaces, exempt }).length;
   return { embedder: key.model, dims: key.dims, total, written: total - remaining, remaining, done: remaining === 0, ms: now() - t0 };
 }
 
