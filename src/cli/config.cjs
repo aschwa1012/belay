@@ -129,12 +129,12 @@ function read(file, dir, searched) {
   };
   let raw;
   try {
-    raw = fs.readFileSync(file, 'utf8').replace(/^\uFEFF/, ''); // a leading UTF-8 BOM is not part of the JSON
+    raw = fs.readFileSync(file, 'utf8'); // kept exactly as on disk: the settings writer compares it with a fresh read
   } catch (e) {
     return { ...base, raw: null, config: {}, parse_error: `could not read ${file}: ${e.message}` };
   }
   try {
-    const parsed = JSON.parse(raw);
+    const parsed = JSON.parse(raw.replace(/^\uFEFF/, '')); // a leading UTF-8 BOM is not part of the JSON
     if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
       return { ...base, raw, config: {}, parse_error: `${file} is valid JSON but not an object` };
     }
