@@ -46,7 +46,14 @@ async function keepReason(E, group, ctx) {
   if (open) return { reason: 'task_open', detail: `task ${open.id} is ${open.state}` };
   const w = W.liveWorkerIn(E, rec.path);
   // A dry run for a close that is pending judges the rest as if the close had ended the worker that is alive but not parked.
-  if (w && !(ctx.closePending && w.state !== 'paused')) return { reason: w.state === 'paused' ? 'parked_worker' : 'live_worker', detail: `worker ${w.id} (${w.state})` };
+  if (w && !(ctx.closePending && w.state !== 'paused')) {
+    if (w.path_unresolved) return { reason: 'path_unresolved', detail: `worker ${w.id} (${w.state}) of a live run works in a directory that no longer resolves, under this tree` };
+    return { reason: w.state === 'paused' ? 'parked_worker' : 'live_worker', detail: `worker ${w.id} (${w.state})` };
+  }
+  // A Codex worker between turns has no process by design, and its thread can be resumed in this tree: run.end marks it dead at a
+  // close, so only a run that lapsed with no close shows it here.
+  const idle = ctx.workers.find((x) => x.state === 'idle' && x.worktree && W.under(x.worktree, rec.path));
+  if (idle) return { reason: 'codex_resumable', detail: `worker ${idle.id} (idle) can be resumed in this tree` };
   const unproven = ctx.workers.find((x) => ctx.unproven.has(x.id) && x.worktree && W.under(x.worktree, rec.path));
   if (unproven) return { reason: 'kill_unproven', detail: `worker ${unproven.id} was not proven ended by the close` };
   if (!fs.existsSync(rec.path)) return { reason: 'already_gone', detail: 'the path is not on disk; belay worktree remove <task-id> records it' };
@@ -99,7 +106,7 @@ async function removeOne(E, caller, g, base) {
   if (!pathGone || (head && branchAfter !== head)) {
     return { failed: { ...base, code: 'E_PROOF', error: (pathGone ? 'the branch head is not the tree\'s head' : 'the path is still on disk'), git_still_lists: false, leftover: false, branch_head_after: branchAfter } };
   }
-  return { removed: { ...base, head, branch_head_after: branchAfter, path_gone: pathGone, junctions_unlinked: r.junctions_unlinked, links_unlinked: r.links_unlinked,
+  return { removed: { ...base, head, kept_by: r.kept_by || null, branch_head_after: branchAfter, path_gone: pathGone, junctions_unlinked: r.junctions_unlinked, links_unlinked: r.links_unlinked,
     ignored_removed: ignored ? { paths: ignored.length, first: ignored.slice(0, NAMED) } : null, ms: Date.now() - t1 } };
 }
 
@@ -119,18 +126,8 @@ async function dryRun(E, groups, ctx, out, t0) {
   return out;
 }
 
-async function sweep(E, caller, args) {
-  const runId = args.run_id === undefined ? caller.run_id : args.run_id;
-  if (typeof runId !== 'string' || !runId) throw err('E_ARGS', 'task.worktreeSweep needs a run_id');
-  if (args.unproven_workers !== undefined && !(Array.isArray(args.unproven_workers) && args.unproven_workers.every((s) => typeof s === 'string'))) throw err('E_ARGS', 'task.worktreeSweep: unproven_workers must be an array of worker ids', { field: 'unproven_workers' });
-  if (args.deadline_ms !== undefined && !(Number.isFinite(args.deadline_ms) && args.deadline_ms >= 0)) throw err('E_ARGS', 'task.worktreeSweep: deadline_ms must be a non-negative number', { field: 'deadline_ms' });
-  if (args.close_pending !== undefined && !(args.close_pending === true && args.dry_run === true)) throw err('E_ARGS', 'task.worktreeSweep: close_pending is true and only with dry_run', { field: 'close_pending' });
-  const t0 = Date.now();
-  let slowest = EXPECT_TREE_MS;
-  const budget = Number.isFinite(args.budget_ms) ? args.budget_ms : SWEEP_BUDGET_MS;
-  const allTasks = rows.currentAll(E.store, 'task');
-  const allIntegrations = rows.currentAll(E.store, 'integration');
-  const ctx = { runId, allTasks, integrations: allIntegrations.filter((i) => !i.removed_at), workers: rows.currentAll(E.store, 'worker'), unproven: new Set(args.unproven_workers || []), closePending: args.close_pending === true, liveness: holds.runLiveness(E.store) };
+// The run's tasks that record a tree not removed, grouped by tree path (a fix shares the work's tree).
+function treeGroups(allTasks, runId) {
   const groups = new Map();
   for (const t of allTasks) {
     const rec = t.run_id === runId ? W.active(t) : null;
@@ -138,6 +135,23 @@ async function sweep(E, caller, args) {
     if (!groups.has(key(rec.path))) groups.set(key(rec.path), { rec, tasks: [] });
     groups.get(key(rec.path)).tasks.push(t);
   }
+  return groups;
+}
+
+async function sweep(E, caller, args) {
+  const runId = args.run_id === undefined ? caller.run_id : args.run_id;
+  if (typeof runId !== 'string' || !runId) throw err('E_ARGS', 'task.worktreeSweep needs a run_id');
+  if (args.unproven_workers !== undefined && !(Array.isArray(args.unproven_workers) && args.unproven_workers.every((s) => typeof s === 'string'))) throw err('E_ARGS', 'task.worktreeSweep: unproven_workers must be an array of worker ids', { field: 'unproven_workers' });
+  if (args.deadline_ms !== undefined && !(Number.isFinite(args.deadline_ms) && args.deadline_ms >= 0)) throw err('E_ARGS', 'task.worktreeSweep: deadline_ms must be a non-negative number', { field: 'deadline_ms' });
+  if (args.lapsed_seq !== undefined && !Number.isSafeInteger(args.lapsed_seq)) throw err('E_ARGS', 'task.worktreeSweep: lapsed_seq must be an integer', { field: 'lapsed_seq' });
+  if (args.close_pending !== undefined && !(args.close_pending === true && args.dry_run === true)) throw err('E_ARGS', 'task.worktreeSweep: close_pending is true and only with dry_run', { field: 'close_pending' });
+  const t0 = Date.now();
+  let slowest = EXPECT_TREE_MS;
+  const budget = Number.isFinite(args.budget_ms) ? args.budget_ms : SWEEP_BUDGET_MS;
+  const allTasks = rows.currentAll(E.store, 'task');
+  const allIntegrations = rows.currentAll(E.store, 'integration');
+  const ctx = { runId, allTasks, integrations: allIntegrations.filter((i) => !i.removed_at), workers: rows.currentAll(E.store, 'worker'), unproven: new Set(args.unproven_workers || []), closePending: args.close_pending === true, liveness: holds.runLiveness(E.store) };
+  const groups = treeGroups(allTasks, runId);
   const out = { removed: [], kept: [], failed: [], orphans: [], integration_kept: [], skipped: null, ms: 0 };
   if (args.dry_run === true) return dryRun(E, groups, ctx, out, t0);
   const mine = { path: null };
@@ -147,6 +161,7 @@ async function sweep(E, caller, args) {
     const base = { task_ids: g.tasks.map((t) => t.id), path: g.rec.path, branch: g.rec.branch };
     if (cancelRequested.has(runId)) { out.skipped = 'interrupted'; out.kept.push({ ...base, reason: 'interrupted', detail: 'the close was cut before this tree' }); continue; }
     if (args.deadline_ms !== undefined && Date.now() - t0 + slowest > args.deadline_ms) { out.skipped = 'deadline'; out.kept.push({ ...base, reason: 'deadline', detail: `the close has ${args.deadline_ms} ms left, which does not fit another removal` }); continue; }
+    if (args.lapsed_seq !== undefined && !require('./run-lapsed.cjs').stillLapsed(E, runId, args.lapsed_seq)) { out.kept.push({ ...base, reason: 'run_not_lapsed', detail: 'the run took a new life since it was judged lapsed' }); continue; }
     if (Date.now() - t0 >= budget) { out.skipped = 'budget'; out.kept.push({ ...base, reason: 'budget', detail: `the sweep's ${budget} ms ran out before this tree` }); continue; }
     try {
       const why = await keepReason(E, g, ctx);
@@ -161,6 +176,11 @@ async function sweep(E, caller, args) {
       // A tree dirtied between the check and the removal is refused by the removal itself: it is kept dirty, not failed.
       if (e.code === 'E_PRECONDITION' && e.detail && Array.isArray(e.detail.dirty)) {
         out.kept.push({ ...base, reason: 'dirty', detail: `${e.detail.dirty.length} uncommitted path(s)`, paths: e.detail.dirty.slice(0, NAMED) });
+        continue;
+      }
+      // A head that could not be pinned, or a directory the link walk could not read, keeps the tree: nothing was removed.
+      if (e.detail && (e.detail.pin_failed || e.detail.walk_failed)) {
+        out.kept.push({ ...base, reason: e.detail.pin_failed ? 'pin_failed' : 'walk_failed', detail: e.message });
         continue;
       }
       const listed = await G.worktrees(g.rec.repo).then((l) => l.some((x) => G.samePath(x.path, g.rec.path))).catch(() => null);
@@ -180,4 +200,4 @@ async function sweep(E, caller, args) {
   return out;
 }
 
-module.exports = { sweep, cancel, SWEEP_BUDGET_MS };
+module.exports = { sweep, cancel, treeGroups, SWEEP_BUDGET_MS };
