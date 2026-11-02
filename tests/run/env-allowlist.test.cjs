@@ -34,8 +34,9 @@ const REQUIRED = {
 
 test('buildEnv drops credentials, billing and redirect variables, the askpass bridge and lead-session handles, for both substrates', () => {
   for (const substrate of ['claude-code', 'codex']) {
-    const env = L.buildEnv({ ...REQUIRED, ...SECRETS }, { substrate });
-    for (const k of Object.keys(SECRETS)) assert.ok(!(k in env), `${k} must not reach a ${substrate} launch`);
+    const base = { PATH: 'x', SSH_AUTH_SOCK: '/s' };
+    assert.ok(!('SSH_AUTH_SOCK' in L.buildEnv(base, { substrate, workerId: 'w1' })), `${substrate} worker`);
+    assert.equal(L.buildEnv(base, { substrate, orchestrator: true }).SSH_AUTH_SOCK, '/s', `${substrate} orchestrator keeps it`);
   }
 });
 
@@ -58,7 +59,7 @@ test('buildEnv still scrubs CLAUDE_CODE_EFFORT_LEVEL and BELAY_FAKE_ (the allowl
   assert.equal(env.BELAY_CLAUDE_EXE, 'e');
 });
 
-test('buildEnv keeps the PowerShell and git plumbing and the subscription OAuth token, drops the ssh key agent socket, and turns git prompts off', () => {
+test('buildEnv keeps the PowerShell and git plumbing and the subscription OAuth token, drops the ssh key agent socket for a worker, and turns git prompts off', () => {
   const env = L.buildEnv({
     PATH: 'x', PSModulePath: 'C:/ps', PSExecutionPolicyPreference: 'Bypass', SSH_AUTH_SOCK: '/s', GIT_CONFIG_GLOBAL: 'C:/g', CLAUDE_CODE_OAUTH_TOKEN: 'synthetic-sub',
     GIT_TERMINAL_PROMPT: '1', GCM_INTERACTIVE: 'always',

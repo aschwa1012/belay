@@ -58,11 +58,14 @@ const ALLOW_EXACT = new Set([
   'CLAUDE_CODE_OAUTH_TOKEN',
   // belay's own powershell calls (process identity checks) and a Restricted-policy host need these; they hold no secret
   'PSMODULEPATH', 'PSEXECUTIONPOLICYPREFERENCE',
-  // git: the config redirects a test (or an operator) uses to keep git hermetic; belay sets neither itself. SSH_AUTH_SOCK is not
-  // passed (operator, 2026-11-02): a worker holds no key agent. BELAY_ENV_ALLOW can still name it for a launch that needs it.
+  // git: the config redirects a test (or an operator) uses to keep git hermetic; belay sets neither itself
   'GIT_CONFIG_GLOBAL', 'GIT_CONFIG_NOSYSTEM',
 ]);
 // Added for an interactive orchestrator only: Claude Code reads them to detect the terminal (key handling, rendering).
+// The orchestrator keeps the key agent socket, because it pushes (operator, 2026-11-02: the ruling names workers only). A worker is no
+// longer handed it. That is not a boundary: the Windows agent pipe is reachable without the variable, and BELAY_ENV_ALLOW (which
+// applies to every launch) can name it for workers too.
+const ORCHESTRATOR_EXACT = new Set(['SSH_AUTH_SOCK']);
 const INTERACTIVE_EXACT = new Set(['WT_SESSION', 'TERM_PROGRAM_VERSION']);
 // BELAY_ENV_ALLOW (comma-separated names, in belay's own environment) passes extra operator variables (JAVA_HOME, VIRTUAL_ENV, GOPATH
 // and the like) to every launch. Billing, credential and redirect names are refused, loudly, whatever the list says.
@@ -97,7 +100,7 @@ const CODEX_RUST_LOG = 'codex_core=debug,codex_rmcp_client=debug,rmcp=info';
 // the two variables that trail it are dropped. Called without a `cwd` the three are scrubbed, which
 // is wrong for a spawn and right for everything else: better a worker with no `PWD` than one holding
 // the parent's.
-function buildEnv(base, { substrate = 'claude-code', cwd = null, mcpToolTimeoutMs = null, workerId = null, interactive = false } = {}) {
+function buildEnv(base, { substrate = 'claude-code', cwd = null, mcpToolTimeoutMs = null, workerId = null, interactive = false, orchestrator = false } = {}) {
   const src = base || process.env;
   const extra = parseEnvAllow(src);
   const out = {};
@@ -106,7 +109,7 @@ function buildEnv(base, { substrate = 'claude-code', cwd = null, mcpToolTimeoutM
     if (SCRUB_CWD.includes(k)) continue;
     if (SCRUB_ENV_EXTRA.includes(k)) continue;
     if (SCRUB_PREFIXES.some((p) => k.startsWith(p))) continue;
-    if (!allowed(k) && !extra.has(k.toUpperCase()) && !(interactive && INTERACTIVE_EXACT.has(k.toUpperCase()))) continue;
+    if (!allowed(k) && !extra.has(k.toUpperCase()) && !(interactive && INTERACTIVE_EXACT.has(k.toUpperCase())) && !(orchestrator && ORCHESTRATOR_EXACT.has(k.toUpperCase()))) continue;
     if (k.toUpperCase() === 'CLAUDE_CODE_OAUTH_TOKEN' && substrate !== 'claude-code') continue; // Claude's credential, not Codex's
     out[k] = v;
   }
