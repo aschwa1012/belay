@@ -1,5 +1,5 @@
 'use strict';
-// A fake Codex CLI: `exec --json`, one process per turn, the prompt in argv and nothing on stdin.
+// A fake Codex CLI: `exec --json`, one process per turn, the prompt in argv (or, when argv ends in `-`, on stdin as `codex exec -` reads it).
 // It emits the four event shapes the parser knows — thread.started, item.completed/agent_message,
 // turn.completed — and, standing in for the belay worker adapter that the real binary would launch
 // from its `-c mcp_servers.belay.*` overrides, it appends a JSON-RPC tools/list frame to the
@@ -36,7 +36,12 @@ function adapterLogPath() {
 
 if (process.argv.includes('--version')) { process.stdout.write('codex-cli 9.9.9-fake' + String.fromCharCode(10)); process.exit(0); }
 if (process.env.FAKE_CODEX_UNKNOWN_FEATURE) { process.stderr.write('Error: Unknown feature flag: ' + process.env.FAKE_CODEX_UNKNOWN_FEATURE + String.fromCharCode(10)); process.exit(1); } // a renamed feature: Codex exits at once
-const prompt = process.argv[process.argv.length - 1];
+let prompt = process.argv[process.argv.length - 1];
+if (prompt === '-') { // the prompt arrives on stdin (`codex exec -`); say how much and how it ended, not all of it
+  const text = fs.readFileSync(0, 'utf8');
+  if (process.env.FAKE_CODEX_STDIN_FILE) fs.writeFileSync(process.env.FAKE_CODEX_STDIN_FILE, String(text.length)); // a test reads how much arrived
+  prompt = 'stdin:' + text.length + ':' + text.slice(-24).trim();
+}
 say({ type: 'thread.started', thread_id: THREAD });
 
 if (!NO_TOOLS_LIST) {

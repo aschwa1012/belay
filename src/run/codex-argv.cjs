@@ -34,6 +34,7 @@ function codexLaunchArgv(opts) {
     model = null,
     scratchDir = null,
     effort = null,
+    promptViaStdin = false,
   } = opts;
   const argv = [
     'exec',
@@ -47,14 +48,15 @@ function codexLaunchArgv(opts) {
   ];
   if (scratchDir) argv.push('--add-dir', fwd(scratchDir)); // a reviewer's scratch folder lies outside the worktree, the only root workspace-write opens: add that one folder
   if (model) argv.push('-m', model);
-  argv.push('--', prompt); // after `--` the text is the prompt: one that starts with `-` is not an option, and `review` or `resume` not a subcommand
+  if (promptViaStdin) argv.push('-'); // the prompt is written to the process's stdin (`codex exec -`), so its length is not a command-line length
+  else argv.push('--', prompt); // after `--` the text is the prompt: one that starts with `-` is not an option, and `review` or `resume` not a subcommand
   return argv;
 }
 
 // ADR 0008 §6: `exec resume` is a strict subset of `exec`. No -C and no -s; the working directory is
 // supplied through the spawn's own cwd option. Passing either exits 2 at the parse layer in ~76 ms.
 function codexResumeArgv(opts) {
-  const { threadId, adapterArgs, prompt, model = null, scratchDir = null, effort = null } = opts;
+  const { threadId, adapterArgs, prompt, model = null, scratchDir = null, effort = null, promptViaStdin = false } = opts;
   const argv = [
     'exec',
     'resume',
@@ -67,7 +69,8 @@ function codexResumeArgv(opts) {
   // escapes quotes and backslashes, and the path is forward-slashed first, so a space or a quote in it cannot end the string.
   if (scratchDir) argv.push('-c', `sandbox_workspace_write.writable_roots=${JSON.stringify([fwd(scratchDir)])}`);
   if (model) argv.push('-m', model);
-  argv.push('--', prompt);
+  if (promptViaStdin) argv.push('-'); // `exec resume <id> -` reads the prompt from stdin
+  else argv.push('--', prompt);
   return argv;
 }
 

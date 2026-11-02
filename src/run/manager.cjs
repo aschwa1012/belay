@@ -130,7 +130,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   const launch = (w, o) => require('./bind-launch.cjs').launchBound({ core, runId, root, mcpPath, writeRow }, w, () => launchNow(w, o)); // ADR 0045: one launch of a worker at a time, its bind opened first
   async function launchNow(w, { resume = null, prompt = null, path = 'spawn' } = {}) { // `path` ('spawn', 'message', 'restart') shapes the advice of an oversized-line refusal
     try { NM.checkLaunch(w); } catch (e) { await NM.refuseLaunch(ctx, w, e, () => PI.pidLive(w)); } // sync and first (Codex's check-then-spawn stays one tick); only a refusal awaits
-    const spec = LS.buildSpec(w, exeFor, { resume, prompt }); if (w.substrate === 'codex') AL.checkCommandLine(spec.exe, spec.args, { workerId: w.id, path }); // before any state change: an oversized text is refused, not thrown by spawn
+    const spec = LS.buildChecked(w, exeFor, { resume, prompt }, (sp) => AL.checkCommandLine(sp.exe, sp.args, { workerId: w.id, path })); // before any state change: an oversized line is refused, not thrown by spawn; a Codex prompt that does not fit goes on stdin
     w.argvHash = L.writeArgvJson(w.dir, spec);
     w.settled = false; w.pidGoneAt = null; w.pidGonePid = null; w.settleWaitedMs = 0; // the exit-event hold is per launch
     w.settledState = null; // the last process's end; a restatement of this one's row must never carry it
@@ -151,7 +151,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
         substrate: w.substrate, cwd: w.worktree, workerId: w.id,
         mcpToolTimeoutMs: w.permissionPrompt ? w.permitWaitMs + 60000 : null,
       }),
-      stdin: w.substrate === 'claude-code' ? 'pipe' : 'ignore',
+      stdin: w.substrate === 'claude-code' ? 'pipe' : 'ignore', input: spec.stdinText, // a Codex prompt on stdin is written and closed by spawnWorker
     }));
     w.launches += 1;
     w.launchedAt = now();
@@ -330,7 +330,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     RG.refuseIfRelaunching(w, 'restart'); // a Codex message's relaunch owns the window; this one waits its turn
     if (w.substrate === 'codex' && appendMessage) { // before anything is stopped or written: the caller's text alone (a floor of the line) over the cap is refused with the worker untouched
       // the branch is not known yet, so measure both shapes (resume and fresh) and take the smaller: the real line is never shorter than it
-      const shapes = [null, w.sessionId].filter((r, i) => i === 0 || r).map((resume) => LS.buildSpec(w, exeFor, { resume, prompt: appendMessage }));
+      const shapes = [null, w.sessionId].filter((r, i) => i === 0 || r).map((resume) => LS.buildSpec(w, exeFor, { resume, prompt: appendMessage, viaStdin: true })); // the text itself goes on stdin, so only the rest of the line is measured
       const floor = shapes.reduce((a, b) => (AL.commandLineLength(b.exe, b.args) < AL.commandLineLength(a.exe, a.args) ? b : a));
       AL.checkCommandLine(floor.exe, floor.args, { workerId: w.id, path: 'restart' });
     }
