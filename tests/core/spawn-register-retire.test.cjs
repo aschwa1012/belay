@@ -48,6 +48,27 @@ test('retire with expect retires its own worker record when the creation times a
   assert.ok(!fs.existsSync(path.join(dir, `${pid}.json`)));
 }));
 
+test('a dead record closes two stamp periods after its last stamp (its write time when unstamped), capped at the time it is found dead', () => withRegistry((dir) => {
+  const W = 2 * SR.SEEN_REFRESH_MS;
+  const [a, b, c] = [deadPid(), deadPid(), deadPid()];
+  put(dir, { pid: a, created: T, at: T + 100 });
+  put(dir, { pid: b, created: T, at: T + 100, seen_at: T + 1000 });
+  put(dir, { pid: c, created: T, at: T + 100, seen_at: NOW - 1000 });
+  const r = SR.scan({ snap: new Map(), now: NOW, boot: BOOT });
+  const until = (pid) => r.dead.find((d) => d.rec.pid === pid).tomb.until;
+  assert.strictEqual(until(a), T + 100 + W, 'unstamped: from its write time');
+  assert.strictEqual(until(b), T + 1000 + W, 'stamped long ago: the stamp plus two periods');
+  assert.strictEqual(until(c), NOW, 'stamped a moment ago: capped at now');
+  // retire agrees with scan, and a later floor a writer recorded wins
+  const [d, e] = [deadPid(), deadPid()];
+  put(dir, { pid: d, created: T, at: T + 100 });
+  put(dir, { pid: e, created: T, at: T + 100, seen_at: T + 1000 });
+  SR.retire(d, NOW, T + 90000, { checked: true });
+  SR.retire(e, NOW, null, { checked: true });
+  assert.strictEqual(tomb(d).until, T + 90000, 'the floor a writer recorded is later');
+  assert.strictEqual(tomb(e).until, T + 1000 + W, 'no floor: the stamp plus two periods');
+}));
+
 test('the reported defect stays fixed: a pre-boot record gets no tombstone, and a descendant tombstone without via_from is dropped', () => withRegistry((dir) => {
   const pid = deadPid();
   put(dir, { pid, created: BOOT - 10 * H, at: BOOT - 10 * H + 500, seen_at: BOOT - 9 * H });

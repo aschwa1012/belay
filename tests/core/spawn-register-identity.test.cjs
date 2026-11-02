@@ -120,7 +120,7 @@ test('retire closes a dead pid\'s record at the later of its stamp and the row\'
   assert.strictEqual(tomb(d2).until, t + 50, 'never later than the time of the close');
 }));
 
-test('touch stamps once the last stamp is 30 s old, so the gap between stamps stays about one timer period', () => withRegistry((dir) => {
+test('touch stamps once the last stamp is 30 s old, so a tick a moment early is skipped and the gap between stamps can reach two timer periods', () => withRegistry((dir) => {
   const t = NOW - HOUR;
   putRecord(dir, { pid: 4500, created: t, at: t, seen_at: t });
   assert.strictEqual(SR.touch(4500, t + 29999), false, 'under 30 s: skipped');
