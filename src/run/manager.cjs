@@ -218,6 +218,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
         allowedTools, permissionMode: permission_mode, sandbox,
         permissionPrompt: permission_prompt, permitWaitMs: permit_wait_ms, effort, tools: spawnTools, maxBudgetUsd: max_budget_usd, nativeMemory, agentType: agent_type,
       });
+      w.toolsBy = allowed_tools != null ? 'spawn' : 'type'; // what narrowed w.tools: the spawn's allowed_tools, else the agent type's list (task-body.cjs toolsLine)
       w.indexQueries = indexQueries; // the orchestrator's situation lines for this worker's memory index (memory.embedQuery extra_texts)
       workers.set(id, w); w.launching = true; hold.w = w; // launching: until the spawn returns or fails, a run pause is held for it (launch-gate.cjs)
     } finally { pendingIds.delete(id); }
