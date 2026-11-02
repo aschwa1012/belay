@@ -22,7 +22,7 @@ function die(reason) {
 // refusal at start, never a silent run without the defaults the operator configured.
 function readAgentDefaults(file) {
   let parsed;
-  try { parsed = JSON.parse(require('node:fs').readFileSync(file, 'utf8')); } catch (e) { die(`--agent-defaults ${file} could not be read: ${e.message}`); }
+  try { parsed = JSON.parse(require('node:fs').readFileSync(file, 'utf8').replace(/^\uFEFF/, '')); } catch (e) { die(`--agent-defaults ${file} could not be read: ${e.message}`); }
   const checked = AD.parseAgentsBlock(parsed && parsed.types);
   if (checked.error) die(`--agent-defaults ${file}: ${checked.error}`);
   return { path: parsed.path || null, types: checked.value };

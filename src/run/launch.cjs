@@ -122,7 +122,7 @@ function mcpConfig({ workerId, runId, dataDir, mcpPath, logPath = null, permit =
 function readPluginConfig(settingsPath) {
   const p = settingsPath || userSettingsPath();
   try {
-    const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+    const parsed = JSON.parse(fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, ''));
     const names = parsed && parsed.enabledPlugins;
     if (names && typeof names === 'object') return { names: Object.keys(names), read: true, path: p, error: null };
     return { names: [], read: true, path: p, error: null };

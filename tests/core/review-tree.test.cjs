@@ -470,7 +470,7 @@ test('no worker row at the grant, or one naming no worktree: the tree is null wi
       assert.strictEqual(got.worktree, null, id);
       assert.match(got.error, /no worktree on record at its grant/, id);
     }
-  } finally { store.close(); cleanup(d); }
+  } finally { store.close(); cleanup(d, { skipInvariants: { rules: ['done_evidence'], reason: 'the test writes done task rows by hand, with no evaluation behind them' } }); }
 });
 
 test("the reviewed task's own worktree is removed: the tree is null and the error says so, not the same path from a row", async () => {
@@ -483,5 +483,5 @@ test("the reviewed task's own worktree is removed: the tree is null and the erro
     const got = store.tx(() => RT.reviewedTree(store, { id: 'r', depends_on: ['w'], acceptance: { verdict: true } }));
     assert.strictEqual(got.worktree, null);
     assert.strictEqual(got.error, 'the reviewed worktree was removed');
-  } finally { store.close(); cleanup(d); }
+  } finally { store.close(); cleanup(d, { skipInvariants: { rules: ['done_evidence'], reason: 'the test writes done task rows by hand, with no evaluation behind them' } }); }
 });
