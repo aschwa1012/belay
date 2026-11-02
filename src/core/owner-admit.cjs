@@ -5,6 +5,15 @@
 const { METHODS } = require('./engine.cjs');
 const { err } = require('./errors.cjs');
 
+// The reason the owner's operator check refused a connection, as a client may be told it: one line of printable ASCII, at most
+// REASON_MAX characters. It is the check's own wording (it names pids and images of processes on this machine), never text a request sent.
+const REASON_MAX = 300;
+function boundedReason(r) {
+  if (typeof r !== 'string' || !r) return 'the operator check gave no reason';
+  const one = r.replace(/[^ -~]+/g, ' ').trim();
+  return one.length > REASON_MAX ? `${one.slice(0, REASON_MAX - 3)}...` : one;
+}
+
 // ADR 0045 decisions 2 and 3: who is calling, settled before the request reaches a method. Returns null (admitted, with
 // req.params.caller now the identity belay established), a refusal, or a promise of either. The request's own `caller`
 // is never what a keyed call runs as; it supplies only a pid (for retirement's liveness check) and a channel request.
@@ -33,7 +42,11 @@ function admit(owner, c, req) {
   if (req.method === 'ping') {
     // a keyless operator on the loopback port asks to be checked now (client.cjs _verifyOperator), so the check's cost is not its first call's
     if (params.verify_operator === true && sent.role === 'operator' && c.belayTransport === 'tcp' && typeof owner.opts.operatorCheck === 'function') {
-      return Promise.resolve(owner.opts.operatorCheck({ conn: c, caller: sent, method: 'ping' })).then((v) => { c.belayVerified = !!(v && v.ok === true); return null; }, () => null);
+      return Promise.resolve(owner.opts.operatorCheck({ conn: c, caller: sent, method: 'ping' })).then((v) => {
+        c.belayVerified = !!(v && v.ok === true);
+        c.belayVerifyReason = c.belayVerified ? undefined : boundedReason(v && v.reason);
+        return null;
+      }, () => { c.belayVerifyReason = 'the operator check failed to run'; return null; });
     }
     return null;
   }
