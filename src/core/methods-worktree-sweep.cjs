@@ -52,7 +52,7 @@ async function keepReason(E, group, ctx) {
   }
   // A Codex worker between turns has no process by design, and its thread can be resumed in this tree: run.end marks it dead at a
   // close, so only a run that lapsed with no close shows it here.
-  const idle = ctx.workers.find((x) => x.state === 'idle' && x.worktree && W.under(x.worktree, rec.path));
+  const idle = ctx.closePending ? null : ctx.workers.find((x) => x.state === 'idle' && x.worktree && W.under(x.worktree, rec.path));
   if (idle) return { reason: 'codex_resumable', detail: `worker ${idle.id} (idle) can be resumed in this tree` };
   const unproven = ctx.workers.find((x) => ctx.unproven.has(x.id) && x.worktree && W.under(x.worktree, rec.path));
   if (unproven) return { reason: 'kill_unproven', detail: `worker ${unproven.id} was not proven ended by the close` };

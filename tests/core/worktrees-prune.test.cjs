@@ -221,3 +221,12 @@ test('prune is the operator\'s only, and a bad argument is refused', async () =>
   await rejectsCode(prune({ yes: 'yes' }), 'E_ARGS');
   await rejectsCode(prune({ run_id: '' }), 'E_ARGS');
 });
+
+test('a Codex worker between turns keeps its tree (codex_resumable): its process is gone by design, its thread resumes there', async () => {
+  const a = await runWithTree('pk-codex', { setup: (t) => call('worker.write', { id: 'pk-codex-w', substrate: 'codex', pid: null, state: 'idle', worktree: t.w.path }, orch('pk-codex')) });
+  const k = has((await sweep('pk-codex')).kept, a.id);
+  assert.strictEqual(k && k.reason, 'codex_resumable', JSON.stringify(k));
+  assert.ok(fs.existsSync(a.w.path));
+  const planned = has((await sweep('pk-codex', { dry_run: true, close_pending: true })).would_remove, a.id);
+  assert.ok(planned, 'a close about to run ends the idle row, so the dry run for it does not keep the tree');
+});
