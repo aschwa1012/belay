@@ -98,7 +98,7 @@ async function mergeIntoUser(E, caller, args, c) {
     try {
       const reuse = INC.reuseFor(E, repo, into, merged, (await G.dirtyPaths(tree.path)).length === 0);
       const endSpan = EC.beginSpan(`integration ${id}`);
-      try { out.checks = await rerun(args.evaluate === false ? [] : tasks.filter((t) => entries.some((m) => m.task_id === t.id)), tree.path, reuse, merged, (a, b) => EC.during(`integration ${id}`, a, b), extra, until); } finally { endSpan(); }
+      try { out.checks = await rerun(args.evaluate === false ? [] : tasks.filter((t) => entries.some((m) => m.task_id === t.id)), tree.path, reuse, merged, (a, b) => EC.during(`integration ${id}`, a, b), extra, until, E.store); } finally { endSpan(); }
       out.passed = out.checks.length > 0 ? out.checks.every((x) => x.passed) : null;
       ran = out.checks.length > 0;
     } catch (e) {
