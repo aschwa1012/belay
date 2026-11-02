@@ -81,6 +81,10 @@ async function run(ctx) {
     let runId = parsed.runId;
     let runIdSource = parsed.runId ? 'argument' : null;
     const { runs } = await core.run.list({});
+    if (runId && !runs.some(r => r.id === runId)) {
+      const message = `no run row exists for ${runId}`;
+      return { code: 1, text: `belay status: ${message}\n`, json: { error: { code: 'E_NOT_FOUND', message, run_id: runId } } };
+    }
     if (!runId) {
       if (runs.length) {
         // Fix round: run.list orders by the row most recently WRITTEN, not by which run is actually

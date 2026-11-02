@@ -187,12 +187,12 @@ test('status: a live run reads alive, established by a bounded ping and pid chec
     assert.strictEqual(j.run_id_source, 'argument');
     assert.strictEqual(j.verdict, 'alive');
 
-    // An id naming no run at all.
+    // An id naming no run at all: exit 1, like workers, tasks and diff.
     r = checkedStatusJson(['no-such-run'], dataDir, 'unknown run id read');
-    assert.strictEqual(r.status, 0, `status no-such-run: ${r.stdout} / ${r.stderr}`);
-    j = JSON.parse(r.stdout);
-    assert.strictEqual(j.verdict, 'stopped');
-    assert.match(j.rungs.find((x) => x.rung === 'run-alive').by, /no run row for no-such-run/);
+    assert.strictEqual(r.status, 1, `status no-such-run: ${r.stdout} / ${r.stderr}`);
+    const e = JSON.parse(r.stderr).error;
+    assert.strictEqual(e.code, 'E_NOT_FOUND');
+    assert.match(e.message, /no run row exists for no-such-run/);
 
     // Stop the run, then read status again.
     const stop = runStopSync(dataDir, runId);
