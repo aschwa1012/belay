@@ -161,7 +161,12 @@ function workerZombie(db) {
   return { violations: out, evaluated: pairs, unproven };
 }
 
+// The default scratch parent is removed once empty (rmdir never removes a folder that still holds another check's copy).
 function checkStore(target, opts = {}) {
+  try { return checkStoreAt(target, opts); } finally { if (!opts.scratch) { try { fs.rmdirSync(path.join(os.tmpdir(), 'belay-inv')); } catch { /* absent, or another copy is still open */ } } }
+}
+
+function checkStoreAt(target, opts) {
   const dbPath = resolveDb(target);
   if (!fs.existsSync(dbPath)) throw new Error('no database at ' + dbPath);
   const scratch = opts.scratch || path.join(os.tmpdir(), 'belay-inv');
