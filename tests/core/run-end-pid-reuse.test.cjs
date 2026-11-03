@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs');
 // run-end-pid-reuse.test.cjs — run.end decides a worker row's death before its bounded git call and re-reads the row after it.
 // A pid that answers again by then is the row's process only if a snapshot says so (ADR 0039): Windows hands a freed pid out
 // within seconds, so another process can take a dead worker's pid while git runs, and judged by the pid alone the row stayed
