@@ -22,7 +22,7 @@ function msysHint(reason, env = process.env) {
   const named = HELPER_IMAGE.test(String(reason || ''));
   if (!named && !(env && env.MSYSTEM)) return null;
   const cli = cliPath();
-  return `Git Bash can start a command through an MSYS helper (sh.exe, env.exe, timeout.exe) whose parent Windows cannot see, so belay cannot prove this command came from you. Run it from PowerShell or cmd${cli ? `, or run it directly with: node ${cli} <command>` : ''}.`;
+  return `Git Bash can start a command through an MSYS helper (sh.exe, env.exe, timeout.exe) whose parent Windows cannot see, so belay cannot prove this command came from you. Run it from PowerShell or cmd (belay.cmd for a global install)${cli ? `, or run it directly with: node ${cli} <command>` : ''}.`;
 }
 
 // `e` is a client error: when it is an operator-check refusal, add the hint to its message and to detail.hint. Returns `e`.
