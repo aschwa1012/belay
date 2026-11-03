@@ -18,10 +18,11 @@ function cliPath() {
   try { return fs.existsSync(p) ? p.split(path.sep).join('/') : null; } catch { return null; }
 }
 
-// The refusals that concern the chain's root (operator-check.cjs `cause`). Only these can be the Git Bash break: a chain proved to run
+// The refusals that say a chain's root is not provably the operator's (operator-check.cjs `cause`). A chain that cannot be followed at
+// all (root_unfollowable: a loop or a missing link) is not the Git Bash break, which leaves an intact chain ending at the helper. Only these can be the Git Bash break: a chain proved to run
 // through a process belay spawned (direct_spawn), a pipe, an unreadable table and the like are refused for another reason, and the
 // line would be untrue for them.
-const ROOT_CAUSES = new Set(['root_unfollowable', 'root_in_window', 'root_after_owner']);
+const ROOT_CAUSES = new Set(['root_in_window', 'root_after_owner']);
 
 // -> the line, or null. It needs a root cause and either an MSYS helper named in the refusal or an MSYS shell in the environment.
 function msysHint(reason, cause, env = process.env) {

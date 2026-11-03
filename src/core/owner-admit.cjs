@@ -50,7 +50,7 @@ function admit(owner, c, req) {
         c.belayVerifyReason = c.belayVerified ? undefined : boundedReason(v && v.reason);
         c.belayVerifyCause = c.belayVerified ? undefined : causeOf(v);
         return null;
-      }, () => { c.belayVerified = undefined; c.belayVerifyReason = 'the operator check failed to run'; return null; });
+      }, () => { c.belayVerified = undefined; c.belayVerifyReason = 'the operator check failed to run'; c.belayVerifyCause = undefined; return null; });
     }
     return null;
   }

@@ -114,4 +114,25 @@ test('the hint is true words only: root causes with a helper image or MSYSTEM; a
   assert.ok(msysHint('x', 'root_after_owner', { MSYSTEM: 'MINGW64' }));
   assert.strictEqual(msysHint('this platform has no peer check', undefined, { MSYSTEM: 'MINGW64' }), null);
   assert.strictEqual(msysHint('x', 'unknown', { MSYSTEM: 'MINGW64' }), null);
+  assert.strictEqual(msysHint('the process chain could not be followed to a root (pid 4242)', 'root_unfollowable', { MSYSTEM: 'MINGW64' }), null, 'a chain that cannot be followed is not the Git Bash break');
+});
+
+test('a check that fails to run on a later ping leaves no cause from an earlier refusal on the connection', { skip, timeout: 60000 }, async () => {
+  const dir = sandbox();
+  let calls = 0;
+  const o = new Owner(dir, { embed: false, mode: 'bound', operatorCheck: async () => {
+    calls += 1;
+    if (calls === 1) return { ok: false, cause: 'root_after_owner', reason: 'the peer\'s chain ends at pid 4100 (sh.exe), which was not running' };
+    throw new Error('the check broke');
+  } });
+  await o.start();
+  const c = new Client(dir, { caller, elect: false, connectRetries: 1 });
+  try {
+    await c.connect();
+    const first = await c._send('ping', { caller, verify_operator: true });
+    assert.strictEqual(first.operator_cause, 'root_after_owner');
+    const second = await c._send('ping', { caller, verify_operator: true });
+    assert.strictEqual(second.operator_reason, 'the operator check failed to run');
+    assert.ok(!('operator_cause' in second), 'the earlier cause is not carried onto a failure to run');
+  } finally { await c.close().catch(() => {}); await o.stop().catch(() => {}); cleanup(dir); }
 });
