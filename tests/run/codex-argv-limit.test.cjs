@@ -5,6 +5,7 @@
 // E_ARGS naming the limit, and any synchronous spawn throw writes the first launch's row `dead`, which releases the lease.
 // Uses the fake Codex from tests/run/fakes; no real Codex, no sleeps.
 
+require('../helpers/tmp.cjs');
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
