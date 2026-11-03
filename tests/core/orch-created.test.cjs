@@ -22,7 +22,7 @@ const shot = new Map([
   [700, { ppid: 4001, created: OLD_ROOT_CREATED + 5000, image: 'pwsh.exe' }],
   [4242, { ppid: 700, created: T0 - 10, image: 'node.exe' }],
 ]);
-const verdict = () => OC.create({ startedAt: T0, spawned: () => SR.list(), deps: { table, snapshot: async () => shot } })({ conn: conn() });
+const verdict = () => OC.create({ startedAt: T0, spawned: () => SR.list({ snap: shot, persist: false }), deps: { table, snapshot: async () => shot } })({ conn: conn() });
 
 test('the register record of the headless orchestrator, once it carries its creation time, no longer refuses a reused pid', async () => {
   const reg = ownSpawnRegistry();
