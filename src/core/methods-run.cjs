@@ -37,7 +37,7 @@ const ATTACH_SUSPECT = LIFE_CLAIMING_STATES;
 // Fix round for 6f (diff-scope): `rows.cjs` (unowned) lacks paused_at/paused_by in COLUMNS.run, so
 // rows.append would drop both. This local insert (its own shape, via exported bind/parseRow) adds them.
 function appendRun(E, values, writtenBy, at = Date.now()) {
-  const cols = [...rows.COLUMNS.run, 'paused_at', 'paused_by', 'pause_parks', 'memory_levers', 'project', 'project_dir', 'embedder_mode', 'revived_epoch', 'memory_notice', 'merge_into', 'run_mode', 'budget', 'retrieval_routing']; // item 1: 6th local column; ADR 0041 decision 1: the memory levers and the project
+  const cols = [...rows.COLUMNS.run, 'paused_at', 'paused_by', 'pause_parks', 'memory_levers', 'project', 'project_dir', 'embedder_mode', 'revived_epoch', 'memory_notice', 'merge_into', 'run_mode', 'cross_run_merge', 'budget', 'retrieval_routing', 'harness']; // item 1: 6th local column; ADR 0041 decision 1: the memory levers and the project
   const all = [...cols, 'written_at', 'written_by'];
   const sql = `INSERT INTO run(${all.join(', ')}) VALUES (${all.map(() => '?').join(', ')})`;
   const params = cols.map(c => rows.bind(values[c]));
@@ -106,8 +106,13 @@ async function attach(E, caller, args) {
   if (policyGiven && caller.role !== 'operator') throw err('E_ROLE', 'run.attach policy_default is stated by the process that launched the run, never by the orchestrator', { role: caller.role });
   const policyDefault = policyGiven && args.policy_default !== null ? JSON.stringify(require('./policy-plan.cjs').check(args.policy_default, 'run.attach policy_default')) : null;
   if ((mergeGiven || modeSet) && caller.role !== 'operator') throw err('E_ROLE', 'run.attach merge_into and run_mode are stated by the process that launched the run, never by the orchestrator', { role: caller.role });
+  const crossGiven = args.cross_run_merge !== undefined;
+  if (crossGiven && caller.role !== 'operator') throw err('E_ROLE', 'run.attach cross_run_merge is stated by the process that launched the run, never by the orchestrator', { role: caller.role });
+  if (crossGiven && args.cross_run_merge !== null && typeof args.cross_run_merge !== 'boolean') throw err('E_ARGS', 'run.attach cross_run_merge must be null or a boolean', { cross_run_merge: args.cross_run_merge });
   if (mergeGiven && args.merge_into !== null && !['ask', 'allowed'].includes(args.merge_into)) throw err('E_ARGS', 'run.attach merge_into must be null, ask or allowed', { merge_into: args.merge_into });
   if (modeSet && args.run_mode !== null && !['headless', 'interactive'].includes(args.run_mode)) throw err('E_ARGS', 'run.attach run_mode must be null, headless or interactive', { run_mode: args.run_mode });
+  const harnessGiven = args.harness !== undefined && args.harness !== null;
+  if (harnessGiven) require('./run-harness.cjs').check(args.harness, caller);
   const dirGiven = args.project_dir !== undefined;
   if (dirGiven && args.project_dir !== null && !(typeof args.project_dir === 'string' && args.project_dir.length > 0 && args.project_dir.length <= 1024)) {
     throw err('E_ARGS', 'run.attach project_dir must be null or a directory path', { project_dir: args.project_dir });
@@ -122,7 +127,7 @@ async function attach(E, caller, args) {
   // await adds nothing between that read and the write.
   const identity = await LA.prepare(rows.currentAll(E.store, 'worker').filter((w) => w.run_id === runId && ATTACH_SUSPECT.has(w.state)).map((w) => ({ pid: w.pid, created: w.pid_created })));
   const t = Date.now();
-  const prev = rows.current(E.store, 'run', runId);
+  let prev = rows.current(E.store, 'run', runId);
   // ADR 0041: the project is named by the spec and never derived, and it is named once. The run row's project column (what a caller's reach and the
   // `project` alias resolve through) and the resolved levers' project must be the same name, else the orchestrator would write to one project while its
   // levers describe another. Refused here, with nothing written.
@@ -150,6 +155,15 @@ async function attach(E, caller, args) {
     const a = await RL.adapterState(prev);
     if (a.state === 'live') throw err('E_RUN_LIVE', RL.liveMessage(runId, prev), { run_id: runId, adapter_pid: prev.adapter_pid, epoch: prev.epoch, adapter_state: a.state, detail: a.detail });
     if (a.state === 'unverifiable') warnings.push(RL.unverifiedWarning(runId, prev, a));
+    // The snapshot awaited above can take about a second; another writer of this row (a pause, a budget raise, the old life's
+    // run.end) may have committed meanwhile. Read the row again so the next epoch is built from it, with nothing awaited after.
+    const checked = prev;
+    prev = rows.current(E.store, 'run', runId);
+    // The gates above decided on the row as first read. If another attach committed meanwhile, the re-read row names an adapter
+    // that was never checked: write nothing and let the caller retry against it.
+    if (prev && checked && (Number(prev.epoch) !== Number(checked.epoch) || Number(prev.adapter_pid) !== Number(checked.adapter_pid))) {
+      throw err('E_BUSY', `another attach committed meanwhile for run ${runId} (epoch ${checked.epoch} to ${prev.epoch}); nothing was written; retry`, { op: 'attach', run_id: runId, epoch: prev.epoch, adapter_pid: prev.adapter_pid });
+    }
   }
   const epoch = prev ? Number(prev.epoch || 0) + 1 : 1;
   const by = E.writtenBy(caller);
@@ -219,9 +233,11 @@ async function attach(E, caller, args) {
     project_dir: dirGiven ? args.project_dir : (carryPause ? prev.project_dir : null),
     revived_epoch: revivedEpoch,
     merge_into: mergeGiven ? args.merge_into : (carryPause ? prev.merge_into : null), run_mode: modeSet ? args.run_mode : (carryPause ? prev.run_mode : null), // same carry rule
+    cross_run_merge: crossGiven ? (args.cross_run_merge === null ? null : Number(args.cross_run_merge)) : (carryPause ? prev.cross_run_merge : null), // same carry rule
     budget_usd: require('./run-budget.cjs').attachLimit(args, prev, carryPause), // dollar limit; a raised limit survives a re-attach of the same life
     budget: carryPause ? prev.budget : null,
     policy_default: policyGiven ? policyDefault : (carryPause ? prev.policy_default : null), // same carry rule
+    harness: require('./run-harness.cjs').record(harnessGiven ? args.harness : null, carryPause ? prev.harness : null), // ADR 0082: the build that wrote this epoch's row, never a caller's word
     retrieval_routing: carryPause ? prev.retrieval_routing : null, // pinned for the run's life; a re-run over an ended row pins again
     embedder_mode: modeGiven ? (args.embedder_mode === null ? null : require('./embedder-mode.cjs').normalize(args.embedder_mode)) : (carryPause ? prev.embedder_mode : null),
   }, by, t);
@@ -436,4 +452,4 @@ async function forgetWorker(E, caller, args) {
   };
 }
 
-module.exports = { appendRun, LIFE_CLAIMING_STATES, attach, end, getRun, listRuns, writeWorker, getWorker, listWorkers, forgetWorker, decorate, setPaused, setEmbedderMode, appendRunRow: appendRun };
+module.exports = { appendRun, lifePids, LIFE_CLAIMING_STATES, attach, end, getRun, listRuns, writeWorker, getWorker, listWorkers, forgetWorker, decorate, setPaused, setEmbedderMode, appendRunRow: appendRun };

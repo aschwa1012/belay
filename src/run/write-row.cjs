@@ -36,6 +36,10 @@ function requestHead(w, ctx, requestedState) {
   });
 }
 
+// Whether the row being written carries the landed creation time. A pending or final error is not the value: a row that carries only
+// an error is restated when the value lands (or the error becomes final), so the stored row never keeps an outdated "being read".
+const rowHadPidCreated = (w) => w.pidCreated != null;
+
 // `ctx` is the same context object manager.cjs builds (`{ core, runId, adapterPid, writeRow }`); this
 // factory fills in `writeRow` on it. `flags` is a small mutable object (`{ closed }`) lifecycle.cjs's
 // own `shutdown()` flips once every worker has been asked to stop — a shared reference, not a copy, so
@@ -69,7 +73,7 @@ function createWriteRow(ctx, flags) {
     if (w.settled && w.headSha == null && !w.headRequested && state !== 'starting' && state !== 'running') requestHead(w, ctx, state);
     let written;
     w.lastRowHadBase = w.baseSha != null || w.baseError != null;
-    w.lastRowHadPidCreated = w.pidCreated != null || w.pidCreatedError != null; // ADR 0039: restatePidCreated below
+    w.lastRowHadPidCreated = rowHadPidCreated(w); // ADR 0039: restatePidCreated below
     try {
       const row = W.rowOf(w, state, ctx);
       if (opts.guard && w.lastWrittenSeq != null) row.expect_seq = w.lastWrittenSeq;
@@ -140,4 +144,4 @@ function restatePidCreated(w, ctx, force = false) {
   });
 }
 
-module.exports = { createWriteRow, restateBase, restatePidCreated };
+module.exports = { createWriteRow, restateBase, restatePidCreated, rowHadPidCreated };

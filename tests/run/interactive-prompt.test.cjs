@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // ADR 0037 decision 4: the interactive twin is orchestrator.md with only its headless sentences replaced.
 const { test } = require('node:test');
 const assert = require('node:assert');

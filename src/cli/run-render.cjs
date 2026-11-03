@@ -9,11 +9,18 @@ const { memoryText } = require('./run-levers.cjs');
 // written, in a directory that was never created. `receipt.receipt_path` is the path written, or
 // `null`, and the line prints only when it is not.
 function renderText(receipt) {
+  // A refusal fills an all-null orchestrator block: no process ever existed, so there is no pid, session,
+  // turn count or exit code to print. Say that, with the reason, rather than a row of "null".
+  const neverStarted = receipt.orchestrator.pid == null && receipt.orchestrator.session_id == null;
   const lines = [
     `run_id: ${receipt.run_id}`,
-    `orchestrator pid ${receipt.orchestrator.pid}, session ${receipt.orchestrator.session_id}, ${receipt.orchestrator.turns} turn(s)`,
-    `ended_by: ${receipt.ended_by}`,
-    `exit_code: ${receipt.orchestrator.exit_code}`,
+    ...(neverStarted
+      ? [`never started: ${receipt.ended_by}`]
+      : [
+        `orchestrator pid ${receipt.orchestrator.pid}, session ${receipt.orchestrator.session_id}, ${receipt.orchestrator.turns} turn(s)`,
+        `ended_by: ${receipt.ended_by}`,
+        `exit_code: ${receipt.orchestrator.exit_code}`,
+      ]),
     `holds: ${receipt.holds.length}`,
     `polls: ${receipt.polls}`,
   ];

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // status-text.test.cjs — build step 4a-2, design item
 // 2(b): round-2 finding 2 noted that no test in the suite ever drives `belay status`/`belay workers`
 // without --json, so renderText, the workers table and the `(no workers)` line were never asserted.

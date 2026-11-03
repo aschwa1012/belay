@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // run-budget-levers.test.cjs — the run's dollar budget lever: spec over config over off, null turns a default off,
 // the usage ledger is forced on for a budgeted run only, and a run without a budget has the levers it always had.
 

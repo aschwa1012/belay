@@ -20,6 +20,7 @@ const ID = require('./proc-identity.cjs');
 const MUG = require('./merge-user-gate.cjs');
 const PS = require('./policy-stamp.cjs');
 const { checkTakeOver, checkArgs, readTasks, policyGuard, standingMerge, mergedElsewhere, assertOwnBranch } = require('./integration-policy.cjs');
+const { refuseCrossRun } = require('./cross-run.cjs');
 
 // `not_merged` and `left_out` (each merged branch head past what was judged, ADR 0060 decision 4) are derived from the row, never stored.
 const leftOut = (r) => { const l = (r.merged || []).filter((m) => m && m.left_out).map((m) => ({ task_id: m.task_id, ...m.left_out })); return l.length ? l : null; };
@@ -176,7 +177,7 @@ function cwdFor(c, task, tree) {
 // then the tasks' own commands, on this head only. A command a task also declares runs once and is marked `source: 'integrate'`
 // as well. All commands share the call's budget, ending at `until`.
 const keyCwd = (cwd) => G.fwd(path.resolve(cwd)); // `.`, an omitted cwd and the tree itself are one place
-async function rerun(tasks, tree, reuse, head, beside = null, extra = [], until = Infinity) {
+async function rerun(tasks, tree, reuse, head, beside = null, extra = [], until = Infinity, store = null) {
   const byKey = new Map();
   for (const e of extra) {
     const cwd = e.cwd ? G.fwd(path.resolve(tree, e.cwd)) : tree;
@@ -205,6 +206,7 @@ async function rerun(tasks, tree, reuse, head, beside = null, extra = [], until 
     const mark = { ...(c.source ? { source: c.source } : {}), ...declared };
     const from = reuse(c.argv, c.cwd, c.timeout_ms);
     if (from) { checks.push({ argv: c.argv, cwd: c.cwd, timeout_ms: c.timeout_ms, task_ids: c.task_ids, ...mark, reused_from: from, head_sha: head, passed: true }); continue; }
+    const CE = require('./check-env.cjs'), env = store && until - Date.now() > 0 ? await CE.forCommands(store, [{ argv: c.argv, cwd: c.cwd }]) : null; // ADR 0080: recorded, never read; taken before the budget is measured, so it is charged to it
     const t0 = Date.now();
     if (until - t0 <= 0) { checks.push({ argv: c.argv, cwd: c.cwd, timeout_ms: c.timeout_ms, task_ids: c.task_ids, ...mark, executable: false, exit_code: null, ms: 0, timed_out: false, passed: false, not_run: `the call's commands share a budget of ${ACCEPTANCE_BUDGET_MS} ms and it was spent` }); continue; }
     const allowed = Math.min(c.timeout_ms, until - t0);
@@ -212,7 +214,7 @@ async function rerun(tasks, tree, reuse, head, beside = null, extra = [], until 
     const concurrent = beside ? beside(t0, Date.now()) : [];
     checks.push({
       argv: c.argv, cwd: c.cwd, timeout_ms: c.timeout_ms, task_ids: c.task_ids, ...mark, executable: r.executable, exit_code: r.exit_code, ms: r.ms, timed_out: r.timed_out,
-      passed: r.executable && r.exit_code === 0 && !r.timed_out, spawn_error: r.spawn_error || null, ...(allowed < c.timeout_ms ? { budget_capped_ms: allowed } : {}), ...(concurrent.length ? { concurrent } : {}), ...outputTails(r),
+      passed: r.executable && r.exit_code === 0 && !r.timed_out, spawn_error: r.spawn_error || null, ...CE.brief(env), ...(allowed < c.timeout_ms ? { budget_capped_ms: allowed } : {}), ...(concurrent.length ? { concurrent } : {}), ...outputTails(r),
     });
   }
   return checks;
@@ -229,6 +231,7 @@ async function merge(E, caller, args) {
   const into = await G.validBranch(repo, args.into === undefined ? `belay/integrate/${caller.run_id}` : args.into);
   // A branch the user owns (ADR 0067): approval first (read-only, and before any slot or tree), then belay merges on a detached HEAD.
   const fold = await MUG.folder(repo);
+  refuseCrossRun(E, caller, tasks, into, repo, fold);
   await MUG.refuseVariant(repo, into, fold); // another spelling of an existing branch is that branch, on a host with case-insensitive refs
   const userBranch = await MUG.isUserBranch(E, repo, into, caller.run_id, fold);
   if (claim) await assertOwnBranch(E, caller, repo, into, claim); // ADR 0067: a branch this run did not make is not a step's to write
@@ -310,7 +313,7 @@ async function merge(E, caller, args) {
         const older = carried.entries.map((c) => rows.current(E.store, 'task', c.task_id)).filter(Boolean);
         const reuse = INC.reuseFor(E, repo, into, out.head_sha, (await G.dirtyPaths(tree.path)).length === 0);
         const endSpan = EC.beginSpan(`integration ${base.id}`); // ADR 0061 section 4 (b): it ran beside the evaluations that overlapped it, and they beside it
-        try { out.checks = await rerun(args.evaluate === false ? [] : [...tasks, ...older].filter((t) => landed.has(t.id)), tree.path, reuse, out.head_sha, (a, b) => EC.during(`integration ${base.id}`, a, b), extra, t0call + ACCEPTANCE_BUDGET_MS); } finally { endSpan(); }
+        try { out.checks = await rerun(args.evaluate === false ? [] : [...tasks, ...older].filter((t) => landed.has(t.id)), tree.path, reuse, out.head_sha, (a, b) => EC.during(`integration ${base.id}`, a, b), extra, t0call + ACCEPTANCE_BUDGET_MS, E.store); } finally { endSpan(); }
         out.passed = out.checks.length > 0 ? out.checks.every((c) => c.passed) : null;
         if (!stop) {
           if (!out.checks.length) out.error = { message: 'the merged tasks declare no acceptance commands, so nothing was re-run and nothing is proven' };
@@ -371,7 +374,7 @@ async function remove(E, caller, args) {
   const fold = await MUG.folder(cur.repo); // the key a merge into this branch holds: the name as refs compare it on this host
   return W.exclusive(`integrate:${cur.repo}:${fold(cur.into_branch)}`, `an integration call for ${cur.into_branch}`, async () => {
     if (cur.state === 'merging') await abandonStale(E, caller, cur.repo, cur.into_branch, takeOver);
-    const removal = await W.removeTree(E, { repo: cur.repo, path: cur.worktree, junctions: cur.junctions, branch: cur.into_branch }, { force: args.force }, `integration ${cur.id}`);
+    const removal = await W.removeTree(E, { repo: cur.repo, path: cur.worktree, junctions: cur.junctions, branch: cur.into_branch }, { force: args.force, owner: `integration-${cur.id}` }, `integration ${cur.id}`);
     const row = E.store.tx(() => rows.append(E.store, 'integration', { ...rows.current(E.store, 'integration', cur.id), removed_at: Date.now() }, E.writtenBy(caller), Date.now()));
     E.noteWrite();
     return { ...view(row), removal };

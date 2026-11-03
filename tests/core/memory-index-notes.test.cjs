@@ -199,6 +199,21 @@ async function overflowSetup() {
   return { space, t };
 }
 
+test('held notes are listed after the rest, and a budget that cuts one names it in held_unlisted', async () => {
+  const space = fresh(), pad = 'y'.repeat(80);
+  for (let i = 0; i < 8; i++) note(space, 'term claim ' + i + ' ' + pad, { subjects: ['gizmo'], created_at: 1500 + i });
+  const t = await task('adjust the gizmo', ['src/held0.cjs']);
+  const held = note(space, 'held term claim zz', { subjects: ['gizmo'], created_at: 9000 }); // the newest note, so it would lead a time-ordered cut
+  store.storeIn({ namespace: 'held/' + space.slice('project/'.length), worker_id: 'harness', type: 'held', text: 'held duplicate ' + held, title: 'h',
+    body: { state: 'held', note_id: held, kind: 'duplicate', of: held, ground: 'same_claim', reason: 'probe', rev: 0 }, run_id: null, source: 'harness', written_by: 'harness' });
+  const wide = await index('on', { namespaces: [space], task_id: t, max_bytes: 4000 });
+  assert.strictEqual(wide.row_ids[wide.row_ids.length - 1], held, 'the held note is last');
+  assert.strictEqual(wide.held_unlisted, undefined, 'nothing cut, nothing named');
+  const tight = await index('on', { namespaces: [space], task_id: t, max_bytes: 900 });
+  assert.ok(!tight.row_ids.includes(held));
+  assert.deepStrictEqual(tight.held_unlisted, [{ id: held, kind: 'duplicate' }]);
+});
+
 test('overflow line: off by default; on, it counts only path and term notes that did not fit, in neutral words', async () => {
   const { space, t } = await overflowSetup();
   const args = { namespaces: [space], task_id: t, max_bytes: 1000 };

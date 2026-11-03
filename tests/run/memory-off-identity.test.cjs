@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-off-identity.test.cjs — off means byte-identical (BUILD-PLAN rule 3). The same script (a spawn with a
 // task, two messages) runs on the fake-claude fixture against four cores: the plain fake core the base suites
 // use, and cores whose run row carries no memory block, the explicit defaults, and levers that feed nothing
@@ -35,8 +36,9 @@ function sandbox() {
 // The row that restates the pid's creation time (pid-identity.cjs) lands whenever the process snapshot answers
 // (about a second, longer on a slow runner), so where it falls in the sequence, and whether it falls before the
 // rows are read, is timing and not memory work. It is the guarded rewrite of the previous row's state that first
-// carries the identity, and it alone is left out of the comparison.
-const hasIdentity = (r) => r.pid_created != null || r.pid_created_error != null;
+// carries the creation time, and it alone is left out of the comparison. The rows before it carry the pending error,
+// which is not the value: the restatement is the row the value lands on.
+const hasIdentity = (r) => r.pid_created != null;
 const isPidRestatement = (r, prev) => !!prev && r.expect_seq !== undefined && r.state === prev.state && hasIdentity(r) && !hasIdentity(prev);
 
 // The script, and everything it leaves that the memory work could change. `readDelayMs` replaces the process

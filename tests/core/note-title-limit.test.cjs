@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // note-title-limit.test.cjs — a note title over the limit is refused E_NOTE_SHAPE, and the refusal names the limit, the title's
 // length in bytes and by how much it is over, so the retry cuts the right amount.
 

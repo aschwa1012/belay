@@ -19,7 +19,7 @@ const fwd = (p) => String(p).split('\\').join('/');
 const KNOWN_KEYS = new Set([
   'worktree', 'prompt_file', 'brief_file', 'run_id', 'model', 'allowed_tools', 'orchestrator_dir',
   'startup_timeout_ms', 'timeout_ms', 'mcp_tool_timeout_ms', 'poll_ms', 'close_grace_ms',
-  'max_fix_rounds', 'max_follow_ups', 'fix_hard_cap', 'fix_cutoff', 'on_embedder_failure', 'compact_at_tokens', 'stop_idle_on_done', 'max_parallel_evaluations', 'permission_prompt', 'merge_into', 'keep_review_scratch', 'memory', 'mode', 'interactive_surface_ms', 'fullscreen',
+  'max_fix_rounds', 'max_follow_ups', 'fix_hard_cap', 'fix_cutoff', 'on_embedder_failure', 'compact_at_tokens', 'stop_idle_on_done', 'max_parallel_evaluations', 'permission_prompt', 'merge_into', 'cross_run_merge', 'keep_review_scratch', 'memory', 'mode', 'interactive_surface_ms', 'fullscreen',
   'budget_usd', // the run's dollar limit (run-budget-levers.cjs)
   'policy', // the user's default plan for the run's tasks (run-policy-levers.cjs)
   'budget_counts_in_flight', // true: the budget counts reported cost plus the in-flight estimate (off by default)
@@ -38,7 +38,7 @@ const PROMPT_KEYS = ['prompt_file', 'brief_file'];
 const RUN_ID_MAX = 40;
 function parseSpec(specPath, cwd, opts = {}) {
   let raw;
-  try { raw = fs.readFileSync(specPath, 'utf8'); }
+  try { raw = fs.readFileSync(specPath, 'utf8').replace(/^\uFEFF/, ''); } // a leading UTF-8 BOM is not part of the JSON
   catch (e) { return { error: `could not read spec file ${specPath}: ${e.message}` }; }
   let spec;
   try { spec = JSON.parse(raw); }

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // A usage write that was sent and then lost (the owner went away, or the call timed out) may have committed. It is not re-run, and the
 // next turn's row must not carry its dollars again.
 

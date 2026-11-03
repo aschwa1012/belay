@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // run-parallel-lever.test.cjs — the run lever max_parallel_evaluations in the run spec: a positive integer, absent from the levers
 // (and so the receipt) unless set, and a bad value is a usage error before anything starts.
 

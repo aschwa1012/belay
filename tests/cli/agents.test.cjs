@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // agents.test.cjs — ADR 0036 decisions 5a and 5b, build step U1. Drives the built CLI's `agents` as a
 // subprocess against a sandbox store planted through the core, with fixture stream files (the
 // orchestrator's under the OS tmp dir, a worker's under its sandbox data dir). Never a real data dir.

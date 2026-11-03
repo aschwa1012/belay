@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // The no-project notice: the helper's condition, that it is pure (nothing is loaded that a read path must not load), and the
 // words it carries (the exact line to add and the name rule).
 const test = require('node:test');

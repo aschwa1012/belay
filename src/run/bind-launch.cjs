@@ -49,7 +49,7 @@ async function bindWorker({ core, runId, root, mcpPath }, w) {
 // so no exit listener will ever settle the row the spawn wrote as `starting`. A first launch settles it `dead` before the refusal is handed
 // back, as every other pre-launch refusal does. A relaunch keeps the terminal row the worker already had. The refusal stays the error.
 async function settleUnregistered(env, w, e) {
-  if (!(e && e.detail && e.detail.reason === 'spawn_register') || w.state !== 'starting' || w.child || !env.writeRow) return;
+  if (!(e && e.detail && ['spawn_register', 'spawn_throw', 'argv_too_long'].includes(e.detail.reason)) || w.state !== 'starting' || w.child || !env.writeRow) return;
   w.launchFailed = true;
   try { await env.writeRow(w, 'dead'); } catch { /* the registration refusal is the error to report */ }
 }

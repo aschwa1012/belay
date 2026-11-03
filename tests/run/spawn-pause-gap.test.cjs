@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // spawn-pause-gap.test.cjs — a pause that lands between the spawn gate and the task assignment. The gate has passed, the worker's
 // `starting` row is written, and the assignment is then refused E_PAUSED. Nothing may launch, the refusal reaches the caller as the
 // gate's own code, the unstarted worker and its directory are dropped, and the message no longer implies nothing was written (the

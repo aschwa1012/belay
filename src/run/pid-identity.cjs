@@ -71,7 +71,9 @@ function noteSpawn(w, child, { createdOf = P.createdOf, gate = ID.gate, schedule
   const pid = child.pid;
   const spawnedAt = Number.isFinite(child.belaySpawnStartedAt) ? child.belaySpawnStartedAt : Date.now(); // the time before the spawn call, when the spawner took it
   const spawnSeq = gate.stamp(); // a snapshot counts for this spawn only if it started after this
-  w.pidCreated = null; w.pidCreatedError = null;
+  // The first row goes out before the read finishes. It says so, so a process that meets that row (an adapter that died inside the
+  // window leaves it behind) refuses by the pending error rather than killing by image name for a row with no creation time.
+  w.pidCreated = null; w.pidCreatedError = `creation time of pid ${child.pid} pending at spawn; retrying while the worker runs (try 0)`;
   w.pidImage = child.spawnfile ? path.basename(String(child.spawnfile)) : null;
   if (!Number.isInteger(pid)) { w.pidCreatedError = 'the spawn gave no pid'; w.pidCreatedPromise = null; return null; }
   const mine = () => w.pid === pid; // a relaunch took the record over; a read for the old life belongs to nobody
@@ -93,7 +95,7 @@ function noteSpawn(w, child, { createdOf = P.createdOf, gate = ID.gate, schedule
     if (!mine()) return;
     // A child that exited before the read may have lost its pid to another process: its snapshot entry proves nothing.
     if (exitedYet(child)) w.pidCreatedError = `the child had already exited when the creation time of pid ${pid} was read, so the reading is discarded`;
-    else if (r && Number.isFinite(r.created) && (!Number.isFinite(child.belaySpawnStartedAt) || r.created >= spawnedAt - SPAWN_SLACK_MS)) w.pidCreated = r.created; // the same rule as a later reading
+    else if (r && Number.isFinite(r.created) && (!Number.isFinite(child.belaySpawnStartedAt) || r.created >= spawnedAt - SPAWN_SLACK_MS)) { w.pidCreated = r.created; w.pidCreatedError = null; } // the same rule as a later reading
     else {
       pending = true; tries = 1;
       setPending(`the process snapshot had no creation time for pid ${pid} (unreadable, or the process had already gone)`);

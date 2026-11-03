@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // effort.test.cjs — build step S6b, ADR 0028: a worker's effort is a spawn argument, kept on the worker
 // and passed as --effort on every launch, a relaunch after a park included. A real RunManager over
 // tests/run/fakes/fake-claude.cjs and tests/run/fake-core.cjs, the shape of tests/run/park-2.test.cjs.
@@ -42,7 +43,7 @@ async function refusal(fn) {
   return null;
 }
 
-test('spawn: effort is refused E_ARGS for an unknown level and E_SUBSTRATE for codex, writing no row', async () => {
+test('spawn: effort is refused E_ARGS for an unknown level, and for a Claude-only level on codex, writing no row', async () => {
   const sb = sandbox();
   const core = createFakeCore();
   const m = mgr(sb, core);
@@ -53,10 +54,10 @@ test('spawn: effort is refused E_ARGS for an unknown level and E_SUBSTRATE for c
       assert.strictEqual(e.code, 'E_ARGS');
       assert.match(e.message, /low, medium, high, xhigh, max/);
     }
-    const c = await refusal(() => m.spawn({ substrate: 'codex', worktree: sb.worktree, prompt: 'one', worker_id: 'wcodex', effort: 'high' }));
-    assert.ok(c, 'codex with effort was accepted');
-    assert.strictEqual(c.code, 'E_SUBSTRATE');
-    assert.match(c.message, /codex effort is not measured/);
+    const c = await refusal(() => m.spawn({ substrate: 'codex', worktree: sb.worktree, prompt: 'one', worker_id: 'wcodex', effort: 'max' }));
+    assert.ok(c, 'codex with effort max was accepted');
+    assert.strictEqual(c.code, 'E_ARGS');
+    assert.match(c.message, /codex effort must be one of low, medium, high, xhigh/);
     for (const id of ['wbad', 'wcodex']) {
       assert.ok(await refusal(() => core.worker.get({ worker_id: id })), `${id} has a row`);
       assert.ok(!fs.existsSync(`${sb.data}/workers/${id}`), `${id} has a directory`);

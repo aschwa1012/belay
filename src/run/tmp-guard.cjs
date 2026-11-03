@@ -1,17 +1,16 @@
 'use strict';
-// tmp-guard.cjs — the matcher behind the rooted-temp hook (proposed record, beside ADR 0024 amendment 7). Git Bash maps
+// tmp-guard.cjs — the matcher behind the rooted-temp hook (ADR 0084, beside ADR 0024 amendment 7). Git Bash maps
 // `/tmp` only in its own argument conversion. A native program a worker runs (node, python, the Write tool) that opens the
 // literal `/tmp/x` gets the root of the current drive, `C:\tmp\x`, which is the operator's folder and not the session's
 // temp dir. `refusal(payload, tempDir)` returns the one-line refusal for a PreToolUse payload that would do that, or null.
 // Two checks: Write, Edit, MultiEdit and NotebookEdit by exact path, and a Bash command by a textual scan of its heredoc
 // bodies and inline scripts (`node -e`, `python -c`). The Bash check is a safety net, not a parser: a path built at run
 // time out of pieces escapes it, and a heredoc that only mentions `/tmp` in prose is refused. Plain node, no requires
-// beyond os: the hook process is spawned for every Write, Edit and Bash call.
+// beyond os: guard.cjs runs it in the one hook process spawned for every Write, Edit and Bash call.
 const os = require('node:os');
 const path = require('node:path');
 
 const FILE_TOOLS = { Write: 'file_path', Edit: 'file_path', MultiEdit: 'file_path', NotebookEdit: 'notebook_path' };
-const MATCHER = 'Write|Edit|MultiEdit|NotebookEdit|Bash';
 
 // The reason goes into the model's context (invariant 9: at most 400 bytes injected per hook event), so the whole deny JSON is
 // held under MAX_JSON bytes: a long temp-dir path is cut from its front, the rule is kept whole.
@@ -102,10 +101,4 @@ function denyOutput(reason) {
   return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } });
 }
 
-// The hooks block for a worker's or headless orchestrator's settings file.
-function hooksBlock() {
-  const fwd = (p) => p.split(path.sep).join('/');
-  return { PreToolUse: [{ matcher: MATCHER, hooks: [{ type: 'command', command: `"${fwd(process.execPath)}" "${fwd(path.join(__dirname, 'tmp-hook.cjs'))}"`, timeout: 5 }] }] };
-}
-
-module.exports = { refusal, denyOutput, hooksBlock, rootedTmp, message, MATCHER };
+module.exports = { refusal, denyOutput, rootedTmp, message };

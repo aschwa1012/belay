@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // The pid poll holds a death for the child's own exit event (src/run/manager.cjs POLL_EXIT_HOLD_MS), so the
 // first dead row, and the wake built from it, carries the exit code the late event delivers. Past the bound
 // it settles as before: null code, established by pid-poll.

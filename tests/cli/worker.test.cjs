@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1'; // ADR 0034: a run here has no model to warm; the one suite that tests the warm-up opts in
 // worker.test.cjs — build step 6b, done item 1. Drives the
 // built CLI as subprocesses, in the scaffolding of tests/cli/stop-helpers.cjs and
@@ -342,7 +343,7 @@ test('worker rm: refuses a live pid, an unknown id and an already forgotten row'
     assert.strictEqual(r1.receipt.forgotten, false);
     assert.strictEqual(r1.receipt.error.code, 'E_WORKER_LIVE');
     assert.strictEqual(r1.receipt.error.detail.pid_alive, true);
-    assert.match(r1.receipt.reason, /kill it first/);
+    assert.match(r1.receipt.reason, /belay worker kill .* first .*another process/);
 
     const r2 = cliSync(['worker', 'rm', 'no-such-worker'], dataDir);
     assert.strictEqual(r2.status, 1, `${r2.stdout} / ${r2.stderr}`);

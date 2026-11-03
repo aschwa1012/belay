@@ -55,7 +55,7 @@ function createMessage({ core, ctx, forWorker, refuseIfPaused, sendStdin, launch
       if (w.child && P.pidAlive(w.pid)) {
         fail('E_SUBSTRATE', 'codex worker is mid-turn; one process per turn', { worker_id, substrate: w.substrate, state: w.state, pid: w.pid });
       }
-      await launch(w, { resume: w.sessionId, prompt: text });
+      await launch(w, { resume: w.sessionId, prompt: text, path: 'message' });
       return held;
     });
     await guarded(w, async () => {

@@ -49,8 +49,8 @@ function validateSpawnArgs({ substrate, worktree, prompt, permission_prompt, per
   if (task_id ? prompt != null && typeof prompt !== 'string' : typeof prompt !== 'string' || !prompt) fail('E_ARGS', 'spawn needs a prompt (optional only with a task_id: belay sends the task\'s spec)');
   if (typeof permission_prompt !== 'boolean') fail('E_ARGS', 'spawn permission_prompt must be a boolean', { permission_prompt });
   if (!Number.isInteger(permit_wait_ms) || permit_wait_ms <= 0) fail('E_ARGS', 'spawn permit_wait_ms must be a positive integer', { permit_wait_ms });
-  if (effort !== null && !L.EFFORT_LEVELS.includes(effort)) fail('E_ARGS', `spawn effort must be one of ${L.EFFORT_LEVELS.join(', ')}`, { effort });
-  if (effort !== null && substrate === 'codex') fail('E_SUBSTRATE', 'codex effort is not measured, so spawn refuses it', { substrate, effort });
+  if (effort !== null && substrate === 'codex') { try { require('./codex-surface.cjs').checkEffort(effort); } catch (e) { fail('E_ARGS', e.message, e.detail); } } // a Codex level is from Codex's enum
+  else if (effort !== null && !L.EFFORT_LEVELS.includes(effort)) fail('E_ARGS', `spawn effort must be one of ${L.EFFORT_LEVELS.join(', ')}`, { effort });
   // ADR 0024 amendment 3 (proposed): the eval-only native-memory folder; a Claude Code launch only, absolute.
   if (native_memory !== null) {
     if (substrate === 'codex') fail('E_SUBSTRATE', 'native_memory is Claude Code auto-memory, and codex has none', { substrate, native_memory });

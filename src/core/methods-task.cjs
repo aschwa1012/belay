@@ -219,6 +219,7 @@ async function evaluate(E, caller, args, queued = null) {
   if (args.trigger !== undefined && args.trigger !== 'release') throw err('E_ARGS', 'task.evaluate: trigger is release (the run manager evaluating a hand-back) or absent');
   const task = rows.current(E.store, 'task', args.task_id);
   if (!task) throw err('E_NOT_FOUND', `no task row exists for ${args.task_id}`, { task_id: args.task_id });
+  const leaseAtStart = (rows.currentLeaseForTask(E.store, task.id) || {}).id || null; // read with the task, before any await
   // The same two gates assign applies, checked before any command runs and again inside the write's transaction. `done` is
   // final: a re-run would overwrite its passing evidence, or keep `done` over failing results. An open dependency is refused
   // rather than evaluated without `done`, because a task is not done while its dependency is open (ADR 0013 section 1).
@@ -235,9 +236,11 @@ async function evaluate(E, caller, args, queued = null) {
   const at = require('./methods-worktree.cjs').evaluateTarget(task, args); // ADR 0053 decision 4: the recorded worktree and base
   const EC = args.cancel_key !== undefined ? require('./evaluate-cancel.cjs') : null; // ADR 0058: a release evaluation can be cancelled
   const cancel = EC ? EC.register(args.cancel_key) : null;
+  const envT0 = Date.now();
+  const env = await require('./check-env.cjs').forTask(E.store, task, at.worktree); // ADR 0080: the environment the commands run in, recorded; nothing reads it to decide
   const J = require('./judged.cjs'), judged = await J.stateOf(task, at.worktree); // ADR 0060 decisions 4 and 6: what integrate may merge
   let commandChecks;
-  try { commandChecks = await runAcceptance(task.acceptance, at.worktree, task.files_owned, { ...at, cancel, budgetMs: require('./evaluate-cancel.cjs').budgetAfter(queued && queued.waited_ms, ACCEPTANCE_BUDGET_MS, args.trigger), beside: (a, b) => require('./evaluate-cancel.cjs').during(task.id, a, b) }); } finally { if (cancel) EC.unregister(args.cancel_key, cancel); }
+  try { commandChecks = await runAcceptance(task.acceptance, at.worktree, task.files_owned, { ...at, cancel, budgetMs: Math.max(1, require('./evaluate-cancel.cjs').budgetAfter(queued && queued.waited_ms, ACCEPTANCE_BUDGET_MS, args.trigger) - (Date.now() - envT0)), beside: (a, b) => require('./evaluate-cancel.cjs').during(task.id, a, b) }); } finally { if (cancel) EC.unregister(args.cancel_key, cancel); }
   if (cancel && cancel.cancelled) throw EC.cancelled(task, cancel);
   // The commands can run for minutes, so the row is read again inside the transaction that writes it: a
   // release that landed meanwhile (its handoff, its state) is what the verdict check reads and what the
@@ -247,6 +250,8 @@ async function evaluate(E, caller, args, queued = null) {
     const fresh = rows.current(E.store, 'task', args.task_id) || task;
     gate(fresh);
     if ((fresh.amended || []).length !== (task.amended || []).length) throw err('E_BUSY', `task ${task.id}'s acceptance was amended while it was evaluated; nothing was written. Evaluate it again`, { op: 'evaluate', task_id: task.id, amended: true }); // ADR 0061
+    // Assigned again while the commands ran: the evidence is of the earlier hand-back's tree, and `done` would un-earn the new lease.
+    if (((rows.currentLeaseForTask(E.store, task.id) || {}).id || null) !== leaseAtStart) throw err('E_BUSY', `task ${task.id} was assigned again while it was evaluated; nothing was written. Evaluate it again after the new hand-back`, { op: 'evaluate', task_id: task.id, reassigned: true });
     const checks = [...commandChecks];
     if (fresh.acceptance && fresh.acceptance.verdict === true) checks.push(verdictCheck(E.store, fresh));
     if (fresh.acceptance && fresh.acceptance.handoff) checks.push(require('./handoff-check.cjs').handoffCheck(E.store, fresh)); // ADR 0058 decision 6
@@ -255,7 +260,7 @@ async function evaluate(E, caller, args, queued = null) {
     const executable = checks.length > 0 && checks.every(c => c.executable);
     const passed = checks.length > 0 && checks.every(c => c.passed);
     const results = {
-      evaluated_at: Date.now(), executable, passed, checks, ...(args.trigger ? { trigger: args.trigger } : {}), ...(queued ? { queued } : {}), ...J.fields(judged), ...(checks.some(c => c.flaky) ? { flaky: true } : {}), // ADR 0060: what was judged (4, 6); a pass only on a retry is never silent (2)
+      evaluated_at: Date.now(), executable, passed, checks, ...(args.trigger ? { trigger: args.trigger } : {}), ...(queued ? { queued } : {}), ...J.fields(judged), ...(env ? { env } : {}), ...(checks.some(c => c.flaky) ? { flaky: true } : {}), // ADR 0060: what was judged (4, 6); a pass only on a retry is never silent (2)
       ...(checks.length === 0 ? { note: 'the task declares no acceptance criteria, so nothing was executed and nothing is proven' } : {}),
     };
     require('./check-flake.cjs').record(E.store, checks, judged); // 0.4.0: the store-wide flaky-check record, in this write

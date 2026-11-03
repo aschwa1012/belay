@@ -19,6 +19,10 @@ delete process.env.BELAY_WORKER_ID;
 // when it exits. A targeted `node --test --require tests/helpers/tmp.cjs file` therefore never writes into the real temp dir. Child
 // processes and nested runs inherit the variables, see a scratch name, and make no second one. Under scripts/test.cjs, which sets
 // TEMP itself, nothing changes. BELAY_TEST_TMP_ISOLATE=0 turns the redirect off (a test of this helper that must watch a given temp dir).
+// A temp root inside the user's home (Projects, eval-lines, ...) is refused first and replaced by the real OS temp dir
+// (tests/helpers/temp-root.cjs), so a TEMP an agent pointed at an indexed folder never receives the sandboxes.
+require('./temp-root.cjs').enforceSafeTemp(process.env);
+
 let ownScratch = null;
 if (process.env.BELAY_TEST_TMP_ISOLATE !== '0' && !/^belay-(suite|test)-tmp-/.test(path.basename(os.tmpdir()))) {
   try {
@@ -73,8 +77,8 @@ if (!globalThis[KEY]) {
 
   // Every git a test or the product code under test starts ignores the developer's global git config and any inherited GIT_DIR and
   // the like (tests/helpers/git-env.cjs). Test files that start git also require it themselves, so a run without --require is isolated
-  // too. It is loaded after the spawn register above exists: its config file lives inside that register, which the runner removes with
-  // the tree even when this process is killed.
+  // too. It is loaded after the spawn register above exists: when this helper made that register, the config file lives inside it,
+  // which the runner removes with the tree even when this process is killed; otherwise git-env.cjs uses its own belay-gitcfg-* dir.
   require('./git-env.cjs');
 
   // One attempt per directory when budgetMs is 0; otherwise retried within the budget. Returns what remains.

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // paused-spawn-gate.test.cjs — the run manager asks the core before an orchestrator's spawn or restart (the core refuses E_PAUSED while the
 // run is paused, unless the owner says the orchestrator is not gated); the operator is not asked. Also: a usage row starts ahead of a
 // slow memory queue.

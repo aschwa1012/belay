@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // handback-facts.test.cjs — a reviewer's first message states, as a fact, belay's own acceptance result for the task it reviews:
 // from that task's latest results, at the head they were judged on, and never an instruction about re-running.
 

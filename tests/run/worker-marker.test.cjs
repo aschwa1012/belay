@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // worker-marker.test.cjs — the identity-bind stopgap, spawn side: the run manager puts the worker's own id into the worker's
 // environment as BELAY_WORKER_ID (the CLI's guard reads it), on a fresh spawn and on a restart. Real manager, the fake core and
 // the fake Claude, which echoes its environment to stderr.

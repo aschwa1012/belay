@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // A write to an orchestrator whose stdin pipe is already broken fails as an asynchronous 'error' event on the
 // parent's stream. With no listener Node crashes the run process; with one, the exit handler still settles the run,
 // and a later write is refused instead of being recorded as written. The seam forces the interleaving: the real
