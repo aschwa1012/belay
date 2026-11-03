@@ -5,6 +5,7 @@ require('../helpers/tmp.cjs');
 // probed on codex-cli 0.164.0 and drops the user's provider and profile). A Codex effort comes only from the spawn or
 // agents.<type>.codex_effort, never from the Claude effort field. Uses the fake Codex; no real Codex.
 
+require('../helpers/tmp.cjs');
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');

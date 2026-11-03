@@ -128,6 +128,8 @@ test('S7: memory.drainHeavy asked to probe runs the VRAM probe before any load; 
   await assert.rejects(E.handle('memory.drainHeavy', { caller: op, model: EMB4, namespaces: [NS], probe: true }), (e) => e.code === 'E_MODEL_ABSENT' && e.detail.cause === 'probe_refused' && e.detail.refusal.reason === 'no_gpu');
   assert.strictEqual(GS.isOpen(), false, 'the refused probe loaded nothing in the shared child');
   assert.ok(HD.backlogOf(E, EMB4, [NS]).some(r => r.id === late), 'the row is still behind');
+  await R.restore(); R = rig({ fake: { load_fail: true, load_fail_msg: 'Invalid GGUF magic. Expected "GGUF"' } }); R.install();
+  await assert.rejects(E.handle('memory.drainHeavy', { caller: op, model: EMB4, namespaces: [NS], probe: true }), (e) => e.code === 'E_MODEL_ABSENT' && e.detail.cause === 'model_corrupt' && e.message.includes(`${EMB4} (file m.gguf)`) && /belay embedder delete --gpu --model/.test(e.message) && !/probe refused/.test(e.message));
   await R.restore(); R = rig(); R.install();
   const ok = await E.handle('memory.drainHeavy', { caller: op, model: EMB4, namespaces: [NS], probe: true, headroom_gb: 0.5 });
   assert.strictEqual(ok.done, true);

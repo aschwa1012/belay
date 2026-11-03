@@ -64,7 +64,7 @@ async function probeFirst(model, headroomGb) {
   if (GS.holds(model)) return;
   const hr = headroomGb === undefined ? require('./memory-levers.cjs').DEFAULTS.vram_headroom_gb : headroomGb;
   const r = await GS.probeOnce([model], { headroomMb: Math.round(hr * 1024) });
-  if (!(r && r.ok)) { const f = (r && r.refusal) || { reason: 'probe_failed', message: 'the GPU probe returned nothing', options: [] }; throw err('E_MODEL_ABSENT', `the GPU probe refused ${model} (${f.reason}): ${f.message}. Options: ${(f.options || []).join('; ') || 'none'}`, { gpu: true, cause: 'probe_refused', refusal: f }); }
+  if (!(r && r.ok)) { const f = (r && r.refusal) || { reason: 'probe_failed', message: 'the GPU probe returned nothing', options: [] }; throw err('E_MODEL_ABSENT', `${f.reason === 'model_corrupt' ? f.message : `the GPU probe refused ${model} (${f.reason}): ${f.message}`}. Options: ${(f.options || []).join('; ') || 'none'}`, { gpu: true, cause: f.reason === 'model_corrupt' ? 'model_corrupt' : 'probe_refused', refusal: f }); }
 }
 
 async function drainHeavy(E, tierKey, { namespaces, onProgress, boundMs = DEFAULT_BOUND_MS, batch = BATCH, probe = false, headroomGb, cancelled, now = () => Date.now() } = {}) {
