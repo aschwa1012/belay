@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs');
 // A policy exception or a worker death under a plan is claimed when the wake publisher publishes it. The claim must not outlive a delivery
 // that never happened: if the mod's delivered-wakes file does not name the wake within a bound, the claim is released and worker_wait
 // returns it. A wake the file does name stays claimed.
