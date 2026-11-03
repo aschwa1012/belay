@@ -25,8 +25,18 @@ test('the clean fixture passes every rule', () => {
     assert.deepStrictEqual(r.violations, []);
     assert.strictEqual(r.ok, true);
     assert.deepStrictEqual([...r.rules_run].sort(), [...RULES].sort());
-    assert.ok(!fs.existsSync(path.join(os.tmpdir(), 'belay-inv')), 'the default scratch folder is removed after the check');
   } finally { fs.rmSync(d, { recursive: true, force: true }); }
+});
+
+// Test processes share a temp folder: a fixed scratch parent that one check removes can vanish under another's copy. A plain file
+// where that fixed parent would be stands in for that interleaving: the check must not depend on any fixed path in the temp folder.
+test('the default scratch is a folder of the check\'s own, not a shared fixed path', () => {
+  const d = tmp(), squat = path.join(os.tmpdir(), 'belay-inv');
+  try {
+    F.materialize(F.load('clean'), d);
+    fs.writeFileSync(squat, 'not a folder');
+    assert.strictEqual(checkStore(d).ok, true);
+  } finally { fs.rmSync(squat, { force: true }); fs.rmSync(d, { recursive: true, force: true }); }
 });
 
 for (const name of planted) {
