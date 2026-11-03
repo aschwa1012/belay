@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs');
 // codex-surface.test.cjs — what belay sets on a Codex launch and what it leaves to the user's own Codex config. Every launch and resume
 // passes --ignore-rules, the required belay server and the 12 pinned --disable switches; --ignore-user-config is never passed (it was
 // probed on codex-cli 0.164.0 and drops the user's provider and profile). A Codex effort comes only from the spawn or

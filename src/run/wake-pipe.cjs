@@ -11,7 +11,8 @@
 // one (invariant 7). While `isHeld()` is true wakes are derived and queued but not published; they are
 // released in order when it turns false (a run pause holds wakes, ADR 0037 amendment 5 decision 6).
 // Every published wake is retained (bounded) and replayed to a client that connects later: the mod
-// dedupes by id in a file, so a replay after a mod reload costs nothing and a gap loses nothing.
+// dedupes by id in a file, so a replay after a mod reload costs nothing and a gap loses nothing. A claimed wake whose claim was
+// released (sweepOwed) is still replayed, so the mod may submit it after worker_wait returned it: at least once, both naming its ref.
 
 const net = require('node:net');
 const fs = require('node:fs');

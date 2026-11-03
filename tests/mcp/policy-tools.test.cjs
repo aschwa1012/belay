@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs');
 // policy-tools.test.cjs — the plan surface at the MCP boundary (ADR 0071, ADR 0072 decision 3). The stamps a policy step writes (acted_by,
 // trigger, policy_rev) are the harness's, so every tool that can write a task, a lease or an integration refuses them by name; a worker can
 // neither set nor amend a plan; the orchestrator can, and sees the change shown back; the listings stay inside their budgets.

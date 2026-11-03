@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs');
 // wait-hold.test.cjs — a worker_wait that would answer a turn_end whose hand-back is under release evaluation holds that answer until
 // the evaluation settles and returns the turn with its result in one call. Stub worker records follow the real order of onTurnEnd:
 // the hand-back's ids are noted and the waiters resolve first, and the evaluation starts only after the turn's row is written (the

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs');
 // policy-log.test.cjs -- package I: `belay status` and `belay receipts` show the policy step log as facts (step, task, trigger, outcome, the row
 // or the error, and the cost of the turn the step started, from the usage ledger), read from a copy of the store. Rows are planted on a stopped
 // store; the commands are driven as subprocesses. A run with no step shows nothing, the data directory is byte-identical after the reads, and
