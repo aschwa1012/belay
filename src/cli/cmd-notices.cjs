@@ -14,6 +14,8 @@
 //   run_ended           the run row's ended_at
 //   gpu_probe_refused, model_corrupt, retrieval_warmup_failed, heavy_behind, heavy_drain_failed, reranker_warm_failed, heavy_tier_fallback
 //                       the retrieval failures the run row records (the pin's notices, a failed reranker warm-up, the heavy fallback in force): what failed, the profile served, the next step
+//   search_semantic_failed, search_rerank_failed, search_keyword_failed, search_heavy_behind_failed, search_heavy_embed_failed, search_refused_failed
+//                       a stage of the run's searches that failed, or a search refused, as the search log records it (src/cli/notices-searchlog.cjs): count, first and last time, what belay did, the next step; none when the search_log lever is off
 //   memory_wrapup       a wrap-up memory_event of the run (ADR 0043 decision 2): one per task and one per run, once
 //                       each because the store refuses a second (run, key)
 //   scrub_alarm         the run-close scrub took more notes out of sight (holds and archiving relations) than is normal (scrub_alarm_holds): look before the archive reviewer runs
@@ -146,6 +148,7 @@ function verdictEvents(tasks, runId) {
 
 // Retrieval failures the run row records (retrieval-view.cjs failures): one event per pin notice, failed warm-up and heavy fallback in force.
 // A run that pinned nothing has none. The message says what failed, the profile served and the next step, as the row recorded it.
+const { searchLogEvents } = require('./notices-searchlog.cjs');
 function retrievalEvents(run) {
   const v = require('../core/retrieval-view.cjs').describe(run);
   return require('../core/retrieval-view.cjs').failures(v).map((f) => ({

@@ -220,7 +220,7 @@ function onSemanticFailure(E, caller, e) {
 // `internal` is never a request field (the engine passes none): { tier, levers, log } let a caller inside this process, and the tests, name the
 // retrieval tier and switch the log off (an internal search, such as the hand-back's duplicate check); a request cannot (invariant 3).
 // Without a tier it is ST.tierFor(E, caller).
-async function search(E, caller, args, internal = {}) {
+async function searchRun(E, caller, args, internal, st) {
   const t0 = Date.now(), ms = {};
   const o = parseSearch(E, caller, args);
   // A supplied query vector is searched on the tier whose embedder made it: one that does not name the pinned heavy embedder is nano's (the
@@ -493,5 +493,8 @@ function withSemanticFailure(result, failure) {
     ...rest, modes_failed: [failed, ...(rest.modes_failed || [])], absence_established: false,
   };
 }
+
+// A refused or failed search is logged too (search-refusal.cjs).
+const search = require('./search-refusal.cjs').wrap(searchRun);
 
 module.exports = { onSemanticFailure, search, timeline, getMany, get, list, withSemanticFailure };
