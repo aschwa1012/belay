@@ -12,7 +12,7 @@ function describe(row, owner) {
   let p;
   try { p = typeof row.retrieval_routing === 'string' ? JSON.parse(row.retrieval_routing) : row.retrieval_routing; } catch { return null; }
   if (!p || !p.routing || !p.routing.run) return null;
-  const t = (x) => ({ profile: x.profile, embedder: x.embedder, reranker: x.reranker, device: x.device });
+  const t = (x) => ({ profile: x.profile, embedder: x.embedder, reranker: x.reranker, device: x.device, ...(x.fallback_from ? { fallback_from: x.fallback_from } : {}) });
   // An owner that stopped mid warm-up never wrote its end: a 'loading' record is unfinished (a shutdown, not a failure) when the run ended or the
   // owner that wrote it no longer serves (none now, not alive, another pid, or the same pid created at another time).
   const fb = p.fallback && p.fallback.epoch === row.epoch ? p.fallback : null;
@@ -62,8 +62,25 @@ function lines(v) {
   for (const n of v.notices) out.push(`retrieval notice (${n.code}): ${n.message}`);
   if (v.behind && v.behind.choice) out.push(`retrieval: ${v.behind.embedders.map((b) => `${b.embedder} was ${b.rows} behind`).join('; ')}; on_heavy_behind ${v.behind.choice}`);
   out.push(...warmLines(v));
-  if (v.fallback) out.push(`WARNING retrieval: the heavy tier failed and the run is served on the fallback profile (${v.fallback.cause.code}: ${v.fallback.cause.message}); fix it and resume, or drain with belay memory embed --model <id>`);
+  if (v.fallback) out.push(`WARNING retrieval: the heavy tier failed and the run is served on the fallback profile (${v.fallback.cause.code}: ${v.fallback.cause.message}); it lasts until the run ends: fix the cause and run again, or drain with belay memory embed --model <id>`);
   return out;
 }
 
-module.exports = { describe, lines, models };
+// Every retrieval failure the row records, one fact each: [{ code, ts, message, reason, options, agent_types, profile, fallback_from }].
+// The pin's notices (what failed, the profile the run is served on, what belay did and the next step are in the message), a reranker warm-up that
+// failed, and the sticky heavy fallback in force. Pure; text from the row is bounded here, nothing is invented.
+const cap = (s, n) => { const x = String(s == null ? '' : s); return x.length > n ? `${x.slice(0, n - 3)}...` : x; };
+function failures(v) {
+  if (!v) return [];
+  const base = { profile: v.profile, fallback_from: v.run.fallback_from || null };
+  const out = v.notices.map((n) => ({ code: n.code, ts: v.pinned_at ?? null, message: cap(n.message, 700), reason: n.reason || null, options: (n.options || []).slice(0, 4).map((o) => cap(o, 200)), agent_types: n.agent_types || null, ...base }));
+  const newest = new Map(); // only a model's newest warm-up: a failure a later warm-up replaced is not current
+  for (const w of v.warmups || []) if (!newest.has(w.model) || w.started_at >= newest.get(w.model).started_at) newest.set(w.model, w);
+  for (const w of newest.values()) {
+    if (w.state === 'failed') out.push({ code: 'reranker_warm_failed', ts: w.ended_at ?? w.started_at ?? null, message: cap(`reranker ${w.model} failed to warm (${(w.trigger || '').replace('_', ' ')}): ${w.error || 'no reason recorded'}; searches that need it keep the fusion order or follow on_heavy_failure`, 500), reason: null, options: [], agent_types: null, ...base });
+  }
+  if (v.fallback) out.push({ code: 'heavy_tier_fallback', ts: v.fallback.since ?? null, profile: 'cpu-fast', fallback_from: v.profile, message: cap(`the heavy tier failed during the run (${v.fallback.cause.code}: ${v.fallback.cause.message}); searches are served on the fallback profile (nano, no reranker) from then on. The fallback lasts until the run ends: fix the cause and run again, or drain with belay memory embed --model <id>`, 700), reason: v.fallback.cause.reason || null, options: [], agent_types: null });
+  return out;
+}
+
+module.exports = { describe, lines, models, failures };
