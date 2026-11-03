@@ -27,9 +27,9 @@ async function headOf(worktree) {
 // ADR 0029 decision 1 and amendment 1 item 1: the ending epoch's own workers, closed by the rule run.attach
 // applies to the previous one. A claim is dead only by a pid check (invariant 4), except a Codex `idle`
 // row: its process exits between turns by design (api.md §2), so its pid proves nothing and the row is
-// closed with the run whatever the pid says. The row is re-read after the git call and nothing is written
+// closed with the run whatever the pid says. The rows are re-read after the git calls and nothing is written
 // over one that moved on, or (for a pid-checked row) whose pid came back, in the meantime: a pid that answers
-// again is the row's process only by the same identity check, with a snapshot taken then.
+// again is the row's process only by the same identity check, with one snapshot taken then.
 const CODEX_IDLE_BY = 'run.end: a Codex worker between turns has no process by design; its run ended';
 const isCodexIdle = (w) => w.substrate === 'codex' && w.state === 'idle';
 // A pid that answers is the worker only if it is the process the row recorded (pid_created, checked against one snapshot taken for the
@@ -43,30 +43,34 @@ async function closeEpochWorkers(E, runId, by, lifeClaiming, treeKill = null) {
   const mine = rows.currentAll(E.store, 'worker').filter((w) => w.run_id === runId && lifeClaiming.has(w.state) && !isCodexIdle(w));
   const LA = require('./live-as.cjs');
   const ready = await LA.prepare(mine.flatMap(LA.pairsWithImage));
+  const closing = []; // rows whose process was gone at the check above, each with its worktree's head
   for (const w of rows.currentAll(E.store, 'worker')) {
     if (w.run_id !== runId || !lifeClaiming.has(w.state)) continue;
     const codexIdle = isCodexIdle(w);
     if (!codexIdle && ready.runsAs(w.pid, w.pid_created, w.pid_image || null)) continue;
-    const head = await headOf(w.worktree);
-    let cur = rows.current(E.store, 'worker', w.id);
+    closing.push({ w, codexIdle, head: await headOf(w.worktree) });
+  }
+  // A pid that answers after the git calls though it did not run as the row's process before them: Windows hands a freed pid out
+  // within seconds, and the snapshot above was not taken for a pid that was dead then. One snapshot, taken now, judges them all. A pid
+  // that only began to answer while that snapshot was taken was not asked about: the row's process had gone before, so it is another.
+  const asked = new Set(closing.filter((c) => !c.codexIdle && pidAlive(c.w.pid)).map((c) => c.w.pid));
+  const again = await LA.prepare(closing.filter((c) => asked.has(c.w.pid)).flatMap((c) => LA.pairsWithImage(c.w)));
+  for (const { w, codexIdle, head } of closing) {
+    const cur = rows.current(E.store, 'worker', w.id);
     if (!cur || cur.seq !== w.seq) continue;
-    if (!codexIdle && pidAlive(cur.pid)) {
-      // The pid answers now though it did not run as the row's process before the git call. Windows hands a freed pid out again within
-      // seconds, and the snapshot above was not taken for a pid that was dead then, so it is judged by a snapshot taken now.
-      const again = await LA.prepare(LA.pairsWithImage(cur));
-      cur = rows.current(E.store, 'worker', w.id);
-      if (!cur || cur.seq !== w.seq || again.runsAs(cur.pid, cur.pid_created, cur.pid_image || null)) continue;
-    }
+    const held = !codexIdle && pidAlive(cur.pid); // the pid answers, and is not the row's process unless the snapshot says so
+    if (held && asked.has(cur.pid) && again.runsAs(cur.pid, cur.pid_created, cur.pid_image || null)) continue;
     // The head the row carries: git's answer, else the head the row already had (never overwritten with null).
     const headSha = head.sha == null ? (cur.head_sha == null ? null : cur.head_sha) : head.sha;
     const killedByTree = !codexIdle && treeKill && cur.pid_created != null && treeKill.pids.get(cur.pid) === cur.pid_created; // pid and creation time, as every kill (ADR 0039); a row with no creation time keeps the plain wording
-    const reusedImage = !codexIdle && cur.pid_created == null && !!cur.pid_image && pidAlive(cur.pid); // alive, yet not the row's process: judged by its image
+    const reusedImage = held && cur.pid_created == null && !!cur.pid_image; // alive, yet not the row's process: judged by its image
     const values = {
       ...cur, state: 'dead', exited_at: cur.exited_at == null ? (killedByTree ? treeKill.signalled_at : t) : cur.exited_at,
       death_established_by: codexIdle ? CODEX_IDLE_BY
         : killedByTree ? `run.end: pid ${cur.pid} was in the orchestrator's process tree that belay killed at ${treeKill.signalled_at} (named by the snapshot taken before the signal); the adapter died with it, so no adapter wrote its exit`
           : reusedImage ? `run.end: pid ${cur.pid} is held by another image than the ${cur.pid_image} the row recorded, so the worker's process had exited and the pid was reused; no adapter wrote its exit`
-            : `run.end: pid ${cur.pid} not alive when the run ended; no adapter wrote its exit`,
+            : held ? `run.end: pid ${cur.pid} is held by another process than the one the row recorded${cur.pid_created != null ? ` (created at ${cur.pid_created})` : ''}, so the worker's process had exited and the pid was reused; no adapter wrote its exit`
+              : `run.end: pid ${cur.pid} not alive when the run ended; no adapter wrote its exit`,
       head_sha: headSha, head_error: headSha != null ? null : (cur.head_error == null ? null : cur.head_error), paused_at: null, paused_by: null,
     };
     require('./cost-estimate.cjs').apply(E.dataDir, values); // no adapter wrote this life's end: its unreported last turn comes from the stream
