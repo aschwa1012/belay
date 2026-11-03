@@ -35,13 +35,14 @@ const withEnv = async (vars, fn) => {
 };
 
 test('an inherited GIT_DIR or GIT_INDEX_FILE does not redirect a core git call', async () => {
-  const root = fwd(fs.mkdtempSync(path.join(os.tmpdir(), 'belay-gitenv-')));
+  // The long name: git prints it, and a TEMP may hold an 8.3 short one (RUNNER~1 on a hosted runner).
+  const root = fwd(fs.realpathSync.native(fs.mkdtempSync(path.join(os.tmpdir(), 'belay-gitenv-'))));
   try {
     const A = mkRepo(root, 'A');
     const B = mkRepo(root, 'B');
     await withEnv({ GIT_DIR: `${A}/.git`, GIT_WORK_TREE: A, GIT_COMMON_DIR: `${A}/.git`, GIT_OBJECT_DIRECTORY: `${A}/.git/objects`, GIT_ALTERNATE_OBJECT_DIRECTORIES: `${A}/.git/objects` }, async () => {
       const top = await G.run(B, ['rev-parse', '--absolute-git-dir']);
-      assert.strictEqual(fwd(top.stdout.trim()), `${B}/.git`, 'the call acted on B, not on the inherited GIT_DIR');
+      assert.strictEqual(fwd(top.stdout.trim()).toLowerCase(), `${B}/.git`.toLowerCase(),'the call acted on B, not on the inherited GIT_DIR');
       const w = await G.run(B, ['branch', 'probe']);
       assert.strictEqual(w.ok, true, w.stderr);
     });
