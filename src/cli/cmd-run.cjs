@@ -157,6 +157,7 @@ async function run(ctx) {
       }
       if (choice) { guard.setMode(choice); await core.run.setEmbedderMode({ mode: choice }); return; } // the row records the live mode, for readers without the guard
       const w = await warmEmbedder(core, { retry: true, timeoutMs: RESUME_WARM_MS });
+      guard.noteReload(w);
       if (!w.ok) {
         const e = new Error(`the embedder still cannot load, so the run stays paused: ${w.code}: ${w.message}; fix: ${w.fix}`);
         e.code = w.code === 'E_INTERNAL' ? 'E_INTERNAL' : w.code;
@@ -436,7 +437,7 @@ async function run(ctx) {
     wakes_held: wakesHeld, pauses, ...(leftovers && (leftovers.found.length || leftovers.not_taken) ? { orchestrator_leftovers: leftovers } : {}),
     stop: stopReceipt, ms: Date.now() - t0, receipt_path: null,
     ...require('./run-routing.cjs').receiptBlock(routingPin, gotRun), // the pin as the row holds it at the end, so a fallback in force is in the receipt; under --json the start-up progress lines are here
-    levers: parsed.levers, prompt_warnings: parsed.promptWarnings, on_embedder_failure_final: guard.mode(), memory_off: guard.memoryOff(), embedder: warm, embedder_failures: guard.events(), ...(embedBounds && embedBounds.length ? { embedder_bounds: embedBounds } : {}),
+    levers: parsed.levers, prompt_warnings: parsed.promptWarnings, on_embedder_failure_final: guard.mode(), memory_off: guard.memoryOff(), embedder: warm, embedder_failures: guard.events(), ...(guard.reloads().length ? { embedder_reloads: guard.reloads() } : {}), ...(embedBounds && embedBounds.length ? { embedder_bounds: embedBounds } : {}),
     review_rounds: reviewRounds.value, review_rounds_reason: reviewRounds.reason,
     workers_closed: closed ? workersClosedBlock(closed, endedRow ? (endedRow.workers_marked_dead || []) : null) : null,
     ...(closeStages ? { close_stages: closeStages } : {}), ...(await require('./run-prepared.cjs').left(core, parsed.runId)), // close_stages only with notes on; prepared_left: merges kept for the user

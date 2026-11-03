@@ -111,6 +111,22 @@ test('a probe refusal under on_heavy_failure fallback serves the fallback profil
   assert.deepStrictEqual([tier.profile, tier.reranker, tier.fallback_from], ['cpu-fast', null, 'gpu-balanced']);
 });
 
+test('a corrupt model file is a model_corrupt notice naming the model and file, and on_heavy_failure still decides', async () => {
+  await R.restore(); R = rig({ fake: { load_fail: true, load_fail_msg: 'Invalid GGUF magic. Expected "GGUF" but got "0000".' } }); R.install();
+  await attach('pin-c', { project: 'pinc', profile: 'gpu-rerank-fast' });
+  const r = await pin('pin-c');
+  assert.strictEqual(r.pinned, true, 'fallback: the run starts on the fallback profile, as for a probe refusal');
+  assert.strictEqual(r.notices.length, 1);
+  assert.strictEqual(r.notices[0].code, 'model_corrupt');
+  assert.strictEqual(r.notices[0].reason, 'model_corrupt');
+  assert.ok(r.notices[0].message.includes(`${RR06} (file m.gguf)`), r.notices[0].message);
+  assert.doesNotMatch(r.notices[0].message, /probe refused/);
+  assert.match(r.notices[0].options.join(' '), /belay embedder delete --gpu --model/);
+  await attach('pin-c2', { project: 'pinc2', profile: 'gpu-rerank-fast', on_heavy_failure: 'pause' });
+  await assert.rejects(pin('pin-c2'), (e) => e.code === 'E_MODEL_ABSENT' && e.detail.cause === 'model_corrupt' && /on_heavy_failure is pause/.test(e.message));
+  await R.restore(); R = rig({ probe: { vram_fail: true } }); R.install(); // the next test expects the no-GPU rig the one before it set up
+});
+
 test('a probe refusal under on_heavy_failure pause refuses to pin, by name, and the run stays on nano', async () => {
   await attach('pin-p', { project: 'pinp', profile: 'gpu-rerank', on_heavy_failure: 'pause' });
   await assert.rejects(pin('pin-p'), (e) => e.code === 'E_MODEL_ABSENT' && e.detail.cause === 'probe_refused' && e.detail.refusal.reason === 'no_gpu' && /on_heavy_failure is pause/.test(e.message));

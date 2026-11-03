@@ -161,7 +161,15 @@ function workerZombie(db) {
   return { violations: out, evaluated: pairs, unproven };
 }
 
+// With no scratch given, each check copies under a folder of its own and removes that folder after; a shared parent removed by
+// one check could vanish under another check's copy in the same process.
 function checkStore(target, opts = {}) {
+  if (opts.scratch) return checkStoreAt(target, opts);
+  const own = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-inv-'));
+  try { return checkStoreAt(target, { ...opts, scratch: own }); } finally { fs.rmSync(own, { recursive: true, force: true }); }
+}
+
+function checkStoreAt(target, opts) {
   const dbPath = resolveDb(target);
   if (!fs.existsSync(dbPath)) throw new Error('no database at ' + dbPath);
   const scratch = opts.scratch || path.join(os.tmpdir(), 'belay-inv');

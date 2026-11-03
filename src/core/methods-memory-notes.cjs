@@ -45,9 +45,8 @@ async function prepare(E, caller, args) {
     return null;
   }
   // ADR 0034 amendment 1: with the run's memory off, a hand-back drops its notes and marks and still releases the lease.
-  if (given && E.memoryOff('memory.store') === 'refuse') {
-    return { dropped: { reason: 'notes are off for this run (on_embedder_failure off, after an embedder failure), so the notes and reported_wrong were not written', notes: Array.isArray(args.notes) ? args.notes.length : 0, reported_wrong: Array.isArray(args.reported_wrong) ? args.reported_wrong.length : 0 } };
-  }
+  const dropped = () => ({ dropped: { reason: 'notes are off for this run (on_embedder_failure off, after an embedder failure), so the notes and reported_wrong were not written', notes: Array.isArray(args.notes) ? args.notes.length : 0, reported_wrong: Array.isArray(args.reported_wrong) ? args.reported_wrong.length : 0 } });
+  if (given && E.memoryOff('memory.store') === 'refuse') return dropped();
   const lv = notesLevers(E, caller);
   if (!lv) {
     if (given) throw err('E_LEVER_OFF', 'lease.release: notes, reported_wrong and memory_ids need the run\'s memory.notes lever, and this run has it off', { lever: 'notes' });
@@ -82,7 +81,13 @@ async function prepare(E, caller, args) {
     if (m && Number(m[1]) >= notes.length) throw err('E_ARGS', `reported_wrong[${i}].replaced_by names ${w.replaced_by} and this call has ${notes.length} notes`, { field: 'reported_wrong', index: i });
   }
   const worker = rows.current(E.store, 'worker', caller.worker_id);
-  const prepared = await NW.prepareNotes(E, caller, notes, { project, lv, worker });
+  let prepared;
+  try { prepared = await NW.prepareNotes(E, caller, notes, { project, lv, worker }); } catch (e) {
+    // Under off, this hand-back's own embed may be the run's first embedder failure: the guard heard of it (withEmbedding) and turned the
+    // memory off, so the hand-back drops its notes and releases, as one that came after the failure does.
+    if (e && e.detail && e.detail.embedder === true && E.memoryOff('memory.store') === 'refuse') return dropped();
+    throw e;
+  }
   const verdict = args.result && typeof args.result === 'object' && typeof args.result.verdict === 'string' ? args.result.verdict : null;
   return { project, lv, notes: prepared, wrong, skipped, memoryIds, verdict };
 }
