@@ -161,9 +161,12 @@ function workerZombie(db) {
   return { violations: out, evaluated: pairs, unproven };
 }
 
-// The default scratch parent is removed once empty (rmdir never removes a folder that still holds another check's copy).
+// With no scratch given, each check copies under a folder of its own and removes that folder after; a shared parent removed by
+// one check could vanish under another check's copy in the same process.
 function checkStore(target, opts = {}) {
-  try { return checkStoreAt(target, opts); } finally { if (!opts.scratch) { try { fs.rmdirSync(path.join(os.tmpdir(), 'belay-inv')); } catch { /* absent, or another copy is still open */ } } }
+  if (opts.scratch) return checkStoreAt(target, opts);
+  const own = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-inv-'));
+  try { return checkStoreAt(target, { ...opts, scratch: own }); } finally { fs.rmSync(own, { recursive: true, force: true }); }
 }
 
 function checkStoreAt(target, opts) {
