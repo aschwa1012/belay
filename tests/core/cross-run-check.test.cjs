@@ -2,6 +2,7 @@
 // cross-run-check.test.cjs — the cross_run_merge check on stored rows (src/core/cross-run.cjs): a fix task that carries another run's
 // branch, an `into` that is another run's task branch, and run ids compared with case folded. Rows are plain objects in a stand-in store.
 
+require('../helpers/tmp.cjs');
 const { test } = require('node:test');
 const assert = require('node:assert');
 const { refuseCrossRun } = require('../../src/core/cross-run.cjs');
