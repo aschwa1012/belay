@@ -28,7 +28,8 @@ async function headOf(worktree) {
 // applies to the previous one. A claim is dead only by a pid check (invariant 4), except a Codex `idle`
 // row: its process exits between turns by design (api.md §2), so its pid proves nothing and the row is
 // closed with the run whatever the pid says. The row is re-read after the git call and nothing is written
-// over one that moved on, or (for a pid-checked row) whose pid came back, in the meantime.
+// over one that moved on, or (for a pid-checked row) whose pid came back, in the meantime: a pid that answers
+// again is the row's process only by the same identity check, with a snapshot taken then.
 const CODEX_IDLE_BY = 'run.end: a Codex worker between turns has no process by design; its run ended';
 const isCodexIdle = (w) => w.substrate === 'codex' && w.state === 'idle';
 // A pid that answers is the worker only if it is the process the row recorded (pid_created, checked against one snapshot taken for the
@@ -47,8 +48,15 @@ async function closeEpochWorkers(E, runId, by, lifeClaiming, treeKill = null) {
     const codexIdle = isCodexIdle(w);
     if (!codexIdle && ready.runsAs(w.pid, w.pid_created, w.pid_image || null)) continue;
     const head = await headOf(w.worktree);
-    const cur = rows.current(E.store, 'worker', w.id);
-    if (!cur || cur.seq !== w.seq || (!codexIdle && pidAlive(cur.pid) && ready.runsAs(cur.pid, cur.pid_created, cur.pid_image || null))) continue;
+    let cur = rows.current(E.store, 'worker', w.id);
+    if (!cur || cur.seq !== w.seq) continue;
+    if (!codexIdle && pidAlive(cur.pid)) {
+      // The pid answers now though it did not run as the row's process before the git call. Windows hands a freed pid out again within
+      // seconds, and the snapshot above was not taken for a pid that was dead then, so it is judged by a snapshot taken now.
+      const again = await LA.prepare(LA.pairsWithImage(cur));
+      cur = rows.current(E.store, 'worker', w.id);
+      if (!cur || cur.seq !== w.seq || again.runsAs(cur.pid, cur.pid_created, cur.pid_image || null)) continue;
+    }
     // The head the row carries: git's answer, else the head the row already had (never overwritten with null).
     const headSha = head.sha == null ? (cur.head_sha == null ? null : cur.head_sha) : head.sha;
     const killedByTree = !codexIdle && treeKill && cur.pid_created != null && treeKill.pids.get(cur.pid) === cur.pid_created; // pid and creation time, as every kill (ADR 0039); a row with no creation time keeps the plain wording
