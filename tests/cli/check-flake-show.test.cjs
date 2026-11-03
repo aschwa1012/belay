@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs');
 // check-flake-show.test.cjs -- item J: `belay status` and `belay receipts` show the checks that flipped on one tree, as facts (counts,
 // last outcome, overlap), and show nothing when no key has flipped. Rows are planted through check-flake.record on a stopped store;
 // the commands are driven as subprocesses.

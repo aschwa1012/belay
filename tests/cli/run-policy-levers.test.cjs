@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs');
 // run-policy-levers.test.cjs — the user's default plan for a run (ADR 0071 decision 3): the spec's `policy` over the config's `run.policy`
 // over nothing, null turns a config default off for one run, a value v1 does not accept is refused at launch, and a run that states no
 // plan has the levers it always had.

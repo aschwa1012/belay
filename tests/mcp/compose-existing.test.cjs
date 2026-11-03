@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs');
 // compose-existing.test.cjs — an assignment the core answers as already standing (a policy step made it) is sent to the worker unless this
 // process has already sent it: a policy step's hand-over that failed must not leave the worker without its task when the orchestrator
 // assigns the same worker again.

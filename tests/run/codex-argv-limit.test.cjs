@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs');
 // codex-argv-limit.test.cjs — a Codex worker's message is in argv, and Windows caps a command line at 32,767 characters. Node THROWS
 // (it does not emit an error event) when libuv cannot start the process for that reason. Before the fix the spawn then left its
 // `starting` row with no pid and the task leased to a worker that never existed. Now: an oversized command line is refused up front with

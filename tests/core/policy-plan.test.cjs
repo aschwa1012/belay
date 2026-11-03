@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs');
 // policy-plan.test.cjs — ADR 0071 decisions 1 to 4: the plan's check against V1_ACCEPTS, the field-by-field precedence of a task's own
 // plan over the user's default, the revision an amend writes, and the tag a listing shows. Pure; no store.
 
