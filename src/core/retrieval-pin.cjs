@@ -7,7 +7,7 @@
 //   1. resolve the run's levers (resolveRouting) wanting a GPU, to learn which GPU models the routing needs;
 //   2. when it needs any, run the probe for exactly those models with the vram_headroom_gb lever BEFORE the first GPU load. A refusal
 //      is a loud tier failure handled by on_heavy_failure: `fallback` resolves the routing without a GPU (the fallback profile
-//      everywhere) and records ONE notice (`gpu_probe_refused`: the probe's reason and options, the roles it moved); `pause` refuses
+//      everywhere) and records ONE notice (`gpu_probe_refused`: the probe's reason and options, the roles it moved; `model_corrupt` for a model file that cannot be read, naming the model and file); `pause` refuses
 //      to pin and throws, so the run does not start on a tier it cannot serve;
 //   3. for each heavy embedder in the routing, count its backlog in the run's scope. A non-empty backlog is on_heavy_behind's business
 //      (decision 4: a heavy tier never serves a partial index):
@@ -86,7 +86,9 @@ async function pinRouting(E, caller, args = {}) {
     else {
       const refusal = (r && r.refusal) || { reason: 'probe_failed', message: 'the GPU probe returned nothing', options: [] };
       probe = { ok: false, reason: refusal.reason, message: refusal.message };
-      tierFailure(ctx, 'gpu_probe_refused', 'probe_refused', `the GPU probe refused this run's routing (${refusal.reason}): ${refusal.message}`, { refusal, reason: refusal.reason, options: refusal.options || [] });
+      // A model file that cannot be read is a fact about that file, not about the GPU or the probe: it keeps the handling (on_heavy_failure) and says so.
+      if (refusal.reason === 'model_corrupt') tierFailure(ctx, 'model_corrupt', 'model_corrupt', refusal.message, { refusal, reason: refusal.reason, options: refusal.options || [], model: refusal.model, file: refusal.file });
+      else tierFailure(ctx, 'gpu_probe_refused', 'probe_refused', `the GPU probe refused this run's routing (${refusal.reason}): ${refusal.message}`, { refusal, reason: refusal.reason, options: refusal.options || [] });
     }
   }
   const behind = [];

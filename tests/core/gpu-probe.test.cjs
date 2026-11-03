@@ -148,7 +148,12 @@ test('probe: refusals for no runtime, a model not fetched, no GPU, no discrete G
     assert.strictEqual(loadFail.refusal.reason, 'insufficient_vram', 'an allocation failure is a memory refusal, not a probe failure');
     assert.match(loadFail.refusal.message, /ran out of memory loading org\/rr/);
     const other = await P.probe(base({ models: ['org/rr'], clientOpts: { workerPath: FAKE, workerOpts: { fake: { load_fail: true, load_fail_msg: 'the GGUF file is corrupt' } } } }));
-    assert.strictEqual(other.refusal.reason, 'probe_failed');
+    assert.strictEqual(other.refusal.reason, 'model_corrupt', 'a model file the runtime cannot read is named as such, not as a probe fault');
+    assert.match(other.refusal.message, /org/rr (file .*) could not be read as a model/, 'the model id and the file are named');
+    assert.match(other.refusal.options.join(' '), /belay embedder delete --gpu --model org/rr[sS]*belay embedder fetch --gpu --model org/rr/);
+    assert.strictEqual(other.refusal.model, 'org/rr');
+    const odd = await P.probe(base({ models: ['org/rr'], clientOpts: { workerPath: FAKE, workerOpts: { fake: { load_fail: true, load_fail_msg: 'the loader hit a surprise' } } } }));
+    assert.strictEqual(odd.refusal.reason, 'probe_failed', 'any other load failure stays a probe failure');
   } finally { cleanup(cache); }
 });
 
