@@ -148,12 +148,12 @@ function verdictEvents(tasks, runId) {
 
 // Retrieval failures the run row records (retrieval-view.cjs failures): one event per pin notice, failed warm-up and heavy fallback in force.
 // A run that pinned nothing has none. The message says what failed, the profile served and the next step, as the row recorded it.
-const { searchLogEvents } = require('./notices-searchlog.cjs');
+const { searchLogEvents, searchLogOffEvents } = require('./notices-searchlog.cjs');
 function retrievalEvents(run) {
   const v = require('../core/retrieval-view.cjs').describe(run);
   return require('../core/retrieval-view.cjs').failures(v).map((f) => ({
     kind: f.code, retrieval: true, ts: num(f.ts), run_id: run.id, profile: f.profile, fallback_from: f.fallback_from, reason: f.reason, agent_types: f.agent_types,
-    text: f.message, options: f.options, source: `run row seq ${run.seq}, retrieval_routing`,
+    text: f.message, options: f.options, cause_code: f.cause_code || null, source: `run row seq ${run.seq}, retrieval_routing`,
   }));
 }
 
@@ -288,7 +288,7 @@ function summaryOf(e) {
       return `${id('request', e.request_id)} ${id('worker', e.worker_id)} tool ${P.v(e.tool, 40)} adapter_alive ${P.v(e.adapter_alive)} age ${P.v(e.age_ms)}ms`;
     case 'worker_dead':
     case 'worker_stopped':
-      return `${id('worker', e.worker_id)} exit ${P.v(e.exit_code)}${e.exit_signal ? ` signal ${P.v(e.exit_signal, 20)}` : ''} established by ${P.v(e.death_established_by, 160)}`;
+      return `${id('worker', e.worker_id)} exit ${P.v(e.exit_code)}${e.exit_signal ? ` signal ${P.v(e.exit_signal, 20)}` : ''} established by ${P.v(e.death_established_by, 220)}`;
     case 'worker_stalled':
       return `${id('worker', e.worker_id)} ${P.v(e.state, 12)} mid-turn, last event ${e.last_event_age_ms}ms ago by ${P.v(e.last_event_age_source, 20)} (over ${e.stall_ms}ms), pid ${P.v(e.pid)} pid_alive ${P.v(e.pid_alive)}`;
     case 'review_verdict':
@@ -361,7 +361,8 @@ async function run(ctx) {
     const { workers } = await core.worker.list({});
     const { tasks } = await core.task.list({});
     const { events: ledger } = await core.memory.events({ run_id: chosen.id, kinds: ['wrapup', ...STAGE_KINDS] });
-    const { events: searchRows } = await core.memory.events({ run_id: chosen.id, kinds: ['search'] });
+    const { events: searchRows } = await core.memory.events({ run_id: chosen.id, kinds: ['search'], search_failures: true });
+    const retro = retrievalEvents(chosen);
     const events = ordered([
       ...permissionEvents(requests, chosen.id),
       ...workerEvents(workers.filter((w) => w.run_id === chosen.id), chosen.id, parsed.stallMs, dataDir),
@@ -374,8 +375,9 @@ async function run(ctx) {
       ...reviewEvents(reviews, chosen.id),
       ...unjudgedEvents(heldNotes && heldNotes.unjudged_reports, chosen.id),
       ...strandedEvents(heldNotes && heldNotes.stranded, chosen.id),
-      ...retrievalEvents(chosen),
-      ...searchLogEvents(searchRows, chosen.id, { heavyFallbackInRow: retrievalEvents(chosen).some((e) => e.kind === 'heavy_tier_fallback') }),
+      ...retro,
+      ...searchLogEvents(searchRows, chosen.id, { heavyFallbackCodes: retro.filter((e) => e.kind === 'heavy_tier_fallback').map((e) => e.cause_code) }),
+      ...searchLogOffEvents(chosen),
       ...runEvents(chosen),
     ], parsed.since);
     const receipt = {

@@ -239,7 +239,7 @@ async function searchRun(E, caller, args, internal, st) {
   const leftOut = ST.isNano(o.tier) ? [] : o.namespaces.filter(n => n.startsWith('run/') && defaultSearchSkipsRun(E, n.slice(4)));
   const semConsidered = !leftOut.length ? considered : considered - db.prepare(`SELECT COUNT(*) AS n FROM memory_entries e WHERE ${base.where} AND e.type = 'turn' AND e.namespace IN (SELECT value FROM json_each(?))`).get(...base.params, JSON.stringify(leftOut)).n;
 
-  const ran = [], failed = [];
+  const ran = [], failed = [], pre = args[Symbol.for('belay.search.prefailed')] || []; // stages the in-process timeout already found failed: for the log only
   let sem = null, kw = null;
   if (o.mode !== 'keyword') {
     const ts = Date.now();
@@ -366,7 +366,7 @@ async function searchRun(E, caller, args, internal, st) {
   const abandoned = args[Symbol.for('belay.search.abandoned')];
   if (lv.search_log && E.owner && internal.log !== false && !(abandoned && abandoned.abandoned)) {
     ST.logSearch(E, caller, { kind: 'search', tier: o.tier, query: o.query, mode: o.mode, namespaces: o.namespaces, k: o.k, offset: o.offset, ms, capMb: lv.search_log_cap_mb,
-      ranks: ST.rankRecord(fused, ranked, Math.max(lv.rerank_depth, o.k), o.order), fallback: failed.length ? { failed } : null });
+      ranks: ST.rankRecord(fused, ranked, Math.max(lv.rerank_depth, o.k), o.order), fallback: failed.length || pre.length ? { failed: [...pre, ...failed] } : null });
   }
   if (debug) {
     const searched = { namespaces: o.namespaces, filter: o.filter, rows_considered: considered, fts: ftsReady(db) };

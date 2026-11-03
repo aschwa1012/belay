@@ -5,6 +5,7 @@
 // was asked to log is recorded (the same lever, owner and internal-search rules as a served one); a bad argument is not a search. Never throws.
 
 const SL = require('./search-log.cjs');
+const ST = require('./search-tier.cjs');
 
 function wrap(searchRun) {
   return async function search(E, caller, args, internal = {}) {
@@ -28,4 +29,18 @@ function wrap(searchRun) {
   };
 }
 
-module.exports = { wrap };
+// The in-process timeout (index.cjs) refuses a hybrid search from outside the engine's search, which it abandoned: the same row, from the raw arguments.
+function logRefusal(E, params, refusal) {
+  try {
+    const caller = params.caller;
+    const lv = ST.leversOfSearch(E, caller);
+    if (!lv.search_log || !E.owner) return;
+    const code = refusal.code || 'E_INTERNAL';
+    SL.record(E, caller, {
+      kind: 'search', tier: ST.tierFor(E, caller), query: params.query, mode: params.mode, namespaces: params.namespaces || (params.namespace ? [params.namespace] : null), k: params.k, offset: params.offset,
+      ms: {}, capMb: lv.search_log_cap_mb, ranks: [], code, fallback: { failed: [{ mode: 'refused', code, message: String(refusal.message || refusal) }] },
+    });
+  } catch { /* the log is a record, never the search's failure */ }
+}
+
+module.exports = { wrap, logRefusal };

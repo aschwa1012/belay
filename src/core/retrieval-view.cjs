@@ -79,7 +79,7 @@ function failures(v) {
   for (const w of newest.values()) {
     if (w.state === 'failed') out.push({ code: 'reranker_warm_failed', ts: w.ended_at ?? w.started_at ?? null, message: cap(`reranker ${w.model} failed to warm (${(w.trigger || '').replace('_', ' ')}): ${w.error || 'no reason recorded'}; searches that need it keep the fusion order or follow on_heavy_failure`, 500), reason: null, options: [], agent_types: null, ...base });
   }
-  if (v.fallback) out.push({ code: 'heavy_tier_fallback', ts: v.fallback.since ?? null, profile: 'cpu-fast', fallback_from: v.profile, message: cap(`the heavy tier failed during the run (${v.fallback.cause.code}: ${v.fallback.cause.message}); searches are served on the fallback profile (nano, no reranker) from then on. The fallback lasts until the run ends: fix the cause and run again, or drain with belay memory embed --model <id>`, 700), reason: v.fallback.cause.reason || null, options: [], agent_types: null });
+  if (v.fallback) out.push({ code: 'heavy_tier_fallback', cause_code: v.fallback.cause.code, ts: v.fallback.since ?? null, profile: 'cpu-fast', fallback_from: v.profile, message: cap(`the heavy tier failed during the run (${v.fallback.cause.code}: ${v.fallback.cause.message}); searches are served on the fallback profile (nano, no reranker) from then on. The fallback lasts until the run ends: fix the cause and run again, or drain with belay memory embed --model <id>`, 700), reason: v.fallback.cause.reason || null, options: [], agent_types: null });
   return out;
 }
 
