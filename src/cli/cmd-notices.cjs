@@ -12,6 +12,8 @@
 //   review_verdict      a verdict check on a review task's results (ADR 0025)
 //   run_paused          the run row's paused_at while the run has not ended
 //   run_ended           the run row's ended_at
+//   gpu_probe_refused, model_corrupt, retrieval_warmup_failed, heavy_behind, heavy_drain_failed, reranker_warm_failed, heavy_tier_fallback
+//                       the retrieval failures the run row records (the pin's notices, a failed reranker warm-up, the heavy fallback in force): what failed, the profile served, the next step
 //   memory_wrapup       a wrap-up memory_event of the run (ADR 0043 decision 2): one per task and one per run, once
 //                       each because the store refuses a second (run, key)
 //   scrub_alarm         the run-close scrub took more notes out of sight (holds and archiving relations) than is normal (scrub_alarm_holds): look before the archive reviewer runs
@@ -142,6 +144,16 @@ function verdictEvents(tasks, runId) {
   return out;
 }
 
+// Retrieval failures the run row records (retrieval-view.cjs failures): one event per pin notice, failed warm-up and heavy fallback in force.
+// A run that pinned nothing has none. The message says what failed, the profile served and the next step, as the row recorded it.
+function retrievalEvents(run) {
+  const v = require('../core/retrieval-view.cjs').describe(run);
+  return require('../core/retrieval-view.cjs').failures(v).map((f) => ({
+    kind: f.code, retrieval: true, ts: num(f.ts), run_id: run.id, profile: f.profile, fallback_from: f.fallback_from, reason: f.reason, agent_types: f.agent_types,
+    text: f.message, options: f.options, source: `run row seq ${run.seq}, retrieval_routing`,
+  }));
+}
+
 function runEvents(run) {
   const out = [];
   if (run.paused_at != null && run.ended_at == null) {
@@ -267,6 +279,7 @@ function reviewOutcome(text) {
 
 function summaryOf(e) {
   const id = (label, x) => `${label} ${P.v(x, 60)}`;
+  if (e.retrieval) return `${P.v(e.text, 700)}${e.options && e.options.length ? ` Next: ${e.options.map((o) => P.v(o, 200)).join('; ')}` : ''}`;
   switch (e.kind) {
     case 'permission_pending':
       return `${id('request', e.request_id)} ${id('worker', e.worker_id)} tool ${P.v(e.tool, 40)} adapter_alive ${P.v(e.adapter_alive)} age ${P.v(e.age_ms)}ms`;
@@ -305,7 +318,7 @@ function summaryOf(e) {
     case 'run_paused':
       return `${id('run', e.run_id)} paused by ${P.v(e.paused_by, e.embedder_failure ? 160 : 60)}${e.embedder_failure ? ` (an embedder failure, on_embedder_failure required: belay settings memory.on_embedder_failure keyword|off saves a choice for later runs, belay resume ${e.run_id} --embedder keyword|off resumes with one, or leave it paused)` : ''}`;
     default:
-      return `${id('run', e.run_id)} ended, exit_reason ${P.v(e.exit_reason, 60)}`;
+      return `${id('run', e.run_id)} ended, exit_reason ${P.v(e.exit_reason, 700)}`;
   }
 }
 
@@ -357,6 +370,7 @@ async function run(ctx) {
       ...reviewEvents(reviews, chosen.id),
       ...unjudgedEvents(heldNotes && heldNotes.unjudged_reports, chosen.id),
       ...strandedEvents(heldNotes && heldNotes.stranded, chosen.id),
+      ...retrievalEvents(chosen),
       ...runEvents(chosen),
     ], parsed.since);
     const receipt = {
@@ -372,4 +386,4 @@ async function run(ctx) {
   }
 }
 
-module.exports = { run, heldEvents, breakerEvents, reviewEvents, unjudgedEvents, strandedEvents, stageEvents, wrapupEvents, verdictEvents, runEvents, ordered, workerEvents, stallAge, renderText };
+module.exports = { run, retrievalEvents, heldEvents, breakerEvents, reviewEvents, unjudgedEvents, strandedEvents, stageEvents, wrapupEvents, verdictEvents, runEvents, ordered, workerEvents, stallAge, renderText };

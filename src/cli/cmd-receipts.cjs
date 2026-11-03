@@ -125,6 +125,31 @@ function totalsOf(orchestrator, workers) {
   return totals;
 }
 
+// The run's retrieval, from the run row alone (retrieval-view.cjs): what was pinned per role, the device, any fallback and every failure the row
+// records. A run that pinned nothing is on nano with no reranker, and says so.
+function retrievalOf(row) {
+  const RV = require('../core/retrieval-view.cjs');
+  const v = RV.describe(row);
+  if (!v) return { pinned: false, profile: 'cpu-fast', run: { embedder: null, reranker: null, device: 'cpu' }, tiers: {}, probe: null, fallback_from: null, behind: null, fallback: null, failures: [] };
+  return {
+    pinned: true, pinned_at: nn(v.pinned_at), profile: v.profile, run: v.run, tiers: v.tiers, fallback_from: v.run.fallback_from || null,
+    probe: v.probe ? { ok: !!v.probe.ok, device: nn(v.probe.device), reason: nn(v.probe.reason), message: nn(v.probe.message) } : null,
+    behind: v.behind && v.behind.choice ? v.behind : null, fallback: v.fallback, failures: RV.failures(v),
+  };
+}
+
+function retrievalLines(r) {
+  if (!r.pinned) return ['retrieval  nothing pinned: the default cpu-fast (nano, no reranker, cpu)'];
+  const t = (x) => `${v(x.profile)} (embedder ${v(x.embedder, 60)}, reranker ${x.reranker ? v(x.reranker, 60) : 'none'}, ${v(x.device)})${x.fallback_from ? ` fell back from ${v(x.fallback_from)}` : ''}`;
+  const out = [`retrieval  run tier ${t(r.run)}`];
+  const same = (a, b) => a.profile === b.profile && a.embedder === b.embedder && a.reranker === b.reranker && a.device === b.device;
+  for (const [role, x] of Object.entries(r.tiers)) if (!same(x, r.run)) out.push(`  ${v(role, 20)}: ${t(x)}`);
+  if (r.probe) out.push(r.probe.ok ? `  gpu probe ok on ${v(r.probe.device)}` : `  gpu probe refused (${v(r.probe.reason)}): ${v(r.probe.message, 300)}`);
+  if (r.behind) out.push(`  heavy backlog at start: ${r.behind.embedders.map((b) => `${v(b.embedder, 60)} ${b.rows} behind`).join('; ')}; on_heavy_behind ${v(r.behind.choice)}`);
+  for (const f of r.failures) out.push(`  failure ${v(f.code, 40)}: ${v(f.message, 700)}${f.options.length ? ` Next: ${f.options.map((o) => v(o, 200)).join('; ')}` : ''}`);
+  return out;
+}
+
 // ---- text ----------------------------------------------------------------------------------------
 
 // The one sanitiser: control characters (U+0000-U+001F, U+007F, U+2028, U+2029) become spaces, and the
@@ -229,6 +254,7 @@ function renderText(rc) {
     `  started ${iso(r.started_at)}  ${state}  exit_reason ${v(r.exit_reason)}`,
     `  belay ${clean(require('../core/run-harness.cjs').line(r.harness), Infinity)}`, // ADR 0082
     ...(r.paused_at != null && r.ended_at == null ? [`  PAUSED${/embedder-failure [(]/.test(r.paused_by || '') ? ' for an embedder failure' : ''} ${iso(r.paused_at)} by ${v(r.paused_by)}`] : []),
+    ...retrievalLines(rc.retrieval),
     `orchestrator  model ${v(o.model)}  turns ${v(o.turns)}  wall ${wallText(o)}  cost ${money(o.cost_usd)}  (orchestrator tool calls: no column)`,
     tokensLine(o),
   ];
@@ -305,7 +331,7 @@ async function run(ctx) {
     const receipt = {
       run_id: chosen.id, run_id_source: source,
       run: { started_at: nn(chosen.started_at), ended_at: nn(chosen.ended_at), exit_reason: nn(chosen.exit_reason), alive: !!chosen.alive, paused_at: nn(chosen.paused_at), paused_by: nn(chosen.paused_by), harness: nn(chosen.harness) },
-      orchestrator, workers,
+      retrieval: retrievalOf(chosen), orchestrator, workers,
       unassigned_tasks: tasks.filter(t => !assigned.has(t.id)).map((t) => taskView(t, chosen.started_at, tasksById)),
       integrate_checks: RCK.integrateChecksOf(await core.integration.list({ run_id: chosen.id }).then((r) => r.integrations, () => []), chosen.id), // a read that fails leaves the block empty
       totals: totalsOf(orchestrator, workers), owner,
