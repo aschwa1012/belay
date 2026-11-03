@@ -25,6 +25,7 @@ test('the clean fixture passes every rule', () => {
     assert.deepStrictEqual(r.violations, []);
     assert.strictEqual(r.ok, true);
     assert.deepStrictEqual([...r.rules_run].sort(), [...RULES].sort());
+    assert.ok(!fs.existsSync(path.join(os.tmpdir(), 'belay-inv')), 'the default scratch folder is removed after the check');
   } finally { fs.rmSync(d, { recursive: true, force: true }); }
 });
 
