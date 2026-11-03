@@ -419,7 +419,7 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
   const primary = state.spawnError || state.attachFailure || state.gateFailure || state.stopBy;
   let endedBy;
   if (state.spawnError) endedBy = `claude could not be started: ${state.spawnError}`;
-  else if (state.attachFailure) endedBy = state.attachStage === 'pin' ? `the run's retrieval routing could not be pinned (the attach itself succeeded), so the run did not start: ${state.attachFailure}. The orchestrator process (pid ${child.pid}) had been started for the attach; belay sent it no prompt (anything typed into it meanwhile was its own turn), and the orchestrator.kill block of this receipt records the stop.` : `the run's attach write failed after this process became the store owner: ${state.attachFailure}`;
+  else if (state.attachFailure) endedBy = state.attachStage === 'pin' ? `the run's retrieval routing could not be pinned (the attach itself succeeded), so the run did not start: ${state.attachFailure}. The orchestrator process (pid ${child.pid}) had been started for the attach; belay sent it no prompt (anything typed into it meanwhile was its own turn), and orchestrator.interactive.kill_identity in this receipt records the stop.` : `the run's attach write failed after this process became the store owner: ${state.attachFailure}`;
   else if (state.gateFailure) {
     const g = state.gateFailure;
     endedBy = g.check === 'plugin' ? String(g.failed) : `surface gate failed (${g.check}): ${g.failed || 'check failed'}${g.detail ? `: ${g.detail}` : ''}`;

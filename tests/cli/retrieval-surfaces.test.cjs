@@ -113,3 +113,10 @@ test('failures(): a warm-up failure a later warm-up replaced is not reported, an
   assert.doesNotMatch(f.message, /resume/);
   assert.doesNotMatch(RV.lines(RV.describe(row([], { epoch: 1, at: 9, cause: { code: 'E_X', message: 'c' } }))).join('\n'), /resume/);
 });
+
+test('each refused-start text points to the receipt field that really records the stop', () => {
+  const src = (f) => fs.readFileSync(`${ROOT}/src/run/${f}`, 'utf8');
+  assert.match(src('orchestrator.cjs'), /orchestrator\.kill block of this receipt/);
+  assert.match(src('orchestrator-interactive.cjs'), /orchestrator\.interactive\.kill_identity in this receipt/);
+  assert.doesNotMatch(src('orchestrator-interactive.cjs'), /orchestrator\.kill block/);
+});
