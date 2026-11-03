@@ -494,7 +494,6 @@ function withSemanticFailure(result, failure) {
   };
 }
 
-// A refused or failed search is logged too (search-refusal.cjs).
 const search = require('./search-refusal.cjs').wrap(searchRun);
 
 module.exports = { onSemanticFailure, search, timeline, getMany, get, list, withSemanticFailure };
