@@ -1,5 +1,4 @@
 'use strict';
-require('../helpers/tmp.cjs');
 // A policy exception or a worker death under a plan is claimed when the wake publisher publishes it. The claim must not outlive a delivery
 // that never happened: if the mod's delivered-wakes file does not name the wake within a bound, the claim is released and worker_wait
 // returns it. A wake the file does name stays claimed.
@@ -52,11 +51,6 @@ test('a claimed wake the mod never delivered is released after the bound, and wo
   try {
     assert.strictEqual(D.isClaimed({ dataDir: s.dataDir, runId, uid: s.uid }), true, 'claimed at publish');
     assert.strictEqual((await s.wait()).event, null, 'inside the bound the wake is held for the mod');
-    const net = require('node:net');
-    const line = await new Promise((resolve) => { // read before the release: a released wake is no longer replayed to a new client
-      const c = net.connect(wakePipeName(s.dataDir, runId, 'n-claim')); let buf = '';
-      c.on('data', (d) => { buf += d; const l = buf.split(NL).find((x) => x.includes('(ref ')); if (l) { c.destroy(); resolve(l); } });
-    });
     s.clock.skew = BOUND + 500;
     assert.ok(await until(() => !D.isClaimed({ dataDir: s.dataDir, runId, uid: s.uid })), 'the claim is released once the bound passes undelivered');
     const r = await s.wait();
@@ -65,6 +59,11 @@ test('a claimed wake the mod never delivered is released after the bound, and wo
     assert.strictEqual(r.exceptions[0].ref, shortRef(s.uid), 'the entry names the short delivery key, so a repeat is recognisable');
     assert.strictEqual(s.pub.stats().released.length, 1, 'the release is recorded for the receipt');
     assert.strictEqual(s.pub.stats().released[0].uid, s.uid);
+    const net = require('node:net');
+    const line = await new Promise((resolve) => {
+      const c = net.connect(wakePipeName(s.dataDir, runId, 'n-claim')); let buf = '';
+      c.on('data', (d) => { buf += d; const l = buf.split(NL).find((x) => x.includes('(ref ')); if (l) { c.destroy(); resolve(l); } });
+    });
     assert.ok(JSON.parse(line).text.endsWith(`(ref ${r.exceptions[0].ref})`), 'the wake line carries the same key');
   } finally { await s.pub.stop(); fs.rmSync(s.base, { recursive: true, force: true }); }
 });

@@ -102,50 +102,30 @@ export async function readDelivered({ read, sleep, tries = 4, delayMs = 250 }) {
 // has succeeded, and the submit happens only after that, so a failed write submits nothing (the wake is retried
 // on a replay) and a crash between the record and the submit loses that wake but never duplicates one.
 // `io` = { write(file, content) -> Promise, submit(text) -> Promise, log(entry) }; `initial` is the file's text.
-//
-// A claimed wake (its text ends with `(ref <8 hex>)`) has a second path: the publisher releases its claim when the delivered file has not
-// named it within its delivery bound (src/run/wake-pipe.cjs, 30 s) and worker_wait offers it. So a claimed wake whose write still fails
-// GIVE_UP_MS after its first failure is given up and logged, never retried into that path's turn: one path delivers it. No retry
-// starts later than GIVE_UP_MS after the first failure (index.ts tries at about 1, 3, 7 and 15 s), well inside the bound. An unclaimed wake has no other path and is retried
-// until its write lands. A repeat that slips past (a line that reached the mod late) still carries its ref, so it is recognisable.
-export const GIVE_UP_MS = 20000
-export const isClaimedText = (text) => / \(ref [0-9a-f]{8}\)$/.test(String(text))
-export function createDelivery({ file, initial = '', io, now = () => Date.now(), cap = capText, giveUpMs = GIVE_UP_MS }) {
+export function createDelivery({ file, initial = '', io, now = () => Date.now(), cap = capText }) {
   let content = String(initial || '')
   const delivered = parseDelivered(content)
   const inflight = new Set()
-  const pending = new Map() // id -> text of a wake whose record write failed: kept until the write lands or, claimed, until giveUpMs
-  const firstFail = new Map() // id -> when its write first failed
-  const gaveUp = new Set() // claimed wakes left to the other path: never submitted here
+  const pending = new Map() // id -> text of a wake whose record write failed: kept until the write lands, never dropped
   const self = {
     delivered,
     pending,
-    gaveUp,
     // Tries every wake whose write failed again, in the order they arrived; the caller schedules this until `pending` is empty.
     async retryPending() {
-      for (const [id, text] of [...pending]) {
-        if (isClaimedText(text) && now() - firstFail.get(id) >= giveUpMs) {
-          pending.delete(id); firstFail.delete(id); gaveUp.add(id)
-          try { io.log({ at: now(), id, stage: 'gave-up', error: 'the record write kept failing; this claimed wake is left to worker_wait once the publisher releases it' }) } catch { /* nowhere to log */ }
-          continue
-        }
-        await self.deliver(id, text)
-      }
+      for (const [id, text] of [...pending]) await self.deliver(id, text)
       return pending.size
     },
     async deliver(id, text) {
-      if (delivered.has(id) || inflight.has(id) || gaveUp.has(id)) return 'skip'
+      if (delivered.has(id) || inflight.has(id)) return 'skip'
       inflight.add(id)
       try {
         const next = content + deliveredLine(id, now())
         try { await io.write(file, next) } catch (e) {
           pending.set(id, text)
-          if (!firstFail.has(id)) firstFail.set(id, now())
           try { io.log({ at: now(), id, stage: 'write', error: String((e && e.message) || e) }) } catch { /* nowhere to log */ }
           return 'write-failed'
         }
         pending.delete(id)
-        firstFail.delete(id)
         content = next
         delivered.add(id)
         try { await io.submit(cap(text)) } catch (e) {

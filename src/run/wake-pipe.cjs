@@ -97,8 +97,6 @@ function startWakePublisher({
       if (named.has(o.id)) { owed.delete(uid); continue; } // delivered: the claim stands for good
       if (!all && now() - o.at < deliveryBoundMs) continue;
       owed.delete(uid);
-      const i = retained.findIndex((l) => l.startsWith(`{"id":${JSON.stringify(o.id)},`));
-      if (i >= 0) retained.splice(i, 1); // a released wake is worker_wait's to offer now: a client that connects later is not handed it as well
       stats.released.push({ uid, wake_id: o.id, after_ms: now() - o.at, at_stop: all });
       try { D.release({ dataDir, runId, uids: [uid] }); } catch { stats.errors += 1; stats.last_error = 'release'; }
     }
@@ -239,4 +237,4 @@ function startWakePublisher({
   return { pipeName, listening, stop, receipt: () => receipt.slice(), stats: () => ({ ...stats, queued: queue.length, retained: retained.length, clients: clients.size, dropped: dropped.length }), droppedWakes: () => dropped.slice() };
 }
 
-module.exports = { startWakePublisher, wakePipeName, wakeId, HEARTBEAT_MS, DELIVERY_BOUND_MS };
+module.exports = { startWakePublisher, wakePipeName, wakeId, HEARTBEAT_MS };
