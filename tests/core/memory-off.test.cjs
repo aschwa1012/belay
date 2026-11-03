@@ -155,6 +155,8 @@ test('under required an embedder failure names the choices and the resume comman
     await assert.rejects(wcall('memory.store', { namespace: `run/${RUN}`, text: 'worker while ending' }), (e) => /ENDING/.test(e.message) && !/belay resume/.test(e.message));
     ending = false;
     mode = 'keyword';
-    await assert.rejects(call('memory.store', { namespace: 'n', text: 'needs a vector too' }), (e) => !/belay resume|ENDING|embedder failure and this call/.test(e.message));
+    const kept = await call('memory.store', { namespace: 'n', text: 'needs a vector too' }); // kept without a vector, with no advice
+    assert.deepStrictEqual([kept.embedded, kept.embedder_failure.code], [false, 'E_MODEL_ABSENT']);
+    assert.doesNotMatch(kept.embedder_failure.message, /belay resume|ENDING|embedder failure and this call/);
   } finally { mode = 'required'; failEmbed = false; ending = false; }
 });

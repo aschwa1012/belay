@@ -139,3 +139,13 @@ test('the spawn-embed bound under keyword is recorded and pauses nothing; under 
   const o = await boundedCall('off');
   assert.deepStrictEqual([o.calls.pause, o.guard.events()[0].action, o.guard.memoryOff()], [[], 'off', true]);
 });
+
+test('a reload at a resume is recorded apart from the failures: the fresh child, or the load that still failed', () => {
+  const { guard } = make('required');
+  assert.deepStrictEqual(guard.reloads(), []);
+  guard.noteReload({ ok: false, code: 'E_MODEL_ABSENT', cause: 'absent', message: 'no model' });
+  guard.noteReload({ ok: true, reloaded: true, pid: 4242, warm_ms: 900 });
+  assert.strictEqual(guard.noteReload({ ok: true, reloaded: false, pid: 4242 }), null, 'a healthy embedder was not reloaded');
+  assert.deepStrictEqual(guard.reloads().map((r) => [r.ok, r.code || null, r.pid || null]), [[false, 'E_MODEL_ABSENT', null], [true, null, 4242]]);
+  assert.deepStrictEqual(guard.events(), [], 'a reload is not a failure');
+});

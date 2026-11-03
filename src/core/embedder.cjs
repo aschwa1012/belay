@@ -147,6 +147,13 @@ class Embedder {
     return 'the embedder process is not running; load() has not succeeded or close() was called';
   }
 
+  // A call with no loaded child is an embedder failure like any other (api.md §6): a child that died after its load is cause dead,
+  // with its pid and exit, so the run's guard hears of it (the owner keeps handing out this object after the death).
+  _notReady(notLoaded) {
+    if (this.exit) return err('E_MODEL_ABSENT', this._deadReason(), { embedder: true, cause: 'dead', pid: this.pid, exit_code: this.exit.code, signal: this.exit.signal });
+    return err('E_MODEL_ABSENT', notLoaded, { embedder: true, cause: 'dead' });
+  }
+
   // `stored` is the store's recorded identity (embed-identity.cjs META_KEYS), any key absent. Returns the
   // identity it loaded: model, sha, dtype, pooling, dim, library, canary_vector, canary_sha256, load_ms,
   // and the two flags the owner acts on: adopted_canary and library_changed.
@@ -165,13 +172,13 @@ class Embedder {
   }
 
   async tokenCount(text) {
-    if (!this.pipe) throw err('E_MODEL_ABSENT', this.exit ? this._deadReason() : 'the embedder was asked for a token count before it finished loading');
+    if (!this.pipe) throw this._notReady('the embedder was asked for a token count before it finished loading');
     return this._call({ op: 'tokenCount', text }, this.opBoundMs);
   }
 
   async embed(text, { as = 'document' } = {}) {
     if (as !== 'document' && as !== 'query') throw err('E_ARGS', `embed: as must be 'document' or 'query', not ${JSON.stringify(as)}`, { as });
-    if (!this.pipe) throw err('E_MODEL_ABSENT', this.exit ? this._deadReason() : 'the embedder was asked to embed before it finished loading');
+    if (!this.pipe) throw this._notReady('the embedder was asked to embed before it finished loading');
     return this._call({ op: 'embed', text, as }, this.opBoundMs);
   }
 
