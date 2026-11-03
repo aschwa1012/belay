@@ -66,6 +66,7 @@ function createEmbedderGuard({ mode: initialMode, pauseRun, stopRun, interactive
   let mode = normalizeMode(initialMode) || 'required';
   let off = false;
   const events = [];
+  const reloads = [];
   let fatalReason = null;
   const pending = new Set();
   function onFailure({ caller, by, call, error, worker_id: workerId }) {
@@ -116,6 +117,14 @@ function createEmbedderGuard({ mode: initialMode, pauseRun, stopRun, interactive
     if (mode === 'off') off = true;
     return ev;
   }
+  // A resume that re-loaded the model after a failure (belay resume with no --embedder): a fresh child, or a load that still failed.
+  // Kept apart from the failures, so a reader can tell when the run had its embedder back.
+  function noteReload(warm) {
+    const r = warm && warm.ok ? { at: Date.now(), ok: true, pid: warm.pid || null, warm_ms: warm.warm_ms === undefined ? null : warm.warm_ms }
+      : { at: Date.now(), ok: false, code: (warm && warm.code) || null, cause: (warm && warm.cause) || null, message: (warm && warm.message) || '' };
+    reloads.push(r);
+    return r;
+  }
   function setMode(m) {
     const n = normalizeMode(m);
     if (n === null) throw new Error(`on_embedder_failure must be one of ${ON_FAILURE.join(', ')}`);
@@ -123,7 +132,7 @@ function createEmbedderGuard({ mode: initialMode, pauseRun, stopRun, interactive
     if (n === 'off') off = true; // choosing off at a resume turns memory off at once
     return n;
   }
-  return { onFailure, noteWarmFailure, setMode, mode: () => mode, memoryOff: () => off, fatal: () => fatalReason, events: () => events.map((e) => ({ ...e })), settled: () => Promise.all([...pending]).then(() => undefined) };
+  return { onFailure, noteWarmFailure, noteReload, reloads: () => reloads.map((r) => ({ ...r })), setMode, mode: () => mode, memoryOff: () => off, fatal: () => fatalReason, events: () => events.map((e) => ({ ...e })), settled: () => Promise.all([...pending]).then(() => undefined) };
 }
 
 module.exports = { ON_FAILURE, isFatal, isEmbedderFailure, warmEmbedder, createEmbedderGuard, fixFor };
