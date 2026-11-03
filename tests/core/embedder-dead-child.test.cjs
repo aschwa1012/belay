@@ -13,7 +13,7 @@ const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
 const { Embedder } = core('embedder.cjs');
 const { Engine } = core('engine.cjs');
 const { Store } = core('store.cjs');
-const { createEmbedderGuard } = require('../../src/run/embedder-guard.cjs');
+const { createEmbedderGuard, warmEmbedder } = require('../../src/run/embedder-guard.cjs');
 
 let dead = null;
 async function deadEmbedder() {
@@ -98,7 +98,8 @@ test('keyword: the death is recorded, the search answers from keywords, and a st
     assert.strictEqual(turn.embedded, false, 'a harness turn row is kept too');
     await guard.settled();
     assert.deepStrictEqual(pauses, []);
-    assert.deepStrictEqual(guard.events().map((v) => [v.call, v.cause, v.action]), [['memory.search', 'dead', 'continue'], ['memory.store', 'dead', 'continue'], ['memory.store', 'dead', 'continue']]);
+    // one death, one event: the later failures of the same cause are counted on it, so the receipt stays bounded
+    assert.deepStrictEqual(guard.events().map((v) => [v.call, v.cause, v.action, v.repeats]), [['memory.search', 'dead', 'continue', 2]]);
   });
 });
 
@@ -126,4 +127,40 @@ test('off: a hand-back that is the first call to meet the death drops its notes 
     assert.strictEqual(guard.memoryOff(), true);
     assert.deepStrictEqual(guard.events().map((v) => [v.call, v.cause, v.action]), [['memory.store', 'dead', 'off']]);
   });
+});
+test('keyword: a dedup hit on a row that kept its vector answers as usual, never "stored without a vector"', async () => {
+  await inRun('keyword', async ({ E, store }) => {
+    store.store({ namespace: `run/${RUN}`, worker_id: 'wd', written_by: 'worker:wd', text: 'a lesson stored while the embedder lived', embedding: [0, 1, 0], embedding_model: 'm', embedding_revision: 'r', dim: 3 });
+    const r = await E.handle('memory.store', { caller: worker, text: 'a lesson stored while the embedder lived' });
+    assert.notStrictEqual(r.action, 'inserted', 'a dedup hit');
+    assert.strictEqual(r.has_embedding, true);
+    assert.ok(!('embedded' in r) && !('embedder_failure' in r) && !/without a vector/.test(r.note || ''), JSON.stringify(r));
+  });
+});
+
+test('a resume whose embedder was healthy (a heavy-stage pause) records no reload; one that cleared a failed embedder does', async () => {
+  const fake = (reloaded) => ({ owner: { getEmbedder: async () => ({}), embedInfo: { pid: 7 } }, memory: { warm: async (a) => ({ state: 'ready', pid: 7, ...(a.reload ? { reloaded } : {}) }) } });
+  const guard = createEmbedderGuard({ mode: 'required', pauseRun: async () => ({}), stopRun: async () => {} });
+  const healthy = await warmEmbedder(fake(false), { retry: true });
+  assert.deepStrictEqual([healthy.ok, healthy.reloaded], [true, false]);
+  assert.strictEqual(guard.noteReload(healthy), null);
+  assert.deepStrictEqual(guard.reloads(), []);
+  const fresh = await warmEmbedder(fake(true), { retry: true });
+  guard.noteReload(fresh);
+  assert.deepStrictEqual(guard.reloads().map((r) => [r.ok, r.pid]), [[true, 7]]);
+});
+
+test('memory.warm reload says whether it cleared a failed embedder', async () => {
+  const dir = sandbox();
+  const store = new Store(path.join(dir, 'memory.db'), { stamp: true });
+  try {
+    let failed = false;
+    const owner = { opts: {}, resetEmbedder: async () => failed, embedState: () => 'ready', embedInfo: { pid: 9 }, embedError: null };
+    const E = new Engine({ dataDir: dir, store, getEmbedder: async () => ({}), owner, establishedBy: 'owner' });
+    const op = callerFor('operator');
+    assert.strictEqual((await E.handle('memory.warm', { caller: op, reload: true })).reloaded, false);
+    failed = true;
+    assert.strictEqual((await E.handle('memory.warm', { caller: op, reload: true })).reloaded, true);
+    assert.ok(!('reloaded' in (await E.handle('memory.warm', { caller: op }))), 'only a reload answers it');
+  } finally { store.close(); cleanup(dir); }
 });

@@ -36,11 +36,12 @@ async function warmEmbedder(core, { retry = false, timeoutMs = WARM_TIMEOUT_MS }
     return { ok: false, code: 'E_INTERNAL', message: 'this process is not the store owner, so it has no embedder to warm', cause: null, fix: fixFor('E_INTERNAL') };
   }
   const t0 = Date.now();
+  let warmed = null;
   try {
     // `retry` is a resume after a failure: the owner's failed load is sticky, so it is discarded (memory.warm's
     // retry, ADR 0034 decision 2) before the load is attempted again.
     // A cold-cache warm-up gets the longest wait memory.warm allows (600 s), since nothing else is waiting yet.
-    if (core.memory && typeof core.memory.warm === 'function') await core.memory.warm({ wait: true, timeout_ms: timeoutMs, ...(retry ? { reload: true } : {}) });
+    if (core.memory && typeof core.memory.warm === 'function') warmed = await core.memory.warm({ wait: true, timeout_ms: timeoutMs, ...(retry ? { reload: true } : {}) });
     else await owner.getEmbedder();
   } catch (e) {
     const code = (e && e.code) || 'E_INTERNAL';
@@ -51,7 +52,7 @@ async function warmEmbedder(core, { retry = false, timeoutMs = WARM_TIMEOUT_MS }
     };
   }
   const info = owner.embedInfo || {};
-  return { ok: true, warm_ms: Date.now() - t0, load_ms: info.load_ms === undefined ? null : info.load_ms, model: info.model || null, pid: info.pid || null };
+  return { ok: true, ...(retry ? { reloaded: !!(warmed && warmed.reloaded) } : {}), warm_ms: Date.now() - t0, load_ms: info.load_ms === undefined ? null : info.load_ms, model: info.model || null, pid: info.pid || null };
 }
 
 // `pauseRun(why)` is the run pause control's own pause (src/run/run-pause.cjs), never a second mechanism; `why`
@@ -80,6 +81,10 @@ function createEmbedderGuard({ mode: initialMode, pauseRun, stopRun, interactive
       at: Date.now(), worker, call, code: error.code || null, cause: error.detail.cause || null,
       message: error.message || String(error), action: eff === 'required' ? 'pause' : eff === 'off' ? 'off' : 'continue', pause: null,
     };
+    // Under keyword a dead or failed embedder fails every later call the same way: one event per code and cause, counted, so the receipt
+    // stays bounded over a long run (repeats, last_at).
+    const same = eff === 'keyword' ? events.find((x) => x.action === 'continue' && x.call !== 'warm-up' && x.code === ev.code && x.cause === ev.cause) : null;
+    if (same) { same.repeats = (same.repeats || 0) + 1; same.last_at = ev.at; return undefined; }
     events.push(ev);
     if (eff === 'off') off = true;
     if (eff !== 'required') return undefined;
@@ -118,8 +123,10 @@ function createEmbedderGuard({ mode: initialMode, pauseRun, stopRun, interactive
     return ev;
   }
   // A resume that re-loaded the model after a failure (belay resume with no --embedder): a fresh child, or a load that still failed.
-  // Kept apart from the failures, so a reader can tell when the run had its embedder back.
+  // Kept apart from the failures, so a reader can tell when the run had its embedder back. A resume whose embedder was healthy (a pause
+  // for a reranker or heavy-tier failure) started no child and records nothing.
   function noteReload(warm) {
+    if (warm && warm.ok && !warm.reloaded) return null;
     const r = warm && warm.ok ? { at: Date.now(), ok: true, pid: warm.pid || null, warm_ms: warm.warm_ms === undefined ? null : warm.warm_ms }
       : { at: Date.now(), ok: false, code: (warm && warm.code) || null, cause: (warm && warm.cause) || null, message: (warm && warm.message) || '' };
     reloads.push(r);

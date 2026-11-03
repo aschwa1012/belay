@@ -260,7 +260,7 @@ async function store(E, caller, args) {
   const row = E.store.store(a);
   E.noteWrite();
   const out = withLasting(E, caller, namespace, row);
-  return unembedded ? { ...out, embedded: false, embedder_failure: unembedded, note: 'stored without a vector (on_embedder_failure keyword): found by keyword search only' } : out;
+  return unembedded && out && out.has_embedding === false ? { ...out, embedded: false, embedder_failure: unembedded, note: 'stored without a vector (on_embedder_failure keyword): found by keyword search only' } : out;
 }
 
 // ADR 0057 decision 8 (C8): the default namespace is the run's scratch. A model's write there, in a run with a project whose rows are not promoted
@@ -316,11 +316,12 @@ async function stats(E, caller) {
 // it reports the same cause.
 async function warm(E, caller, args = {}) {
   const o = E.owner;
-  if ((args.reload || args.retry) && o && o.resetEmbedder) await o.resetEmbedder();
+  const reload = !!(args.reload || args.retry);
+  const reloaded = reload && o && o.resetEmbedder ? (await o.resetEmbedder()) === true : false; // true only when a failed embedder was cleared
   const p = E.getEmbedder();
   if (args.wait) await p; else p.catch(() => { /* reported by state and error below */ });
   const state = o && o.embedState ? o.embedState() : 'unknown';
-  return { state, pid: o && o.embedInfo ? o.embedInfo.pid : null, error: o && o.embedError ? o.embedError : null, rerankers: require('./retrieval-warm.cjs').warmList(E) };
+  return { state, pid: o && o.embedInfo ? o.embedInfo.pid : null, error: o && o.embedError ? o.embedError : null, ...(reload ? { reloaded } : {}), rerankers: require('./retrieval-warm.cjs').warmList(E) };
 }
 
 module.exports = { leversOf, runAlpha, store, delete: del, stats, warm, nsFor, resolveNamespace, projectOf, withEmbedding, notifyEmbedderFailure, adviseEmbedderFailure, reachOf, checkReach, runEmbedderMode, scrub };
