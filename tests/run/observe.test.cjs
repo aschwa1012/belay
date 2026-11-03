@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // observe.test.cjs — the mechanical observation builder (ADR 0041 §3): type table, title bound, empty facts,
 // no clock, and the body shape. Events use the captured shape of ADR 0041 §2.
 

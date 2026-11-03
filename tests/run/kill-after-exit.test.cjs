@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // A kill path checks its root handle before it awaits a process snapshot. A root that exits during the await may have lost its
 // pid to another process, and the snapshot then names that process's children as descendants. Every path re-confirms the root
 // after the snapshot and signals nothing below it otherwise. No real process is signalled: pids are fictitious and every kill

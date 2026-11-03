@@ -23,7 +23,7 @@ const BAD_PATHS = [
 ];
 const OK_PATHS = [
   'tmp/x', './tmp/x', 'C:\\Work\\a\\tmp\\x', 'C:/repo/tmp/x', '/home/tmp/x', '/tmpfoo/x', 'C:/tmpfoo', 'C:\\tmp-old\\x',
-  'C:/tmp.old/x', 'C:/repo/tmp./x', 'C:/.../tmp/x', 'C:/Work/AppData/Local/Temp/x', `${TEMP}/x`, 'C:/repo/src/../src/tmp.js', '/c/Users/tmp', '', undefined, 5,
+  'C:/tmp.old/x', 'C:/repo/tmp./x', 'C:/.../tmp/x', 'C:/Work/AppData/Local/Temp/x', `${TEMP}/x`, 'C:/repo/src/../src/tmp.js', '/c/Work/tmp', '', undefined, 5,
 ];
 
 test('Write, Edit, MultiEdit and NotebookEdit to a rooted tmp path are refused, in every spelling and case', () => {
@@ -121,7 +121,7 @@ test('the refusal is one line and names the worker temp dir and the way out', ()
 });
 
 test('the whole deny JSON stays under 400 bytes however long the temp dir is, and keeps the rule', () => {
-  const long = ['C:\\Work\\a-very-long-folder-name', ...Array.from({ length: 30 }, (_, i) => `segment-${i}-\u00e9\u00e9`), 'belay-w1'].join('\\');
+  const long = ['C:\\Work\\a-very-long-folder-name',...Array.from({ length: 30 }, (_, i) => `segment-${i}-\u00e9\u00e9`), 'belay-w1'].join('\\');
   for (const dir of [TEMP, long, 'x'.repeat(2000), undefined]) {
     for (const p of [file('Write', '/tmp/x'), bash(`node -e "open('/tmp/x')"`)]) {
       const reason = TG.refusal(p, dir);
@@ -147,7 +147,7 @@ test('the refusal names the process temp dir when none is passed', () => {
   assert.ok(TG.refusal(file('Write', '/tmp/x')).includes(os.tmpdir()));
 });
 
-const HOOK = path.join(__dirname, '..', '..', 'src', 'run', 'tmp-hook.cjs');
+const HOOK = path.join(__dirname, '..', '..', 'src', 'run', 'guard-hook.cjs');
 function runHook(input) { return spawnSync(process.execPath, [HOOK], { input, encoding: 'utf8', timeout: 10000, env: { ...process.env, TEMP, TMP: TEMP, TMPDIR: TEMP } }); }
 
 test('the hook process answers a refused call with a PreToolUse deny and exit 0', () => {
@@ -169,7 +169,7 @@ test('the hook process says nothing for an allowed call and for an unreadable pa
   }
 });
 
-test('worker settings and the headless orchestrator settings register the hook beside the kill guard; the interactive orchestrator has neither', () => {
+test('worker settings and the headless orchestrator settings register the one guard hook, whose matcher covers the file tools and Bash; the interactive orchestrator has none', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-tmpguard-')).split(path.sep).join('/');
   try {
     const mcpPath = L.mcpServerPath();
@@ -179,11 +179,10 @@ test('worker settings and the headless orchestrator settings register the hook b
     const i = L.writeOrchestratorFiles({ dir: `${dir}/i`, runId: 'r', dataDir: `${dir}/data`, mcpPath, settingsPath: null });
     for (const f of [w.settingsPath, c.settingsPath, o.settingsPath]) {
       const pre = JSON.parse(fs.readFileSync(f, 'utf8')).hooks.PreToolUse;
-      assert.strictEqual(pre.length, 2);
-      assert.match(pre[0].hooks[0].command, /kill-hook\.cjs"$/);
-      assert.match(pre[1].matcher, /^Write\|Edit\|MultiEdit\|NotebookEdit\|Bash$/);
-      assert.match(pre[1].hooks[0].command, /tmp-hook\.cjs"$/);
-      assert.ok(pre[1].hooks[0].timeout <= 10);
+      assert.strictEqual(pre.length, 1);
+      for (const t of ['Write', 'Edit', 'MultiEdit', 'NotebookEdit', 'Bash']) assert.ok(pre[0].matcher.split('|').includes(t), t);
+      assert.match(pre[0].hooks[0].command, /guard-hook.cjs"(?: --push)?$/);
+      assert.ok(pre[0].hooks[0].timeout <= 10);
     }
     assert.strictEqual(JSON.parse(fs.readFileSync(i.settingsPath, 'utf8')).hooks, undefined);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }

@@ -19,7 +19,7 @@ const gate = require('./memory-note-gate.cjs');
 const ST = require('./search-tier.cjs');
 const HB = require('./heavy-behind.cjs');
 const W = require('./memory-withhold.cjs');
-const { notesDefaults } = require('./memory-search-scope.cjs');
+const { notesDefaults, defaultSearchSkipsRun } = require('./memory-search-scope.cjs');
 const V = require('./memory-search-view.cjs');
 const { semanticStage } = require('./search-semantic.cjs'); // the query vector and the cosine scan
 const { nsFor, resolveNamespace, runAlpha, reachOf, checkReach, runEmbedderMode } = require('./methods-memory.cjs');
@@ -235,6 +235,9 @@ async function search(E, caller, args, internal = {}) {
   const base = baseWhere(o);
   const db = E.store.db;
   const considered = db.prepare(`SELECT COUNT(*) AS n FROM memory_entries e WHERE ${base.where}`).get(...base.params).n;
+  // The rows the semantic half is asked to cover: a heavy tier leaves out a run's turn rows when its default search goes to the project (search-tier.cjs).
+  const leftOut = ST.isNano(o.tier) ? [] : o.namespaces.filter(n => n.startsWith('run/') && defaultSearchSkipsRun(E, n.slice(4)));
+  const semConsidered = !leftOut.length ? considered : considered - db.prepare(`SELECT COUNT(*) AS n FROM memory_entries e WHERE ${base.where} AND e.type = 'turn' AND e.namespace IN (SELECT value FROM json_each(?))`).get(...base.params, JSON.stringify(leftOut)).n;
 
   const ran = [], failed = [];
   let sem = null, kw = null;
@@ -249,9 +252,9 @@ async function search(E, caller, args, internal = {}) {
     ms.semantic = Date.now() - ts;
     // ADR 0057 decision 5: rows in scope and not one with a vector is a semantic half that saw nothing. It is degraded, not run. Not an
     // embedder failure (nothing to resume), so no run is paused and no hybrid search refused; a semantic-mode search answers it too.
-    if (sem && sem.scanned === 0 && considered > 0) {
+    if (sem && sem.scanned === 0 && semConsidered > 0) {
       ran.pop();
-      failed.push({ mode: 'semantic', code: 'E_NO_VECTORS', message: `none of the ${considered} in-scope rows has a vector (written without the embedder, or in a namespace bound to no model), so semantic search had nothing to compare` });
+      failed.push({ mode: 'semantic', code: 'E_NO_VECTORS', message: `none of the ${semConsidered} in-scope rows has a vector (written without the embedder, or in a namespace bound to no model), so semantic search had nothing to compare` });
       sem = null;
     }
   }
@@ -285,16 +288,15 @@ async function search(E, caller, args, internal = {}) {
     rows = rowsByIds(E, ranked.map(h => h.id));
     ranked = ranked.filter(h => rows.has(h.id) && gate.bodyLive(rows.get(h.id))); // (the project's legacy rows never get here: the keyword WHERE and the semantic scan leave them out)
   }
-  // A held note (an active hold on it, whoever reads: a worker is withheld the disputed ones above) ranks below every note that is not held
-  // and reaches the relevance floor, and above the ones that do not; below the floor the same order holds. Every view marks it from its hold
-  // row, never from the note's own pointer, which can outlive its hold (ADR 0047 amendment of 2026-10-25). A row with no cosine is not below it.
+  // A held note (an active hold on it, whoever reads: a worker is withheld the disputed ones above) is shown after the ranked hits, so it never
+  // pushes a relevant hit off the page; the notes that are not held keep their order, floor or no floor. Every view marks it from its hold row,
+  // never from the note's own pointer, which can outlive its hold (ADR 0047 amendment of 2026-11-02).
   const holds = W.holdsAmong(E, ranked.map(h => h.id));
-  const band = h => (sem && cosine.has(h.id) && V.belowFloor(cosine.get(h.id), floor) ? 2 : 0) + (holds.has(h.id) ? 1 : 0);
-  const byBand = list => list.map((h, i) => ({ h, i, t: band(h) })).sort((a, b) => a.t - b.t || a.i - b.i).map(x => x.h);
+  const byBand = list => list.map((h, i) => ({ h, i, t: holds.has(h.id) ? 1 : 0 })).sort((a, b) => a.t - b.t || a.i - b.i).map(x => x.h);
   const banded = holds.size > 0 && o.order === 'score';
   if (banded) ranked = byBand(ranked);
   // The rerank stage (a tier with a reranker): the top of the fused list reordered by the provider, fusion rank as the tiebreak. The reranker
-  // orders within a band, never across one: a held note stays below every note that is not held, as above (a stable sort of the reranked list).
+  // orders within a band, never across one: a held note stays after every note that is not held, as above (a stable sort of the reranked list).
   const fused = ranked, tr = Date.now();
   const rr = await ST.rerankHead(E, caller, o, ranked, ids => rows || rowsByIds(E, ids), lv);
   ranked = banded && rr.info ? byBand(rr.ranked) : rr.ranked;
@@ -339,7 +341,7 @@ async function search(E, caller, args, internal = {}) {
   // keyword index sees every row; a row with no vector is named, and one left out establishes nothing), no scanned row reaches the floor,
   // and the keyword half matched no row: a keyword hit can be the exact identifier the query names, whatever its cosine. offset and
   // min_score narrow the page, never the claim, which is about every in-scope row.
-  const unembedded = sem ? Math.max(0, considered - sem.scanned) : 0;
+  const unembedded = sem ? Math.max(0, semConsidered - sem.scanned) : 0;
   let top = -Infinity;
   for (const v of cosine.values()) if (v > top) top = v;
   // The floor is measured for nano only (ADR 0057), so a heavy tier, which has no floor, never establishes absence.

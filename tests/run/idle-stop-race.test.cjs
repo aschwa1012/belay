@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // stop_idle_on_done decides at the moment of the stop, inside the stop's operation slot: work or a relaunch that landed while
 // the leases were read is seen there. Real modules: idle-stop.cjs and lifecycle.cjs (runOp, refuseMessageDuringOp).
 const { test } = require('node:test');

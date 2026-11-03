@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // notes-summary.test.cjs — ADR 0047 decision 1 on the run side: with the notes lever on a task's summary is stored in
 // summary/<project>, not the project and not the run; with it off the destination is what ADR 0044 made it.
 

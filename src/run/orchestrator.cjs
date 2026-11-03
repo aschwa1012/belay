@@ -93,7 +93,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   const fullArgs = [...prefixArgs, ...argv];
   const argvHash = L.writeArgvJson(written.dir, { exe: command, args: fullArgs, cwd: worktree });
 
-  const env = L.buildEnv(process.env, { substrate: 'claude-code', cwd: worktree });
+  const env = L.buildEnv(process.env, { substrate: 'claude-code', cwd: worktree, orchestrator: true });
   env.MCP_TOOL_TIMEOUT = String(mcpToolTimeoutMs);
 
   const child = P.spawnWorker({ exe: command, args: fullArgs, cwd: worktree, env, stdin: 'pipe' });
@@ -407,7 +407,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       clearTimers();
       try { fs.closeSync(streamFd); } catch { /* already closed */ }
       try { fs.closeSync(stderrFd); } catch { /* already closed */ }
-      expireStalePendingWrites();
+      expireStalePendingWrites(); for (const ev of require('./release-eval.cjs').drainHeld(state.evalSeen)) state.wakesSuppressed.push({ ...ev, reason: 'the run ended while this turn end was held for its release evaluation' }); // recorded either way
       const out = {
         orchestrator: orchestratorBlock(), ended_by: state.endedBy, holds: state.holds, polls: state.polls,
         wakes: state.wakes, wakes_suppressed: state.wakesSuppressed, wakes_expired: state.wakesExpired,

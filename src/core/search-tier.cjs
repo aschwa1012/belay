@@ -68,8 +68,10 @@ function nanoKey(E, ns, m) {
 // computed once per load. A load that finds a live row without a vector is NOT kept, so a kept cache is always complete; a kept cache is
 // tied to the vector table's write generation (memory-vectors.cjs generation: any write or delete of a vector, by the Store or not, bumps
 // it, and patchBody does too), and is rebuilt when that has moved.
+// A turn row of a run whose default search goes to the project is left out of its heavy tier: embedded or not, behind or not (ADR 0044 amendment of 2026-11-02).
+const turnExempt = (E, ns) => ns.startsWith('run/') && require('./memory-search-scope.cjs').defaultSearchSkipsRun(E, ns.slice(4));
 function heavyVectors(E, tier, ns, c) {
-  const db = E.store.db;
+  const db = E.store.db, ex = turnExempt(E, ns);
   if (!VT.hasTable(db)) throw err('E_NO_INDEX', 'this store has no vector cache (memory_vectors), so a heavy tier has nothing to read');
   const key = `${tier.embedder}\u0000${tier.revision || ''}\u0000${tier.dims}`, gen = VT.generation(db);
   const kept = c.heavy && c.heavy.get(key);
@@ -77,7 +79,7 @@ function heavyVectors(E, tier, ns, c) {
   const h = new Map(), t = Date.now();
   for (const [id, f] of VT.vectorsFor(db, { model: tier.embedder, revision: tier.revision || '', dims: tier.dims }, c.rows.map(r => r.id))) h.set(id, f.vector);
   // An expired row that has not been swept yet is not in the backlog, so it does not keep the map from being kept.
-  if (c.rows.every(r => h.has(r.id) || (r.ttl_at && r.ttl_at < t) || r.unrenderable)) (c.heavy || (c.heavy = new Map())).set(key, { gen, h });
+  if (c.rows.every(r => h.has(r.id) || (r.ttl_at && r.ttl_at < t) || r.unrenderable || (r.turn && ex))) (c.heavy || (c.heavy = new Map())).set(key, { gen, h });
   return h;
 }
 
@@ -100,7 +102,8 @@ function candidates(E, tier, ns, m, o) {
     return out;
   }
   const h = heavyVectors(E, tier, ns, c);
-  for (const r of c.rows) { if (!live(r)) continue; const v = h.get(r.id); if (v) out.push({ id: r.id, vec: v }); else if (r.unrenderable) VT.warnUnrenderable(r); else lacking.push(r.id); }
+  const ex = turnExempt(E, ns);
+  for (const r of c.rows) { if (!live(r)) continue; if (r.turn && ex) continue; const v = h.get(r.id); if (v) out.push({ id: r.id, vec: v }); else if (r.unrenderable) VT.warnUnrenderable(r); else lacking.push(r.id); }
   if (lacking.length) throw behindError(tier, [ns], lacking);
   return out;
 }
@@ -118,8 +121,8 @@ function assertServable(E, tier, namespaces, reveal = true) {
   binding(E, tier, namespaces[0]); // E_ARGS for a tier without dims
   const t = Date.now(), behind = [];
   for (const ns of namespaces) {
-    const c = E.store._loadNs(ns), h = heavyVectors(E, tier, ns, c);
-    for (const r of c.rows) if (!(r.ttl_at && r.ttl_at < t) && !h.has(r.id) && !r.unrenderable) behind.push(r.id);
+    const c = E.store._loadNs(ns), h = heavyVectors(E, tier, ns, c), ex = turnExempt(E, ns);
+    for (const r of c.rows) if (!(r.ttl_at && r.ttl_at < t) && !h.has(r.id) && !r.unrenderable && !(r.turn && ex)) behind.push(r.id);
   }
   if (behind.length) throw behindError(tier, namespaces, behind, reveal);
 }

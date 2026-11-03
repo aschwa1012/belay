@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // release-eval-fix-rounds.test.cjs — a refuted review's wake data names the work task a chain of fixes began from.
 
 const test = require('node:test');

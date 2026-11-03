@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // stop-background.test.cjs — a graceful stop first stops the worker's open background tasks (as a park does), so a worker that a
 // hung background shell keeps alive after stdin closes still exits gracefully; a stop that has to kill says why and names the
 // processes it killed. A real RunManager over the fake executable (FAKE_BG_BLOCKS_EXIT: no exit on stdin close while a task runs).

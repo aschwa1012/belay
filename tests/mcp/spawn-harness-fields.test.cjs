@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // worker_spawn's harness-only fields are refused at the MCP boundary, in the orchestrator role, by name, before the run manager sees them.
 // `tools` matters most: the built-in list may only be narrowed through allowed_tools (ADR 0024 amendment 4), never named directly.
 

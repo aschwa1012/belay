@@ -346,7 +346,9 @@ class Owner {
     if (who && typeof who === 'object') c.belayCaller = { pid: Number.isInteger(who.pid) ? who.pid : null, role: typeof who.role === 'string' ? who.role : null };
 
     if (req.method === 'ping') {
-      const result = { pid: process.pid, pipe: this.pipe, uptime_ms: Date.now() - this.startedAt, calls: this.counters.calls, embedder: this.embedInfo || null, ...(c.belayVerified === undefined ? {} : { operator_verified: c.belayVerified }) };
+      // A stopping owner is not a serving one: it refuses every call, so its ping must not read as liveness.
+      if (this.stopped) return this._refuse(c, req, { code: 'E_OWNER_STOPPING', message: 'the store owner is stopping and serves no calls', detail: { method: 'ping', sent: false, owner_stopping: true } });
+      const result = { pid: process.pid, pipe: this.pipe, uptime_ms: Date.now() - this.startedAt, calls: this.counters.calls, embedder: this.embedInfo || null, ...(c.belayVerified === undefined ? {} : { operator_verified: c.belayVerified }), ...(c.belayVerifyReason ? { operator_reason: c.belayVerifyReason } : {}) };
       if (!c.destroyed) c.write(JSON.stringify({ id: req.id, result }) + '\n');
       return;
     }
@@ -384,7 +386,7 @@ class Owner {
       // Like an engine call: once the owner is stopping a bind or ticket call is not run (sent: false, so the client re-dials), and
       // one served before that is in inFlightCalls, so stop() lets its reply be written before it destroys the connection.
       if (this.stopped) {
-        return this._refuse(c, req, { code: 'E_OWNER_LOST', message: `the store owner is stopping, so ${req.method} was not run; the client re-runs it against the next owner`, detail: { method: req.method, sent: false, owner_stopping: true } });
+        return this._refuse(c, req, { code: 'E_OWNER_LOST', message: `the store owner is stopping, so ${req.method} was not run; the client re-runs it against the next owner`, detail: { method: req.method, sent: false, owner_stopping: true, owner_pid: process.pid, owner_token: this.lockToken } });
       }
       const call = Promise.resolve().then(() => (req.method.startsWith('ticket.') ? this.ticketCall(req.method, rest, caller) : this.bindCall(req.method, params, params.caller))).then(
         (result) => { if (!c.destroyed) c.write(JSON.stringify({ id: req.id, result }) + '\n'); },
@@ -405,7 +407,7 @@ class Owner {
     // Once the owner is stopping, a new call is not run: it could commit after stop() took its list of calls to answer and have its
     // reply destroyed. E_OWNER_LOST with sent: false is the answer a client already re-runs on the next owner (ADR 0033).
     if (this.stopped) {
-      return this._refuse(c, req, { code: 'E_OWNER_LOST', message: `the store owner is stopping, so ${req.method} was not run; the client re-runs it against the next owner`, detail: { method: req.method, sent: false, owner_stopping: true } });
+      return this._refuse(c, req, { code: 'E_OWNER_LOST', message: `the store owner is stopping, so ${req.method} was not run; the client re-runs it against the next owner`, detail: { method: req.method, sent: false, owner_stopping: true, owner_pid: process.pid, owner_token: this.lockToken } });
     }
     const call = Promise.resolve()
       .then(() => this.engine.handle(req.method, decodeWire(req.params || {})))

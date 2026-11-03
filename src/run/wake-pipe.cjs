@@ -49,6 +49,7 @@ function startWakePublisher({
   const retained = []; // published lines, oldest first
   const receipt = []; // wakeRecord entries of every published wake, in order
   const queue = []; // derived while held
+  const dropped = []; // wakes found but never published because the publisher stopped first; stop() and a pass that ends after it record them
   const stats = { polls: 0, errors: 0, published: 0, held_max: 0, last_error: null, released: [] }; // released: claims given back undelivered, for the receipt
   let baseline = {};
   const deadPids = require('./dead-pids.cjs').createDeadPids({ graceMs: DEATH_GRACE_MS, adapterAlive: (pid) => !!pid && require('../core/lock.cjs').pidAlive(pid) });
@@ -157,6 +158,7 @@ function startWakePublisher({
           queue.push({ id: wakeId(runId, ev), text: wakeText(ev), worker_id: ev.worker_id, event: ev.event, paused_at: r.paused_at == null ? null : r.paused_at, paused_by: ev.paused_by || r.paused_by || null, ev });
         }
       }
+      if (stopped) { dropQueued(); return; } // a pass that was awaiting the store when stop() ran: what it just derived goes into the record too
       if (budgetWake) for (const bw of budgetWake.takeWakes()) publish({ id: bw.id, text: bw.text, event: 'budget_pause', ev: bw }); // the budget pause's own wake is the one a hold does not keep back
       sweepOwed();
       if (lost.size) for (const [uid, w] of lost) if (!require('./run-digest.cjs').isClaimed({ dataDir, runId, uid })) { lost.delete(uid); queue.push(w); } // a released claim: publish what it had held back
@@ -210,18 +212,29 @@ function startWakePublisher({
 
   listening.catch(() => {}); // the caller reads the failure from `listening`; an unread one must not crash the process
 
+  // What is still queued (a run pause) or held for its release evaluation is not published once the publisher has stopped:
+  // each is recorded with its reason, so no wake found is missing from the receipt. A queued death or exception the run wait already claimed
+  // was delivered by that path (ADR 0074 decision 4), so it is left out rather than called unpublished.
+  function dropQueued() {
+    const D = dataDir ? require('./run-digest.cjs') : null;
+    const elsewhere = (q) => { try { const uid = D && D.wakeUid({ ...(q.ev || {}), worker_id: q.worker_id }); return !!uid && D.isClaimed({ dataDir, runId, uid }); } catch { return false; } };
+    for (const q of queue.splice(0)) if (!elsewhere(q)) dropped.push({ id: q.id, worker_id: q.worker_id, event: q.event, reason: 'the run ended while this wake was held' });
+    for (const ev of require('./release-eval.cjs').drainHeld(evalSeen)) dropped.push({ id: wakeId(runId, ev), worker_id: ev.worker_id, event: ev.event, reason: 'the run ended while this turn end was held for its release evaluation' });
+  }
+
   async function stop() {
     if (stopped) return;
     stopped = true;
     sweepOwed(true);
     clearTimeout(pollTimer); clearInterval(hbTimer);
+    dropQueued();
     for (const c of clients) { try { c.end(); c.destroy(); } catch { /* gone */ } }
     clients.clear();
     await new Promise((r) => { try { server.close(() => r()); } catch { r(); } setTimeout(r, 500).unref(); });
     if (process.platform !== 'win32') { try { fs.unlinkSync(pipeName); } catch { /* none */ } }
   }
 
-  return { pipeName, listening, stop, receipt: () => receipt.slice(), stats: () => ({ ...stats, queued: queue.length, retained: retained.length, clients: clients.size }) };
+  return { pipeName, listening, stop, receipt: () => receipt.slice(), stats: () => ({ ...stats, queued: queue.length, retained: retained.length, clients: clients.size, dropped: dropped.length }), droppedWakes: () => dropped.slice() };
 }
 
 module.exports = { startWakePublisher, wakePipeName, wakeId, HEARTBEAT_MS };

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // run-budgets.test.cjs — the time bounds the functional `belay run` tests do not assert, in the quiet phase (ADR 0018's shape): the
 // run is driven N times, the minimum is the figure, and the raw samples are printed beside the gate. The functional suites keep the
 // facts (the kill came after the grace, the run says so); here is how long it took.

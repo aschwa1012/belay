@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // spawn-check-first.test.cjs — ADR 0030 decision 4. A spawn whose task cannot be assigned is refused
 // before it writes anything: no worker row, no worker directory or config files, and the worker id stays
 // free. The real core and the real run manager, a fake claude binary, a sandbox under the OS temp dir.

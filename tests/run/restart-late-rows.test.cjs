@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // restart-late-rows.test.cjs — a restart yields the rows, and so the wakes, of the new life only. The previous life's terminal row
 // was queued on the worker's write queue unbound to its launch: queued behind another write when a restart launched the next life,
 // it landed after the new life's `starting` row and recorded the new life as dead, which the wake announced as a death (a late

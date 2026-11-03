@@ -5,7 +5,7 @@
 // no project, or no run (the operator's CLI), nothing here applies and the search is what it always was.
 // A read: every statement is a SELECT.
 
-const { leversOf, projectOf } = require('./methods-memory.cjs');
+const { defaultSearchProject } = require('./notes-scope-rule.cjs');
 
 const NOTE_TYPE = 'note';
 
@@ -13,12 +13,30 @@ const NOTE_TYPE = 'note';
 // project/<p>), `filter` may gain types ['note']. Returns the inputs unchanged when the default does not apply.
 function notesDefaults(E, caller, args, filter) {
   if (!caller || !caller.run_id || (caller.role !== 'worker' && caller.role !== 'orchestrator')) return { args, filter }; // the operator's window is not scoped
-  const lv = leversOf(E, caller);
-  if (!lv || lv.notes !== true || !projectOf(E, caller)) return { args, filter };
+  let run = null;
+  try { run = E.store.p('SELECT project, memory_levers FROM run WHERE id = ? ORDER BY seq DESC LIMIT 1').get(caller.run_id); } catch { run = null; }
+  if (!run || !defaultSearchProject(run.project, run.memory_levers)) return { args, filter };
   const named = (args.namespace !== undefined && args.namespace !== null) || (args.namespaces !== undefined && args.namespaces !== null);
   if (named) return { args, filter };
   if (typeof filter !== 'object' || filter === null || Array.isArray(filter)) return { args, filter }; // a malformed filter is refused by filterSql, not hidden
   return { args: { ...args, namespace: 'project' }, filter: filter.types === undefined ? { ...filter, types: [NOTE_TYPE] } : filter };
 }
 
-module.exports = { notesDefaults, NOTE_TYPE };
+// Whether the default search of run `runId` leaves out the run's own namespace (it goes to the project's notes: notesDefaults' own rule). A turn
+// row of such a run is read by the briefing, not by a default search, so a heavy tier does not embed it (ADR 0044 amendment of 2026-11-02).
+function defaultSearchSkipsRun(E, runId) {
+  return notesDefaults(E, { run_id: runId, role: 'orchestrator' }, {}, {}).args.namespace === 'project';
+}
+
+// A predicate over a memory row (type and namespace): true for a turn row a heavy tier leaves out. One answer per run.
+function heavyExemptFn(E) {
+  const memo = new Map();
+  return (r) => {
+    if (r.type !== 'turn' || typeof r.namespace !== 'string' || !r.namespace.startsWith('run/')) return false;
+    const id = r.namespace.slice(4);
+    if (!memo.has(id)) memo.set(id, defaultSearchSkipsRun(E, id));
+    return memo.get(id);
+  };
+}
+
+module.exports = { notesDefaults, defaultSearchSkipsRun, heavyExemptFn, NOTE_TYPE };

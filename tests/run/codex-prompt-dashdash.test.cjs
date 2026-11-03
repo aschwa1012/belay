@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // codex-prompt-dashdash.test.cjs — codex exec parses its argv with clap: a prompt that starts with `-` is read as an option
 // ("- fix the list" exits 2, "-cmodel=x" is a config override) and a prompt that is `review` or `resume` as a subcommand. Both
 // builders put `--` before the prompt, and the prompt is the last element, exactly as given. Probed on codex-cli 0.163.0 with

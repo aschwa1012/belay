@@ -1,6 +1,7 @@
 // lease-keepalive.test.cjs — build step W2-2, ADR 0026. (k1)-(k7) are pure: a fake `call`, a fake clock
 // and a fake `pidAlive`, so nothing here touches a store, a pid or a wall clock.
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 
 const test = require('node:test');
 const assert = require('node:assert');

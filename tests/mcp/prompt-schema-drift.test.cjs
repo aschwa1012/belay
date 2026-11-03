@@ -7,6 +7,7 @@
 // of its sentence and the sentence after it (a sentence ending in a colon takes the list under it) or to the next mention,
 // and only backticked words in the window are read. Anything that is not an input is named in NOT_FIELDS, kept small.
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -167,11 +168,11 @@ test('tripwire: invented fields appended to a prompt are caught, in both prompts
 test('A5 the largest orchestrator listing (every lever on) is pinned and inside the 20,480 byte budget', () => {
   const bytes = tools.listingBytes('orchestrator', { notes: true, knowledge: true, queries: true });
   assert.ok(bytes <= tools.BUDGET.orchestrator, `everything-on orchestrator listing is ${bytes} bytes, over ${tools.BUDGET.orchestrator} by ${bytes - tools.BUDGET.orchestrator}`);
-  assert.strictEqual(bytes, 16677, 'the everything-on orchestrator listing size is pinned; change this with the ADR 0010 amendment that changes it');
+  assert.strictEqual(bytes, 16715, 'the everything-on orchestrator listing size is pinned; change this with the ADR 0010 amendment that changes it');
 });
 
 test('the everything-on listing with the permission channel is pinned and inside the budget (ADR 0010 amendment 16)', () => {
   const bytes = tools.listingBytes('orchestrator', { notes: true, knowledge: true, queries: true, permissions: true });
   assert.ok(bytes <= tools.BUDGET.orchestrator, `permissions-on orchestrator listing is ${bytes} bytes, over ${tools.BUDGET.orchestrator} by ${bytes - tools.BUDGET.orchestrator}`);
-  assert.strictEqual(bytes, 17442, 'pinned; change this with the ADR 0010 amendment that changes it');
+  assert.strictEqual(bytes, 17480, 'pinned; change this with the ADR 0010 amendment that changes it');
 });

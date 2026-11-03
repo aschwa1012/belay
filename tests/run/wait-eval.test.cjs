@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // wait-eval.test.cjs — gap 9 of the second 0.3.1 try: after a turn ends with its hand-back being evaluated, a later worker_wait
 // holds until that evaluation ends and answers with its result, instead of answering `already` at once; one that times out first
 // says the evaluation is still running. Real core, real run manager, the fake Claude Code substrate; the evaluation's one acceptance

@@ -19,6 +19,7 @@ const S = require('./surface.cjs'); // ADR 0024, S2 fix round F4: the surface fi
 const I = require('./instructions.cjs'); // ADR 0024 amendment 1: the spawn-time CLAUDE.md copy
 const { fail } = require('./errors.cjs');
 const { checkWorkerId, checkIdFree, validateSpawnArgs, checkMemoryQueries, discardUnstarted } = require('./spawn-args.cjs');
+const CS = require('./codex-surface.cjs'); // what belay sets on a Codex launch
 const AD = require('./agent-defaults.cjs'); // the config's per-agent-type model and effort defaults
 const TP = require('./tool-policy.cjs'); // ADR 0054 decision 4: a worker type's tool list
 const MP = require('./memory-preface.cjs'); // ADR 0042: the first-message preface and the memory hooks
@@ -44,7 +45,7 @@ const LG = require('./launch-gate.cjs'); const RG = require('./relaunch-guard.cj
 const { waitTurnOrLanded } = require('./turn-wait.cjs'); // a turn that ended before the wait began is answered
 
 const { POLL_MS } = require('./exit-hold.cjs');
-const now = () => Date.now();
+const AL = require('./argv-limit.cjs'); const LS = require('./launch-spec.cjs'); const now = () => Date.now(); // AL: the Windows command-line limit, and a spawn that throws
 
 // `memoryLevers`: the run's levers when the caller holds the run row (ADR 0041); `worktree`: the run's (ADR 0043).
 function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = null, memoryLevers = null, worktree = null, agentDefaults = null, stopIdleOnDone = false, permissionPrompt = false }) {
@@ -127,25 +128,9 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     });
   }
   const launch = (w, o) => require('./bind-launch.cjs').launchBound({ core, runId, root, mcpPath, writeRow }, w, () => launchNow(w, o)); // ADR 0045: one launch of a worker at a time, its bind opened first
-  async function launchNow(w, { resume = null, prompt = null } = {}) {
-    try { NM.checkLaunch(w); } catch (e) { await NM.refuseLaunch(ctx, w, e, () => PI.pidLive(w)); } let args; // sync and first (Codex's check-then-spawn stays one tick); only a refusal awaits
-    if (w.substrate === 'claude-code') {
-      args = L.claudeLaunchArgv({
-        workerId: w.id, mcpJsonPath: w.mcpJsonPath, settingsPath: w.workerSettingsPath,
-        model: w.model || L.DEFAULT_CLAUDE_MODEL, allowedTools: w.allowedTools,
-        permissionMode: w.permissionMode, resumeSessionId: resume,
-        permissionPromptTool: w.permissionPrompt, appendSystemPromptFile: w.instructions && w.instructions.path,
-        effort: w.effort, tools: w.tools, maxBudgetUsd: w.maxBudgetUsd, // ADR 0028 decision 2: every launch, fresh or resumed; ADR 0024: a narrowed list too
-      });
-    } else if (resume) {
-      args = L.codexResumeArgv({ threadId: resume, adapterArgs: w.adapterArgs, prompt, model: w.model, scratchDir: w.scratchDir });
-    } else {
-      args = L.codexLaunchArgv({
-        worktree: w.worktree, adapterArgs: w.adapterArgs, prompt, sandbox: w.sandbox, model: w.model, scratchDir: w.scratchDir,
-      });
-    }
-    const { command, prefixArgs } = L.resolveExe(exeFor(w.substrate));
-    const spec = { exe: command, args: [...prefixArgs, ...args], cwd: w.worktree };
+  async function launchNow(w, { resume = null, prompt = null, path = 'spawn' } = {}) { // `path` ('spawn', 'message', 'restart') shapes the advice of an oversized-line refusal
+    try { NM.checkLaunch(w); } catch (e) { await NM.refuseLaunch(ctx, w, e, () => PI.pidLive(w)); } // sync and first (Codex's check-then-spawn stays one tick); only a refusal awaits
+    const spec = LS.buildChecked(w, exeFor, { resume, prompt }, (sp) => AL.checkCommandLine(sp.exe, sp.args, { workerId: w.id, path })); // before any state change: an oversized line is refused, not thrown by spawn; a Codex prompt that does not fit goes on stdin
     w.argvHash = L.writeArgvJson(w.dir, spec);
     w.settled = false; w.pidGoneAt = null; w.pidGonePid = null; w.settleWaitedMs = 0; // the exit-event hold is per launch
     w.settledState = null; // the last process's end; a restatement of this one's row must never carry it
@@ -158,7 +143,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     if (w.adapterLogPath) rotateWireLog(w.adapterLogPath);
     w.adapterLogBytes = w.adapterLogPath ? (fs.statSync(w.adapterLogPath, { throwIfNoEntry: false }) || { size: 0 }).size : 0;
     w.parser = createParser(w.substrate, MP.parserOpts(ctx));
-    const child = P.spawnWorker({
+    const child = AL.guardSpawn(w.id, () => P.spawnWorker({
       // ADR 0016: `cwd` goes to `buildEnv` too, so `PWD` agrees with the real working directory. 6d:
       // MCP_TOOL_TIMEOUT is set only with permission_prompt, always outside permit_wait_ms's own bound.
       exe: spec.exe, args: spec.args, cwd: w.worktree,
@@ -166,8 +151,8 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
         substrate: w.substrate, cwd: w.worktree, workerId: w.id,
         mcpToolTimeoutMs: w.permissionPrompt ? w.permitWaitMs + 60000 : null,
       }),
-      stdin: w.substrate === 'claude-code' ? 'pipe' : 'ignore',
-    });
+      stdin: w.substrate === 'claude-code' ? 'pipe' : 'ignore', input: spec.stdinText, // a Codex prompt on stdin is written and closed by spawnWorker
+    }));
     w.launches += 1;
     w.launchedAt = now();
     try { W.attach(w, child, ctx); }
@@ -217,6 +202,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       effort = agent.effort.value;
     }
     validateSpawnArgs({ substrate, worktree, prompt, task_id, permission_prompt, permit_wait_ms, effort, worker_id, native_memory: nativeMemory });
+    const codexSurface = CS.forSpawn(substrate, effort, agent); // a Codex worker: what belay set and what it left to the user's config
     const indexQueries = checkMemoryQueries(memory_queries);
 
     const id = worker_id || crypto.randomUUID();
@@ -234,7 +220,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
         allowedTools, permissionMode: permission_mode, sandbox,
         permissionPrompt: permission_prompt, permitWaitMs: permit_wait_ms, effort, tools: spawnTools, maxBudgetUsd: max_budget_usd, nativeMemory, agentType: agent_type,
       });
-      w.assignCore = assignCore; w.indexQueries = indexQueries; // the orchestrator's situation lines for this worker's memory index (memory.embedQuery extra_texts)
+      w.assignCore = assignCore; w.indexQueries = indexQueries; w.toolsBy = allowed_tools != null ? 'spawn' : 'type'; // indexQueries: the orchestrator's situation lines for this worker's memory index (memory.embedQuery extra_texts); toolsBy: what narrowed w.tools, the spawn's allowed_tools or else the agent type's list (task-body.cjs toolsLine)
       workers.set(id, w); w.launching = true; hold.w = w; // launching: until the spawn returns or fails, a run pause is held for it (launch-gate.cjs)
     } finally { pendingIds.delete(id); }
     try { await MP.spawnLevers(ctx, w); w.nativeMemoryAuth = await NM.authorize(core, runId, w.nativeMemory); } catch (e) { await discardUnstarted(workers, w, dirExisted); throw e; } // ADR 0047: the levers are known before the files are written; with the first-message index off the row keeps no situation lines
@@ -249,7 +235,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     await writeRow(w, 'starting');
     let first;
     try {
-      first = NR.isJob(w.id) ? prompt : (await MP.preface(w, ctx, prompt)) + require('./task-body.cjs').body(w.taskSpec, prompt) + require('./task-body.cjs').PROCESS_LINE + (scratch ? require('./review-scratch.cjs').firstLine(scratch) : '') + require('./review-scratch.cjs').treeLine(w.review) + (w.handbackRule || '') + (await MP.contractTail(ctx, w)) + (await NR.reviewTail(ctx, w)); await LG.refuseIfPaused(ctx.core, ctx.runId, w); // the resume line, then the memory index, against the `starting` row (ADR 0007 §2, 0042 §2); then the paused gate once more, and the pause held for this launch: refused here (the catch drops the worker); a pause after this is parked at ready
+      first = NR.isJob(w.id) ? prompt : (await MP.preface(w, ctx, prompt)) + require('./task-body.cjs').body(w.taskSpec, prompt) + require('./task-body.cjs').PROCESS_LINE + require('./task-body.cjs').toolsLine(w) + (scratch ? require('./review-scratch.cjs').firstLine(scratch) : '') + require('./review-scratch.cjs').treeLine(w.review) + (w.handbackRule || '') + (await MP.contractTail(ctx, w)) + (await NR.reviewTail(ctx, w)); await LG.refuseIfPaused(ctx.core, ctx.runId, w); // the resume line, then the memory index, against the `starting` row (ADR 0007 §2, 0042 §2); then the paused gate once more, and the pause held for this launch: refused here (the catch drops the worker); a pause after this is parked at ready
     } catch (e) {
       // The task refused the assignment (an open dependency, ADR 0013 §1; the operator's lease; no such
       // task). Nothing has launched, so the `starting` row is written `dead` before the refusal is handed
@@ -296,11 +282,11 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
         // the row to return is the store's own (`worker.get`'s pid_alive/last_event_age_ms dropped here).
         if (w.state === 'idle') {
           const { pid_alive, last_event_age_ms, ...row } = await core.worker.get({ worker_id: id });
-          return { ...row, ready_ms, permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions), ...(agent ? { agent } : {}), ...(scratch ? { scratch } : {}), ...(w.review ? { review: w.review } : {}) };
+          return { ...row, ready_ms, permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions), ...(agent ? { agent } : {}), ...(codexSurface ? { codex_surface: codexSurface } : {}), ...(scratch ? { scratch } : {}), ...(w.review ? { review: w.review } : {}) };
         }
         await failNoReady(w, `the worker reached ready but its pid ${w.pid} was no longer alive when the running row would have been written`, { ready_ms });
       }
-      return { ...written, ready_ms, permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions), ...(agent ? { agent } : {}), ...(scratch ? { scratch } : {}), ...(w.review ? { review: w.review } : {}) }; // scratch: a reviewer's folder (ADR 0054 amendment 1); agent: the model and effort used, each with its source
+      return { ...written, ready_ms, permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions), ...(agent ? { agent } : {}), ...(codexSurface ? { codex_surface: codexSurface } : {}), ...(scratch ? { scratch } : {}), ...(w.review ? { review: w.review } : {}) }; // scratch: a reviewer's folder (ADR 0054 amendment 1); agent: the model and effort used, each with its source
     });
   }
 
@@ -341,6 +327,12 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const worker_id = w.id;
     const old_pid = w.pid;
     RG.refuseIfRelaunching(w, 'restart'); // a Codex message's relaunch owns the window; this one waits its turn
+    if (w.substrate === 'codex' && appendMessage) { // before anything is stopped or written: the caller's text alone (a floor of the line) over the cap is refused with the worker untouched
+      // the branch is not known yet, so measure both shapes (resume and fresh) and take the smaller: the real line is never shorter than it
+      const shapes = [null, w.sessionId].filter((r, i) => i === 0 || r).map((resume) => LS.buildSpec(w, exeFor, { resume, prompt: appendMessage, viaStdin: true })); // the text itself goes on stdin, so only the rest of the line is measured
+      const floor = shapes.reduce((a, b) => (AL.commandLineLength(b.exe, b.args) < AL.commandLineLength(a.exe, a.args) ? b : a));
+      AL.checkCommandLine(floor.exe, floor.args, { workerId: w.id, path: 'restart' });
+    }
     // ADR 0026 amendment 2 (proposed): from here until launch() has moved w.launches, a death of this worker keeps its lease.
     const { d, hold, firstText } = await RG.relaunching(w, writeRow, async () => {
       await w.queue; // the life before's rows land first (a death meanwhile keeps the lease: relaunch-guard.cjs)
@@ -365,7 +357,15 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       if (onFirstText) onFirstText(firstText); if (!skipDeadPidKill) await LG.refuseIfPaused(ctx.core, ctx.runId, w, { restart: true }); // a run pause landing during the awaits above; a resume (skipDeadPidKill) runs while the run is still paused
 
       const resume = d.branch === 'resume' ? w.sessionId : null;
-      await launch(w, w.substrate === 'claude-code' ? { resume } : { resume, prompt: firstText });
+      try { await launch(w, w.substrate === 'claude-code' ? { resume } : { resume, prompt: firstText, path: 'restart-stopped' }); } catch (e) {
+        if (e && e.detail && e.detail.reason === 'argv_too_long' && e.detail.path === 'restart-stopped') { // the old process is stopped and none will start: a `stopped` row would keep the lease to its TTL
+          w.deathEstablishedBy = 'relaunch refused: the command line was too long, so no process was started';
+          let row = null, threw = false;
+          try { row = await writeRow(w, 'dead', { releaseLeases: true }); } catch { threw = true; /* the refusal stays the error */ }
+          AL.noteDeadWrite(e, row, threw); // what the message and detail say comes from the row the write returned, never from the attempt
+        }
+        throw e;
+      }
       return { d, hold, firstText };
     });
     let init;

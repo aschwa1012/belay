@@ -157,7 +157,7 @@ test('belay embedder verify --gpu reports a missing runtime and exits 1 without 
     assert.deepStrictEqual(fs.readdirSync(dir), []);
     const m = await cmd.run({ argv: ['fetch', '--gpu', '--model', 'onnx-community/voyage-4-nano-ONNX'] });
     assert.strictEqual(m.code, 2);
-    assert.match(m.text, /unknown embedding model/);
+    assert.match(m.text, /unknown GPU model/);
   } finally { if (saved === undefined) delete process.env.BELAY_GPU_RUNTIME; else process.env.BELAY_GPU_RUNTIME = saved; cleanup(dir); }
 });
 

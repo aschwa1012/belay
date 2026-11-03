@@ -11,6 +11,8 @@ const rows = require('./rows.cjs');
 const { pidAlive } = require('./lock.cjs');
 const G = require('./git.cjs');
 const H = require('./git-hooks.cjs');
+const T = require('./tree-guards.cjs');
+const { strayLinks } = T;
 const { isPathId, pathIdMessage } = require('./path-id.cjs');
 
 const DEFAULT_JUNCTIONS = ['node_modules'];
@@ -18,10 +20,20 @@ const TERMINAL_WORKER = new Set(['stopped', 'dead', 'forgotten']);
 
 // One create or remove per task at a time, in the owner's process (the only process that serves writes).
 const inFlight = new Set();
-async function exclusive(key, what, fn) {
+// A holder that is a removal (kind 'remove') also publishes a promise resolved in its finally, after the key is free, so the sweep can
+// wait for exactly the lock's release instead of guessing how many turns that takes.
+const releases = new Map(); // key -> { kind, released }
+async function exclusive(key, what, fn, kind) {
   if (inFlight.has(key)) throw err('E_BUSY', `${what} is already in flight; nothing was done`, { key });
   inFlight.add(key);
-  try { return await fn(); } finally { inFlight.delete(key); }
+  let release;
+  const mine = { kind, released: new Promise((r) => { release = r; }) };
+  releases.set(key, mine);
+  try { return await fn(); } finally {
+    inFlight.delete(key);
+    if (releases.get(key) === mine) releases.delete(key);
+    release();
+  }
 }
 
 // Several keys at once, all or none: a key already held refuses the call before anything is taken (task.create with trees).
@@ -157,30 +169,17 @@ function unlinkJunctions(junctions) {
 // A worker row that still works in `dir` or a directory under it: not terminal, and parked (no process, but its session will
 // resume there) or alive by its pid.
 const under = (p, dir) => { const a = G.fwd(p).replace(/\/+$/, ''), b = G.fwd(dir).replace(/\/+$/, ''); return G.samePath(a, b) || G.samePath(a.slice(0, b.length + 1), `${b}/`); };
+// A directory is compared by its recorded spelling and by real path (tree-guards.cjs); a row whose directory cannot be resolved blocks the
+// tree only when its run is live, and then carries `path_unresolved`.
 function liveWorkerIn(E, dir) {
-  return rows.currentAll(E.store, 'worker').find((w) => w.worktree && under(w.worktree, dir) && !TERMINAL_WORKER.has(w.state)
-    && (w.state === 'paused' || (w.pid != null && pidAlive(w.pid)))) || null;
-}
-
-// Every link in the tree that belay did not record (a worker's own junction, a package manager's symlink), found by lstat and
-// never followed. Each is unlinked before git removes the tree: an unlink takes the link alone and never its target, and a link
-// left in place stops git removing the directory (git exits 0 and leaves it). The .git file of a linked worktree is a file.
-function strayLinks(root, recorded) {
-  const known = new Set((recorded || []).map((j) => G.fwd(j.path).toLowerCase()));
-  const found = [], stack = [root];
-  while (stack.length) {
-    const dir = stack.pop();
-    let entries;
-    try { entries = fs.readdirSync(dir, { withFileTypes: true }); } catch { continue; }
-    for (const d of entries) {
-      const p = G.fwd(path.join(dir, d.name));
-      let st;
-      try { st = fs.lstatSync(p); } catch { continue; }
-      if (st.isSymbolicLink()) { if (!known.has(p.toLowerCase())) found.push({ path: p }); continue; }
-      if (st.isDirectory() && d.name !== '.git') stack.push(p);
-    }
+  let liveness = null;
+  for (const w of rows.currentAll(E.store, 'worker')) {
+    if (!w.worktree || TERMINAL_WORKER.has(w.state) || !(w.state === 'paused' || (w.pid != null && pidAlive(w.pid)))) continue;
+    const runLive = () => { liveness = liveness || require('./task-holds.cjs').runLiveness(E.store); return !!w.run_id && liveness(w.run_id).live; };
+    const hit = T.workerInTree(w.worktree, dir, runLive);
+    if (hit.match) return hit.unresolved ? { ...w, path_unresolved: true } : w;
   }
-  return found;
+  return null;
 }
 
 // Unlinks the junctions, removes the tree and (unless `keepBranch`, for a branch belay did not make) the branch; never throws,
@@ -318,17 +317,17 @@ async function worktreeRemove(E, caller, args) {
       if (open) throw err('E_PRECONDITION', `task ${open.id} (${open.state}) is worked in the same tree or branch ${rec.path}; finish or cancel it first`, { task_id: open.id, state: open.state, path: rec.path });
       return await removeShared(E, caller, args, task, rec);
     } finally { if (removing.get(key) === mine) removing.delete(key); finish(); }
-  });
+  }, 'remove');
 }
 
 // Removes the tree and records the removal on the task and on every task that shares the tree.
 async function removeShared(E, caller, args, task, rec) {
-  const out = await removeTree(E, rec, args, `task ${task.id}`);
+  const out = await removeTree(E, rec, { force: args.force, delete_branch: args.delete_branch, owner: task.id }, `task ${task.id}`);
   // The sweep leaves a tree git dropped but the disk kept as it is: the row still says it is there, so belay worktree remove can finish it.
   if (args.noRecordLeftover === true && out.leftover) return { ...task, removal: out };
   // No second run-open check here: the tree is already gone, and a row that still named it would be the false one.
   const row = E.store.tx(() => {
-    const done = { ...rec, removed_at: Date.now(), removed_by: E.writtenBy(caller), forced: out.forced, already_gone: out.already_gone, branch_deleted: out.branch_deleted, leftover: out.leftover };
+    const done = { ...rec, removed_at: Date.now(), removed_by: E.writtenBy(caller), forced: out.forced, already_gone: out.already_gone, branch_deleted: out.branch_deleted, leftover: out.leftover, ...(out.kept_by ? { kept_by: out.kept_by } : {}) };
     for (const s of sharers(E, task.id, rec.path)) rows.append(E.store, 'task', { ...s, worktree: { ...s.worktree, ...done, inherited_from: s.worktree.inherited_from, removed_through: task.id } }, E.writtenBy(caller), Date.now());
     const fresh = rows.current(E.store, 'task', task.id);
     return rows.append(E.store, 'task', { ...fresh, worktree: done }, E.writtenBy(caller), Date.now());
@@ -352,19 +351,36 @@ async function assertOnBranch(rec, what) {
 }
 
 // task.worktreeSweep's removal of one task's tree (ADR 0065): the same exclusion and record as task.worktreeRemove, without force.
-// Null when the task has no tree to remove now.
+// Null when the task has no tree to remove now; { removed_elsewhere, removed_through } when another call removed it first.
 async function removeForSweep(E, caller, task0) {
-  return exclusive(`task:${task0.id}`, `a worktree call for task ${task0.id}`, async () => {
-    const task = requireTask(E, task0.id, 'task.worktreeSweep');
-    const rec = active(task);
-    if (!rec) return null;
+  // A removal through this very task holds its per-task lock, which would refuse the sweep as E_BUSY. Wait for the lock's release
+  // (a removal waits only on removal claims, never on the sweep, so there is no cycle). Any other holder, a create, still refuses.
+  const lockKey = `task:${task0.id}`;
+  let waited = false;
+  while (releases.has(lockKey) && releases.get(lockKey).kind === 'remove') { waited = true; await releases.get(lockKey).released; }
+  const elsewhere = (t, by) => ({ removed_elsewhere: true, removed_through: (t.worktree && t.worktree.removed_through) || by || t.id });
+  return exclusive(lockKey, `a worktree call for task ${task0.id}`, async () => {
+    let task = requireTask(E, task0.id, 'task.worktreeSweep');
+    let rec = active(task);
+    if (!rec) return waited ? elsewhere(task) : null;
+    const key = G.fwd(rec.path).toLowerCase();
+    // A sharer's removal of this tree in flight is waited for, as task.worktreeRemove does: the sweep then finds the tree
+    // removed or, if that removal failed, removes it itself. Waiting reports the tree's true end state; skipping would not.
+    while (removing.has(key)) {
+      const by = removing.get(key).task_id;
+      await removing.get(key).done.catch(() => {});
+      task = requireTask(E, task0.id, 'task.worktreeSweep');
+      rec = active(task);
+      if (!rec) return elsewhere(task, by);
+    }
     const open = openSharer(E, task);
     if (open) throw err('E_PRECONDITION', `task ${open.id} (${open.state}) is worked in the same tree or branch ${rec.path}`, { task_id: open.id, state: open.state, path: rec.path });
-    const key = G.fwd(rec.path).toLowerCase();
+    // Claimed in this turn, before any await, so a call that arrives from here on waits for this one.
     let finish;
-    removing.set(key, { task_id: task.id, done: new Promise((r) => { finish = r; }) });
-    try { return await removeShared(E, caller, { force: false, noRecordLeftover: true }, task, rec); } finally { removing.delete(key); finish(); }
-  });
+    const mine = { task_id: task.id, done: new Promise((r) => { finish = r; }) };
+    removing.set(key, mine);
+    try { return await removeShared(E, caller, { force: false, noRecordLeftover: true }, task, rec); } finally { if (removing.get(key) === mine) removing.delete(key); finish(); }
+  }, 'remove');
 }
 
 // The shared removal (a task's tree, or an integration's): refuses a live worker in it and a dirty tree unless force,
@@ -385,8 +401,17 @@ async function removeTree(E, rec, args, what) {
     const dirty = await G.dirtyPaths(rec.path);
     if (dirty.length && args.force !== true) throw err('E_PRECONDITION', `${what}'s worktree has ${dirty.length} uncommitted path(s); commit them, or pass force to discard them`, { path: rec.path, dirty: dirty.slice(0, 50) });
     if (rec.branch && args.force !== true) await assertOnBranch(rec, what);
+    // Nothing is touched until the walk has read every directory and the head is pinned (ADR 0065 amendment 3): a tree whose links
+    // cannot all be found, or whose head cannot be kept by a ref, stays. The walk is repeated just before git, after the unlinks.
+    const stray = strayLinks(rec.path, rec.junctions);
+    if (args.noPin !== true) {
+      if (!args.owner) throw err('E_INTERNAL', `a removal of ${what}'s worktree named no owner for its pin`);
+      out.kept_by = await T.pinHead(rec, args.owner);
+    }
     out.junctions_unlinked = unlinkJunctions(rec.junctions);
-    out.links_unlinked = unlinkJunctions(strayLinks(rec.path, rec.junctions));
+    out.links_unlinked = unlinkJunctions(stray);
+    const late = strayLinks(rec.path, rec.junctions);
+    if (late.length) out.links_unlinked.push(...unlinkJunctions(late));
     const r = await G.run(rec.repo, ['worktree', 'remove', ...(args.force === true ? ['--force'] : []), '--', rec.path]);
     // A failed remove that git still lists can be retried, so it is refused. One git has dropped (it deleted part of the tree,
     // then a file it could not delete stopped it) can never be retried: the removal is recorded, and what was left is named.

@@ -121,8 +121,27 @@ function createRunPauseControl({ runId, core, hook, pauseWorker, resumeWorker, s
     const alreadyParkedRows = await pausedRows();
     const already_parked = alreadyParkedRows.map((w) => w.id);
 
+    // The two store awaits above yield; the idle rule or the timeout can begin closing the run meanwhile, and
+    // `hook.pause` (what makes the hold read paused) has not run yet. Re-check before and after the row write.
+    const exitedAfterRows = refuseIfExited();
+    if (exitedAfterRows) return exitedAfterRows;
     const pausedAt = Date.now();
     await core.run.setPaused({ paused: true, at: pausedAt, by });
+    const exitedAfterWrite = refuseIfExited();
+    if (exitedAfterWrite) {
+      exitedAfterWrite.catch(() => {}); // held across the undo's await; returned (or replaced) below, so it must not read as unhandled
+      // Undo the row write so a run that is closing does not read paused; an ended run clears its own pause,
+      // so any other failure is named in the refusal: the row may be left paused.
+      try { await core.run.setPaused({ paused: false }); } catch (e) {
+        if (!(e && e.code === 'E_ARGS')) {
+          const left = new Error(`the run (${runId}) is finishing and its pause could not be undone; the row may be left paused: ${(e && e.message) || e}`);
+          left.code = 'E_NOT_FOUND';
+          left.detail = { phase: 'finishing', row_left_paused: true, undo_error: (e && e.code) || null };
+          return Promise.reject(left);
+        }
+      }
+      return exitedAfterWrite;
+    }
     if (interactive) interactivePaused = true; // from here the wake publisher holds its wakes
     const { interrupt, timeout } = await interruptOrchestrator(by);
 

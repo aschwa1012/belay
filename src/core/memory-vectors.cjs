@@ -248,7 +248,7 @@ function warnUnrenderable(r) {
   try { process.emitWarning(`memory row ${r.id} has no renderable text, so no embedder can embed it; it is left out of every heavy backlog`, { code: 'BELAY_UNRENDERABLE_ROW' }); } catch { /* a warning is a courtesy */ }
 }
 
-function scan(db, tier, { namespaces, includeSuperseded = false, at = Date.now(), hidden = null, bodyLive = false } = {}) {
+function scan(db, tier, { namespaces, includeSuperseded = false, at = Date.now(), hidden = null, bodyLive = false, exempt = null } = {}) {
   needTable(db);
   const out = { rows: [], missing: [] };
   if (!namespaces || !namespaces.length) return out;
@@ -256,6 +256,7 @@ function scan(db, tier, { namespaces, includeSuperseded = false, at = Date.now()
   const k = keyOf(tier), get = db.prepare(VEC_BY_KEY);
   for (const r of visibleRows(db, { namespaces, includeSuperseded, at })) {
     if (skip && skip.has(r.id)) continue;
+    if (exempt && exempt(r)) continue; // a turn row this run's heavy tier leaves out, embedded or not
     if (bodyLive && !gate.bodyLive(r)) continue; // as search does after ranking, for a gated caller
     const found = lookup(get, k, r);
     if (found) out.rows.push({ id: r.id, namespace: r.namespace, ...found });

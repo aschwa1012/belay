@@ -3,7 +3,7 @@
 // can be tested. The record is written at once and a register that cannot be written throws (the orchestrator runner ends the child
 // before its first prompt: a launch that fails open would leave other stores taking its descendants for operators). It is then
 // stamped while the orchestrator hook says the child has not exited (the run's own exit facts, never a bare pid check), so a run
-// process that dies without its exit handler leaves a record that closes at the last stamp and not at the spawn. At the run
+// process that dies without its exit handler leaves a record that closes near the last stamp and not near the spawn. At the run
 // process's exit the stamp stops and the record is unregistered.
 
 const SR = require('../core/spawn-register.cjs');
@@ -13,7 +13,7 @@ const { stampWhile } = require('./seen-stamp.cjs');
 function registerOrchestrator(h, { dataDir, proc = process, register = SR, stamp = stampWhile, stampOpts = {} } = {}) {
   const pid = h && h.pid;
   if (!Number.isInteger(pid)) return null;
-  // The stamp follows the hook's own exit facts. A hook without them would stamp nothing, and the record would then close at the spawn
+  // The stamp follows the hook's own exit facts. A hook without them would stamp nothing, and the record would then close soon after the spawn
   // (a fail-open): refuse, so a renamed key cannot silently stop the stamping.
   if (typeof h.exited !== 'function') throw new Error(`the orchestrator hook (pid ${pid}) has no exited() function, so its spawn register record could not be stamped while it lives`);
   const spawnedAt = Date.now();

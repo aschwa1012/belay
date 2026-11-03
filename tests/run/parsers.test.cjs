@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // Parsers against stream lines captured from the real binaries, not against invented ones.
 // Fixtures were written by tests/run/measure/capture-fixtures.cjs:
 //   claude-stream.jsonl  Claude Code 2.1.258, -p --input-format stream-json, two user messages

@@ -6,7 +6,7 @@ import type { BelayMenu, BelayMenuModel, BelayPanelMenu, BelayPanelUi } from '..
 import { fitSegs, type Seg } from './model'
 import { CONFIRM_MS } from './held'
 import {
-  actionId, bytesText, CAP_PRESETS, DEPTH_PRESETS, draftOf, embedLine, fetchLine, gb, MEM_TABS, probeLine, profileText, routeFit, runtimeLine, sameDraft, type MemAction,
+  actionId, bytesText, CAP_PRESETS, DEPTH_PRESETS, downloadLine, draftOf, embedLine, gb, MEM_TABS, probeLine, profileText, routeFit, runtimeLine, sameDraft, type MemAction,
 } from './memory'
 import { cells, clipCells, wrapHard } from './wrap'
 import { FreeRow } from './longtext'
@@ -131,11 +131,11 @@ function ModelRow({ E, menu, m, ui, now, cols, act }: { E: Els; menu: BelayMenu;
     <Box key={`m-${m.id}`} flexDirection="column">
       <Row E={E} w={cols} k={`ml-${m.id}`} segs={[{ t: m.label, bold: true }, { t: ` · ${bytesText(m.bytes)} · ${vram} · `, dim: true }, m.state === 'ready' ? { t: 'ready', c: 'success' } : { t: 'download', c: 'warning' }, ...(m.inUse ? [{ t: ' · in use', dim: true }] : [])]} />
       <Box paddingLeft={2}>
-        {m.state === 'download' && <Button key={`fetch:${m.id}`} plain label="[download] " onPress={press(act, { kind: 'cmd', line: fetchLine(m) })} />}
+        {m.state === 'download' && <Button key={`fetch:${m.id}`} plain label="[download: shows command] " onPress={press(act, { kind: 'cmd', line: downloadLine(menu, m) })} />}
         {m.state === 'ready' && <Button key={`verify:${m.id}`} plain label={asked(ver) ? '[verify: press again] ' : '[verify] '} onPress={press(act, ver)} />}
         {m.state === 'ready' && <Button key={`delete:${m.id}`} plain label={asked(del) ? '[delete: press again] ' : '[delete…] '} onPress={press(act, del)} />}
         {m.heavy && m.state === 'ready' && <Row E={E} w={Math.max(8, cols - 30)} k={`bl-${m.id}`} segs={[{ t: m.backlog === null ? `backlog not counted${menu.backlogReason ? ` (${menu.backlogReason})` : ''} ` : `backlog ${m.backlog} `, c: (m.backlog ?? 0) > 0 ? 'warning' : undefined, dim: (m.backlog ?? 0) === 0 }]} />}
-        {m.heavy && m.state === 'ready' && m.backlog !== null && m.backlog > 0 && <Button key={`embed:${m.id}`} plain label="[embed now]" onPress={press(act, { kind: 'cmd', line: embedLine(menu, m) })} />}
+        {m.heavy && m.state === 'ready' && m.backlog !== null && m.backlog > 0 && <Button key={`embed:${m.id}`} plain label="[embed now: shows command]" onPress={press(act, { kind: 'cmd', line: embedLine(menu, m) })} />}
       </Box>
     </Box>
   )
@@ -160,7 +160,7 @@ function Models(c: MCtx & { menu: BelayMenu }) {
       <Row E={E} w={cols} k="mrt" segs={[{ t: 'GPU runtime', bold: true }, { t: ' · ', dim: true }, g.runtimeOk ? { t: 'installed', c: 'success' } : { t: g.runtimeInstalled ? 'installed but wrong' : 'not installed', c: 'warning' }]} />
       <Box paddingLeft={2}>
         {g.runtimeInstalled && <Button key="runtime:verify" plain label={asked ? '[verify: press again] ' : '[verify] '} onPress={press(act, rv)} />}
-        {!g.runtimeOk && <Button key="runtime:install" plain label="[install]" onPress={press(act, { kind: 'cmd', line: runtimeLine(menu) })} />}
+        {!g.runtimeOk && <Button key="runtime:install" plain label="[install: shows command]" onPress={press(act, { kind: 'cmd', line: runtimeLine(menu) })} />}
       </Box>
       <Row E={E} w={cols} k="mdisk" segs={[{ t: `disk used by models ${bytesText(menu.diskBytes)} in ${menu.diskModels} model${menu.diskModels === 1 ? '' : 's'}`, dim: true }]} />
     </Box>

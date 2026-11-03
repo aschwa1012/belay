@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // note-chances.test.cjs — the run side of the notes sink record: the parser adds `shown` to a memory_search /
 // memory_retrieve tool result, and the worker hook hands the core what the stream showed when the hand-back succeeds.
 

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // gpu-smoke.cjs — a real run of the GPU tier on this machine. NOT part of npm test: it installs the runtime with
 // npm, loads real models on the GPU and needs the bench GGUF files.
 // Usage: node tests/smoke/gpu-smoke.cjs <bench models dir> <receipt dir> <notes.json>

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // note-review-closing.test.cjs — a review task's verdicts and the close, through the real afterTurn and lifecycle.shutdown (a fake core, no sleeps):
 //   C1  a turn that ends after the close began (closing set) starts no application: nothing is marked applied, and the store-only sweep applies it;
 //   C2  a failure receipt after the owner is marked gone is never written (it would elect a new owner);

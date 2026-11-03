@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // spawn-stop-before-launch.test.cjs — a stop that lands while a spawn is still before its launch. The stop finds no process and writes
 // `stopped`; the spawn must then refuse to launch (no process, the row stays `stopped`). Seam: the real assignment inside the memory
 // preface stalls on a deferred, so the spawn is parked between its worker record and its launch. No timing.

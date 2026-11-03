@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1'; // ADR 0034: a run here has no model to warm
 // run-register.test.cjs — ADR 0045 decision 4, the headless orchestrator's record in the machine-wide spawn register. A register
 // that cannot be written must not leave the orchestrator running unrecorded: another store's owner would take its descendants for

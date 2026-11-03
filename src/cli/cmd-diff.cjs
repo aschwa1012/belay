@@ -46,7 +46,7 @@ function parseSince(v) {
 }
 
 function descriptorOf(table, row) {
-  if (table === 'run') return `epoch ${row.epoch}`;
+  if (table === 'run') { const h = require('../core/run-harness.cjs').parsed(row.harness); return `epoch ${row.epoch}${h && h.build ? ` build ${h.build}` : ''}`; } // ADR 0082: a build change between epochs reads as one
   if (table === 'lease') return `holder ${row.holder}`;
   if (table === 'checkpoint') return `source ${row.source}`;
   return `state ${row.state}`; // worker, task
@@ -118,6 +118,10 @@ async function run(ctx) {
         if (parsed.runId) {
           runId = parsed.runId; runIdSource = 'argument';
           chosen = runs.find(r => r.id === parsed.runId) || null;
+          if (!chosen) {
+            const message = `no run row exists for ${parsed.runId}; list runs with belay status`;
+            return { code: 1, text: `belay diff: ${message}\n`, json: { error: { code: 'E_NOT_FOUND', message, run_id: parsed.runId } } };
+          }
         } else if (runs.length) {
           chosen = runs.find(r => r.alive) || runs[0];
           runId = chosen.id; runIdSource = 'run.list';
@@ -142,4 +146,4 @@ async function run(ctx) {
   }
 }
 
-module.exports = { run };
+module.exports = { run, descriptorOf };

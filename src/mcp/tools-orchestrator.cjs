@@ -15,7 +15,7 @@ const ORCHESTRATOR = [
       prompt: str('Without task_id, the first message. With it, instructions added after the task\'s spec'),
       task_id: str('Assign this task once ready; belay sends its resume line, then its spec'),
       model: str(),
-      agent_type: { type: 'string', enum: WORKER_TYPES, description: 'Configured model, effort and tools' },
+      agent_type: { type: 'string', enum: WORKER_TYPES, description: 'Configured model, effort and tools; a researcher has no shell by default' },
       effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
       memory_queries: strs('Up to 4 task lines naming the situations the worker will be in, each max 160 bytes'),
       allowed_tools: strs(),

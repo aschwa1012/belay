@@ -54,26 +54,35 @@ async function run(ctx) {
 
   const core = await openCore({ dataDir, caller: { role: 'operator', run_id: parsed.runId || 'cli', pid: process.pid } });
   try {
-    let runId = parsed.runId;
-    let runIdSource = parsed.runId ? 'argument' : null;
-    if (!runId) {
-      const { runs } = await core.run.list({});
-      if (runs.length) {
-        // Fix round: prefer the run flagged alive over the newest written row, same rule as
-        // cmd-status.cjs — see the comment there.
-        const chosen = runs.find(r => r.alive) || runs[0];
-        runId = chosen.id; runIdSource = 'run.list';
-      } else runIdSource = 'none';
-    }
-    const { workers: everyWorker } = await core.worker.list({});
-    const workers = parsed.all ? everyWorker : (runId ? everyWorker.filter(w => w.run_id === runId) : []);
-    const owner = core.ownerInfo();
-    const receipt = {
-      run_id: parsed.all ? null : (runId || null),
-      run_id_source: parsed.all ? 'all' : runIdSource,
-      workers, owner,
-    };
-    return { code: 0, text: renderText(workers), json: receipt };
+    return await core.readBatch(async () => { // one store copy for every read below
+      let runId = parsed.runId;
+      let runIdSource = parsed.runId ? 'argument' : null;
+      if (parsed.runId && !parsed.all) {
+        const { runs } = await core.run.list({});
+        if (!runs.some(r => r.id === parsed.runId)) {
+          const message = `no run row exists for ${parsed.runId}; list runs with belay status`;
+          return { code: 1, text: `belay workers: ${message}\n`, json: { error: { code: 'E_NOT_FOUND', message, run_id: parsed.runId } } };
+        }
+      }
+      if (!runId) {
+        const { runs } = await core.run.list({});
+        if (runs.length) {
+          // Fix round: prefer the run flagged alive over the newest written row, same rule as
+          // cmd-status.cjs — see the comment there.
+          const chosen = runs.find(r => r.alive) || runs[0];
+          runId = chosen.id; runIdSource = 'run.list';
+        } else runIdSource = 'none';
+      }
+      const { workers: everyWorker } = await core.worker.list({});
+      const workers = parsed.all ? everyWorker : (runId ? everyWorker.filter(w => w.run_id === runId) : []);
+      const owner = core.ownerInfo();
+      const receipt = {
+        run_id: parsed.all ? null : (runId || null),
+        run_id_source: parsed.all ? 'all' : runIdSource,
+        workers, owner,
+      };
+      return { code: 0, text: renderText(workers), json: receipt };
+    });
   } catch (e) {
     const detail = { code: e.code || 'E_INTERNAL', message: e.message };
     return { code: 1, text: `belay workers: ${e.message}\n`, json: { error: detail } };

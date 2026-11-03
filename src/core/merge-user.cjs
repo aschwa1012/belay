@@ -98,7 +98,7 @@ async function mergeIntoUser(E, caller, args, c) {
     try {
       const reuse = INC.reuseFor(E, repo, into, merged, (await G.dirtyPaths(tree.path)).length === 0);
       const endSpan = EC.beginSpan(`integration ${id}`);
-      try { out.checks = await rerun(args.evaluate === false ? [] : tasks.filter((t) => entries.some((m) => m.task_id === t.id)), tree.path, reuse, merged, (a, b) => EC.during(`integration ${id}`, a, b), extra, until); } finally { endSpan(); }
+      try { out.checks = await rerun(args.evaluate === false ? [] : tasks.filter((t) => entries.some((m) => m.task_id === t.id)), tree.path, reuse, merged, (a, b) => EC.during(`integration ${id}`, a, b), extra, until, E.store); } finally { endSpan(); }
       out.passed = out.checks.length > 0 ? out.checks.every((x) => x.passed) : null;
       ran = out.checks.length > 0;
     } catch (e) {
@@ -135,7 +135,7 @@ async function mergeIntoUser(E, caller, args, c) {
   let removal = null, removedAt = null;
   treeGone = true; // removeTree below owns the tree from here
   try {
-    removal = await W.removeTree(E, { repo, path: tree.path, junctions: tree.junctions, branch: null }, { force: true }, `integration ${id}`);
+    removal = await W.removeTree(E, { repo, path: tree.path, junctions: tree.junctions, branch: null }, { force: true, noPin: true }, `integration ${id}`);
     removedAt = removal.leftover ? null : Date.now();
   } catch (e) {
     out.error = { ...(out.error || {}), tree_not_removed: `${tree.path} could not be removed (${e.message}); belay worktree remove --integration ${id} will` };
@@ -146,7 +146,7 @@ async function mergeIntoUser(E, caller, args, c) {
   E.noteWrite();
   return { ...view(row), checked: ran, ...(ran ? {} : { note: 'no checks ran' }), merge_commits: entries.map((m) => m.head_sha).filter(Boolean), ...(removal ? { removal } : {}) };
   } catch (e) { // a throw outside the guarded steps: the temporary tree and the open `merging` row do not outlive the call
-    if (!treeGone) { try { await W.removeTree(E, { repo, path: tree.path, junctions: tree.junctions, branch: null }, { force: true }, `integration ${id}`); } catch (_) { /* the error below is the one reported */ } }
+    if (!treeGone) { try { await W.removeTree(E, { repo, path: tree.path, junctions: tree.junctions, branch: null }, { force: true, noPin: true }, `integration ${id}`); } catch (_) { /* the error below is the one reported */ } }
     if (wrote) { // what is true now, read back: the branch and the prepared ref may have moved before the throw
       try {
         const cur = await G.run(repo, ['rev-parse', '--verify', '--quiet', `refs/heads/${into}^{commit}`]);

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // relaunch-drain.test.cjs — ADR 0026 amendment 2 decisions 4 and 6: a relaunch (a restart, a Codex turn) of a worker whose old life
 // dies while the relaunch is under way runs on the lease it asked about. Before, a dead row landing after task.ensureHold answered
 // `run_live` released the lease and opened the task, and the worker ran on with no lease and nothing saying so. The relaunch now

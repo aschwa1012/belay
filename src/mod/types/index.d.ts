@@ -204,6 +204,8 @@ export type BelayMenu = {
   backlogReason: string | null
   diskBytes: number
   diskModels: number
+  /** Ids of the runs that are live now (`belay memory menu --json` live_runs). */
+  liveRuns: string[]
 }
 /** The Memory menu's last read: the facts, or why there are none. */
 /** `behind` is the main page badge: set by the full menu read and by the light `--badge` read between menu visits. */

@@ -93,7 +93,7 @@ test('the register read without a snapshot closes a dead record at its last-seen
     const dead = deadPid();
     putRecord(dir, { pid: dead, created: NOW - 3 * H, at: NOW - 3 * H + 500, seen_at: NOW - 2 * H });
     assert.deepStrictEqual(SR.list(), []);
-    assert.strictEqual(SR.tombstones().find((t) => t.pid === dead).until, NOW - 2 * H);
+    assert.strictEqual(SR.tombstones().find((t) => t.pid === dead).until, NOW - 2 * H + 2 * SR.SEEN_REFRESH_MS, 'two stamp periods past the stamp');
   });
 });
 
@@ -119,7 +119,9 @@ test('a headless orchestrator whose run process died is covered up to its last s
     const shot = snapOf({ 99001: { ppid: pid, created: s4 + H, image: 'node.exe' } });
     const chain = [{ pid: 99001, created: s4 + H }];
     const match = () => OC.spawnedMatch(chain, spawned({ snap: shot, persist: false }).concat(Prov.refresh(shot, { persist: false }).alive));
-    assert.strictEqual(match(), null, 'never stamped: the record closes at its spawn, the case the stamp timer exists for');
+    assert.strictEqual(match(), null, 'never stamped: the record closes 60 s after it was written, so an orphan made an hour in is outside it');
+    const early = snapOf({ 99002: { ppid: pid, created: s4 + 30000, image: 'node.exe' } });
+    assert.ok(OC.spawnedMatch([{ pid: 99002, created: s4 + 30000 }], spawned({ snap: early, persist: false }).concat(Prov.refresh(early, { persist: false }).alive)), 'one made 30 s in is covered');
     assert.strictEqual(SR.touch(pid, s4 + 3.5 * H), true, 'the run process timer, 3.5 h in');
     assert.ok(match(), 'stamped: the orphan made an hour in is a descendant');
   });

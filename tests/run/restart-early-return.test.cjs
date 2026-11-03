@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // restart-early-return.test.cjs — ADR 0048: over MCP a restart answers inside MCP_TOOL_TIMEOUT. With a budget the call is
 // not held by a slow stop or relaunch or by a first turn that does not end: it returns `not ready yet` with
 // first_turn_awaited false, and worker_wait sees the worker come up. Both slow paths are injected (a held row write, a

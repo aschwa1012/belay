@@ -3,7 +3,7 @@
 // payload from stdin; a call that would write the root of the current drive's `\tmp` is answered with a deny that names the
 // session's own temp dir, anything else with nothing. A payload that cannot be read is allowed: the hook never fails a tool
 // call by itself.
-const { refusal, denyOutput } = require('./tmp-guard.cjs');
+const { refusal, denyOutput } = require('../../../src/run/tmp-guard.cjs');
 
 let raw = '';
 let done = false;

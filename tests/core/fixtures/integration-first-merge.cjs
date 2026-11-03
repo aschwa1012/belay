@@ -18,7 +18,9 @@ const git = (cwd, ...a) => { const r = spawnSync('git', a, { cwd, encoding: 'utf
   const top = git(repo, 'rev-parse', '--show-toplevel');
   const orch = await openCore({ dataDir: `${base}/data`, caller: { role: 'orchestrator', run_id: 'r', pid: process.pid }, embed: false, ownerOpts: { longLived: true } }); // a long-lived owner starts the probe
   const op = await openCore({ dataDir: `${base}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
-  await orch.run.attach({ adapter_pid: process.pid });
+  const launcher = await openCore({ dataDir: `${base}/data`, caller: { role: 'operator', run_id: 'r', pid: process.pid }, embed: false }); // cross_run_merge is the launching process's to state
+  await launcher.run.attach({ adapter_pid: process.pid, cross_run_merge: true });
+  await launcher.close();
   await require('../worktree-helpers.cjs').stageRuns(`${base}/data`, ['receipt']);
   const t = await orch.task.create({ spec: 'a', acceptance: { commands: [{ argv: [process.execPath, '-e', "require('fs').accessSync('a.txt')"] }] } });
   const w = (await op.task.worktreeCreate({ task_id: t.id, repo: top, junction: [] })).worktree;

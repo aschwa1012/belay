@@ -113,9 +113,10 @@ async function run(w, ctx, ev) {
       // ADR 0058 decision 8: the stop waits for the worker's queue itself, and this is not on it.
       if (row.state === 'done' && ctx.stopIdleOnDone && ctx.manager && !ev.cancelled) { out[out.length - 1].stop_idle_on_done = true; w.idleStopping = ctx.manager.idleStop(row).then((r) => { if (r) w.idleStop = r; }, () => {}); }
     } catch (e) {
-      recordFailure(ctx, w, t.id, e && e.detail && e.detail.cancelled ? 'E_CANCELLED' : (e && e.code) || 'E_INTERNAL', (e && e.message) || e, ev.turn);
+      const reason = e && e.detail && e.detail.reassigned ? 'the task was re-assigned while its checks ran' : (e && e.message) || e;
+      recordFailure(ctx, w, t.id, e && e.detail && e.detail.cancelled ? 'E_CANCELLED' : (e && e.code) || 'E_INTERNAL', reason, ev.turn);
       out.push(e && e.detail && e.detail.cancelled ? { task_id: t.id, cancelled: true, by: e.detail.by || ev.cancelled }
-        : { task_id: t.id, error: (e && e.code) || 'E_INTERNAL', message: String((e && e.message) || e).slice(0, 200) });
+        : { task_id: t.id, error: (e && e.code) || 'E_INTERNAL', message: String(reason).slice(0, 200) });
     }
   }
   ev.done = true; // in the same tick the loop ends: from here a later hand-back starts a new chain instead of joining this one
@@ -356,4 +357,14 @@ function evaluatingHolds(seen, rows, runId) {
   return [...pending].filter(([, p]) => live.has(p.worker_id)).map(([id]) => `eval:${id}`).concat(held);
 }
 
-module.exports = { __recordFailure: recordFailure, unevaluated, notePending, evaluatingHolds, startRelease, cancelEvaluation, evalOf, enrichWakes, clause, turnEndText, summaryOf, workOf, cut, holdMs, WAKE_TEXT_MAX, PENDING_MAX_MS, RELEASE_WAKE_HOLD_MS };
+// The turn_end wakes still held for their evaluation when a run ends, removed from `seen.held`: the caller records each as
+// suppressed with its reason, so no wake found is left out of the receipt.
+function drainHeld(seen) {
+  const held = seen && seen.held;
+  if (!held || !held.size) return [];
+  const evs = [...held.values()].map((h) => h.ev);
+  held.clear();
+  return evs;
+}
+
+module.exports = { __recordFailure: recordFailure, unevaluated, notePending, evaluatingHolds, drainHeld, startRelease, cancelEvaluation, evalOf, enrichWakes, clause, turnEndText, summaryOf, workOf, cut, holdMs, WAKE_TEXT_MAX, PENDING_MAX_MS, RELEASE_WAKE_HOLD_MS };

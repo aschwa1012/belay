@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // cli-budgets.test.cjs — build step 0018-gate-2,
 // implementing ADR 0018 amendment 1. Every spawned-process budget gate lives here, in a directory
 // package.json's four `test` globs do not reach: `npm test` runs this file in a second, sequential

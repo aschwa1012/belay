@@ -12,6 +12,11 @@ const KG = require('../../src/run/kill-guard.cjs');
 const L = require('../../src/run/launch.cjs');
 
 const REFUSED = [
+  'Set-Location C:\\\ntaskkill /F /IM node.exe', // a PowerShell path ends in a backslash: two commands
+  'cd C:\\work\\\ntaskkill /F /IM node.exe',
+  'taskkill \\\n  /F /IM node.exe', // bash line continuation
+  'taskkill `\n  /F /IM node.exe', // PowerShell line continuation
+  'taskkill /F \\\r\n /IM node.exe',
   'taskkill /F /IM node.exe',
   'taskkill //F //IM node.exe',
   'TASKKILL /f /im node.exe /t',
@@ -118,7 +123,7 @@ test('the refusal is one line and says the pid rule', () => {
   assert.match(KG.MESSAGE, /exact pid/);
 });
 
-const HOOK = path.join(__dirname, '..', '..', 'src', 'run', 'kill-hook.cjs');
+const HOOK = path.join(__dirname, '..', '..', 'src', 'run', 'guard-hook.cjs');
 function runHook(input) { return spawnSync(process.execPath, [HOOK], { input, encoding: 'utf8', timeout: 10000 }); }
 
 test('the hook process answers a refused Bash command with a PreToolUse deny and exit 0', () => {
@@ -150,8 +155,9 @@ test('worker settings and the headless orchestrator settings carry the hook; the
     for (const f of [w.settingsPath, o.settingsPath]) {
       const h = hooksOf(f);
       assert.deepStrictEqual(Object.keys(h), ['PreToolUse']);
-      assert.strictEqual(h.PreToolUse[0].matcher, 'Bash|PowerShell');
-      assert.match(h.PreToolUse[0].hooks[0].command, /kill-hook\.cjs"$/);
+      assert.strictEqual(h.PreToolUse.length, 1, 'one hook process per call');
+      assert.strictEqual(h.PreToolUse[0].matcher, 'Bash|PowerShell|Write|Edit|MultiEdit|NotebookEdit');
+      assert.match(h.PreToolUse[0].hooks[0].command, /guard-hook\.cjs"(?: --push)?$/);
       assert.ok(h.PreToolUse[0].hooks[0].timeout <= 10);
     }
     assert.strictEqual(hooksOf(i.settingsPath), undefined, "the interactive orchestrator is the operator's own session");

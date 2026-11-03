@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // worker-id-path.test.cjs — a worker id becomes a directory under the data dir, so one grammar guards it at the MCP boundary,
 // RunManager.spawn, the core worker write and the layout join. A traversal id writes nothing: no directory, no row, and the
 // repo's settings file is untouched.

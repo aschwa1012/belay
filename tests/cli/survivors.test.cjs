@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 process.env.BELAY_TEST_MODE = '1';
 // survivors.test.cjs — the run-close e2e's final sweep checks survival by {pid, created}. A real survivor
 // (the pid held by the process the row recorded) is reported with its image and creation time; a reused pid

@@ -242,6 +242,8 @@ class Parser {
             // substrate's own event, never from what was asked for.
             permission_mode: j.permissionMode || null,
             claude_code_version: j.claude_code_version || null,
+            // The auth source the session started with ("none" is the subscription); ready.cjs refuses anything else.
+            api_key_source: typeof j.apiKeySource === 'string' ? j.apiKeySource : null,
             model: j.model || null, // build step W2-3: the model the session actually started with
           },
           rawType

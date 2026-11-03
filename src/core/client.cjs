@@ -187,9 +187,10 @@ class Client {
     const sock = this.sock;
     const p = (async () => {
       let ok = false;
-      try { const r = await this.call('ping', { caller: this.opts.caller, verify_operator: true }, { timeoutMs: VERIFY_OPERATOR_MS }); ok = !!(r && r.operator_verified === true); }
+      let reason = null;
+      try { const r = await this.call('ping', { caller: this.opts.caller, verify_operator: true }, { timeoutMs: VERIFY_OPERATOR_MS }); ok = !!(r && r.operator_verified === true); reason = ok ? null : (r && typeof r.operator_reason === 'string' ? r.operator_reason : null); }
       catch { ok = false; }
-      if (this.sock === sock) { if (ok) this._opChecked = true; if (this._opVerifying === p) this._opVerifying = null; }
+      if (this.sock === sock) { this._opReason = reason; if (ok) this._opChecked = true; if (this._opVerifying === p) this._opVerifying = null; }
       return ok;
     })();
     this._opVerifying = p;
@@ -271,7 +272,7 @@ class Client {
   }
 
   _unverified(method) {
-    return err('E_UNBOUND', `${method}: the operator check did not vouch for this connection (the owner could not read the host's connection table or process snapshot, or refused); the read was not made as the anonymous worker, whose answer hides rows the operator may read. Retry; the check is asked again`, { reason: 'operator_check', method, role: 'operator' });
+    return err('E_UNBOUND', `${method}: the operator check did not vouch for this connection (${this._opReason ? `the owner said: ${this._opReason}` : "the owner could not read the host's connection table or process snapshot, or refused"}); the read was not made as the anonymous worker, whose answer hides rows the operator may read. Retry; the check is asked again`, { reason: 'operator_check', method, role: 'operator', ...(this._opReason ? { operator_reason: this._opReason } : {}) });
   }
 
   _send(method, params, opts = {}) {

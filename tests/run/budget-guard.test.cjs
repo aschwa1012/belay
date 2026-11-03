@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // budget-guard.test.cjs — the run process's budget guard against a spy core: the soft threshold, the pause reason, the recorded
 // detail, a task breach, idempotence, the orchestrator's cost, the one wake, and what a resume of a budget pause needs.
 

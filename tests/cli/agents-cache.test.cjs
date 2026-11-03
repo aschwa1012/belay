@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // agents-cache.test.cjs — ADR 0036 amendment 1 sections 4 and 5. The prompt-cache timer, the task, the
 // display state and the run's mode of `belay agents`. The derivations are driven in process with an
 // injected `now` over fixture stream files; one subprocess test plants rows in a sandbox store.

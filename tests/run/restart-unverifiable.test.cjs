@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // restart of an adopted worker whose old process cannot be proven (no creation time at spawn, or no time and the wrong image)
 // must refuse and launch nothing: a second process on the same session would race the one that may still be running.
 const test = require('node:test');

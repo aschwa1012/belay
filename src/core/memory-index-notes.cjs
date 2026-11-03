@@ -246,10 +246,10 @@ async function index(E, caller, c) {
   const rel = { scores: rank.sunk(found, sel.scores, { lv, runId: caller.run_id }), info: sel.info }; // the sinking seam (a no-op today)
 
   const prep = prepareText(text);
-  // A held note ranks below every note that is not held and has some relevance, and above the ones with none, as a search ranks it below the
-  // floor (ADR 0047 amendment of 2026-10-25). A worker is withheld the disputed ones already; an unsupported row is no hold here.
+  // A held note is listed after every note that is not held, as a search shows it after the ranked hits (ADR 0047 amendment of 2026-11-02).
+  // A worker is withheld the disputed ones already; an unsupported row is no hold here.
   const holds = W.holdsAmong(E, live.map((r) => r.id));
-  const heldTier = (x) => (x.rel > 0 ? 0 : 2) + (holds.has(x.r.id) ? 1 : 0);
+  const heldTier = (x) => (holds.has(x.r.id) ? 1 : 0);
   const ranked = live.map((r) => {
     const paths = ownedF.length ? pathsOf(r.b, norm) : [];
     const ps = paths.length ? pathScore(paths, ownedF, w.idf) : 0;
@@ -281,7 +281,11 @@ async function index(E, caller, c) {
       overflow = left;
     }
   }
+  const kept = new Set(fitted.kept);
+  const heldCut = caller.role === 'worker' ? [] : ranked.filter(({ r }) => holds.has(r.id) && !kept.has(r.id)).map(({ r }) => ({ id: r.id, kind: holds.get(r.id).kind || null }));
   const info = {
+    // A held note is listed last, so a tight budget cuts it first: the orchestrator and the operator are told which ones were cut. Workers never see held notes.
+    ...(heldCut.length ? { held_unlisted: heldCut } : {}),
     considered: found.length, excluded_already_injected: excluded, candidates: sel.candidates, ...(rel.info ? { relevance: rel.info } : {}),
     notes: { path: ranked.filter((x) => x.tier === 1).length, term: ranked.filter((x) => x.tier === 2).length, unlisted_path_or_term: Math.max(overflow, 0) },
   };

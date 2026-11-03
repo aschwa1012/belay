@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1';
 // memory-security.test.cjs — the CLI half of the memory security rules: an import writes only into namespaces the
 // operator named and never as a lasting type, and every row value `belay memory` prints passes the terminal

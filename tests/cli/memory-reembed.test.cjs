@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1';
 // memory-reembed.test.cjs — `belay memory embed --reembed --template v2`: the operator rebuilds the vector of a note embedded
 // before the `when` field from its title and When: line, only where a `when` exists. A v1 note without one stays v1 and the

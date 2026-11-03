@@ -16,9 +16,11 @@ const FIELDS = ['model', 'effort'];
 // A worker type (not the orchestrator, which is always Claude Code) may also name the model its Codex workers use. It is a field apart from
 // `model`, which is a Claude Code roster model: a Codex spawn never takes `model`, and a Claude Code spawn never takes `codex_model`.
 const CODEX_FIELD = 'codex_model';
+const CODEX_EFFORT_FIELD = 'codex_effort'; // a Codex worker's reasoning effort: a field apart from `effort`, which is a Claude Code level ('max' is valid there)
+const CODEX_EFFORTS = ['low', 'medium', 'high', 'xhigh'];
 // ADR 0054 decision 4: a worker type's tool list (its ceiling and default). The orchestrator's list is fixed by decision 1.
 const TOOLS_FIELD = 'tools';
-const fieldsOf = (type) => (type === 'orchestrator' ? FIELDS : [...FIELDS, CODEX_FIELD, TOOLS_FIELD]);
+const fieldsOf = (type) => (type === 'orchestrator' ? FIELDS : [...FIELDS, CODEX_FIELD, CODEX_EFFORT_FIELD, TOOLS_FIELD]);
 const NOT_CLAUDE = /^(gpt|codex|o[0-9])/i; // a Codex model named under `model` would be passed to Claude Code coders
 const ORCHESTRATOR_MODEL = 'claude-opus-5-5'; // ADR 0021 amendment 4; launch.cjs's DEFAULT_ORCHESTRATOR_MODEL. The orchestrator has no built-in effort.
 
@@ -51,6 +53,7 @@ function parseAgentsBlock(block) {
       }
       if ((f === 'model' || f === CODEX_FIELD) && !(typeof v === 'string' && v.length > 0)) return { error: `agents.${type}.${f} must be a non-empty string or null` };
       if (f === 'model' && NOT_CLAUDE.test(v)) return { error: `agents.${type}.model ${JSON.stringify(v)} is not a Claude model: Claude Code workers would be launched with it; a Codex model goes in agents.${type}.${CODEX_FIELD}` };
+      if (f === CODEX_EFFORT_FIELD && !CODEX_EFFORTS.includes(v)) return { error: `agents.${type}.${f} must be one of ${CODEX_EFFORTS.join(', ')} or null` };
       if (f === 'effort' && !EFFORT_LEVELS.includes(v)) return { error: `agents.${type}.effort must be one of ${EFFORT_LEVELS.join(', ')} or null` };
       (value[type] = value[type] || {})[f] = v;
     }
@@ -77,9 +80,9 @@ function pick(defaults, type, field, explicit, explicitLabel) {
   return { value: null, source: 'default' };
 }
 
-// The model and effort a worker spawn uses. Codex takes no effort (ADR 0028 decision 6) and the configured `model` is
-// Claude's, so neither is applied to a Codex spawn; a Codex spawn takes the type's `codex_model` when the config sets one (no built-in:
-// without it the launch passes no -m and Codex's own config decides). An explicit model or effort is left for validation as before.
+// The model and effort a worker spawn uses. The configured `model` and `effort` are Claude's, so neither is applied to a Codex spawn; a
+// Codex spawn takes the type's `codex_model` and `codex_effort` when the config sets them (no built-in: without them the launch passes
+// neither and the user's Codex config decides). An explicit model or effort is left for validation as before.
 function forWorker(defaults, { agent_type, model, effort, substrate }) {
   const none = { value: null, source: 'default' };
   const given = !(model === undefined || model === null || model === '');
@@ -87,9 +90,11 @@ function forWorker(defaults, { agent_type, model, effort, substrate }) {
   const m = substrate !== 'codex' ? pick(defaults, agent_type, 'model', model, 'spawn argument')
     : given ? { value: model, source: 'spawn argument' }
     : codexSet ? { value: codexSet, source: `${defaults.path} agents.${agent_type}.${CODEX_FIELD}` } : none;
-  const e = substrate === 'codex' && (effort === undefined || effort === null || effort === '')
-    ? none
-    : pick(defaults, agent_type, 'effort', effort, 'spawn argument');
+  const effortGiven = !(effort === undefined || effort === null || effort === '');
+  const codexEffortSet = defaults && defaults.types && defaults.types[agent_type] && defaults.types[agent_type][CODEX_EFFORT_FIELD];
+  const e = substrate !== 'codex' ? pick(defaults, agent_type, 'effort', effort, 'spawn argument') // a Claude field never applies to Codex, nor a Claude built-in
+    : effortGiven ? { value: effort, source: 'spawn argument' }
+    : codexEffortSet ? { value: codexEffortSet, source: `${defaults.path} agents.${agent_type}.${CODEX_EFFORT_FIELD}` } : none;
   return { agent_type, model: m, effort: e };
 }
 
@@ -110,4 +115,4 @@ function writeFile(dir, defaults) {
   return file;
 }
 
-module.exports = { CODEX_FIELD, TOOLS_FIELD, fieldsOf, NOT_CLAUDE, ORCHESTRATOR_MODEL, BUILTIN, forOrchestrator, writeFile, EFFORT_LEVELS, WORKER_TYPES, AGENT_KEYS, FIELDS, parseAgentsBlock, fromConfig, pick, forWorker };
+module.exports = { CODEX_FIELD, CODEX_EFFORT_FIELD, CODEX_EFFORTS, TOOLS_FIELD, fieldsOf, NOT_CLAUDE, ORCHESTRATOR_MODEL, BUILTIN, forOrchestrator, writeFile, EFFORT_LEVELS, WORKER_TYPES, AGENT_KEYS, FIELDS, parseAgentsBlock, fromConfig, pick, forWorker };

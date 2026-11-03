@@ -26,8 +26,25 @@ const fs = require('node:fs');
 const path = require('node:path');
 const crypto = require('node:crypto');
 
+// The directory's one real spelling: the filesystem shares the lock between an 8.3 short name, a junction and the long path, so the
+// pipe name must not depend on which of them a caller used. A path that does not exist yet is resolved through its nearest existing
+// ancestor, so a name computed before the directory is made equals the one computed after.
+function canonicalDir(dataDir) {
+  const abs = path.resolve(dataDir);
+  try { return fs.realpathSync.native(abs); } catch { /* not there yet */ }
+  const rest = [];
+  let cur = abs;
+  for (;;) {
+    const parent = path.dirname(cur);
+    if (parent === cur) return abs;
+    rest.unshift(path.basename(cur));
+    cur = parent;
+    try { return path.join(fs.realpathSync.native(cur), ...rest); } catch { /* keep climbing */ }
+  }
+}
+
 function pipeName(dataDir) {
-  const h = crypto.createHash('sha1').update(path.resolve(dataDir).toLowerCase()).digest('hex').slice(0, 12);
+  const h = crypto.createHash('sha1').update(canonicalDir(dataDir).toLowerCase()).digest('hex').slice(0, 12);
   return process.platform === 'win32' ? `\\\\.\\pipe\\belay-${h}` : path.join(dataDir, `belay-${h}.sock`);
 }
 
@@ -285,4 +302,16 @@ function releaseLock(lockDir, token = null) {
   return removeDir(lockDir);
 }
 
-module.exports = { pipeName, adapterPipeName, bindPipeName, pidAlive, resolveDataDir, acquireLock, releaseLock, markListening, readOwnerLock, holderReused, serving, lockPath, metaPath };
+// Resolves once the lock that held `{pid, token}` is gone: released, replaced by another owner's, or its pid dead. Bounded; false on
+// the bound. A client whose write met a stopping owner waits here so its re-run dials the next owner, not the same one.
+async function waitOwnerGone(dataDir, held, timeoutMs = 15000, pollMs = 25) {
+  const until = Date.now() + timeoutMs;
+  for (;;) {
+    const lock = readOwnerLock(dataDir);
+    if (!lock || lock.pid !== held.pid || lock.token !== held.token || !pidAlive(lock.pid)) return true;
+    if (Date.now() >= until) return false;
+    await new Promise(r => setTimeout(r, pollMs));
+  }
+}
+
+module.exports = { canonicalDir, waitOwnerGone, pipeName, adapterPipeName, bindPipeName, pidAlive, resolveDataDir, acquireLock, releaseLock, markListening, readOwnerLock, holderReused, serving, lockPath, metaPath };
