@@ -1,5 +1,4 @@
 'use strict';
-require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // codex-argv-limit.test.cjs — a Codex worker's message is in argv, and Windows caps a command line at 32,767 characters. Node THROWS
 // (it does not emit an error event) when libuv cannot start the process for that reason. Before the fix the spawn then left its
 // `starting` row with no pid and the task leased to a worker that never existed. Now: an oversized command line is refused up front with
@@ -67,16 +66,33 @@ async function assertClean(core, taskId, workerId) {
   assert.strictEqual(t.state, 'open', 'the task goes back to open');
 }
 
-test('a Codex spawn whose spec is 40,000 characters is refused with E_ARGS and leaves no starting row or lease', { skip: process.platform !== 'win32' }, async () => {
+test('a Codex spawn whose spec is 40,000 characters starts, the prompt on stdin, and its receipt says so', { skip: process.platform !== 'win32' }, async () => {
+  await withRun(async ({ core, m, wt }) => {
+    const seen = `${wt}/stdin-chars`;
+    process.env.FAKE_CODEX_STDIN_FILE = seen;
+    try {
+      const task = await core.task.create({ spec: 'x'.repeat(40000), files_owned: ['src/a.js'] });
+      await m.spawn({ substrate: 'codex', worktree: wt, worker_id: 'c1', task_id: task.id });
+      const spec = JSON.parse(fs.readFileSync(`${require('node:path').dirname(wt)}/workers/c1/argv.json`, 'utf8')).spec;
+      assert.strictEqual(spec.args[spec.args.length - 1], '-', 'the prompt is not in argv');
+      assert.strictEqual(spec.prompt_via, 'stdin');
+      assert.ok(spec.prompt_chars > 40000, 'the prompt is the spec plus belay\'s own lines');
+      assert.ok(!JSON.stringify(spec).includes('xxxxxxxxxx'), 'the receipt holds the length, not the text');
+      assert.strictEqual(Number(fs.readFileSync(seen, 'utf8')), spec.prompt_chars, 'the process read all of it on stdin');
+    } finally { delete process.env.FAKE_CODEX_STDIN_FILE; }
+  });
+});
+
+test('a Codex launch whose non-prompt arguments are over the cap is still refused with E_ARGS, with the stdin prompt in use', { skip: process.platform !== 'win32' }, async () => {
   await withRun(async ({ core, m, wt }) => {
     const task = await core.task.create({ spec: 'x'.repeat(40000), files_owned: ['src/a.js'] });
-    await assert.rejects(m.spawn({ substrate: 'codex', worktree: wt, worker_id: 'c1', task_id: task.id }), (e) => {
+    await assert.rejects(m.spawn({ substrate: 'codex', worktree: wt, worker_id: 'c2', task_id: task.id, model: 'm'.repeat(40000) }), (e) => {
       assert.strictEqual(e.code, 'E_ARGS');
       assert.strictEqual(e.detail.reason, 'argv_too_long');
       assert.match(e.message, /32767/);
       return true;
     });
-    await assertClean(core, task.id, 'c1');
+    await assertClean(core, task.id, 'c2');
   });
 });
 
@@ -93,36 +109,25 @@ test('a synchronous spawn throw (E2BIG) writes the first launch dead and release
 });
 
 // A restart stops the old process, then builds its text from the worker's final state. Belay's own text here (the resume line, read from
-// the core) is oversized, so the relaunch is refused after the stop with advice that says so, not the "still running" advice of a
-// refusal before the stop. (A caller's appended message, checked before any stop, comes only from a resume, and Codex has no pause.)
-test('a restart whose own relaunch text is oversized is refused with advice that the old process was stopped', { skip: process.platform !== 'win32' }, async () => {
+// the core) is oversized: it goes to the relaunched process on stdin, so the restart is not refused, and argv.json says how the prompt travelled.
+test('a restart whose own relaunch text is oversized relaunches with the text on stdin', { skip: process.platform !== 'win32' }, async () => {
   const big = { on: false }; // the spawn's own text must stay small; the stub grows only for the restart
   const wrapCore = (h) => Object.create(h, { continuity: { value: { ...h.continuity, resumeLine: async (a) => (big.on ? { text: 'y'.repeat(40000) } : h.continuity.resumeLine(a)) } } }); // h's continuity is frozen, so a Proxy may not replace it; a child object can
   const gate = `${sandbox()}/codex-turn.gate`; // never written: the fake's turn stays open, so the process is alive for the whole test
   process.env.FAKE_CODEX_GATE_FILE = gate;
   try {
     await withRun(async ({ core, m, wt }) => {
-      // a task, so the resume branch (a fresh worker's usual one) reads the resume line; without one only the replace branch does
       const task = await core.task.create({ spec: 'small spec', files_owned: ['src/a.js'] });
       await m.spawn({ substrate: 'codex', worktree: wt, worker_id: 'c1', task_id: task.id });
       const pid = (await core.worker.get({ worker_id: 'c1' })).pid;
       assert.ok(pid && P.pidAlive(pid), 'the worker runs before the restart');
       big.on = true;
-      await assert.rejects(m.restart({ worker_id: 'c1', first_turn_timeout_ms: 5000 }), (e) => {
-        assert.strictEqual(e.code, 'E_ARGS');
-        assert.strictEqual(e.detail.reason, 'argv_too_long');
-        assert.strictEqual(e.detail.path, 'restart-stopped');
-        assert.match(e.message, /about \d+ characters/);
-        assert.match(e.message, /already stopped/);
-        assert.match(e.message, /now dead and its lease \S+ was released/); // the task is leased to c1, so the dead row names the lease it released
-        assert.strictEqual(e.detail.lease_released, true);
-        assert.strictEqual(e.detail.row_dead, true);
-        assert.ok(e.detail.leases_released.length > 0);
-        assert.doesNotMatch(e.message, /still running/);
-        return true;
-      });
-      assert.ok(!P.pidAlive(pid), 'the old process was stopped before the text was built');
-      await assertClean(core, task.id, 'c1'); // a `stopped` row would keep the lease to its TTL: the refusal writes it dead and the task goes back to open
+      await m.restart({ worker_id: 'c1', first_turn_timeout_ms: 5000, awaitFirstTurn: false });
+      assert.ok(!P.pidAlive(pid), 'the old process was stopped');
+      const spec = JSON.parse(fs.readFileSync(`${require('node:path').dirname(wt)}/workers/c1/argv.json`, 'utf8')).spec;
+      assert.strictEqual(spec.prompt_via, 'stdin');
+      assert.ok(spec.prompt_chars > 40000);
+      assert.strictEqual(spec.args[spec.args.length - 1], '-');
     }, { wrapCore });
   } finally { delete process.env.FAKE_CODEX_GATE_FILE; }
 });

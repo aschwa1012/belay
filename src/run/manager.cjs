@@ -19,6 +19,7 @@ const S = require('./surface.cjs'); // ADR 0024, S2 fix round F4: the surface fi
 const I = require('./instructions.cjs'); // ADR 0024 amendment 1: the spawn-time CLAUDE.md copy
 const { fail } = require('./errors.cjs');
 const { checkWorkerId, checkIdFree, validateSpawnArgs, checkMemoryQueries, discardUnstarted } = require('./spawn-args.cjs');
+const CS = require('./codex-surface.cjs'); // what belay sets on a Codex launch
 const AD = require('./agent-defaults.cjs'); // the config's per-agent-type model and effort defaults
 const TP = require('./tool-policy.cjs'); // ADR 0054 decision 4: a worker type's tool list
 const MP = require('./memory-preface.cjs'); // ADR 0042: the first-message preface and the memory hooks
@@ -129,7 +130,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
   const launch = (w, o) => require('./bind-launch.cjs').launchBound({ core, runId, root, mcpPath, writeRow }, w, () => launchNow(w, o)); // ADR 0045: one launch of a worker at a time, its bind opened first
   async function launchNow(w, { resume = null, prompt = null, path = 'spawn' } = {}) { // `path` ('spawn', 'message', 'restart') shapes the advice of an oversized-line refusal
     try { NM.checkLaunch(w); } catch (e) { await NM.refuseLaunch(ctx, w, e, () => PI.pidLive(w)); } // sync and first (Codex's check-then-spawn stays one tick); only a refusal awaits
-    const spec = LS.buildSpec(w, exeFor, { resume, prompt }); if (w.substrate === 'codex') AL.checkCommandLine(spec.exe, spec.args, { workerId: w.id, path }); // before any state change: an oversized text is refused, not thrown by spawn
+    const spec = LS.buildChecked(w, exeFor, { resume, prompt }, (sp) => AL.checkCommandLine(sp.exe, sp.args, { workerId: w.id, path })); // before any state change: an oversized line is refused, not thrown by spawn; a Codex prompt that does not fit goes on stdin
     w.argvHash = L.writeArgvJson(w.dir, spec);
     w.settled = false; w.pidGoneAt = null; w.pidGonePid = null; w.settleWaitedMs = 0; // the exit-event hold is per launch
     w.settledState = null; // the last process's end; a restatement of this one's row must never carry it
@@ -150,7 +151,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
         substrate: w.substrate, cwd: w.worktree, workerId: w.id,
         mcpToolTimeoutMs: w.permissionPrompt ? w.permitWaitMs + 60000 : null,
       }),
-      stdin: w.substrate === 'claude-code' ? 'pipe' : 'ignore',
+      stdin: w.substrate === 'claude-code' ? 'pipe' : 'ignore', input: spec.stdinText, // a Codex prompt on stdin is written and closed by spawnWorker
     }));
     w.launches += 1;
     w.launchedAt = now();
@@ -201,6 +202,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       effort = agent.effort.value;
     }
     validateSpawnArgs({ substrate, worktree, prompt, task_id, permission_prompt, permit_wait_ms, effort, worker_id, native_memory: nativeMemory });
+    const codexSurface = CS.forSpawn(substrate, effort, agent); // a Codex worker: what belay set and what it left to the user's config
     const indexQueries = checkMemoryQueries(memory_queries);
 
     const id = worker_id || crypto.randomUUID();
@@ -281,11 +283,11 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
         // the row to return is the store's own (`worker.get`'s pid_alive/last_event_age_ms dropped here).
         if (w.state === 'idle') {
           const { pid_alive, last_event_age_ms, ...row } = await core.worker.get({ worker_id: id });
-          return { ...row, ready_ms, permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions), ...(agent ? { agent } : {}), ...(scratch ? { scratch } : {}), ...(w.review ? { review: w.review } : {}) };
+          return { ...row, ready_ms, permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions), ...(agent ? { agent } : {}), ...(codexSurface ? { codex_surface: codexSurface } : {}), ...(scratch ? { scratch } : {}), ...(w.review ? { review: w.review } : {}) };
         }
         await failNoReady(w, `the worker reached ready but its pid ${w.pid} was no longer alive when the running row would have been written`, { ready_ms });
       }
-      return { ...written, ready_ms, permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions), ...(agent ? { agent } : {}), ...(scratch ? { scratch } : {}), ...(w.review ? { review: w.review } : {}) }; // scratch: a reviewer's folder (ADR 0054 amendment 1); agent: the model and effort used, each with its source
+      return { ...written, ready_ms, permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions), ...(agent ? { agent } : {}), ...(codexSurface ? { codex_surface: codexSurface } : {}), ...(scratch ? { scratch } : {}), ...(w.review ? { review: w.review } : {}) }; // scratch: a reviewer's folder (ADR 0054 amendment 1); agent: the model and effort used, each with its source
     });
   }
 
@@ -328,7 +330,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     RG.refuseIfRelaunching(w, 'restart'); // a Codex message's relaunch owns the window; this one waits its turn
     if (w.substrate === 'codex' && appendMessage) { // before anything is stopped or written: the caller's text alone (a floor of the line) over the cap is refused with the worker untouched
       // the branch is not known yet, so measure both shapes (resume and fresh) and take the smaller: the real line is never shorter than it
-      const shapes = [null, w.sessionId].filter((r, i) => i === 0 || r).map((resume) => LS.buildSpec(w, exeFor, { resume, prompt: appendMessage }));
+      const shapes = [null, w.sessionId].filter((r, i) => i === 0 || r).map((resume) => LS.buildSpec(w, exeFor, { resume, prompt: appendMessage, viaStdin: true })); // the text itself goes on stdin, so only the rest of the line is measured
       const floor = shapes.reduce((a, b) => (AL.commandLineLength(b.exe, b.args) < AL.commandLineLength(a.exe, a.args) ? b : a));
       AL.checkCommandLine(floor.exe, floor.args, { workerId: w.id, path: 'restart' });
     }

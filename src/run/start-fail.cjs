@@ -46,6 +46,8 @@ function createStartFail({ core, writeRow }) {
   async function failNoReady(w, reason, extra = {}) {
     if (w.stopRequested) { extra = { ...extra, stopped_during_launch: true, startup_failure: reason }; reason = `worker ${w.id} was stopped before it was ready; the start was abandoned`; } // the stop ended the start, not the window
     const bind = await abortStart(w, { exitCode: true });
+    const unknownFeature = w.substrate === 'codex' ? await require('./codex-surface.cjs').explainStart(w.dir, w.stderr) : null; // Codex exited at once on a feature name it does not know
+    if (unknownFeature) { reason = unknownFeature.message; extra = { ...extra, ...unknownFeature.detail }; }
     fail('E_NO_READY', reason, {
       worker_id: w.id, pid: w.pid, exit_code: w.exitCode, exit_signal: w.exitSignal,
       stderr_tail: w.stderr.slice(-2000), reason, spawn_error: w.spawnError,
