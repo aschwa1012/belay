@@ -158,8 +158,9 @@ test('every tests/<dir> that holds a *.test.cjs file is named by a phase glob', 
   const holds = (dir) => fs.readdirSync(dir, { withFileTypes: true }).some((e) => (e.isFile() && /\.test\.cjs$/.test(e.name)) || (e.isDirectory() && e.name !== 'fixtures' && holds(path.join(dir, e.name))));
   const dirs = fs.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory() && holds(path.join(root, e.name))).map((e) => e.name);
   assert.ok(dirs.includes('mod') && dirs.includes('core'), 'the scan sees the directories');
-  // acceptance rows run by `npm run test:acceptance`, not by a glob
-  assert.deepStrictEqual(dirs.filter((d) => !named.has(d) && d !== 'acceptance'), []);
+  // the acceptance rows and the release tooling tests, where present, run by their own npm scripts, not by a glob
+  if (dirs.includes('release')) assert.match(require('../../package.json').scripts['test:release'] || '', /tests\/release\//, 'test:release runs tests/release');
+  assert.deepStrictEqual(dirs.filter((d) => !named.has(d) && d !== 'acceptance' && d !== 'release'), []);
 });
 
 // BELAY_TEST_CONCURRENCY: a fake spawn captures each phase's argv; no real test phase runs.
