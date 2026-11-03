@@ -148,7 +148,7 @@ function verdictEvents(tasks, runId) {
 
 // Retrieval failures the run row records (retrieval-view.cjs failures): one event per pin notice, failed warm-up and heavy fallback in force.
 // A run that pinned nothing has none. The message says what failed, the profile served and the next step, as the row recorded it.
-const { searchLogEvents, searchLogOffEvents } = require('./notices-searchlog.cjs');
+const { searchLogEvents, searchLogState, SEARCH_LOG_OFF_FOOTER } = require('./notices-searchlog.cjs');
 function retrievalEvents(run) {
   const v = require('../core/retrieval-view.cjs').describe(run);
   return require('../core/retrieval-view.cjs').failures(v).map((f) => ({
@@ -377,14 +377,13 @@ async function run(ctx) {
       ...strandedEvents(heldNotes && heldNotes.stranded, chosen.id),
       ...retro,
       ...searchLogEvents(searchRows, chosen.id, { heavyFallbackCodes: retro.filter((e) => e.kind === 'heavy_tier_fallback').map((e) => e.cause_code) }),
-      ...searchLogOffEvents(chosen),
       ...runEvents(chosen),
     ], parsed.since);
     const receipt = {
       run_id: chosen.id, run_id_source: source, since: parsed.since, stall_ms: parsed.stallMs,
-      events, count: events.length, owner: core.ownerInfo(),
+      events, count: events.length, owner: core.ownerInfo(), search_log: searchLogState(chosen),
     };
-    return { code: 0, text: renderText(events), json: receipt };
+    return { code: 0, text: renderText(events, receipt.search_log === 'off' ? SEARCH_LOG_OFF_FOOTER : null), json: receipt };
     });
   } catch (e) {
     return { code: 1, text: `belay notices: ${P.clean(e.message, 200)}\n`, json: { error: { code: e.code || 'E_INTERNAL', message: e.message } } };

@@ -9,7 +9,7 @@ const { spawnSync } = require('node:child_process');
 const { DatabaseSync } = require('node:sqlite');
 
 const { openCore } = require('../../src/core/index.cjs');
-const { searchLogEvents, searchLogOffEvents } = require('../../src/cli/notices-searchlog.cjs');
+const { searchLogEvents, searchLogState, SEARCH_LOG_OFF_FOOTER } = require('../../src/cli/notices-searchlog.cjs');
 const { ROOT, CLI, sandbox, cleanup } = require('./stop-helpers.cjs');
 
 const RUN = 'run-sl';
@@ -40,16 +40,10 @@ test('searchLogEvents: only the heavy failure the run row already tells is left 
   assert.deepStrictEqual(left.map((e) => e.code), ['E_Y']);
 });
 
-test('searchLogOffEvents: a run whose search log was off says so once; one with it on says nothing', () => {
-  for (const lv of [null, '{}', '{"notes":true}', { search_log: false }]) {
-    const ev = searchLogOffEvents({ id: RUN, seq: 3, started_at: 5, memory_levers: lv });
-    assert.strictEqual(ev.length, 1);
-    assert.strictEqual(ev[0].kind, 'search_log_off');
-    assert.match(ev[0].text, /search log was off for this run.*not recorded/);
-    assert.match(ev[0].options[0], /belay settings memory.search_log true/);
-  }
-  assert.deepStrictEqual(searchLogOffEvents({ id: RUN, seq: 3, memory_levers: '{"search_log":true}' }), []);
-  assert.deepStrictEqual(searchLogOffEvents({ id: RUN, seq: 3, memory_levers: { search_log: true } }), []);
+test('searchLogState: off unless the levers of the run row turned the log on', () => {
+  for (const lv of [null, '{}', '{"notes":true}', { search_log: false }, 'not json']) assert.strictEqual(searchLogState({ memory_levers: lv }), 'off');
+  assert.strictEqual(searchLogState({ memory_levers: '{"search_log":true}' }), 'on');
+  assert.strictEqual(searchLogState({ memory_levers: { search_log: true } }), 'on');
 });
 
 test('notices through the CLI: a failed stage and a refusal in the run\'s search log are notices', async () => {
@@ -68,8 +62,13 @@ test('notices through the CLI: a failed stage and a refusal in the run\'s search
     } finally { db.close(); }
     const r = spawnSync(process.execPath, [CLI, 'notices', RUN, '--data', dataDir, '--json'], { cwd: ROOT, windowsHide: true, encoding: 'utf8' });
     assert.strictEqual(r.status, 0, r.stderr);
-    const kinds = JSON.parse(r.stdout).events.map((e) => e.kind).filter((k) => k.startsWith('search_')).sort();
-    assert.deepStrictEqual(kinds, ['search_log_off', 'search_refused_failed', 'search_rerank_failed'], 'only this run\'s rows');
+    const j = JSON.parse(r.stdout);
+    assert.strictEqual(j.search_log, 'off', 'a default run says its search log was off, as a field and not an event');
+    assert.ok(r.stdout.length > 0);
+    const tx = spawnSync(process.execPath, [CLI, 'notices', RUN, '--data', dataDir], { cwd: ROOT, windowsHide: true, encoding: 'utf8' });
+    assert.ok(tx.stdout.replace(/s+/g, ' ').includes(SEARCH_LOG_OFF_FOOTER), tx.stdout);
+    const kinds = j.events.map((e) => e.kind).filter((k) => k.startsWith('search_')).sort();
+    assert.deepStrictEqual(kinds, ['search_refused_failed', 'search_rerank_failed'], 'only this run\'s rows');
   } finally { cleanup(dir); }
 });
 

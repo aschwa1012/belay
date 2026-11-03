@@ -56,7 +56,7 @@ test('notices: a pending request, dead and stopped workers with their establishm
     const j = JSON.parse(r.stdout);
     assert.strictEqual(j.stall_ms, 300000);
     const kinds = j.events.map((e) => e.kind);
-    assert.deepStrictEqual([...kinds].sort(), ['permission_pending', 'search_log_off', 'worker_dead', 'worker_stalled', 'worker_stopped']);
+    assert.deepStrictEqual([...kinds].sort(), ['permission_pending', 'worker_dead', 'worker_stalled', 'worker_stopped']);
     const by = Object.fromEntries(j.events.map((e) => [e.kind, e]));
 
     assert.strictEqual(by.permission_pending.request_id, 'tu-1');

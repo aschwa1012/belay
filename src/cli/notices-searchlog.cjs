@@ -47,17 +47,13 @@ function searchLogEvents(rows, runId, opts = {}) {
   });
 }
 
-// With the log off (the default: it keeps each query's text in the store) nothing above can exist, so the notice list says so once rather than
-// look clean. `run` is the run row; its memory_levers say whether the lever was on.
-function searchLogOffEvents(run) {
+// With the log off (the default: it keeps the text of each query in the store) nothing above can exist, so `notices` says so beside the list, not as an
+// event (an event would leave the panel's count above zero on every default run). `run` is the run row; its memory_levers say whether the lever was on.
+const SEARCH_LOG_OFF_FOOTER = 'search-time retrieval failures are not recorded for this run: search_log was off; turn it on with belay settings memory.search_log true';
+function searchLogState(run) {
   let lv = null;
   try { lv = typeof run.memory_levers === 'string' ? JSON.parse(run.memory_levers) : run.memory_levers; } catch { lv = null; }
-  if (lv && lv.search_log === true) return [];
-  return [{
-    kind: 'search_log_off', retrieval: true, ts: num(run.started_at ?? run.written_at), run_id: run.id,
-    text: 'the search log was off for this run (memory.search_log), so a search whose reranker, embedder or heavy tier failed, and a refused search, are not recorded and cannot appear in these notices.',
-    options: ['belay settings memory.search_log true records them for later runs (the log keeps the text of each query in the store)'], source: `run row seq ${run.seq}`,
-  }];
+  return lv && lv.search_log === true ? 'on' : 'off';
 }
 
-module.exports = { searchLogEvents, searchLogOffEvents };
+module.exports = { searchLogEvents, searchLogState, SEARCH_LOG_OFF_FOOTER };
