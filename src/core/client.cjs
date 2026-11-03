@@ -14,6 +14,7 @@ const path = require('node:path');
 const net = require('node:net');
 const { StringDecoder } = require('node:string_decoder');
 const { err } = require('./errors.cjs');
+const { hinted } = require('./msys-hint.cjs');
 const { pipeName, readOwnerLock, pidAlive, holderReused } = require('./lock.cjs');
 const { WRITE_METHODS, METHODS } = require('./engine.cjs'); // the method table only; nothing here opens a store
 // Roles engine dispatch refuses once their run has ended (audit D42); the run process (operator) is not bound. A worker Core already
@@ -187,10 +188,10 @@ class Client {
     const sock = this.sock;
     const p = (async () => {
       let ok = false;
-      let reason = null;
-      try { const r = await this.call('ping', { caller: this.opts.caller, verify_operator: true }, { timeoutMs: VERIFY_OPERATOR_MS }); ok = !!(r && r.operator_verified === true); reason = ok ? null : (r && typeof r.operator_reason === 'string' ? r.operator_reason : null); }
+      let reason = null; let cause = null;
+      try { const r = await this.call('ping', { caller: this.opts.caller, verify_operator: true }, { timeoutMs: VERIFY_OPERATOR_MS }); ok = !!(r && r.operator_verified === true); reason = ok ? null : (r && typeof r.operator_reason === 'string' ? r.operator_reason : null); cause = ok || !r || typeof r.operator_cause !== 'string' ? null : r.operator_cause; }
       catch { ok = false; }
-      if (this.sock === sock) { this._opReason = reason; if (ok) this._opChecked = true; if (this._opVerifying === p) this._opVerifying = null; }
+      if (this.sock === sock) { this._opReason = reason; this._opCause = cause; if (ok) this._opChecked = true; if (this._opVerifying === p) this._opVerifying = null; }
       return ok;
     })();
     this._opVerifying = p;
@@ -223,7 +224,7 @@ class Client {
           if (!p) continue;
           this.pending.delete(msg.id);
           clearTimeout(p.timer);
-          if (msg.error) p.reject(err(msg.error.code || 'E_INTERNAL', msg.error.message || 'the owner returned an error with no message', msg.error.detail));
+          if (msg.error) p.reject(hinted(err(msg.error.code || 'E_INTERNAL', msg.error.message || 'the owner returned an error with no message', msg.error.detail)));
           else p.resolve(msg.result);
         }
       });
@@ -272,7 +273,7 @@ class Client {
   }
 
   _unverified(method) {
-    return err('E_UNBOUND', `${method}: the operator check did not vouch for this connection (${this._opReason ? `the owner said: ${this._opReason}` : "the owner could not read the host's connection table or process snapshot, or refused"}); the read was not made as the anonymous worker, whose answer hides rows the operator may read. Retry; the check is asked again`, { reason: 'operator_check', method, role: 'operator', ...(this._opReason ? { operator_reason: this._opReason } : {}) });
+    return hinted(err('E_UNBOUND', `${method}: the operator check did not vouch for this connection (${this._opReason ? `the owner said: ${this._opReason}` : "the owner could not read the host's connection table or process snapshot, or refused"}); the read was not made as the anonymous worker, whose answer hides rows the operator may read. Retry; the check is asked again`, { reason: 'operator_check', method, role: 'operator', ...(this._opReason ? { operator_reason: this._opReason } : {}), ...(this._opCause ? { operator_cause: this._opCause } : {}) }));
   }
 
   _send(method, params, opts = {}) {
