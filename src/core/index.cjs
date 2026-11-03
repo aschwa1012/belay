@@ -95,8 +95,8 @@ class Core {
           // keyword half, naming the timeout in modes_failed.
           const bound = err('E_EMBED_BOUND', 'memory.search hybrid: its semantic half did not finish within ' + limit + ' ms (the embedder of the owner is still loading or embedding and the load continues)', { embedder: true, cause: 'timeout', op: 'embed', method, timeout_ms: limit, in_process: true });
           if (this.owner.opts && typeof this.owner.opts.embedderMode === 'function') notifyEmbedderFailure(engine, params.caller, 'memory.search', bound);
-          try { adviseEmbedderFailure(engine, params.caller, bound); onSemanticFailure(engine, params.caller, bound); } catch (refusal) { return reject(refusal); }
-          const rerun = { ...params, mode: 'keyword' };
+          try { adviseEmbedderFailure(engine, params.caller, bound); onSemanticFailure(engine, params.caller, bound); } catch (refusal) { require('./search-refusal.cjs').logRefusal(engine, params, refusal); return reject(refusal); }
+          const rerun = { ...params, mode: 'keyword', [Symbol.for('belay.search.prefailed')]: [{ mode: 'semantic', code: e.code, message: e.message }] };
           delete rerun[Symbol.for('belay.search.abandoned')];
           engine.handle(method, rerun).then(r => resolve(withSemanticFailure(r, e)), () => reject(e));
         } else reject(e);

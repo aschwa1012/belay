@@ -103,7 +103,7 @@ function record(E, caller, o) {
     const rowIds = ids.length ? ids : undefined;
     const bytes = bytesOf(message) + bytesOf(rowIds ? JSON.stringify(rowIds) : null);
     const ev = recordEventSync(E, caller, {
-      kind: o.kind === 'index' ? 'index' : 'search', worker_id: caller.worker_id || undefined, task_id: detail.for_task || undefined, row_ids: rowIds, message, bytes,
+      kind: o.kind === 'index' ? 'index' : 'search', ...(o.code ? { code: o.code } : {}), worker_id: caller.worker_id || undefined, task_id: detail.for_task || undefined, row_ids: rowIds, message, bytes,
     }, { prescrubbed: true, searchLog: true });
     account(E, bytes, o.capMb);
     return ev;

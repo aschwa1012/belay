@@ -366,6 +366,8 @@ function renderImportText(r) {
     `inserted: ${r.inserted}  updated: ${r.updated}${r.unchanged ? `  unchanged: ${r.unchanged}` : ''}  refused: ${r.refused.length}${ignored}`];
   const sk = r.skipped || {};
   if (sk.refuted || sk.superseded) out.push(`skipped (not live in the file): refuted ${sk.refuted || 0}, superseded ${sk.superseded || 0}`);
+  // An imported row is type `imported`, and a run with notes on shows a worker or the orchestrator only the notes of project/<p>: say so, so the operator is not surprised by a search that never finds them.
+  if ((r.rows || []).some((x) => x.action !== 'unchanged' && typeof x.namespace === 'string' && x.namespace.startsWith('project/'))) out.push('note: imported rows are not notes; in a run with notes on, a worker or the orchestrator cannot search or read the ones in project/ namespaces (the command line reads them)');
   for (const x of r.refused) out.push(`refused line ${x.line}: ${x.code}${x.message ? ` (${P.clean(x.message, 300)})` : ''}`);
   return `${out.join('\n')}\n`;
 }
