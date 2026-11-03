@@ -129,6 +129,7 @@ async function events(E, caller, args) {
   }
   // The search log (kinds search and index) is large and is read only on request: a call that names no kinds leaves it out.
   if (args.kinds === undefined || args.kinds === null) { where.push(`kind NOT IN (${SEARCH_LOG_KINDS.map(() => '?').join(', ')})`); params.push(...SEARCH_LOG_KINDS); }
+  if (args.search_failures === true) where.push(`(ok = 0 OR message LIKE '%"failed":[{%')`); // the search log's failed rows only, in SQL (notices)
   let limit = '';
   if (args.limit !== undefined && args.limit !== null) {
     if (!Number.isInteger(args.limit) || args.limit < 1) throw err('E_ARGS', 'memory.events limit must be a positive integer');

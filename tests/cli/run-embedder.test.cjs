@@ -180,7 +180,8 @@ test('E_MODEL_CHANGED under stop ends the run with the error (resuming can never
   let ctx2;
   try {
     ctx2 = await startRun(dir2, { on_embedder_failure: 'continue' }, { FAKE_EMBEDDER_MODE: 'changed' });
-    await assert.rejects(ctx2.core.memory.store({ text: 'x' }), (e) => e.code === 'E_MODEL_CHANGED');
+    const kept = await ctx2.core.memory.store({ text: 'x' }); // under keyword the write is kept without a vector, naming the failure
+    assert.deepStrictEqual([kept.embedded, kept.embedder_failure.code], [false, 'E_MODEL_CHANGED']);
     await new Promise((r) => setTimeout(r, 1500));
     assert.strictEqual(ctx2.run.proc.exitCode, null, 'continue: the run goes on');
   } finally { await finish({ ...ctx2, dir: dir2 }); }

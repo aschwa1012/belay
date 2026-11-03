@@ -95,7 +95,9 @@ test('run.end marks a dead-pid worker row in each of starting, running, idle and
       const b = before[id];
       assert.strictEqual(w.state, 'dead', id);
       assert.ok(w.seq > b.seq, `${id} got one appended row`);
-      assert.strictEqual(w.death_established_by, `run.end: pid ${b.pid} not alive when the run ended; no adapter wrote its exit`);
+      assert.strictEqual(w.death_established_by, id === 'w-stopping'
+        ? `run.end: a stop was in flight (the row was stopping) and pid ${b.pid} was not alive when the run ended; no adapter wrote the exit that would say how it ended`
+        : `run.end: pid ${b.pid} not alive when the run ended; no adapter wrote its exit`);
       assert.strictEqual(w.exited_at, b.exited_at == null ? w.exited_at : b.exited_at, `${id} exited_at kept when present`);
       assert.ok(Number.isInteger(w.exited_at) && (b.exited_at != null || w.exited_at >= t0 - 1000), `${id} exited_at is set`);
       assert.strictEqual(w.exit_code, b.exit_code, `${id} exit_code untouched`);
