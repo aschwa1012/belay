@@ -14,6 +14,8 @@
 //   run_ended           the run row's ended_at
 //   gpu_probe_refused, model_corrupt, retrieval_warmup_failed, heavy_behind, heavy_drain_failed, reranker_warm_failed, heavy_tier_fallback
 //                       the retrieval failures the run row records (the pin's notices, a failed reranker warm-up, the heavy fallback in force): what failed, the profile served, the next step
+//   search_semantic_failed, search_rerank_failed, search_keyword_failed, search_heavy_behind_failed, search_heavy_embed_failed, search_refused_failed
+//                       a stage of the run's searches that failed, or a search refused, as the search log records it (src/cli/notices-searchlog.cjs): count, first and last time, what belay did, the next step; none when the search_log lever is off
 //   memory_wrapup       a wrap-up memory_event of the run (ADR 0043 decision 2): one per task and one per run, once
 //                       each because the store refuses a second (run, key)
 //   scrub_alarm         the run-close scrub took more notes out of sight (holds and archiving relations) than is normal (scrub_alarm_holds): look before the archive reviewer runs
@@ -146,11 +148,12 @@ function verdictEvents(tasks, runId) {
 
 // Retrieval failures the run row records (retrieval-view.cjs failures): one event per pin notice, failed warm-up and heavy fallback in force.
 // A run that pinned nothing has none. The message says what failed, the profile served and the next step, as the row recorded it.
+const { searchLogEvents, searchLogState, SEARCH_LOG_OFF_FOOTER } = require('./notices-searchlog.cjs');
 function retrievalEvents(run) {
   const v = require('../core/retrieval-view.cjs').describe(run);
   return require('../core/retrieval-view.cjs').failures(v).map((f) => ({
     kind: f.code, retrieval: true, ts: num(f.ts), run_id: run.id, profile: f.profile, fallback_from: f.fallback_from, reason: f.reason, agent_types: f.agent_types,
-    text: f.message, options: f.options, source: `run row seq ${run.seq}, retrieval_routing`,
+    text: f.message, options: f.options, cause_code: f.cause_code || null, source: `run row seq ${run.seq}, retrieval_routing`,
   }));
 }
 
@@ -285,7 +288,7 @@ function summaryOf(e) {
       return `${id('request', e.request_id)} ${id('worker', e.worker_id)} tool ${P.v(e.tool, 40)} adapter_alive ${P.v(e.adapter_alive)} age ${P.v(e.age_ms)}ms`;
     case 'worker_dead':
     case 'worker_stopped':
-      return `${id('worker', e.worker_id)} exit ${P.v(e.exit_code)}${e.exit_signal ? ` signal ${P.v(e.exit_signal, 20)}` : ''} established by ${P.v(e.death_established_by, 160)}`;
+      return `${id('worker', e.worker_id)} exit ${P.v(e.exit_code)}${e.exit_signal ? ` signal ${P.v(e.exit_signal, 20)}` : ''} established by ${P.v(e.death_established_by, 220)}`;
     case 'worker_stalled':
       return `${id('worker', e.worker_id)} ${P.v(e.state, 12)} mid-turn, last event ${e.last_event_age_ms}ms ago by ${P.v(e.last_event_age_source, 20)} (over ${e.stall_ms}ms), pid ${P.v(e.pid)} pid_alive ${P.v(e.pid_alive)}`;
     case 'review_verdict':
@@ -322,10 +325,11 @@ function summaryOf(e) {
   }
 }
 
-function renderText(events) {
-  if (!events.length) return '(no notices)\n';
+function renderText(events, footer) {
+  const foot = footer ? P.wrapLine('  ', footer) : [];
+  if (!events.length) return ['(no notices)', ...foot, ''].join('\n');
   const lines = events.flatMap((e) => P.wrapLine(`${P.iso(e.ts)}  ${e.kind.padEnd(18)}  `, `${summaryOf(e)} [${P.clean(e.source, 80)}]`));
-  lines.push('');
+  lines.push(...foot, '');
   return lines.join('\n');
 }
 
@@ -358,6 +362,8 @@ async function run(ctx) {
     const { workers } = await core.worker.list({});
     const { tasks } = await core.task.list({});
     const { events: ledger } = await core.memory.events({ run_id: chosen.id, kinds: ['wrapup', ...STAGE_KINDS] });
+    const { events: searchRows } = await core.memory.events({ run_id: chosen.id, kinds: ['search'], search_failures: true });
+    const retro = retrievalEvents(chosen);
     const events = ordered([
       ...permissionEvents(requests, chosen.id),
       ...workerEvents(workers.filter((w) => w.run_id === chosen.id), chosen.id, parsed.stallMs, dataDir),
@@ -370,14 +376,15 @@ async function run(ctx) {
       ...reviewEvents(reviews, chosen.id),
       ...unjudgedEvents(heldNotes && heldNotes.unjudged_reports, chosen.id),
       ...strandedEvents(heldNotes && heldNotes.stranded, chosen.id),
-      ...retrievalEvents(chosen),
+      ...retro,
+      ...searchLogEvents(searchRows, chosen.id, { heavyFallbackCodes: retro.filter((e) => e.kind === 'heavy_tier_fallback').map((e) => e.cause_code) }),
       ...runEvents(chosen),
     ], parsed.since);
     const receipt = {
       run_id: chosen.id, run_id_source: source, since: parsed.since, stall_ms: parsed.stallMs,
-      events, count: events.length, owner: core.ownerInfo(),
+      events, count: events.length, owner: core.ownerInfo(), search_log: searchLogState(chosen),
     };
-    return { code: 0, text: renderText(events), json: receipt };
+    return { code: 0, text: renderText(events, receipt.search_log === 'off' ? SEARCH_LOG_OFF_FOOTER : null), json: receipt };
     });
   } catch (e) {
     return { code: 1, text: `belay notices: ${P.clean(e.message, 200)}\n`, json: { error: { code: e.code || 'E_INTERNAL', message: e.message } } };

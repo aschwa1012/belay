@@ -468,3 +468,12 @@ test('REAL export then import: superseded and refuted rows do not come back live
     assert.deepStrictEqual(await lasting(dst), { index: 1, corpus: 1 }, 'verified, it is lasting, as the source row was');
   } finally { cleanup(dir); }
 });
+
+test('import text: rows written to a project/ namespace carry the note that a run with notes on does not show them to its agents; other namespaces and unchanged rows do not', () => {
+  const R = require('../../src/cli/memory-render.cjs');
+  const base = { file: 'f.jsonl', sha256: 'a'.repeat(64), lines: 1, inserted: 1, updated: 0, unchanged: 0, refused: [], skipped: {} };
+  const text = (rows) => R.renderImportText({ ...base, rows });
+  assert.match(text([{ line: 1, id: 'x', action: 'inserted', namespace: 'project/p' }]), /note: imported rows are not notes; in a run with notes on, a worker or the orchestrator cannot search or read/);
+  assert.ok(!text([{ line: 1, id: 'x', action: 'inserted', namespace: 'run/r' }]).includes('note: imported rows'));
+  assert.ok(!text([{ line: 1, id: 'x', action: 'unchanged', namespace: 'project/p' }]).includes('note: imported rows'));
+});

@@ -82,7 +82,7 @@ test('run close e2e: the real adapter terminated 350 ms after the orchestrator e
     assert.strictEqual(prior.written_by, 'orchestrator');
     assert.strictEqual(last.state, 'dead');
     assert.strictEqual(last.written_by, 'operator', 'the closing row is belay run\'s, not the adapter\'s');
-    assert.strictEqual(last.death_established_by, `run.end: pid ${last.pid} not alive when the run ended; no adapter wrote its exit`);
+    assert.strictEqual(last.death_established_by, `run.end: a stop was in flight (the row was stopping) and pid ${last.pid} was not alive when the run ended; no adapter wrote the exit that would say how it ended`);
     assert.strictEqual(last.head_sha, ctx.head);
     assert.ok(Number.isInteger(last.exited_at));
     const wc = receipt.workers_closed;

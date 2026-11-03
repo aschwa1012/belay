@@ -248,3 +248,25 @@ test('the rerank bound is clamped under the MCP tool timeout', () => {
   assert.strictEqual(ST.leversOfSearch(T.E, T.who.tool('plain'), { rerank_bound_ms: 600000 }).rerank_bound_ms, 110000);
   assert.strictEqual(ST.leversOfSearch(T.E, T.who.tool('plain'), { rerank_bound_ms: 500 }).rerank_bound_ms, 500);
 });
+
+test('a search the engine refused is logged with ok 0, the refusal code and no ranks, and still throws; an internal one is not logged', async () => {
+  const q = args({ query: 'a refused search', query_embedding: undefined });
+  const before = events().length;
+  let thrown = null;
+  await search(OWN, T.who.tool('plain'), q).catch((e) => { thrown = e; });
+  assert.ok(thrown && thrown.code, 'a semantic search with no vector and no embedder is refused by name');
+  const evs = events();
+  assert.strictEqual(evs.length, before + 1, 'exactly one row for the refused call');
+  const ev = evs[evs.length - 1];
+  assert.strictEqual(ev.ok, 0);
+  assert.strictEqual(ev.code, thrown.code);
+  const d = detail(ev);
+  assert.strictEqual(d.query, 'a refused search');
+  assert.deepStrictEqual(d.ranks, []);
+  assert.strictEqual(d.fallback.failed.length, 1);
+  assert.deepStrictEqual({ mode: d.fallback.failed[0].mode, code: d.fallback.failed[0].code }, { mode: 'refused', code: thrown.code });
+  await search(OWN, T.who.tool('plain'), q, { log: false }).catch(() => {});
+  assert.strictEqual(events().length, before + 1, 'an internal search writes no refusal row either');
+  await search(new Engine({ dataDir: T.dir, store: T.store, getEmbedder: null, establishedBy: 'test' }), T.who.tool('plain'), q).catch(() => {});
+  assert.strictEqual(events().length, before + 1, 'a copy (no owner) writes nothing');
+});

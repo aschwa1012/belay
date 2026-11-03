@@ -220,7 +220,7 @@ function onSemanticFailure(E, caller, e) {
 // `internal` is never a request field (the engine passes none): { tier, levers, log } let a caller inside this process, and the tests, name the
 // retrieval tier and switch the log off (an internal search, such as the hand-back's duplicate check); a request cannot (invariant 3).
 // Without a tier it is ST.tierFor(E, caller).
-async function search(E, caller, args, internal = {}) {
+async function searchRun(E, caller, args, internal, st) {
   const t0 = Date.now(), ms = {};
   const o = parseSearch(E, caller, args);
   // A supplied query vector is searched on the tier whose embedder made it: one that does not name the pinned heavy embedder is nano's (the
@@ -228,7 +228,7 @@ async function search(E, caller, args, internal = {}) {
   o.tier = internal.tier || ST.tierFor(E, caller);
   if (!internal.tier && o.queryEmbedding && !ST.isNano(o.tier) && o.embeddingModel !== o.tier.embedder) o.tier = ST.NANO_TIER;
   o.t0 = t0;
-  const lv = ST.leversOfSearch(E, caller, internal.levers);
+  const lv = ST.leversOfSearch(E, caller, internal.levers); st.o = o; st.lv = lv;
   // A heavy tier never serves a partial index. Mid-run on a pinned tier the rows behind are caught up inline or the search is served on nano (heavy-behind.cjs); elsewhere it refuses by name.
   if (o.mode !== 'keyword') await HB.guard(E, caller, o, lv, () => ST.assertServable(E, o.tier, o.namespaces, caller.role !== 'worker'));
   const depth = o.order === 'score' ? Math.min(Math.max((o.offset + o.k) * 3, 60), DEPTH_MAX) : DEPTH_MAX;
@@ -239,7 +239,7 @@ async function search(E, caller, args, internal = {}) {
   const leftOut = ST.isNano(o.tier) ? [] : o.namespaces.filter(n => n.startsWith('run/') && defaultSearchSkipsRun(E, n.slice(4)));
   const semConsidered = !leftOut.length ? considered : considered - db.prepare(`SELECT COUNT(*) AS n FROM memory_entries e WHERE ${base.where} AND e.type = 'turn' AND e.namespace IN (SELECT value FROM json_each(?))`).get(...base.params, JSON.stringify(leftOut)).n;
 
-  const ran = [], failed = [];
+  const ran = [], failed = [], pre = args[Symbol.for('belay.search.prefailed')] || []; // stages the in-process timeout already found failed: for the log only
   let sem = null, kw = null;
   if (o.mode !== 'keyword') {
     const ts = Date.now();
@@ -366,7 +366,7 @@ async function search(E, caller, args, internal = {}) {
   const abandoned = args[Symbol.for('belay.search.abandoned')];
   if (lv.search_log && E.owner && internal.log !== false && !(abandoned && abandoned.abandoned)) {
     ST.logSearch(E, caller, { kind: 'search', tier: o.tier, query: o.query, mode: o.mode, namespaces: o.namespaces, k: o.k, offset: o.offset, ms, capMb: lv.search_log_cap_mb,
-      ranks: ST.rankRecord(fused, ranked, Math.max(lv.rerank_depth, o.k), o.order), fallback: failed.length ? { failed } : null });
+      ranks: ST.rankRecord(fused, ranked, Math.max(lv.rerank_depth, o.k), o.order), fallback: failed.length || pre.length ? { failed: [...pre, ...failed] } : null });
   }
   if (debug) {
     const searched = { namespaces: o.namespaces, filter: o.filter, rows_considered: considered, fts: ftsReady(db) };
@@ -493,5 +493,7 @@ function withSemanticFailure(result, failure) {
     ...rest, modes_failed: [failed, ...(rest.modes_failed || [])], absence_established: false,
   };
 }
+
+const search = require('./search-refusal.cjs').wrap(searchRun);
 
 module.exports = { onSemanticFailure, search, timeline, getMany, get, list, withSemanticFailure };
