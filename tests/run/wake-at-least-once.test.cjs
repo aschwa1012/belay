@@ -47,13 +47,16 @@ async function setup(tag) {
   return { base, dataDir, deliveredFile, clock, now, pub, pipe, uid, wait };
 }
 
-// The retained replay a fresh client is handed on connect, read until it names a claimed wake.
-function claimedLine(pipe) {
-  return new Promise((resolve) => {
+// The retained replay a fresh client is handed on connect, read until it names a claimed wake. A replay that never names one fails
+// at the deadline (the publisher sends a heartbeat on connect, so a missing line is not mistaken for a slow pipe).
+function claimedLine(pipe, deadlineMs = 10000) {
+  return new Promise((resolve, reject) => {
     const c = net.connect(pipe); let buf = '';
+    const timer = setTimeout(() => { c.destroy(); reject(new Error(`no claimed wake line was replayed within ${deadlineMs} ms`)); }, deadlineMs);
+    c.on('error', (e) => { clearTimeout(timer); reject(e); });
     c.on('data', (d) => {
       buf += d; let i;
-      while ((i = buf.indexOf(NL)) >= 0) { const o = JSON.parse(buf.slice(0, i)); buf = buf.slice(i + 1); if (o.id && REF.test(o.text)) { c.destroy(); resolve(o); return; } }
+      while ((i = buf.indexOf(NL)) >= 0) { const o = JSON.parse(buf.slice(0, i)); buf = buf.slice(i + 1); if (o.id && REF.test(o.text)) { clearTimeout(timer); c.destroy(); resolve(o); return; } }
     });
   });
 }
