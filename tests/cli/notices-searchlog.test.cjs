@@ -66,7 +66,7 @@ test('notices through the CLI: a failed stage and a refusal in the run\'s search
     assert.strictEqual(j.search_log, 'off', 'a default run says its search log was off, as a field and not an event');
     assert.ok(r.stdout.length > 0);
     const tx = spawnSync(process.execPath, [CLI, 'notices', RUN, '--data', dataDir], { cwd: ROOT, windowsHide: true, encoding: 'utf8' });
-    assert.ok(tx.stdout.replace(/s+/g, ' ').includes(SEARCH_LOG_OFF_FOOTER), tx.stdout);
+    assert.ok(tx.stdout.replace(/\s+/g, ' ').includes(SEARCH_LOG_OFF_FOOTER), tx.stdout);
     const kinds = j.events.map((e) => e.kind).filter((k) => k.startsWith('search_')).sort();
     assert.deepStrictEqual(kinds, ['search_refused_failed', 'search_rerank_failed'], 'only this run\'s rows');
   } finally { cleanup(dir); }
