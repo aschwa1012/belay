@@ -47,8 +47,8 @@ const SAMPLE_MS = 100;
 const SMI_BOUND_MS = 5000;
 const NVIDIA_SMI = 'C:/Windows/System32/nvidia-smi.exe';
 const PEAKS_FILE = 'probe-peaks.json';
-// A model file the runtime cannot read as a model (a zeroed, truncated or foreign file): not a memory or device problem, and not a probe fault.
-const CORRUPT = /invalid gguf|not a gguf|gguf[^.]{0,40}(magic|version|truncat|corrupt)|unexpected end of (file|data)|tensor data is (out of bounds|truncated)/i;
+// A model file the runtime cannot read as a model (a zeroed or foreign file; a short file is caught earlier, by the size check): not a memory or device problem, and not a probe fault.
+const CORRUPT = /invalid gguf magic|invalid magic/i; // the runtime's own texts for a file that is not a model file; a version it refuses or a driver message is not damage
 const OOM = /out of (device |gpu )?memory|failed to allocate|unable to allocate|cannot allocate|VK_ERROR_OUT_OF|not enough (gpu |device )?memory|insufficient (gpu |device )?memory/i;
 
 const QUERY = 'how do I stop a worker by its pid';

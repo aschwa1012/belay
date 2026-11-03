@@ -139,7 +139,7 @@ function retrievalOf(row) {
 }
 
 function retrievalLines(r) {
-  if (!r.pinned) return ['retrieval  nothing pinned: the default cpu-fast (nano, no reranker, cpu)'];
+  if (!r.pinned) return ['retrieval  nothing pinned: no retrieval routing is recorded on this run (the default tier is cpu-fast: nano, no reranker; the embedder mode and any refusal at start are above)'];
   const t = (x) => `${v(x.profile)} (embedder ${v(x.embedder, 60)}, reranker ${x.reranker ? v(x.reranker, 60) : 'none'}, ${v(x.device)})${x.fallback_from ? ` fell back from ${v(x.fallback_from)}` : ''}`;
   const out = [`retrieval  run tier ${t(r.run)}`];
   const same = (a, b) => a.profile === b.profile && a.embedder === b.embedder && a.reranker === b.reranker && a.device === b.device;

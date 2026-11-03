@@ -99,3 +99,17 @@ test('a start refused by the pin says the orchestrator process had been started 
     assert.ok(!fs.existsSync(`${dir}/recv.jsonl`), 'no prompt reached it');
   } finally { cleanup(dir); }
 });
+
+test('failures(): a warm-up failure a later warm-up replaced is not reported, and the fallback names the profile served and a true next step', () => {
+  const RV = require('../../src/core/retrieval-view.cjs');
+  const tier = { profile: 'gpu-rerank-fast', embedder: 'e', reranker: 'r', device: 'gpu' };
+  const w = (state, t, extra = {}) => ({ model: 'r', state, trigger: 'first_search', started_at: t, ...extra });
+  const row = (warmups, fallback) => ({ epoch: 1, retrieval_routing: JSON.stringify({ routing: { run: tier, tiers: {} }, pinned_at: 5, notices: [], warmups, ...(fallback ? { fallback } : {}) }) });
+  assert.deepStrictEqual(RV.failures(RV.describe(row([w('failed', 1, { error: 'x' }), w('ready', 2)]))), [], 'failed then ready: nothing current');
+  assert.strictEqual(RV.failures(RV.describe(row([w('ready', 1), w('failed', 2, { error: 'x' })]))).length, 1);
+  const f = RV.failures(RV.describe(row([], { epoch: 1, at: 9, cause: { code: 'E_X', message: 'child died' } })))[0];
+  assert.deepStrictEqual([f.profile, f.fallback_from], ['cpu-fast', 'gpu-rerank-fast']);
+  assert.match(f.message, /run again/);
+  assert.doesNotMatch(f.message, /resume/);
+  assert.doesNotMatch(RV.lines(RV.describe(row([], { epoch: 1, at: 9, cause: { code: 'E_X', message: 'c' } }))).join('\n'), /resume/);
+});
