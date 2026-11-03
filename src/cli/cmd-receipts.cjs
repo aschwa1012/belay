@@ -146,7 +146,7 @@ function retrievalLines(r) {
   for (const [role, x] of Object.entries(r.tiers)) if (!same(x, r.run)) out.push(`  ${v(role, 20)}: ${t(x)}`);
   if (r.probe) out.push(r.probe.ok ? `  gpu probe ok on ${v(r.probe.device)}` : `  gpu probe refused (${v(r.probe.reason)}): ${v(r.probe.message, 300)}`);
   if (r.behind) out.push(`  heavy backlog at start: ${r.behind.embedders.map((b) => `${v(b.embedder, 60)} ${b.rows} behind`).join('; ')}; on_heavy_behind ${v(r.behind.choice)}`);
-  for (const f of r.failures) out.push(`  failure ${v(f.code, 40)}: ${v(f.message, 700)}${f.options.length ? ` Next: ${f.options.map((o) => v(o, 200)).join('; ')}` : ''}`);
+  for (const f of r.failures) out.push(`  failure ${v(f.code, 40)}:`, ...wrap('    ', `${v(f.message, 700)}${f.options.length ? ` Next: ${f.options.map((o) => v(o, 200)).join('; ')}` : ''}`));
   return out;
 }
 

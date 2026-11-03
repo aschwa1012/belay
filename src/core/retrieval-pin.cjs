@@ -87,7 +87,7 @@ async function pinRouting(E, caller, args = {}) {
       const refusal = (r && r.refusal) || { reason: 'probe_failed', message: 'the GPU probe returned nothing', options: [] };
       probe = { ok: false, reason: refusal.reason, message: refusal.message };
       // A model file that cannot be read is a fact about that file, not about the GPU or the probe: it keeps the handling (on_heavy_failure) and says so.
-      if (refusal.reason === 'model_corrupt') tierFailure(ctx, 'model_corrupt', 'model_corrupt', refusal.message, { refusal, reason: refusal.reason, options: refusal.options || [], model: refusal.model, file: refusal.file });
+      if (refusal.reason === 'model_corrupt') tierFailure(ctx, 'model_corrupt', 'model_corrupt', refusal.message, { refusal, reason: refusal.reason, options: refusal.options || [], model: r && r.model, file: r && r.file });
       else tierFailure(ctx, 'gpu_probe_refused', 'probe_refused', `the GPU probe refused this run's routing (${refusal.reason}): ${refusal.message}`, { refusal, reason: refusal.reason, options: refusal.options || [] });
     }
   }

@@ -60,8 +60,8 @@ test('receipts carries the retrieval block: the pinned tier, the fallback and th
     assert.strictEqual(r.fallback_from, 'cpu-rerank-light');
     assert.strictEqual(r.failures[0].code, 'retrieval_warmup_failed');
     const text = read(dir, 'receipts', false);
-    assert.match(text, /^retrieval {2}run tier cpu-fast .*fell back from cpu-rerank-light/m);
-    assert.match(text, /^ {2}failure retrieval_warmup_failed: /m);
+    assert.match(text, /^retrieval {2}run tier cpu-fast[\s\S]*fell back from cpu-rerank-light/m);
+    assert.match(text, /^ {2}failure retrieval_warmup_failed:$/m);
   } finally { cleanup(dir); }
 });
 
@@ -92,7 +92,7 @@ test('a start refused by the pin says the orchestrator process had been started 
     const env = { ...process.env, BELAY_CLAUDE_EXE: FAKE, FAKE_SESSION_ID: 'fake-surf', FAKE_RECV_FILE: `${dir}/recv.jsonl` };
     const r = spawnSync(process.execPath, [CLI, 'run', `${dir}/spec.json`, '--data', `${dir}/.belay`, '--json'], { cwd: dir, env, encoding: 'utf8', windowsHide: true, timeout: 90000 });
     assert.strictEqual(r.status, 1, r.stderr);
-    const rc = JSON.parse(r.stdout);
+    const rc = JSON.parse(r.stdout || r.stderr);
     assert.match(rc.ended_by, /could not be pinned/);
     assert.ok(rc.orchestrator.pid > 0);
     assert.ok(rc.ended_by.includes(`orchestrator process (pid ${rc.orchestrator.pid}) had been started`), rc.ended_by);

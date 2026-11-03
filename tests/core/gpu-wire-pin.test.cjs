@@ -124,6 +124,7 @@ test('a corrupt model file is a model_corrupt notice naming the model and file, 
   assert.match(r.notices[0].options.join(' '), /belay embedder delete --gpu --model/);
   await attach('pin-c2', { project: 'pinc2', profile: 'gpu-rerank-fast', on_heavy_failure: 'pause' });
   await assert.rejects(pin('pin-c2'), (e) => e.code === 'E_MODEL_ABSENT' && e.detail.cause === 'model_corrupt' && /on_heavy_failure is pause/.test(e.message));
+  await R.restore(); R = rig({ probe: { vram_fail: true } }); R.install(); // the next test expects the no-GPU rig the one before it set up
 });
 
 test('a probe refusal under on_heavy_failure pause refuses to pin, by name, and the run stays on nano', async () => {
