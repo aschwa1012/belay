@@ -458,7 +458,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       if (stopControl) {
         try {
           stopControl.attach({
-            pid: child.pid, exited: getExitFacts, stop: stopForControl,
+            pid: child.pid, exited: getExitFacts, stop: stopForControl, spawnStartedAt: t0, // t0 is read before the spawn call
             pause: (by) => hold.pause(by), resume: (by, line) => hold.resume(by, line), isPaused: () => hold.isPaused(),
             // 6f-2: lets a run pause/resume refuse a run that is finishing for any reason (run-pause.cjs:50)
             finishing: () => state.finishing, endedBy: () => state.endedBy,

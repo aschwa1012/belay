@@ -82,6 +82,8 @@ function registerProcess(rec, what) {
   catch (e) { throw new Error(`${what} (pid ${rec.pid}) could not be recorded in the spawn register (${(e && e.message) || e}); another store on this machine could not tell its children from an operator`); }
 }
 
+// Fill in a record's creation time. The record is written again through `register`, so its `at` becomes the time of this write (the
+// lifetime the record closes at is read from `seen_at`/`at`, so a later `at` only lengthens it: fail closed); `spawned_at` is kept.
 function update(pid, created, expect = null) {
   if (!Number.isFinite(created)) return false;
   let rec;

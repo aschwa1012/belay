@@ -50,7 +50,8 @@ test('no pid, no record and no timer; cmd-run hands the hook itself, not its pid
   assert.strictEqual(started, false);
   assert.deepStrictEqual(fs.readdirSync(dir), []);
   const src = fs.readFileSync(path.join(__dirname, '../../src/cli/cmd-run.cjs'), 'utf8');
-  assert.match(src, /registerOrchestrator\(h\)/);
+  assert.match(src, /wireRun/);
+  assert.match(src, /runWire.attach/);
   assert.match(src, /register-orchestrator\.cjs/);
 }));
 
