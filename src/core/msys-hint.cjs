@@ -8,6 +8,7 @@
 const fs = require('node:fs');
 const path = require('node:path');
 
+const RETRY = /[.;] Retry; the check is asked again$/;
 const HELPERS = ['sh', 'bash', 'env', 'timeout', 'nohup', 'xargs', 'dash', 'zsh', 'busybox'];
 const HELPER_IMAGE = new RegExp(`(?:^|[^\\w.-])(?:${HELPERS.join('|')})\\.exe\\b`, 'i');
 
@@ -17,22 +18,28 @@ function cliPath() {
   try { return fs.existsSync(p) ? p.split(path.sep).join('/') : null; } catch { return null; }
 }
 
-// -> the line, or null when neither the refusal's text names an MSYS helper nor the environment is an MSYS shell.
-function msysHint(reason, env = process.env) {
+// The refusals that concern the chain's root (operator-check.cjs `cause`). Only these can be the Git Bash break: a chain proved to run
+// through a process belay spawned (direct_spawn), a pipe, an unreadable table and the like are refused for another reason, and the
+// line would be untrue for them.
+const ROOT_CAUSES = new Set(['root_unfollowable', 'root_in_window', 'root_after_owner']);
+
+// -> the line, or null. It needs a root cause and either an MSYS helper named in the refusal or an MSYS shell in the environment.
+function msysHint(reason, cause, env = process.env) {
+  if (!ROOT_CAUSES.has(cause)) return null;
   const named = HELPER_IMAGE.test(String(reason || ''));
   if (!named && !(env && env.MSYSTEM)) return null;
   const cli = cliPath();
-  return `Git Bash can start a command through an MSYS helper (sh.exe, env.exe, timeout.exe) whose parent Windows cannot see, so belay cannot prove this command came from you. Run it from PowerShell or cmd (belay.cmd for a global install)${cli ? `, or run it directly with: node ${cli} <command>` : ''}.`;
+  return `Git Bash can start a command through an MSYS helper (sh.exe, env.exe, timeout.exe) whose parent Windows cannot see, so belay cannot prove this command came from you. Run it from PowerShell or cmd (belay.cmd for a global install)${cli ? `, or run it directly with: node "${cli}" <command>` : ''}.`;
 }
 
 // `e` is a client error: when it is an operator-check refusal, add the hint to its message and to detail.hint. Returns `e`.
 function hinted(e, env = process.env) {
   if (!e || !e.detail || e.detail.reason !== 'operator_check' || e.detail.hint) return e;
-  const line = msysHint(`${e.detail.operator_reason || ''} ${e.message || ''}`, env);
+  const line = msysHint(`${e.detail.operator_reason || ''} ${e.message || ''}`, e.detail.operator_cause, env);
   if (!line) return e;
   e.detail.hint = line;
-  e.message = `${e.message}. ${line}`;
+  e.message = `${e.message.replace(RETRY, '')}. ${line}`; // a retry cannot help here, so the sentence that offers one goes
   return e;
 }
 
-module.exports = { msysHint, hinted, HELPER_IMAGE };
+module.exports = { msysHint, hinted, HELPER_IMAGE, ROOT_CAUSES };

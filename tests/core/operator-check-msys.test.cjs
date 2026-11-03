@@ -60,37 +60,58 @@ test('a command started through an MSYS helper is still refused, and the error n
   for (const e of [read, write]) {
     assert.ok(e && e.code === 'E_UNBOUND', e && e.message);
     assert.strictEqual(e.detail.reason, 'operator_check');
+    assert.strictEqual(e.detail.operator_cause, 'root_after_owner');
     assert.match(e.detail.hint, /MSYS helper/);
     assert.match(e.detail.hint, /PowerShell or cmd/);
-    assert.match(e.detail.hint, /node \S+belay\.cjs <command>/);
+    assert.match(e.detail.hint, /node "[^"]+belay\.cjs" <command>/);
     assert.ok(e.message.endsWith(e.detail.hint), 'the same line is in the text');
     assert.ok(!/[\r\n]/.test(e.detail.hint) && e.detail.hint.length <= 400, String(e.detail.hint.length));
   }
-  const cli = /node (\S+belay\.cjs)/.exec(read.detail.hint)[1];
+  assert.ok(!/Retry; the check is asked again/.test(read.message), 'a retry cannot help under Git Bash, so the line that offers one is replaced');
+  const cli = /node "([^"]+belay\.cjs)"/.exec(read.detail.hint)[1];
   assert.ok(fs.existsSync(path.normalize(cli)), `the printed path exists: ${cli}`);
 });
 
-test('MSYSTEM in the environment adds the line even when the refusal names no helper; neither adds nothing', { skip, timeout: 60000 }, async () => {
+test('MSYSTEM adds the line to a root refusal that names no helper; without it, or with a non-root cause, nothing is added', { skip, timeout: 60000 }, async () => {
   const withEnv = await refused(nodeChain(), { msystem: 'MINGW64' });
   assert.ok(withEnv.read && withEnv.read.code === 'E_UNBOUND' && /MSYS helper/.test(withEnv.read.detail.hint), withEnv.read && withEnv.read.message);
   const plain = await refused(nodeChain());
   assert.ok(plain.read && plain.read.code === 'E_UNBOUND', plain.read && plain.read.message);
   assert.ok(!plain.read.detail.hint && !/MSYS/.test(plain.read.message), plain.read.message);
+  // MSYSTEM with a snapshot that does not hold the peer: refused for another reason, no cause, no line
+  const other = await refused(new Map(), { msystem: 'MINGW64' });
+  assert.ok(other.read && other.read.code === 'E_UNBOUND', other.read && other.read.message);
+  assert.ok(!other.read.detail.hint && !other.read.detail.operator_cause, other.read.message);
 });
 
-test('the hint is true words only: it is produced for a helper image and for MSYSTEM, and for nothing else', () => {
-  assert.ok(msysHint('the peer descends from a process belay spawned (descendant of orchestrator pid 9 pid 4100, timeout.exe)', {}));
-  assert.ok(msysHint("the peer's chain ends at pid 4100 (nohup.exe), which was not running", {}));
-  assert.strictEqual(msysHint("the peer's chain ends at pid 4000 (pwsh.exe), which was not running", {}), null);
-  assert.strictEqual(msysHint('a process named mysh.exe', {}), null);
-  assert.ok(msysHint('x', { MSYSTEM: 'MINGW64' }));
+const conn = () => ({ belayTransport: 'tcp', remotePort: 61000, localPort: 52100 });
+const table = async () => '  TCP    127.0.0.1:61000        127.0.0.1:52100        ESTABLISHED     4242\r\n';
+
+test('the refusal carries a fixed cause: the root forms are told from a proven descent from a spawned process', async () => {
+  // the real false refusal: a chain root inside a live orchestrator's window, recorded by the provenance as a descendant of it
+  const inWindow = await OC.create({ startedAt: T0, spawned: () => [], provenance: () => ({ alive: [{ pid: 4100, created: T0 + 60000, kind: 'descendant of orchestrator pid 900' }] }), deps: { table, snapshot: async () => msysChain('timeout.exe') } })({ conn: conn() });
+  assert.strictEqual(inWindow.ok, false);
+  assert.match(inWindow.reason, /descendant of orchestrator pid 900 pid 4100, timeout\.exe/);
+  assert.strictEqual(inWindow.cause, 'root_in_window');
+  // a chain proved to run through a worker (a live spawned record on a chain process, not a recorded root)
+  const direct = await OC.create({ startedAt: T0, spawned: () => [{ pid: 4002, created: OLD_ROOT_CREATED + 1000, kind: 'worker' }], deps: { table, snapshot: async () => new Map([...msysChain('timeout.exe'), [4100, { ppid: 4002, created: T0 + 60000, image: 'timeout.exe' }]]) } })({ conn: conn() });
+  assert.strictEqual(direct.ok, false);
+  assert.strictEqual(direct.cause, 'direct_spawn');
+  const afterOwner = await OC.create({ startedAt: T0, spawned: () => [], deps: { table, snapshot: async () => msysChain('sh.exe') } })({ conn: conn() });
+  assert.strictEqual(afterOwner.cause, 'root_after_owner');
+  const unfollowable = await OC.create({ startedAt: T0, spawned: () => [], deps: { table, snapshot: async () => new Map([[4242, { ppid: 4300, created: 5, image: 'node.exe' }], [4300, { ppid: 4242, created: 5, image: 'sh.exe' }]]) } })({ conn: conn() });
+  assert.strictEqual(unfollowable.cause, 'root_unfollowable'); // a loop in the chain
 });
 
-test('no trust change: a chain born after the owner under a live orchestrator window is refused by the check itself', async () => {
-  const conn = { belayTransport: 'tcp', remotePort: 61000, localPort: 52100 };
-  const table = async () => '  TCP    127.0.0.1:61000        127.0.0.1:52100        ESTABLISHED     4242\r\n';
-  const check = OC.create({ startedAt: T0, spawned: () => [], provenance: () => ({ alive: [{ pid: 4100, created: T0 + 60000, kind: 'descendant of orchestrator pid 900' }] }), deps: { table, snapshot: async () => msysChain('timeout.exe') } });
-  const v = await check({ conn });
-  assert.strictEqual(v.ok, false);
-  assert.match(v.reason, /descendant of orchestrator pid 900 pid 4100, timeout\.exe/);
+test('the hint is true words only: root causes with a helper image or MSYSTEM; a direct spawn, a pipe and the rest get nothing', () => {
+  const win = 'the peer descends from a process belay spawned (descendant of orchestrator pid 9 pid 4100, timeout.exe)';
+  assert.ok(msysHint(win, 'root_in_window', {}), 'the real root form gets the hint');
+  assert.strictEqual(msysHint('the peer descends from a process belay spawned (worker pid 4100, timeout.exe)', 'direct_spawn', {}), null, 'a proven worker chain does not');
+  assert.strictEqual(msysHint('the peer descends from a process belay spawned (worker pid 4100, claude.exe)', 'direct_spawn', { MSYSTEM: 'MINGW64' }), null, 'MSYSTEM does not turn a proven chain into the Git Bash break');
+  assert.ok(msysHint("the peer's chain ends at pid 4100 (nohup.exe), which was not running", 'root_after_owner', {}));
+  assert.strictEqual(msysHint("the peer's chain ends at pid 4000 (pwsh.exe), which was not running", 'root_after_owner', {}), null);
+  assert.strictEqual(msysHint('a process named mysh.exe', 'root_after_owner', {}), null);
+  assert.ok(msysHint('x', 'root_after_owner', { MSYSTEM: 'MINGW64' }));
+  assert.strictEqual(msysHint('this platform has no peer check', undefined, { MSYSTEM: 'MINGW64' }), null);
+  assert.strictEqual(msysHint('x', 'unknown', { MSYSTEM: 'MINGW64' }), null);
 });
