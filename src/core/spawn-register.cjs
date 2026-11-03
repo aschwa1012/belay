@@ -258,8 +258,9 @@ function tombstones() {
 
 // What `belay run` tells its owner it spawned besides the workers: the headless orchestrator, once its pid is known. The interactive
 // orchestrator is the human's own session (its plugin runs the CLI), so it is listed nowhere.
-function runSpawned(interactive, orchestratorPid) {
-  return !interactive && Number.isInteger(orchestratorPid) ? [{ pid: orchestratorPid, created: null, kind: 'orchestrator' }] : [];
+// `created` is the orchestrator's creation time once it is known; until then the entry matches by pid alone (fail closed).
+function runSpawned(interactive, orchestratorPid, created = null) {
+  return !interactive && Number.isInteger(orchestratorPid) ? [{ pid: orchestratorPid, created: Number.isFinite(created) ? created : null, kind: 'orchestrator' }] : [];
 }
 
 module.exports = { matches, register, registerProcess, update, unregister, retire, touch, stampNow, scan, settle, list, live, tombFile, startOf, bootMs, BOOT_SLACK_MS, SEEN_REFRESH_MS, tombstones, saveTombstone, dropTombstone, dir, runSpawned, io };

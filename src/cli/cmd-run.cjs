@@ -113,7 +113,7 @@ async function run(ctx) {
   // The headless orchestrator is recorded in the machine-wide spawn register, so another store's owner refuses its descendants too.
   // A register that cannot be written throws: the orchestrator runner ends the child before its first prompt (a launch that fails open
   // would leave other stores taking its descendants for operators).
-  const registerOrchestrator = (h) => require('../run/register-orchestrator.cjs').registerOrchestrator(h, { dataDir });
+  const registerOrchestrator = (h) => require('../run/register-orchestrator.cjs').registerOrchestrator(h, { dataDir, onCreated: (c) => { hookBox.created = c; } });
   const core = await openCore({
     dataDir, caller: { role: 'operator', run_id: parsed.runId, pid: process.pid },
     ownerOpts: {
@@ -123,7 +123,7 @@ async function run(ctx) {
       // the human's own session (its plugin runs the CLI), so it is not listed. Where the peer cannot be examined the owner stays claimed.
       mode: require('../core/operator-check.cjs').SUPPORTED ? 'bound' : 'claimed',
       longLived: true, // it serves the whole run, so it may start the snapshot probe a merge's owner_boot reads (ADR 0053 amendment 2)
-      spawnedProcesses: () => require('../core/spawn-register.cjs').runSpawned(!!ce, hookBox.pid),
+      spawnedProcesses: () => require('../core/spawn-register.cjs').runSpawned(!!ce, hookBox.pid, hookBox.created),
       controls: {
         'run.stop': (params) => stopControl.handle(params),
         // ADR 0023 amendment 5: an interactive run registers them too; its pause parks the workers and leaves the session alone
