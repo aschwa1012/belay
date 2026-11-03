@@ -228,7 +228,7 @@ async function searchRun(E, caller, args, internal, st) {
   o.tier = internal.tier || ST.tierFor(E, caller);
   if (!internal.tier && o.queryEmbedding && !ST.isNano(o.tier) && o.embeddingModel !== o.tier.embedder) o.tier = ST.NANO_TIER;
   o.t0 = t0;
-  const lv = ST.leversOfSearch(E, caller, internal.levers);
+  const lv = ST.leversOfSearch(E, caller, internal.levers); st.o = o; st.lv = lv;
   // A heavy tier never serves a partial index. Mid-run on a pinned tier the rows behind are caught up inline or the search is served on nano (heavy-behind.cjs); elsewhere it refuses by name.
   if (o.mode !== 'keyword') await HB.guard(E, caller, o, lv, () => ST.assertServable(E, o.tier, o.namespaces, caller.role !== 'worker'));
   const depth = o.order === 'score' ? Math.min(Math.max((o.offset + o.k) * 3, 60), DEPTH_MAX) : DEPTH_MAX;

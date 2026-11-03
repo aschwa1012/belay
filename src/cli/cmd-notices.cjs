@@ -361,6 +361,7 @@ async function run(ctx) {
     const { workers } = await core.worker.list({});
     const { tasks } = await core.task.list({});
     const { events: ledger } = await core.memory.events({ run_id: chosen.id, kinds: ['wrapup', ...STAGE_KINDS] });
+    const { events: searchRows } = await core.memory.events({ run_id: chosen.id, kinds: ['search'] });
     const events = ordered([
       ...permissionEvents(requests, chosen.id),
       ...workerEvents(workers.filter((w) => w.run_id === chosen.id), chosen.id, parsed.stallMs, dataDir),
@@ -374,6 +375,7 @@ async function run(ctx) {
       ...unjudgedEvents(heldNotes && heldNotes.unjudged_reports, chosen.id),
       ...strandedEvents(heldNotes && heldNotes.stranded, chosen.id),
       ...retrievalEvents(chosen),
+      ...searchLogEvents(searchRows, chosen.id, { heavyFallbackInRow: retrievalEvents(chosen).some((e) => e.kind === 'heavy_tier_fallback') }),
       ...runEvents(chosen),
     ], parsed.since);
     const receipt = {
