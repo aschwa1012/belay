@@ -325,10 +325,11 @@ function summaryOf(e) {
   }
 }
 
-function renderText(events) {
-  if (!events.length) return '(no notices)\n';
+function renderText(events, footer) {
+  const foot = footer ? P.wrapLine('  ', footer) : [];
+  if (!events.length) return ['(no notices)', ...foot, ''].join('\n');
   const lines = events.flatMap((e) => P.wrapLine(`${P.iso(e.ts)}  ${e.kind.padEnd(18)}  `, `${summaryOf(e)} [${P.clean(e.source, 80)}]`));
-  lines.push('');
+  lines.push(...foot, '');
   return lines.join('\n');
 }
 
