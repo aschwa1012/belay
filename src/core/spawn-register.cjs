@@ -10,8 +10,12 @@
 // A record is not simply deleted when its process is gone: it becomes a tombstone under `exited/` that keeps the process's lifetime
 // (spawn-provenance.cjs reads it), because a process it left behind has a chain that ends at itself and, without the tombstone, looks
 // like an operator's detached tool to an owner started later.
-// Fails closed: a directory that exists and cannot be read, or a record that cannot be parsed, is an error the operator check turns
-// into a refusal; an absent directory means nothing was ever registered.
+// Fails closed: a directory that exists and cannot be read is an error the operator check turns into a refusal; an absent directory
+// means nothing was ever registered. One file that cannot be read or parsed (an unclean shutdown can leave a renamed file whose data
+// never reached the disk: all NUL bytes) is "unproven", never a throw: while the pid its file name gives is alive it counts as a
+// spawned process with an unknown window, and the refusal names the file; once that pid is gone, a file from this boot still gives a
+// bounded lifetime to the writer's refresh that finds it (unprovenLife), which then moves it to `corrupt/` (never deleted). `belay
+// doctor` lists what is there.
 
 const fs = require('node:fs');
 const os = require('node:os');
@@ -24,7 +28,9 @@ const exitedDir = () => path.join(dir(), 'exited');
 const tombFile = (t) => path.join(exitedDir(), `${Number(t.pid)}-${Number.isFinite(t.created) ? t.created : 0}.json`);
 // The file calls, in one object so a test can fail them in a chosen order (a Windows rename onto a file another process has open
 // answers EPERM, EBUSY or EACCES for a moment; production never changes this).
-const io = { rename: (a, b) => fs.renameSync(a, b), read: (p) => fs.readFileSync(p, 'utf8'), sleep: (ms) => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* no SAB */ } } };
+// `write` writes the whole text (writeFileSync on an fd loops over short writes) and flushes the temp file to the disk before the
+// rename, so a power loss after the rename cannot leave the new name over unwritten data.
+const io = { write: (p, text) => { const fd = fs.openSync(p, 'w'); try { fs.writeFileSync(fd, text); fs.fsyncSync(fd); } finally { fs.closeSync(fd); } }, rename: (a, b) => fs.renameSync(a, b), read: (p) => fs.readFileSync(p, 'utf8'), sleep: (ms) => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* no SAB */ } } };
 const TRANSIENT = new Set(['EPERM', 'EBUSY', 'EACCES']);
 const RETRIES = 12; // attempts after the first; the waits double from 5 ms to a cap of 80 ms, about 0.7 s in all
 const backoff = (i) => Math.min(5 * 2 ** i, 80);
@@ -35,14 +41,14 @@ const SEEN_REFRESH_MS = 30000;
 const BOOT_SLACK_MS = 5000; // the boot time is derived from the uptime, so a record counts as older than the boot only by more than this
 const UNKNOWN_START_SLACK_MS = 2000; // a record with no creation time and no spawn time: it was made this long after the process started, at most
 
-// Write `text` to `target` so a reader sees the old file or the whole new one. The temp name is unique per call (process, counter,
-// time), so two writers of one target never share it. Many processes write here at once and Windows refuses a rename onto a file
+// Write `text` to `target` so a reader sees the old file or the whole new one, flushed to the disk before it takes the name. The
+// temp name is unique per call (process, counter, time), so two writers of one target never share it. Many processes write here at once and Windows refuses a rename onto a file
 // another process has open, so a transient refusal is retried with a bounded backoff; a target that already holds exactly this text
 // is a success whoever wrote it. Anything else still failing after the retries throws, and the temp file is removed.
 function writeAtomic(target, text) {
   const tmp = `${target}.${process.pid}.${++tmpSeq}.${Date.now().toString(36)}.tmp`;
-  fs.writeFileSync(tmp, text);
   try {
+    io.write(tmp, text);
     for (let i = 0; ; i++) {
       try { io.rename(tmp, target); return; }
       catch (e) {
@@ -58,7 +64,8 @@ function writeAtomic(target, text) {
 }
 
 // Read and parse one register file. A file another process is renaming over answers a transient error for a moment: retry it. A
-// missing file throws ENOENT as ever (the caller decides); a persistent error or an unparseable file throws, and the caller fails closed.
+// missing file throws ENOENT as ever (the caller decides); a persistent error or an unparseable file throws, and the caller decides
+// (a scan makes it unproven, below).
 function readJson(file) {
   for (let i = 0; ; i++) {
     try { return JSON.parse(io.read(file)); }
@@ -102,7 +109,79 @@ function saveTombstone(t) {
   writeAtomic(tombFile(t), JSON.stringify(t));
   return t;
 }
-function dropTombstone(t) { try { fs.unlinkSync(tombFile(t)); } catch { /* already gone */ } }
+// An unproven tombstone (see tombstoneScan) is moved aside, never deleted.
+// A lifetime read from an unproven file (unprovenLife) has no tombstone file of its own: dropping it moves that file aside.
+function dropTombstone(t) { if (t.unproven) { moveAside(t.unproven); return; } try { fs.unlinkSync(tombFile(t)); } catch { /* already gone */ } }
+
+// ---- unproven files: a record or tombstone that cannot be read or parsed, or names no pid --------------------------------------
+const corruptDir = () => path.join(dir(), 'corrupt');
+
+// Why the file cannot be trusted, in the words the operator sees.
+function unreadableWhy(file, err) {
+  if (err && err.code) return `unreadable (${err.code})`; // the read itself failed, after its retries
+  let buf;
+  try { buf = fs.readFileSync(file); } catch (e) { return `unreadable (${(e && e.code) || (err && err.code) || 'error'})`; }
+  if (!buf.length) return 'zero bytes';
+  if (buf.every((b) => b === 0)) return `all ${buf.length} bytes NUL`;
+  return err ? `does not parse (${err.message})` : 'names no pid';
+}
+
+// -> { pid, created, name, file, why, at }. The pid is the one the file name gives; `created` is the creation time a tombstone's name
+// carries (null for a record). `at` is the file's last write time: the harness writes a record or tombstone only once its process
+// exists, so the process began no later than that.
+function unprovenOf(file, name, err, created = null) {
+  let at = null;
+  try { at = fs.statSync(file).mtimeMs; } catch { /* unknown */ }
+  return { pid: Number(/^(?:exited\/)?([0-9]+)/.exec(name)[1]), created, name, file, why: unreadableWhy(file, err), at };
+}
+
+// Is the unproven file's process alive, by the rules a record is judged by as far as the file still tells: a pid in the snapshot, the
+// creation time when the name gives one, and else not younger than the file (a younger process is a reuse of the number); a file
+// written before the boot names a process the boot ended. Without a snapshot, the boot rule and a pid check. An unknown fact counts
+// toward alive.
+function unprovenAlive(u, snap, boot) {
+  if (Number.isFinite(u.at) && u.at + BOOT_SLACK_MS < boot) return false;
+  if (!snap) return pidAlive(u.pid);
+  const e = snap.get(u.pid);
+  if (!e) return false;
+  if (u.created != null && e.created != null) return e.created === u.created;
+  return e.created == null || !Number.isFinite(u.at) || e.created <= u.at + UNKNOWN_START_SLACK_MS;
+}
+const unprovenKind = (u) => `process named by the unreadable spawn-register file ${u.file} (${u.why})`;
+// The start of a live unproven file's process: the snapshot's creation time, else 0 (every root since counts as covered).
+const unprovenFrom = (u, snap) => { const e = snap && snap.get(u.pid); return e && Number.isFinite(e.created) ? e.created : 0; };
+
+// The lifetime a dead unproven file still gives, for the refresh that finds it (spawn-provenance.cjs): its process ran some time
+// between the boot and the file's last write, and a process it left behind is matched by its parent pid only (`ppid_only`), from the
+// creation time the name gives (else the boot) to the file's write time plus two stamp periods (untilOf's bound), capped at now. A
+// file from before the boot gives none: the boot ended its tree. -> a lifetime, or null.
+function unprovenLife(u, now = Date.now(), boot = bootMs(now)) {
+  if (Number.isFinite(u.at) && u.at + BOOT_SLACK_MS < boot) return null;
+  const until = Number.isFinite(u.at) ? Math.min(u.at + 2 * SEEN_REFRESH_MS, now) : now;
+  return { pid: u.pid, created: u.created, from: u.created != null ? u.created : boot, until, kind: unprovenKind(u), via: null, via_from: null, ppid_only: true, unproven: u };
+}
+
+// A rename retried through the transient refusals writeAtomic retries (a scanner opens a freshly renamed file). Throws when it still fails.
+function renameRetry(a, b) {
+  for (let i = 0; ; i++) {
+    try { io.rename(a, b); return; } catch (e) { if (!e || !TRANSIENT.has(e.code) || i >= RETRIES) throw e; io.sleep(backoff(i)); }
+  }
+}
+
+// Move an unproven file to corrupt/ under a name of its own, if it is still the file that was judged: one a writer has since replaced
+// with a good record stays, and one found good after the move goes back. Never deletes. -> the new path, or null when it was left
+// (the move failed: the next writer tries again). Throws when a good record was moved and cannot be put back, so the check that
+// moved it refuses rather than leave a live process's record in corrupt/.
+function moveAside(u) {
+  const good = (f) => { try { const r = readJson(f); return !!r && Number.isInteger(r.pid); } catch { return false; } };
+  if (!fs.existsSync(u.file) || good(u.file)) return null;
+  const to = path.join(corruptDir(), `${u.name.replace('/', '-')}.${Date.now()}`);
+  try { fs.mkdirSync(corruptDir(), { recursive: true }); renameRetry(u.file, to); } catch { return null; }
+  if (!good(to)) return to;
+  if (fs.existsSync(u.file)) return null; // a newer record took the name again; this copy stays in corrupt/, where doctor shows it
+  try { renameRetry(to, u.file); } catch (e) { throw new Error(`spawn register: the record ${u.file} was made good while it was being moved aside and could not be put back from ${to} (${(e && e.code) || e})`); }
+  return null;
+}
 
 // Turn a record into its tombstone: { pid, created, from, until, kind, via }. `until` null means the process may still be alive.
 const tombstoneOf = (rec, until) => ({ pid: rec.pid, created: Number.isFinite(rec.created) ? rec.created : null, from: startOf(rec), until, kind: rec.kind || 'worker', via: null });
@@ -194,8 +273,9 @@ function retire(pid, now = Date.now(), seenFloor = null, { checked = false, expe
 }
 
 // The records, split into those whose process is alive and those whose is gone — computed, never written. Throws when the directory
-// or a record cannot be read. Given `snap` (a process snapshot) the check is by identity, not by pid alone: a record is alive only when
-// the process under its pid is the one it names (creation time; a record with none, only if the process is no younger than the record),
+// cannot be read; a record that cannot is unproven (unprovenAlive): alive, it is listed with an unknown creation time, a window from its
+// process's start, and a kind that names the file; gone, it is dead with `unproven` set and no tombstone. Given `snap` (a process
+// snapshot) the check is by identity, not by pid alone: a record is alive only when the process under its pid is the one it names (creation time; a record with none, only if the process is no younger than the record),
 // and never when it began before the current boot. Without one, a pid check as before. A dead record carries the tombstone that keeps
 // its lifetime, closed at untilOf (two stamp periods after the last stamp the harness wrote, see touch), never left open to the time it
 // is read; a pre-boot record has none (its lifetime ended with the boot).
@@ -206,9 +286,14 @@ function scan({ snap = null, now = Date.now(), boot = bootMs(now) } = {}) {
   for (const n of names) {
     if (!/^[0-9]+[.]json$/.test(n)) continue; // a temp file being renamed into place, the exited directory, or something else
     const file = path.join(dir(), n);
-    let rec;
-    try { rec = readJson(file); } catch (e) { if (e && e.code === 'ENOENT') continue; throw new Error(`spawn register: ${n} cannot be read (${e.message})`); }
-    if (!rec || !Number.isInteger(rec.pid)) throw new Error(`spawn register: ${n} names no pid`);
+    let rec; let err = null;
+    try { rec = readJson(file); } catch (e) { if (e && e.code === 'ENOENT') continue; err = e; }
+    if (err || !rec || !Number.isInteger(rec.pid)) {
+      const u = unprovenOf(file, n, err);
+      if (!unprovenAlive(u, snap, boot)) { out.dead.push({ rec: null, file, tomb: null, unproven: u }); continue; }
+      out.live.push({ pid: u.pid, created: null, kind: unprovenKind(u), data_dir: null, worker_id: null, spawned_at: unprovenFrom(u, snap), at: u.at, unproven: u });
+      continue;
+    }
     const preBoot = !!snap && startOf(rec) + BOOT_SLACK_MS < boot;
     const alive = snap ? !preBoot && sameProcess(rec, snap) : pidAlive(rec.pid);
     if (alive) out.live.push(rec);
@@ -221,6 +306,9 @@ function scan({ snap = null, now = Date.now(), boot = bootMs(now) } = {}) {
 // tombstone cannot be written, which leaves the record for the next read.
 function settle(dead, { tombstones: keep = true } = {}) {
   for (const d of dead) {
+    // An unproven file leaves no tombstone. One from before the boot is moved now; one from this boot still gives a lifetime
+    // (unprovenLife), so it stays for spawn-provenance's refresh, which reads it, records what it reached, and then moves it.
+    if (d.unproven) { if (!unprovenLife(d.unproven)) moveAside(d.unproven); continue; }
     if (keep && d.tomb) saveTombstone(d.tomb);
     // The record is read again just before it goes: one re-registered under the same pid since the scan (a new worker took the number)
     // is a different record and stays.
@@ -243,18 +331,45 @@ function list(opts) {
   return live(opts).map((rec) => ({ pid: rec.pid, created: Number.isFinite(rec.created) ? rec.created : null, kind: rec.kind || 'worker', data_dir: rec.data_dir || null, worker_id: rec.worker_id || null }));
 }
 
-// -> the tombstones of exited processes (and of the descendants spawn-provenance.cjs has recorded). Throws when one cannot be read.
-function tombstones() {
+// -> { list, dead }: the tombstones of exited processes (and of the descendants spawn-provenance.cjs has recorded), and the unproven
+// ones whose process is gone (a writer's refresh reads their lifetime, unprovenLife, and moves them aside). Throws when the directory cannot be read. An unproven tombstone whose process
+// is alive (unprovenAlive, with the creation time its name gives) is listed as a live descendant that names the file, so the chains it
+// could cover are refused; it is never dropped, only moved aside (dropTombstone).
+function tombstoneScan({ snap = null, now = Date.now(), boot = bootMs(now) } = {}) {
   let names;
-  try { names = fs.readdirSync(exitedDir()); } catch (e) { if (e && (e.code === 'ENOENT')) return []; throw e; }
-  const out = [];
+  try { names = fs.readdirSync(exitedDir()); } catch (e) { if (e && (e.code === 'ENOENT')) return { list: [], dead: [] }; throw e; }
+  const out = { list: [], dead: [] };
   for (const n of names) {
     if (!/^[0-9]+-[0-9]+[.]json$/.test(n)) continue;
-    let t;
-    try { t = readJson(path.join(exitedDir(), n)); } catch (e) { if (e && e.code === 'ENOENT') continue; throw new Error(`spawn register: exited/${n} cannot be read (${e.message})`); }
-    if (!t || !Number.isInteger(t.pid) || !Number.isFinite(t.from)) throw new Error(`spawn register: exited/${n} names no pid or start`);
-    out.push({ pid: t.pid, created: Number.isFinite(t.created) ? t.created : null, from: t.from, until: Number.isFinite(t.until) ? t.until : null, kind: t.kind || 'worker', via: t.via == null ? null : t.via, via_from: Number.isFinite(t.via_from) ? t.via_from : null });
+    const file = path.join(exitedDir(), n);
+    let t; let err = null;
+    try { t = readJson(file); } catch (e) { if (e && e.code === 'ENOENT') continue; err = e; }
+    if (err || !t || !Number.isInteger(t.pid) || !Number.isFinite(t.from)) {
+      const u = unprovenOf(file, `exited/${n}`, err, Number(/-([0-9]+)[.]json$/.exec(n)[1]) || null);
+      if (!unprovenAlive(u, snap, boot)) { out.dead.push(u); continue; }
+      // via_from is now: the boot was judged above by the file's write time, so spawn-provenance's boot rule must not drop it again
+      out.list.push({ pid: u.pid, created: u.created, from: unprovenFrom(u, snap), until: null, kind: 'descendant', via: unprovenKind(u), via_from: now, unproven: u });
+      continue;
+    }
+    out.list.push({ pid: t.pid, created: Number.isFinite(t.created) ? t.created : null, from: t.from, until: Number.isFinite(t.until) ? t.until : null, kind: t.kind || 'worker', via: t.via == null ? null : t.via, via_from: Number.isFinite(t.via_from) ? t.via_from : null });
   }
+  return out;
+}
+const tombstones = (opts) => tombstoneScan(opts).list;
+
+// What `belay doctor` reports, and nothing is written: the unproven files in the register now, each with `alive` by unprovenAlive
+// without a snapshot (the boot rule, then whether a process holds the pid; the owner's check also compares creation times, so a pid
+// held by a younger process counts here and not there), and the files moved to corrupt/. -> { dir, corrupt, unproven: [{ name, file, why, alive }], moved: [name], error? }
+function problems() {
+  const out = { dir: dir(), corrupt: corruptDir(), unproven: [], moved: [] };
+  try { out.moved = fs.readdirSync(corruptDir()).sort(); } catch (e) { if (!e || e.code !== 'ENOENT') out.error = `${corruptDir()} cannot be read (${e && e.code})`; }
+  try {
+    const r = scan();
+    const t = tombstoneScan();
+    const row = (u, alive) => ({ name: u.name, file: u.file, why: u.why, alive });
+    out.unproven = [...r.live.filter((x) => x.unproven).map((x) => row(x.unproven, true)), ...r.dead.filter((d) => d.unproven).map((d) => row(d.unproven, false)),
+      ...t.list.filter((x) => x.unproven).map((x) => row(x.unproven, true)), ...t.dead.map((u) => row(u, false))];
+  } catch (e) { out.error = `the register cannot be read (${(e && e.message) || e})`; }
   return out;
 }
 
@@ -265,4 +380,4 @@ function runSpawned(interactive, orchestratorPid, created = null) {
   return !interactive && Number.isInteger(orchestratorPid) ? [{ pid: orchestratorPid, created: Number.isFinite(created) ? created : null, kind: 'orchestrator' }] : [];
 }
 
-module.exports = { matches, register, registerProcess, update, unregister, retire, touch, stampNow, scan, settle, list, live, tombFile, startOf, bootMs, BOOT_SLACK_MS, SEEN_REFRESH_MS, tombstones, saveTombstone, dropTombstone, dir, runSpawned, io };
+module.exports = { matches, register, registerProcess, update, unregister, retire, touch, stampNow, scan, settle, list, live, tombFile, startOf, bootMs, BOOT_SLACK_MS, SEEN_REFRESH_MS, tombstones, tombstoneScan, saveTombstone, dropTombstone, moveAside, unprovenLife, problems, dir, runSpawned, io };

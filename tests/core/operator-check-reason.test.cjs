@@ -58,7 +58,7 @@ test('the owner\'s own refusal of a write bounds the reason the same way', { ski
     await c.connect(); ports.add(c.sock.localPort);
     const e = await c.call('memory.store', { text: 'x', namespace: 'project/p', embed: false, caller }).then(() => null, (err) => err);
     assert.ok(e && e.code === 'E_UNBOUND', e && e.message);
-    const reason = /\((the peer's chain.*)\)$/s.exec(e.message);
+    const reason = /\((the peer's chain.*?)\)(?=\. |$)/s.exec(e.message);
     assert.ok(reason, e.message);
     assert.ok(reason[1].length <= 300 && !/[\r\n]/.test(reason[1]), String(reason[1].length));
   } finally { await c.close().catch(() => {}); await o.stop().catch(() => {}); cleanup(dir); }
