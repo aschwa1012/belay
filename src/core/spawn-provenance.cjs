@@ -62,12 +62,17 @@ function refresh(snap, { now = Date.now(), boot = SR.bootMs(now), persist = true
   const tombs = SR.tombstoneScan({ snap, now, boot }); // an unproven one is judged against the same snapshot (spawn-register.cjs)
   for (const t of tombs.list) known.set(keyOf(t), t);
   for (const d of scan.dead) if (d.tomb) known.set(keyOf(d.tomb), d.tomb);
+  // A dead file that cannot be read still gives a bounded lifetime for this check (its orphans are found below); then it is moved aside.
+  for (const u of [...scan.dead.filter((d) => d.unproven).map((d) => d.unproven), ...tombs.dead]) {
+    const life = SR.unprovenLife(u, now, boot);
+    if (life && !known.has(keyOf(life))) known.set(keyOf(life), life);
+  }
   const saves = new Map(); const drops = [];
   for (const [k, t] of [...known]) if (beforeBoot(t, boot)) { known.delete(k); drops.push(t); }
   for (const t of known.values()) if (t.until == null && !present(t, snap)) { t.until = now; saves.set(keyOf(t), t); }
   const lifetimes = [
     ...scan.live.map((r) => ({ pid: r.pid, created: Number.isFinite(r.created) ? r.created : null, from: SR.startOf(r), until: null, kind: r.kind || 'worker', window: true })),
-    ...[...known.values()].map((t) => ({ ...t, window: t.via == null })),
+    ...[...known.values()].map((t) => ({ ...t, window: t.via == null && !t.ppid_only })),
   ];
   for (const [pid, e] of snap) {
     if (e.created == null || !isRoot(pid, e, snap) || known.has(`${pid}-${e.created}`)) continue;

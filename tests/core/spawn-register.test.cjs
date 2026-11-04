@@ -52,6 +52,7 @@ test('an unreadable register is an error, never an empty list; one unreadable re
   const gone = require('../helpers/dead-pid.cjs').deadPid();
   fs.writeFileSync(path.join(dir, `${gone}.json`), '{ not json');
   assert.deepStrictEqual(SR.list(), []);
+  core('spawn-provenance.cjs').refresh(new Map()); // a writer's refresh reads its lifetime, then moves it
   assert.ok(!fs.existsSync(path.join(dir, `${gone}.json`)) && fs.readdirSync(path.join(dir, 'corrupt')).length === 1, 'moved to corrupt/');
   const file = path.join(dir, 'a-file');
   fs.writeFileSync(file, 'x');

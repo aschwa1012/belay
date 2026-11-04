@@ -171,8 +171,9 @@ function memoryProjectCheck(found) {
 }
 
 // The machine-wide spawn register (src/core/spawn-register.cjs): a file there that cannot be read (an unclean shutdown can leave one
-// of all NUL bytes) is unproven. While its pid is alive the operator check refuses the chains it could cover; once the pid is gone the
-// next operator write moves it to corrupt/, and from then on the check does not count it. Read only: a pid check, no move.
+// of all NUL bytes) is unproven. While its process is alive the operator check refuses the chains it could cover; once it is gone the
+// next operator write reads a bounded lifetime from it (one written since the boot) and moves it to corrupt/. Read only: the boot rule
+// and a pid check (the owner's check also compares creation times, which needs a process snapshot), no move.
 function spawnRegisterCheck() {
   const p = require('../core/spawn-register.cjs').problems();
   const extra = { path: p.dir, unproven: p.unproven, moved: p.moved };
@@ -180,9 +181,9 @@ function spawnRegisterCheck() {
   const parts = [];
   const live = p.unproven.filter((u) => u.alive);
   const gone = p.unproven.filter((u) => !u.alive);
-  if (live.length) parts.push(`${live.length} unreadable file(s) name a live pid, so a keyless operator write from a chain they could cover is refused until that process exits: ${live.map((u) => `${u.file} (${u.why})`).join('; ')}`);
-  if (gone.length) parts.push(`${gone.length} unreadable file(s) name a pid that is gone; they are not counted, and the next operator write moves them to ${p.corrupt}: ${gone.map((u) => `${u.file} (${u.why})`).join('; ')}`);
-  if (p.moved.length) parts.push(`${p.moved.length} unreadable file(s) were moved to ${p.corrupt} and are no longer counted, so a process they left behind is not recognised as belay's: ${p.moved.join(', ')}; read them, then delete them`);
+  if (live.length) parts.push(`${live.length} unreadable file(s) name a pid a process holds now; while it is the file's process (the owner compares creation times, and a younger process is a reuse of the pid), a keyless operator write from a chain it could cover is refused: ${live.map((u) => `${u.file} (${u.why})`).join('; ')}`);
+  if (gone.length) parts.push(`${gone.length} unreadable file(s) name a pid no process holds; the next operator write reads a bounded lifetime from each one written since the boot, refuses the processes it left behind, and moves it to ${p.corrupt}: ${gone.map((u) => `${u.file} (${u.why})`).join('; ')}`);
+  if (p.moved.length) parts.push(`${p.moved.length} unreadable file(s) were moved to ${p.corrupt} and are no longer read: ${p.moved.join(', ')}; read them, then delete them`);
   return parts.length ? row('spawn-register', ERROR, parts.join('. '), extra) : row('spawn-register', OK, `no unreadable file in ${p.dir}, and nothing in ${p.corrupt}`, extra);
 }
 

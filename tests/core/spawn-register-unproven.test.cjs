@@ -41,14 +41,16 @@ async function withRegistry(fn) {
   try { return await fn(reg.dir); } finally { Object.assign(SR.io, real); reg.remove(); }
 }
 
-test('an all-NUL and a zero-byte record whose pid is gone are not a throw: a read lists nothing and moves nothing, a writer moves them to corrupt/', () => withRegistry((dir) => {
+test('an all-NUL and a zero-byte record whose pid is gone are not a throw: a read lists nothing and moves nothing, a writer\'s refresh moves them to corrupt/', () => withRegistry((dir) => {
   const a = put(path.join(dir, `${deadPid()}.json`), NUL);
   const b = put(path.join(dir, `${deadPid()}.json`), Buffer.alloc(0));
   SR.register({ pid: process.pid, kind: 'worker', workerId: 'w1' }); // a good record beside them still lists
   assert.deepStrictEqual(SR.list({ persist: false }).map((r) => r.pid), [process.pid], 'the read before the fix threw "cannot be read" here');
   assert.ok(fs.existsSync(a) && fs.existsSync(b), 'a read writes nothing');
   assert.deepStrictEqual(SR.list().map((r) => r.pid), [process.pid]);
-  assert.ok(!fs.existsSync(a) && !fs.existsSync(b), 'a writer moved both');
+  assert.ok(fs.existsSync(a) && fs.existsSync(b), 'written this boot, they still give a lifetime, so the register\'s own settle keeps them');
+  Prov.refresh(new Map([[process.pid, { ppid: 1, created: null, image: 'node.exe' }]]));
+  assert.ok(!fs.existsSync(a) && !fs.existsSync(b), 'the refresh read them, then moved both');
   const moved = corrupt(dir);
   assert.strictEqual(moved.length, 2, JSON.stringify(moved));
   assert.ok(moved.some((n) => n.startsWith(path.basename(a))) && moved.some((n) => n.startsWith(path.basename(b))), JSON.stringify(moved));
@@ -127,9 +129,49 @@ test('a file a writer made good again before the move stays where it is', () => 
   const f = put(path.join(dir, `${pid}.json`), NUL);
   const s = SR.scan();
   fs.writeFileSync(f, JSON.stringify({ pid, kind: 'worker', at: Date.now() }));
-  SR.settle(s.dead);
+  assert.strictEqual(SR.moveAside(s.dead[0].unproven), null);
   assert.ok(fs.existsSync(f));
   assert.deepStrictEqual(corrupt(dir), []);
+}));
+
+test('a good record that lands while the file is moved goes back, through transient refusals; one that cannot go back is a throw', () => withRegistry((dir) => {
+  SR.io.sleep = () => {};
+  const pid = deadPid();
+  const f = put(path.join(dir, `${pid}.json`), NUL);
+  const u = SR.scan().dead[0].unproven;
+  const realRename = SR.io.rename;
+  const good = JSON.stringify({ pid, kind: 'worker', at: Date.now() });
+  let calls = 0;
+  // the first rename is the move, and a register() for a reused pid has just written the good record under the name
+  SR.io.rename = (a, b) => { calls++; if (calls === 1) { fs.writeFileSync(a, good); return realRename(a, b); } if (calls <= 3) throw Object.assign(new Error('busy'), { code: 'EBUSY' }); return realRename(a, b); };
+  assert.strictEqual(SR.moveAside(u), null);
+  assert.strictEqual(calls, 4, 'two refusals on the way back, then the rename that worked');
+  assert.strictEqual(fs.readFileSync(f, 'utf8'), good, 'the good record is back under its name');
+  assert.deepStrictEqual(corrupt(dir), []);
+  fs.writeFileSync(f, NUL);
+  calls = 0;
+  SR.io.rename = (a, b) => { calls++; if (calls === 1) { fs.writeFileSync(a, good); return realRename(a, b); } throw Object.assign(new Error('busy'), { code: 'EBUSY' }); };
+  assert.throws(() => SR.moveAside(u), /made good while it was being moved aside and could not be put back/);
+  assert.strictEqual(corrupt(dir).length, 1, 'it is in corrupt/, and the throw refuses the check that moved it');
+}));
+
+test('a worker whose record is unreadable and gone still covers the helper it started with start /b: refused, then the file is moved', { skip }, () => withRegistry(async (dir) => {
+  const W = deadPid(); // the worker: exited, its record (written this boot) now all NUL
+  const f = put(path.join(dir, `${W}.json`), NUL, NOW - 30000);
+  // the helper's parent is the worker, gone, so the helper's chain ends at itself, at a root older than the owner
+  const shot = new Map([[4242, { ppid: W, created: NOW - 20000, image: 'node.exe' }]]);
+  const chk = () => OC.create({ startedAt: NOW, spawned: (o) => SR.list(o), provenance: (s, o) => Prov.refresh(s, o), deps: { table: tableOf, snapshot: async () => shot } });
+  const r = await chk()({ conn: peer(), persist: true });
+  assert.strictEqual(r.ok, false, `before the change: accepted once the file was moved; ${JSON.stringify(r)}`);
+  assert.ok(r.reason.includes(f) && /descendant of process named by the unreadable/.test(r.reason), r.reason);
+  assert.ok(!fs.existsSync(f) && corrupt(dir).length === 1, 'moved once what it reached is recorded');
+  const again = await chk()({ conn: peer(), persist: true });
+  assert.strictEqual(again.ok, false, `the helper is now a recorded descendant: ${JSON.stringify(again)}`);
+  // a helper created after the file's bound (its write time plus two stamp periods) is not the worker's
+  fs.rmSync(dir, { recursive: true, force: true }); fs.mkdirSync(dir);
+  put(path.join(dir, `${W}.json`), NUL, NOW - 10 * 60000);
+  const late = await chk()({ conn: peer(), persist: false });
+  assert.strictEqual(late.ok, true, JSON.stringify(late));
 }));
 
 test('a register write flushes its temp file to the disk before the rename', () => withRegistry(() => {
@@ -165,14 +207,14 @@ test('doctor names the unproven files and what was moved to corrupt/, and writes
     const gone = put(path.join(dir, `${deadPid()}.json`), Buffer.alloc(0));
     let r = await row();
     assert.strictEqual(r.verdict, 'error');
-    assert.ok(r.evidence.includes(live) && /name a live pid/.test(r.evidence), r.evidence);
-    assert.ok(r.evidence.includes(gone) && /zero bytes/.test(r.evidence) && /next operator write moves them/.test(r.evidence), r.evidence);
+    assert.ok(r.evidence.includes(live) && /name a pid a process holds now/.test(r.evidence), r.evidence);
+    assert.ok(r.evidence.includes(gone) && /zero bytes/.test(r.evidence) && /next operator write reads a bounded lifetime/.test(r.evidence), r.evidence);
     assert.ok(fs.existsSync(gone) && corrupt(dir).length === 0, 'doctor moved nothing');
     fs.rmSync(live);
-    SR.list(); // a writer moves the gone one
+    Prov.refresh(new Map()); // a writer's refresh moves the gone one
     r = await row();
     assert.strictEqual(r.verdict, 'error');
     assert.strictEqual(r.moved.length, 1);
-    assert.ok(/moved to .*corrupt.* no longer counted/.test(r.evidence), r.evidence);
+    assert.ok(/moved to .*corrupt.* no longer read/.test(r.evidence), r.evidence);
   } finally { fs.rmSync(proj, { recursive: true, force: true }); }
 }));
