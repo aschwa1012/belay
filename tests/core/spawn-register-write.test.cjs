@@ -87,7 +87,8 @@ test('a reader that meets EBUSY while a record is being replaced retries; one th
   assert.deepStrictEqual(SR.list().map((r) => r.worker_id), ['w9']);
   assert.strictEqual(refused, 3);
   SR.io.read = () => { throw errno('EBUSY'); };
-  assert.throws(() => SR.list(), (e) => /cannot be read/.test(e.message), 'a record that cannot be read is an error, not an empty list');
+  const [r] = SR.list({ persist: false });
+  assert.ok(r && r.pid === process.pid && r.created === null && /unreadable \(EBUSY\)/.test(r.kind), `a record that cannot be read still counts while its pid lives, by pid alone: ${JSON.stringify(r)}`);
 }));
 
 test('processes writing one tombstone together all succeed (real renames)', () => withRegistry((dir) => {

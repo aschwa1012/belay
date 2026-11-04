@@ -170,6 +170,22 @@ function memoryProjectCheck(found) {
     : row('memory-project', OK, 'notes are off, or memory.project is set in the config file');
 }
 
+// The machine-wide spawn register (src/core/spawn-register.cjs): a file there that cannot be read (an unclean shutdown can leave one
+// of all NUL bytes) is unproven. While its pid is alive the operator check refuses the chains it could cover; once the pid is gone the
+// next operator write moves it to corrupt/, and from then on the check does not count it. Read only: a pid check, no move.
+function spawnRegisterCheck() {
+  const p = require('../core/spawn-register.cjs').problems();
+  const extra = { path: p.dir, unproven: p.unproven, moved: p.moved };
+  if (p.error) return row('spawn-register', ERROR, p.error, extra);
+  const parts = [];
+  const live = p.unproven.filter((u) => u.alive);
+  const gone = p.unproven.filter((u) => !u.alive);
+  if (live.length) parts.push(`${live.length} unreadable file(s) name a live pid, so a keyless operator write from a chain they could cover is refused until that process exits: ${live.map((u) => `${u.file} (${u.why})`).join('; ')}`);
+  if (gone.length) parts.push(`${gone.length} unreadable file(s) name a pid that is gone; they are not counted, and the next operator write moves them to ${p.corrupt}: ${gone.map((u) => `${u.file} (${u.why})`).join('; ')}`);
+  if (p.moved.length) parts.push(`${p.moved.length} unreadable file(s) were moved to ${p.corrupt} and are no longer counted, so a process they left behind is not recognised as belay's: ${p.moved.join(', ')}; read them, then delete them`);
+  return parts.length ? row('spawn-register', ERROR, parts.join('. '), extra) : row('spawn-register', OK, `no unreadable file in ${p.dir}, and nothing in ${p.corrupt}`, extra);
+}
+
 async function run(ctx) {
   if (ctx.argv.length) {
     const message = `unknown argument ${ctx.argv[0]}`;
@@ -184,7 +200,7 @@ async function run(ctx) {
   // A data_dir the config may not name is a failed check, and the store is looked at where --data or the default puts it.
   const refused = C.effective(found, 'data_dir', { dataDirOverride: C.overrideOf(ctx) }).refused;
   const dataDir = refused ? C.dataDirOf(found, { ...ctx, dataDir: `${found.dir}/${C.KEYS.data_dir.default}`, dataDirGiven: true }) : C.dataDirOf(found, ctx);
-  const checks = [...configChecks(found), ...(refused ? [row('config-data-dir', ERROR, refused, { path: found.path })] : []), ...storeChecks(dataDir), ...substrateChecks(found), ...embedderChecks(), await memoryIndexCheck(dataDir), memoryProjectCheck(found)];
+  const checks = [...configChecks(found), ...(refused ? [row('config-data-dir', ERROR, refused, { path: found.path })] : []), ...storeChecks(dataDir), ...substrateChecks(found), ...embedderChecks(), await memoryIndexCheck(dataDir), memoryProjectCheck(found), spawnRegisterCheck()];
 
   const fixed = ctx.fix ? applyFix(checks) : [];
 

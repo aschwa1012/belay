@@ -42,13 +42,17 @@ test('a record whose pid is gone is removed when the register is read', () => wi
   assert.ok(!fs.existsSync(path.join(dir, `${pid}.json`)), 'pruned');
 }));
 
-test('an unreadable register is an error, never an empty list', () => withRegistry((dir) => {
-  fs.writeFileSync(path.join(dir, '4242.json'), '{ not json');
-  assert.throws(() => SR.list(), /cannot be read/);
-  fs.rmSync(path.join(dir, '4242.json'));
-  fs.writeFileSync(path.join(dir, '4243.json'), JSON.stringify({ kind: 'worker' }));
-  assert.throws(() => SR.list(), /names no pid/);
-  fs.rmSync(path.join(dir, '4243.json'));
+test('an unreadable register is an error, never an empty list; one unreadable record is unproven, never a throw', () => withRegistry((dir) => {
+  // one record that does not parse, or names no pid: its pid alive, it is listed by pid alone; gone, a writer moves it aside
+  fs.writeFileSync(path.join(dir, `${process.pid}.json`), '{ not json');
+  assert.deepStrictEqual(SR.list().map((r) => [r.pid, r.created, /does not parse/.test(r.kind)]), [[process.pid, null, true]]);
+  fs.writeFileSync(path.join(dir, `${process.pid}.json`), JSON.stringify({ kind: 'worker' }));
+  assert.deepStrictEqual(SR.list().map((r) => [r.pid, /names no pid/.test(r.kind)]), [[process.pid, true]]);
+  fs.rmSync(path.join(dir, `${process.pid}.json`));
+  const gone = require('../helpers/dead-pid.cjs').deadPid();
+  fs.writeFileSync(path.join(dir, `${gone}.json`), '{ not json');
+  assert.deepStrictEqual(SR.list(), []);
+  assert.ok(!fs.existsSync(path.join(dir, `${gone}.json`)) && fs.readdirSync(path.join(dir, 'corrupt')).length === 1, 'moved to corrupt/');
   const file = path.join(dir, 'a-file');
   fs.writeFileSync(file, 'x');
   process.env.BELAY_SPAWN_REGISTRY = file;
@@ -74,5 +78,8 @@ test('a retired record leaves a tombstone with the lifetime of its process, whet
   const dead = SR.tombstones().find((x) => x.pid === pid);
   assert.deepStrictEqual([dead.created, dead.from, dead.kind], [null, 7000, 'orchestrator'], 'a record with no creation time starts when its spawn call did');
   assert.strictEqual(SR.live().length, 0);
-  assert.throws(() => { fs.writeFileSync(path.join(SR.dir(), 'exited', '1-1.json'), '{}'); SR.tombstones(); }, /names no pid or start/);
+  // a tombstone that names no pid or start is unproven: its pid (from the name) alive, it is listed as a live descendant naming the file
+  fs.writeFileSync(path.join(SR.dir(), 'exited', `${process.pid}-0.json`), '{}');
+  const u = SR.tombstones().find((x) => x.unproven);
+  assert.deepStrictEqual([u.pid, u.until, u.kind, u.via.includes(`${process.pid}-0.json`), u.unproven.why], [process.pid, null, 'descendant', true, 'names no pid']);
 }));
