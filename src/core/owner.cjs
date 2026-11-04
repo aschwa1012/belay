@@ -223,7 +223,7 @@ class Owner {
       for (const r of db.prepare('SELECT w.pid, w.state FROM worker w JOIN (SELECT id, MAX(seq) m FROM worker GROUP BY id) x ON w.id = x.id AND w.seq = x.m WHERE w.pid IS NOT NULL AND w.pid_created IS NULL').all()) if (live.has(r.state)) out.push({ pid: r.pid, created: null, kind: 'worker' });
     } catch { /* a store that cannot be read has no workers to name; the chain rule still stands */ }
     if (typeof this.opts.spawnedProcesses === 'function') { try { out.push(...this.opts.spawnedProcesses()); } catch { /* the run's own list is best effort */ } }
-    out.push(...require('./spawn-register.cjs').list({ snap, persist })); // every harness on the machine, other stores' workers among them; unreadable throws, and the operator check refuses on it
+    out.push(...require('./spawn-register.cjs').list({ snap, persist })); // every harness on the machine, other stores' workers among them; an unreadable directory throws, and the operator check refuses on it (an unreadable record is unproven, spawn-register.cjs)
     return out;
   }
 
