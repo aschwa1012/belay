@@ -57,6 +57,24 @@ test('an all-NUL and a zero-byte record whose pid is gone are not a throw: a rea
   assert.ok(fs.readFileSync(path.join(dir, 'corrupt', moved.find((n) => n.startsWith(path.basename(a))))).equals(NUL), 'moved whole, never rewritten');
 }));
 
+// The two files the reset left (copies; 218 and 219 bytes, every byte NUL), written before the boot, their pids held again by processes
+// of the new session: the read threw on them, so every keyless operator write was refused.
+const FIXTURES = path.join(__dirname, '..', 'fixtures', 'spawn-register-nul');
+test('the reset\'s own files: a read does not throw, the operator write is accepted, and they are moved to corrupt/ whole', { skip }, () => withRegistry(async (dir) => {
+  const before = SR.bootMs() - 10 * 60000;
+  const files = ['17300.json', '29332.json'].map((n) => { const f = path.join(dir, n); fs.copyFileSync(path.join(FIXTURES, n), f); fs.utimesSync(f, before / 1000, before / 1000); return f; });
+  assert.deepStrictEqual(files.map((f) => fs.statSync(f).size), [218, 219]);
+  const held = new Map([...snap(), [17300, { ppid: 1, created: NOW - 60000, image: 'explorer.exe' }], [29332, { ppid: 1, created: NOW - 30000, image: 'svchost.exe' }]]);
+  const chk = OC.create({ startedAt: NOW, spawned: (o) => SR.list(o), provenance: (s, o) => Prov.refresh(s, o), deps: { table: tableOf, snapshot: async () => held } });
+  assert.deepStrictEqual(SR.list({ snap: held, persist: false }), [], 'before the fix: "spawn register: 17300.json cannot be read"');
+  const r = await chk({ conn: peer(), persist: true });
+  assert.strictEqual(r.ok, true, `before the fix: refused, "could not be listed"; ${JSON.stringify(r)}`);
+  assert.ok(files.every((f) => !fs.existsSync(f)));
+  const moved = corrupt(dir).sort();
+  assert.deepStrictEqual(moved.map((n) => n.split('.json.')[0]), ['17300', '29332']);
+  assert.deepStrictEqual(moved.map((n) => fs.readFileSync(path.join(dir, 'corrupt', n)).equals(fs.readFileSync(path.join(FIXTURES, n.split('.json.')[0] + '.json')))), [true, true]);
+}));
+
 test('an all-NUL record whose pid is alive still counts, with no creation time and a kind that names the file', () => withRegistry((dir) => {
   const f = put(path.join(dir, `${process.pid}.json`), NUL);
   const [r, ...rest] = SR.list();
