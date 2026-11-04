@@ -84,7 +84,10 @@ function spawnedMatch(chain, spawned) {
   return null;
 }
 
-// -> async ({ conn, caller, method }) => { ok: true, via: 'peer', peer } | { ok: false, reason }
+// -> async ({ conn, caller, method }) => { ok: true, via: 'peer', peer } | { ok: false, reason, cause? }
+// `cause` is a fixed word for the refusals that concern the chain's root, so a client can tell them without reading the text:
+// root_unfollowable (the walk did not reach a root), root_in_window (a chain root recorded as a descendant of a spawned process),
+// root_after_owner (the root was created after the owner started), direct_spawn (a chain process is itself one belay spawned).
 // `persist` is true only for a method that writes (owner-admit.cjs): the check then saves the register's retirements; for a read it
 // computes the same answer from the same files and writes nothing (invariant 6). `spawned({ snap, persist })` lists the spawned
 // processes with the register's records judged against the same snapshot `provenance(snap, { persist })` is given.
@@ -100,15 +103,15 @@ function create({ startedAt, spawned, provenance = null, deps = {} }) {
     if (!shot) return { ok: false, reason: 'the process snapshot could not be read' };
     if (!shot.get(found.pid)) return { ok: false, reason: `the peer (pid ${found.pid}) is not in the process snapshot` };
     const { chain, root, intact } = chainOf(found.pid, shot);
-    if (!intact || !root) return { ok: false, reason: `the peer's process chain could not be followed to a root (pid ${found.pid})` };
+    if (!intact || !root) return { ok: false, cause: 'root_unfollowable', reason: `the peer's process chain could not be followed to a root (pid ${found.pid})` };
     let known;
     try { known = spawned({ snap: shot, persist }); } catch (e) { return { ok: false, reason: `the processes belay spawned could not be listed (${(e && e.message) || e}), so descent from one cannot be ruled out` }; }
     if (provenance) {
       try { known = known.concat(provenance(shot, { persist }).alive); } catch (e) { return { ok: false, reason: `the orphans of the processes belay spawned could not be listed (${(e && e.message) || e}), so descent from one cannot be ruled out` }; }
     }
     const bad = spawnedMatch(chain, known);
-    if (bad) return { ok: false, reason: `the peer descends from a process belay spawned (${bad.kind} pid ${bad.pid}, ${bad.image || 'unknown image'})` };
-    if (root.created == null || !(root.created < startedAt)) return { ok: false, reason: `the peer's chain ends at pid ${root.pid} (${root.image || 'unknown image'}), which was not running when this owner started: an orphan or a process started since is not the operator` };
+    if (bad) return { ok: false, cause: /^descendant of /.test(bad.kind) ? 'root_in_window' : 'direct_spawn', reason: `the peer descends from a process belay spawned (${bad.kind} pid ${bad.pid}, ${bad.image || 'unknown image'})` };
+    if (root.created == null || !(root.created < startedAt)) return { ok: false, cause: 'root_after_owner', reason: `the peer's chain ends at pid ${root.pid} (${root.image || 'unknown image'}), which was not running when this owner started: an orphan or a process started since is not the operator` };
     const peer = { pid: found.pid, created: chain[0].created, image: chain[0].image, root: { pid: root.pid, created: root.created, image: root.image } };
     conn.belayPeer = peer;
     return { ok: true, via: 'peer', peer };
