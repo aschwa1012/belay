@@ -26,7 +26,7 @@ npm install -g github:aschwa1012/belay
 
 npm may print warnings about install scripts for `onnxruntime-node` and `protobufjs`. They come from the optional embedding library and are harmless.
 
-To pin a tagged release, add the tag, for example `npm install -g github:aschwa1012/belay#v0.3.2`.
+To pin a tagged release, add the tag, for example `npm install -g github:aschwa1012/belay#v0.3.3`.
 
 This installs the package `@aschwa1012/belay` and puts the `belay` command on your PATH. The installed files live under:
 
@@ -193,6 +193,11 @@ An unknown key is a usage error.
 | `max_parallel_evaluations` | unlimited | How many task checks run at once; the rest wait for a slot. |
 | `stop_idle_on_done` | false | Stop a worker once its task is done and it is idle. |
 | `permission_prompt` | false | Turn on the permission channel: workers' tool approvals become rows, and the orchestrator is shown `permission_list` and `permission_decide`. |
+| `max_follow_ups` | 1 | Follow-up tasks a held review may spawn for its should-fix findings. Not fix rounds. |
+| `merge_into` | `ask` | `ask` or `allowed`: whether integrate may move one of your own branches without your approval. |
+| `cross_run_merge` | false | Let integrate merge work another run made. |
+| `budget_usd` | none | The run's spend limit in dollars; reaching it pauses the run. Also `run.budget_usd` in the config file; `null` turns that default off for one run. |
+| `budget_counts_in_flight` | false | Count a turn still running, as an estimate, against `budget_usd`. |
 | `keep_review_scratch` | false | Keep reviewers' per-run scratch folders after the run. |
 | `mode` | `headless` | `headless` or `interactive` (`--interactive` wins). |
 | `interactive_surface_ms` | 15000 | How long the interactive launch check waits. |
@@ -232,6 +237,18 @@ npm install -g github:aschwa1012/belay
 ```
 
 The embedding model stays in its cache and does not need fetching again unless a release changes it (`belay doctor` will say so). Stop any live run before updating.
+
+**From 0.3.2 to 0.3.3: copy the prompt template again, and check what your workers need from your environment.**
+
+- Workers and the orchestrator get an allowlisted environment. Credentials and billing variables (`GH_TOKEN`, `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_BASE_URL` and the like) are no longer passed; the Claude Code sign-in token (`CLAUDE_CODE_OAUTH_TOKEN`) is kept on purpose. Name any other variable a build needs in `BELAY_ENV_ALLOW` (comma-separated, for example `JAVA_HOME,VIRTUAL_ENV`); credential and billing names there are refused, and so is every launch while the list names one. A launch not signed in through your subscription is refused.
+- Workers no longer get `SSH_AUTH_SOCK`; the orchestrator keeps it.
+- A Codex worker that signed in through `OPENAI_API_KEY` no longer can, and `BELAY_ENV_ALLOW` cannot pass it; sign Codex in with `codex login`.
+- A Claude Code worker's `git push`, and `gh` commands that write to GitHub, are refused, and so are its writes to the drive's `/tmp`. Codex workers are not covered.
+- A merge into one of your own branches asks for approval by default (`merge_into`). A run no longer merges another run's work unless its spec sets `cross_run_merge`.
+- Copy the orchestrator prompt template again, or switch to `brief_file`; the templates carry `<!-- belay-prompt 0.3.3 -->`.
+- `belay status` exits 1 for a run id that names no run. A committed `data_dir` outside the repository is refused.
+- Scripts may need a change: `--fix` is refused by every command but `belay doctor`, and the `worktree` verbs refuse an option they do not take.
+- The store keeps schema version 2.
 
 **From 0.3.1 to 0.3.2: back up `.belay\` first.**
 
