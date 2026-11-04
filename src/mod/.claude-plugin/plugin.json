@@ -1,6 +1,6 @@
 {
   "name": "belay",
-  "version": "0.3.3",
+  "version": "0.4.0-rc.2",
   "description": "belay's panel: a band above the prompt and a side pane that show a belay run's agents, notices and cost, and the Memory menu. Read-only except the archive review and settle buttons and the Memory menu's settings writes.",
   "author": { "name": "belay" },
   "types": "./types/index.d.ts"
