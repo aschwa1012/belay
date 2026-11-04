@@ -104,11 +104,19 @@ test('a parent pid reused after the worker exited does not make a later process 
 
 test('an unreadable spawn history is a refusal, not a pass', async () => {
   await withRegistry(async (dir) => {
-    fs.mkdirSync(path.join(dir, 'exited'));
-    fs.writeFileSync(path.join(dir, 'exited', '7001-1.json'), '{ not json');
+    fs.writeFileSync(path.join(dir, 'exited'), 'x'); // the tombstones' directory is a file: ENOTDIR, which is not "no history"
     const v = await check({ ...OLD_SHELL, [HELPER]: { ppid: 9999, created: W.created - 5000, image: 'node.exe' } })({ conn: tcp() });
     assert.strictEqual(v.ok, false);
-    assert.match(v.reason, /could not be listed.*cannot be read/);
+    assert.match(v.reason, /could not be listed.*ENOTDIR/);
+  });
+  await withRegistry(async (dir) => {
+    // one tombstone that does not parse, whose pid is the live helper's: unproven, so the helper is refused and the file named
+    fs.mkdirSync(path.join(dir, 'exited'));
+    const f = path.join(dir, 'exited', `${HELPER}-0.json`);
+    fs.writeFileSync(f, '{ not json');
+    const v = await check({ ...OLD_SHELL, [HELPER]: { ppid: 9999, created: W.created - 5000, image: 'node.exe' } })({ conn: tcp() });
+    assert.strictEqual(v.ok, false);
+    assert.ok(v.reason.includes(f) && /does not parse/.test(v.reason), v.reason);
   });
 });
 
