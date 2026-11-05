@@ -56,7 +56,11 @@ class Owner {
     // ADR 0045 decision 4: a `bound` owner vouches for an operator by the operator's process (operator-check.cjs), unless the caller
     // brought its own check. Where the peer cannot be examined (not Windows) it has no check and fails closed.
     if (this.mode === 'bound' && typeof this.opts.operatorCheck !== 'function' && OperatorCheck.SUPPORTED) {
-      this.opts.operatorCheck = OperatorCheck.create({ startedAt: this.startedAt, spawned: (ctx) => this._spawnedProcesses(ctx), provenance: (snap, o) => require('./spawn-provenance.cjs').refresh(snap, o), deps: this.opts.operatorCheckDeps });
+      // A check that finds many closed tombstones has this owner prune them after it answers (register-prune.cjs, ADR 0045 amendment 8).
+      const deps = this.opts.operatorCheckDeps || {};
+      this.pruner = require('./register-prune.cjs').createPruner({ snapshot: () => (deps.snapshot ? deps.snapshot() : require('./proc-identity.cjs').snapshotShared({ kind: 'register-prune' }).then((r) => r.snap)), ...(Number.isFinite(this.opts.registerPruneGapMs) ? { gapMs: this.opts.registerPruneGapMs } : {}) });
+      const provenance = (snap, o) => { const r = require('./spawn-provenance.cjs').refresh(snap, o); if (!this.stopped) this.pruner.note(r.closed); return r; };
+      this.opts.operatorCheck = OperatorCheck.create({ startedAt: this.startedAt, spawned: (ctx) => this._spawnedProcesses(ctx), provenance, deps: this.opts.operatorCheckDeps });
     }
     this.conns = new Set();
     this.counters = { calls: 0, errors: 0 };
@@ -205,6 +209,7 @@ class Owner {
           setInterval(() => { try { this._idleCheckpoint(); } catch { /* closing */ } }, this.opts.idleCheckMs),
         ];
         for (const t of this.timers) t.unref();
+        if (this.pruner) this._warming = require('./spawn-register.cjs').warmTombstones(); // the operator check's first read of the register, off the loop
         resolve();
       });
     });
