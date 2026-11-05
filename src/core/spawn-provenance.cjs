@@ -99,4 +99,4 @@ function refresh(snap, { now = Date.now(), boot = SR.bootMs(now), persist = true
   return { alive, closed };
 }
 
-module.exports = { refresh, isRoot, covers, SLACK_MS };
+module.exports = { refresh, isRoot, covers, beforeBoot, SLACK_MS };

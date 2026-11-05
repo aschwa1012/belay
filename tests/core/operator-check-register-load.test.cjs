@@ -162,6 +162,36 @@ test('a worker that retires while the owner\'s check reads the tombstones is sti
   } finally { Object.assign(SR.io, keep); await f.done(); }
 });
 
+test('a pass touches no file in the turn of the check that started it, and never blocks on a read', async () => {
+  plant();
+  const { createPruner } = core('register-prune.cjs');
+  const keep = { ...SR.io };
+  const seen = { sync: 0, async: 0 };
+  const inExited = (p) => path.dirname(p) === exited() || p === exited();
+  for (const k of ['read', 'stat']) SR.io[k] = (p, ...a) => { if (inExited(p)) seen.sync++; return keep[k](p, ...a); };
+  for (const k of ['readAsync', 'statAsync', 'readdirAsync']) SR.io[k] = (p, ...a) => { if (inExited(p)) seen.async++; return keep[k](p, ...a); };
+  try {
+    const p = createPruner({ snapshot: async () => SNAP, gapMs: 0 });
+    const pass = p.note(N);
+    for (let i = 0; i < 50; i++) await null; // every microtask the check's reply could be waiting behind
+    assert.deepStrictEqual(seen, { sync: 0, async: 0 }, 'the pass listed or read the register before the check that started it could answer');
+    await pass;
+    assert.strictEqual(seen.sync, 0, `the pass made ${seen.sync} blocking file calls on the register`);
+    assert.ok(seen.async > N, 'the pass read the register');
+  } finally { Object.assign(SR.io, keep); }
+});
+
+test('an open tombstone from before the last boot is dropped by the prune; one from this boot stays', async () => {
+  plant();
+  const { createPruner } = core('register-prune.cjs');
+  const old = SR.bootMs() - 3600e3;
+  tomb({ pid: 5600, created: old, from: old, until: null, kind: 'descendant', via: 'worker pid 2', via_from: old - 1000 });
+  const p = createPruner({ snapshot: async () => SNAP, gapMs: 0 });
+  assert.strictEqual((await p.note(N)).marked, N + 2);
+  assert.strictEqual((await p.note(N)).dropped, N + 2);
+  assert.deepStrictEqual(fs.readdirSync(exited()).sort(), LEFT, 'the pre-boot descendant went; the open one from this boot and the recorded root stay');
+});
+
 test('two owners pruning one register at once both finish, and the recorded root stays', async () => {
   plant();
   const { createPruner } = core('register-prune.cjs');
