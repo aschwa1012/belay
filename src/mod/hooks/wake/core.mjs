@@ -100,6 +100,10 @@ export async function readDelivered({ read, sleep, tries = 4, delayMs = 250 }) {
 
 // Claude Code's refusal of a submit made while no session is bound in the process: nothing was submitted.
 export const isUnboundSubmit = (message) => /not available in this mode|no session is bound/i.test(String(message || ''))
+// While a wake is held, the mod tries again at most this far apart, so a session that comes back gets it within seconds.
+export const HELD_RETRY_MS = 5000
+// The status line the mod pins while wakes are held: what Claude Code said, and what happens next. '' when none is held.
+export const heldNotice = (n) => (n > 0 ? `belay: ${n} wake${n === 1 ? '' : 's'} not delivered: Claude Code says no session is open in this window; ${n === 1 ? 'it is' : 'they are'} sent when it is back` : '')
 
 // Delivery, at most once (ADR 0037 amendment 5): the id is recorded (memory and file) ONLY after the file write
 // has succeeded, and the submit happens only after that, so a failed write submits nothing (the wake is retried
@@ -113,9 +117,11 @@ export function createDelivery({ file, initial = '', io, now = () => Date.now(),
   const delivered = parseDelivered(content)
   const inflight = new Set()
   const pending = new Map() // id -> text of a wake whose record write failed: kept until the write lands, never dropped
+  const held = new Set() // the ids in pending because no session was bound (isUnboundSubmit), for the status line
   const self = {
     delivered,
     pending,
+    held,
     // Tries every wake whose write failed again, in the order they arrived; the caller schedules this until `pending` is empty.
     async retryPending() {
       for (const [id, text] of [...pending]) await self.deliver(id, text)
@@ -140,14 +146,17 @@ export function createDelivery({ file, initial = '', io, now = () => Date.now(),
           if (isUnboundSubmit(error)) {
             delivered.delete(id)
             pending.set(id, text)
+            held.add(id)
             // A retraction that cannot be written leaves the line on disk: a reload would take the wake as delivered, this process still holds it.
             try { await io.write(file, before); content = before } catch { /* see above */ }
             try { io.log({ at: now(), id, stage: 'submit', held: true, error }) } catch { /* nowhere to log */ }
             return 'held'
           }
+          held.delete(id)
           try { io.log({ at: now(), id, stage: 'submit', error }) } catch { /* nowhere to log */ }
           return 'submit-failed'
         }
+        held.delete(id)
         return 'submitted'
       } finally { inflight.delete(id) }
     },

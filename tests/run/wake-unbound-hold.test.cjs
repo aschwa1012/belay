@@ -35,10 +35,15 @@ test('a wake refused because no session is bound is held, not recorded, and subm
   assert.deepStrictEqual([...s.d.pending.keys()], ['w1', 'w2']);
   assert.deepStrictEqual(s.log.map((e) => [e.id, e.stage, e.held]), [['w1', 'submit', true], ['w2', 'submit', true]]);
   assert.strictEqual(await s.d.retryPending(), 2, 'still unbound: both stay held');
+  assert.deepStrictEqual([...s.d.held], ['w1', 'w2'], 'the held wakes are named for the status line');
+  assert.strictEqual(m.heldNotice(s.d.held.size), 'belay: 2 wakes not delivered: Claude Code says no session is open in this window; they are sent when it is back');
+  assert.ok(m.HELD_RETRY_MS <= 5000, 'a held wake is tried again within seconds');
   s.bound = true;
   assert.strictEqual(await s.d.retryPending(), 0);
   assert.deepStrictEqual(s.submitted, ['belay: worker coder-g3 finished turn 1.', 'belay: worker coder-g3 finished turn 2.'], 'in the order they came');
   assert.deepStrictEqual(m.parseDelivered(s.file), new Set(['w1', 'w2']));
+  assert.strictEqual(s.d.held.size, 0, 'the status line still names wakes that were sent');
+  assert.strictEqual(m.heldNotice(0), '');
   assert.strictEqual(await s.d.deliver('w1', 'again'), 'skip', 'at most once, after it landed');
   assert.strictEqual(s.submitted.length, 2);
 });

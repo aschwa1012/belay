@@ -1,5 +1,5 @@
 import type { Register } from 'claude-code'
-import { activeConfig, streamArgv, deliveredPath, errorsPath, parseLine, createDelivery, lineSplitter, decide, readDelivered } from './core.mjs'
+import { activeConfig, streamArgv, deliveredPath, errorsPath, parseLine, createDelivery, lineSplitter, decide, readDelivered, heldNotice, HELD_RETRY_MS } from './core.mjs'
 
 // ADR 0037 amendment 5 decision 3. Thin: it decides nothing. It starts `belay wake-stream` (a child the
 // engine kills on reload and at exit), and for each wake line records the id in a file outside this copy
@@ -40,6 +40,14 @@ export const registerWake = (on: Parameters<Register>[0]): void => {
       let gotLine = false
       let retrying = false
       let retryMs = 1000
+      // Held wakes are said on this plugin's status line, and cleared once they are sent.
+      let shown = 0
+      const showHeld = (): void => {
+        const n = delivery.held.size
+        if (n === shown) return
+        shown = n
+        try { $.ui.status(n ? heldNotice(n) : undefined) } catch { /* no surface to pin it on right now: the next change tries again */ shown = -1 }
+      }
       // A wake whose record write failed is not lost: it stays in delivery.pending and is tried again, with a growing pause.
       const scheduleRetry = (): void => {
         if (retrying || !delivery.pending.size) return
@@ -47,7 +55,8 @@ export const registerWake = (on: Parameters<Register>[0]): void => {
         $.clock.after(retryMs, () => {
           retrying = false
           chain = chain.then(() => delivery.retryPending()).then(() => undefined, () => undefined).then(() => {
-            if (delivery.pending.size) { retryMs = Math.min(retryMs * 2, 30000); scheduleRetry() } else retryMs = 1000
+            showHeld()
+            if (delivery.pending.size) { retryMs = Math.min(retryMs * 2, delivery.held.size ? HELD_RETRY_MS : 30000); scheduleRetry() } else retryMs = 1000
           })
         })
       }
@@ -61,7 +70,7 @@ export const registerWake = (on: Parameters<Register>[0]): void => {
               const p = parseLine(line)
               if (p.kind === 'wake' && decide(p, delivered) === 'submit') {
                 const { id, text } = p
-                chain = chain.then(() => delivery.deliver(id, text)).then(() => undefined, () => undefined).then(scheduleRetry)
+                chain = chain.then(() => delivery.deliver(id, text)).then(() => undefined, () => undefined).then(() => { showHeld(); scheduleRetry() })
               }
             }
           }
