@@ -10,6 +10,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawn } = require('node:child_process');
 
+require('../helpers/tmp.cjs'); // the temp-root guard, before anything that reads the temp dir
 const DT = require('../../src/run/drive-tmp.cjs');
 const H = require('./stop-helpers.cjs');
 const { ROOT, sandbox, cleanup, makeSpec, waitUntil } = H;
