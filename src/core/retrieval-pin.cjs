@@ -68,11 +68,12 @@ function tierFailure(ctx, code, cause, message, extra) {
   ctx.notices.push({ code, message: `${message}. ${fetchHint(message, extra)}The run is served on the ${target} profile${target === RP.FALLBACK_PROFILE ? ' (nano, no reranker)' : ''}.`, ...(extra && extra.reason ? { reason: extra.reason } : {}), options: (extra && extra.options) || [], agent_types: moved });
 }
 
-// The fetch command for a model whose files are absent: only for an ONNX reranker (the one kind whose command is --reranker) that failed with
-// E_MODEL_ABSENT, and only when the error does not already say it. A timeout, a dead child or a missing package is not cured by a fetch.
+// The fetch command for a model whose files are missing or wrong: only for an ONNX reranker (the one kind whose command is --reranker) whose error
+// says its cause is an absence (detail.cause 'absent') that is not the transformers package (detail.pkg), and only when the error does not already
+// say it. A timeout, a dead child or a missing package is not cured by a fetch.
 function fetchHint(message, extra) {
   const m = extra && extra.model && RP.describeModel(extra.model);
-  if (!m || m.kind !== 'reranker' || m.runtime !== 'onnx' || extra.reason !== 'E_MODEL_ABSENT' || /fetch it with/i.test(message)) return '';
+  if (!m || m.kind !== 'reranker' || m.runtime !== 'onnx' || extra.reason !== 'E_MODEL_ABSENT' || !extra.cause_detail || extra.cause_detail.cause !== 'absent' || 'pkg' in extra.cause_detail || /fetch it with/i.test(message)) return '';
   return `Fetch it with: belay embedder fetch --reranker ${extra.model}. `;
 }
 
@@ -119,7 +120,7 @@ async function pinRouting(E, caller, args = {}) {
   // query of the run pays no cold load. A failure is a tier failure like a probe refusal.
   if (tiersOf(ctx.routing).some((t) => t.reranker || t.embedder !== RP.NANO)) {
     warm = await require('./retrieval-warm.cjs').warmUp(E, ctx.routing);
-    if (!warm.ok) tierFailure(ctx, 'retrieval_warmup_failed', 'warmup_failed', `warming ${warm.model} failed (${warm.code}): ${warm.message}`, { model: warm.model, reason: warm.code });
+    if (!warm.ok) tierFailure(ctx, 'retrieval_warmup_failed', 'warmup_failed', `warming ${warm.model} failed (${warm.code}): ${warm.message}`, { model: warm.model, reason: warm.code, cause_detail: warm.detail });
   }
   // The row is read AGAIN after every await above (a probe and a warm-up take minutes): a run that ended meanwhile is refused, and the
   // record is merged onto the fresh row, never onto the stale copy (which would resurrect the run or clear a pause).

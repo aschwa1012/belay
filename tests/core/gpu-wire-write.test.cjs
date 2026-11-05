@@ -254,7 +254,7 @@ test('S5: an unfetched CPU reranker warm-up notice names the fetch command exact
   assert.strictEqual(m.split(cmd).length - 1, 1, m);
 });
 
-const failingReranker = (code, message) => RPV.register(JINA, { rerank: async () => { const e = new Error(message); e.code = code; throw e; } });
+const failingReranker = (code, message, detail) => RPV.register(JINA, { rerank: async () => { const e = new Error(message); e.code = code; if (detail) e.detail = detail; throw e; } });
 
 test('S5: a warm-up failure that is not an absence gets no fetch hint', async () => {
   await R.restore(); fresh();
@@ -267,20 +267,33 @@ test('S5: a warm-up failure that is not an absence gets no fetch hint', async ()
 
 test('S5: an absent reranker whose error does not name the command gets the --reranker command once', async () => {
   await R.restore(); fresh();
-  failingReranker('E_MODEL_ABSENT', 'the reranker files are missing');
+  failingReranker('E_MODEL_ABSENT', 'the reranker files are missing', { reranker: true, cause: 'absent', model: JINA });
   await attach('wr-w7', { project: 'wrw7', profile: 'cpu-rerank-light' });
   const r = await pin('wr-w7');
   const m = r.notices[0].message;
   assert.strictEqual(m.split('belay embedder fetch --reranker ' + JINA).length - 1, 1, m);
 });
 
+test('S5: a missing transformers package or a dead child gets no fetch hint', async () => {
+  for (const [i, detail] of [{ reranker: true, cause: 'absent', pkg: undefined }, { reranker: true, cause: 'dead', pid: 1 }].entries()) {
+    await R.restore(); fresh();
+    failingReranker('E_MODEL_ABSENT', 'the transformers package is not loadable; run npm install in the belay directory', detail);
+    await attach('wr-w8' + i, { project: 'wrw8' + i, profile: 'cpu-rerank-light' });
+    const r = await pin('wr-w8' + i);
+    assert.doesNotMatch(r.notices[0].message, /fetch it with/i, r.notices[0].message);
+  }
+});
+
 test('S5: fetchHint names --reranker for an ONNX reranker only, and never for an embedder, a GGUF model or another failure', () => {
   const PIN = core('retrieval-pin.cjs');
-  const absent = { reason: 'E_MODEL_ABSENT' };
+  const absent = { reason: 'E_MODEL_ABSENT', cause_detail: { cause: 'absent' } };
   assert.match(PIN.fetchHint('x', { ...absent, model: JINA }), /belay embedder fetch --reranker /);
   assert.strictEqual(PIN.fetchHint('x', { ...absent, model: 'Xenova/all-MiniLM-L6-v2' }), '', 'an ONNX embedder is not fetched with --reranker');
   assert.strictEqual(PIN.fetchHint('x', { ...absent, model: RR4 }), '', 'a GGUF reranker has its own command in its error');
   assert.strictEqual(PIN.fetchHint('x', { reason: 'E_EMBEDDER_TIMEOUT', model: JINA }), '');
+  assert.strictEqual(PIN.fetchHint('x', { ...absent, cause_detail: { cause: 'absent', pkg: undefined }, model: JINA }), '', 'a missing package');
+  assert.strictEqual(PIN.fetchHint('x', { ...absent, cause_detail: { cause: 'dead' }, model: JINA }), '', 'a dead child');
+  assert.strictEqual(PIN.fetchHint('x', { reason: 'E_MODEL_ABSENT', model: JINA }), '', 'no detail, no claim');
   assert.strictEqual(PIN.fetchHint('fetch it with `y`', { ...absent, model: JINA }), '');
 });
 
