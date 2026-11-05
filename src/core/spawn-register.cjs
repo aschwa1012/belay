@@ -30,7 +30,7 @@ const tombFile = (t) => path.join(exitedDir(), `${Number(t.pid)}-${Number.isFini
 // answers EPERM, EBUSY or EACCES for a moment; production never changes this).
 // `write` writes the whole text (writeFileSync on an fd loops over short writes) and flushes the temp file to the disk before the
 // rename, so a power loss after the rename cannot leave the new name over unwritten data.
-const io = { write: (p, text) => { const fd = fs.openSync(p, 'w'); try { fs.writeFileSync(fd, text); fs.fsyncSync(fd); } finally { fs.closeSync(fd); } }, rename: (a, b) => fs.renameSync(a, b), read: (p) => fs.readFileSync(p, 'utf8'), sleep: (ms) => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* no SAB */ } } };
+const io = { write: (p, text) => { const fd = fs.openSync(p, 'w'); try { fs.writeFileSync(fd, text); fs.fsyncSync(fd); } finally { fs.closeSync(fd); } }, rename: (a, b) => fs.renameSync(a, b), read: (p) => fs.readFileSync(p, 'utf8'), stat: (p) => fs.statSync(p, { bigint: true }), statAsync: (p) => fs.promises.stat(p, { bigint: true }), readAsync: (p) => fs.promises.readFile(p, 'utf8'), readdirAsync: (p) => fs.promises.readdir(p), sleep: (ms) => { try { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms); } catch { /* no SAB */ } } };
 const TRANSIENT = new Set(['EPERM', 'EBUSY', 'EACCES']);
 const RETRIES = 12; // attempts after the first; the waits double from 5 ms to a cap of 80 ms, about 0.7 s in all
 const backoff = (i) => Math.min(5 * 2 ** i, 80);
@@ -111,6 +111,8 @@ function saveTombstone(t) {
 }
 // An unproven tombstone (see tombstoneScan) is moved aside, never deleted.
 // A lifetime read from an unproven file (unprovenLife) has no tombstone file of its own: dropping it moves that file aside.
+// dropTombstone for the owner's prune, off its loop; a file another owner removed first is not an error.
+async function dropTombstoneAsync(t) { try { await fs.promises.unlink(tombFile(t)); } catch { /* already gone */ } }
 function dropTombstone(t) { if (t.unproven) { moveAside(t.unproven); return; } try { fs.unlinkSync(tombFile(t)); } catch { /* already gone */ } }
 
 // ---- unproven files: a record or tombstone that cannot be read or parsed, or names no pid --------------------------------------
@@ -339,11 +341,12 @@ function tombstoneScan({ snap = null, now = Date.now(), boot = bootMs(now) } = {
   let names;
   try { names = fs.readdirSync(exitedDir()); } catch (e) { if (e && (e.code === 'ENOENT')) return { list: [], dead: [] }; throw e; }
   const out = { list: [], dead: [] };
+  forgetUnlisted(exitedDir(), names);
   for (const n of names) {
     if (!/^[0-9]+-[0-9]+[.]json$/.test(n)) continue;
     const file = path.join(exitedDir(), n);
     let t; let err = null;
-    try { t = readJson(file); } catch (e) { if (e && e.code === 'ENOENT') continue; err = e; }
+    try { t = readTombstone(file); } catch (e) { if (e && e.code === 'ENOENT') continue; err = e; }
     if (err || !t || !Number.isInteger(t.pid) || !Number.isFinite(t.from)) {
       const u = unprovenOf(file, `exited/${n}`, err, Number(/-([0-9]+)[.]json$/.exec(n)[1]) || null);
       if (!unprovenAlive(u, snap, boot)) { out.dead.push(u); continue; }
@@ -356,6 +359,54 @@ function tombstoneScan({ snap = null, now = Date.now(), boot = bootMs(now) } = {
   return out;
 }
 const tombstones = (opts) => tombstoneScan(opts).list;
+
+// A closed tombstone (a valid one whose `until` is set) is read once per process and kept, keyed by its file's identity: modification
+// time in nanoseconds, size and file id, from a bigint stat (a Windows file id does not fit a double). A file replaced since (a rename
+// onto the name) has another identity and is read again; a stat costs a small part of a read, so a check costs a stat per tombstone and
+// a read per new or changed one, not a read of the whole history. An open tombstone (`until` null) and a file that does not parse are
+// read every time. The kept value is copied out, never shared.
+const closedSeen = new Map(); // file -> { id, t }
+const identityOf = (st) => `${st.mtimeNs}:${st.size}:${st.ino}`;
+const isClosed = (t) => !!t && Number.isInteger(t.pid) && Number.isFinite(t.from) && Number.isFinite(t.until);
+function keep(file, id, t) { if (isClosed(t)) closedSeen.set(file, { id, t: { ...t } }); else closedSeen.delete(file); }
+function readTombstone(file) {
+  const id = identityOf(io.stat(file)); // throws ENOENT for a file gone since the listing: the caller skips it
+  const kept = closedSeen.get(file);
+  if (kept && kept.id === id) return { ...kept.t };
+  const t = readJson(file);
+  keep(file, id, t);
+  return t;
+}
+// The tombstone directory listed and read without blocking the event loop, closed files through the same kept values the check
+// uses. -> { names, list }: every tombstone file name, and every valid tombstone that read (one that does not read or parse is left
+// out; the check judges it). Throws when the directory exists and cannot be read.
+async function tombstonesAsync({ batch = 32 } = {}) {
+  let names;
+  try { names = (await io.readdirAsync(exitedDir())).filter((n) => /^[0-9]+-[0-9]+[.]json$/.test(n)); } catch (e) { if (e && e.code === 'ENOENT') return { names: [], list: [] }; throw e; }
+  const list = [];
+  for (let i = 0; i < names.length; i += batch) {
+    await Promise.all(names.slice(i, i + batch).map(async (n) => {
+      const file = path.join(exitedDir(), n);
+      try {
+        const id = identityOf(await io.statAsync(file)); // the identity before the read, as readTombstone takes it
+        const kept = closedSeen.get(file);
+        let t;
+        if (kept && kept.id === id) t = { ...kept.t };
+        else { t = JSON.parse(await io.readAsync(file)); keep(file, id, t); }
+        if (t && Number.isInteger(t.pid) && Number.isFinite(t.from)) list.push(t);
+      } catch { /* gone, unreadable or unparseable: left to the check */ }
+    }));
+  }
+  return { names, list };
+}
+// Fill the kept closed tombstones off the event loop (an owner calls it when it starts serving), so its first check does not read the
+// whole history at once. It decides nothing: a check still lists, stats and judges every file itself. Never throws.
+async function warmTombstones(o) { try { return (await tombstonesAsync(o)).list.length; } catch { return 0; } }
+function forgetUnlisted(dirPath, names) {
+  if (!closedSeen.size) return;
+  const listed = new Set(names.map((n) => path.join(dirPath, n)));
+  for (const f of [...closedSeen.keys()]) if (path.dirname(f) === dirPath && !listed.has(f)) closedSeen.delete(f);
+}
 
 // What `belay doctor` reports, and nothing is written: the unproven files in the register now, each with `alive` by unprovenAlive
 // without a snapshot (the boot rule, then whether a process holds the pid; the owner's check also compares creation times, so a pid
@@ -380,4 +431,4 @@ function runSpawned(interactive, orchestratorPid, created = null) {
   return !interactive && Number.isInteger(orchestratorPid) ? [{ pid: orchestratorPid, created: Number.isFinite(created) ? created : null, kind: 'orchestrator' }] : [];
 }
 
-module.exports = { matches, register, registerProcess, update, unregister, retire, touch, stampNow, scan, settle, list, live, tombFile, startOf, bootMs, BOOT_SLACK_MS, SEEN_REFRESH_MS, tombstones, tombstoneScan, saveTombstone, dropTombstone, moveAside, unprovenLife, problems, dir, runSpawned, io };
+module.exports = { matches, register, registerProcess, update, unregister, retire, touch, stampNow, scan, settle, list, live, tombFile, startOf, bootMs, BOOT_SLACK_MS, SEEN_REFRESH_MS, tombstones, tombstoneScan, tombstonesAsync, warmTombstones, saveTombstone, dropTombstone, dropTombstoneAsync, moveAside, unprovenLife, problems, dir, runSpawned, io };
