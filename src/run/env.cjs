@@ -100,7 +100,7 @@ const CODEX_RUST_LOG = 'codex_core=debug,codex_rmcp_client=debug,rmcp=info';
 // the two variables that trail it are dropped. Called without a `cwd` the three are scrubbed, which
 // is wrong for a spawn and right for everything else: better a worker with no `PWD` than one holding
 // the parent's.
-function buildEnv(base, { substrate = 'claude-code', cwd = null, mcpToolTimeoutMs = null, workerId = null, interactive = false, orchestrator = false } = {}) {
+function buildEnv(base, { substrate = 'claude-code', cwd = null, mcpToolTimeoutMs = null, workerId = null, interactive = false, orchestrator = false, tempDir = null } = {}) {
   const src = base || process.env;
   const extra = parseEnvAllow(src);
   const out = {};
@@ -117,6 +117,11 @@ function buildEnv(base, { substrate = 'claude-code', cwd = null, mcpToolTimeoutM
   out.GIT_TERMINAL_PROMPT = '0';
   out.GCM_INTERACTIVE = 'never';
   if (cwd) out.PWD = fwd(path.resolve(cwd));
+  // ADR 0084 amendment 1: a worker's temp is a folder belay made for it; any spelling of the three names inherited above is replaced.
+  if (typeof tempDir === 'string' && tempDir) {
+    for (const k of Object.keys(out)) if (/^(?:temp|tmp|tmpdir)$/i.test(k)) delete out[k];
+    out.TEMP = tempDir; out.TMP = tempDir; out.TMPDIR = tempDir;
+  }
   if (typeof workerId === 'string' && workerId) out[WORKER_MARKER] = workerId;
   out.CLAUDE_CODE_PROMPT_CACHE_TTL = '1h';
   // Probe ide-leak: run from a VS Code terminal inside a workspace a
