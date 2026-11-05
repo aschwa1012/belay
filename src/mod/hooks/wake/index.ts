@@ -1,20 +1,23 @@
 import type { Register } from 'claude-code'
-import { activeConfig, streamArgv, deliveredPath, errorsPath, parseLine, createDelivery, lineSplitter, decide, readDelivered, heldNotice, HELD_RETRY_MS } from './core.mjs'
+import { activeConfig, streamArgv, deliveredPath, errorsPath, parseLine, createDelivery, lineSplitter, decide, readDelivered, heldNotice, releasedNotice, HELD_RETRY_MS } from './core.mjs'
 
 // ADR 0037 amendment 5 decision 3. Thin: it decides nothing. It starts `belay wake-stream` (a child the
-// engine kills on reload and at exit), and for each wake line records the id in a file outside this copy
-// (after the write has succeeded) and only then submits the text: at most once, never twice (core.mjs createDelivery). A session with no
-// belay-run.json naming the orchestrator role (a watching session) does nothing. A delivered file that cannot be read
-// (anything but a missing file) starts nothing and is read again later: it is never taken for "nothing delivered". A wake
-// whose record write fails stays pending and is retried until the write lands, and so does one Claude Code refused because no session
-// is bound in its process (core.mjs isUnboundSubmit).
+// engine kills on reload and at exit), and for each wake line submits the text and then records the id in a file outside this copy:
+// at least once, in order (core.mjs createDelivery). A session with no belay-run.json naming the orchestrator role (a watching session)
+// does nothing. A delivered file that cannot be read (anything but a missing file) starts nothing and is read again later: it is never
+// taken for "nothing delivered". A wake Claude Code cannot take now (no session bound in its process, or a window holding a session
+// that is not the orchestrator's, by `$.session.id()` against the launcher's session id) is held, said on this plugin's status line,
+// and tried again every few seconds ahead of every later wake; a toast says when held wakes have gone out. One delivery per module
+// load: a session.start that fires again in the same load starts nothing.
 export const registerWake = (on: Parameters<Register>[0]): void => {
+  let active = false
   // The matcher keeps this apart from the panel's own unmatched session.start hook (one per module is allowed).
   on('session.start', { isInteractive: true }, async ($, e, next) => {
     const started = await next(e)
     let cfg
     try { cfg = activeConfig(await $.fs.read(`${$.plugin.root}/belay-run.json`)) } catch { return started }
-    if (!cfg) return started
+    if (!cfg || active) return started
+    active = true
     const file = deliveredPath(cfg)
     const errFile = errorsPath(cfg)
     let errors = ''
@@ -33,6 +36,7 @@ export const registerWake = (on: Parameters<Register>[0]): void => {
           write: (f: string, c: string) => $.fs.write(f, c),
           submit: (text: string) => $.prompt.submit({ text }),
           log,
+          bound: async () => (cfg.session_id ? (await $.session.id()) === cfg.session_id : true),
         },
       })
       const delivered = delivery.delivered
@@ -40,23 +44,26 @@ export const registerWake = (on: Parameters<Register>[0]): void => {
       let gotLine = false
       let retrying = false
       let retryMs = 1000
-      // Held wakes are said on this plugin's status line, and cleared once they are sent.
-      let shown = 0
+      // Held wakes are said on this plugin's status line, and cleared once they are sent, with a toast saying so.
+      let shown = ''
       const showHeld = (): void => {
+        const out = delivery.takeReleased()
+        if (out) { try { $.ui.toast(releasedNotice(out)) } catch { /* no surface: the status line below still clears */ } }
         const n = delivery.held.size
-        if (n === shown) return
-        shown = n
-        try { $.ui.status(n ? heldNotice(n) : undefined) } catch { /* no surface to pin it on right now: the next change tries again */ shown = -1 }
+        const said = n ? heldNotice(n, delivery.heldWhy || 'unbound') : ''
+        if (said === shown) return
+        shown = said
+        try { $.ui.status(n ? said : undefined) } catch { /* no surface to pin it on right now: the next change tries again */ shown = '?' }
       }
-      // A wake whose record write failed is not lost: it stays in delivery.pending and is tried again, with a growing pause.
+      // A held wake, or a record whose write failed, is tried again with a growing pause (at most a few seconds while one is held).
       const scheduleRetry = (): void => {
-        if (retrying || !delivery.pending.size) return
+        if (retrying || !(delivery.pending.size || delivery.unrecorded.size)) return
         retrying = true
         $.clock.after(retryMs, () => {
           retrying = false
           chain = chain.then(() => delivery.retryPending()).then(() => undefined, () => undefined).then(() => {
             showHeld()
-            if (delivery.pending.size) { retryMs = Math.min(retryMs * 2, delivery.held.size ? HELD_RETRY_MS : 30000); scheduleRetry() } else retryMs = 1000
+            if (delivery.pending.size || delivery.unrecorded.size) { retryMs = Math.min(retryMs * 2, delivery.held.size ? HELD_RETRY_MS : 30000); scheduleRetry() } else retryMs = 1000
           })
         })
       }

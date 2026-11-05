@@ -2,8 +2,9 @@
 require('../helpers/tmp.cjs');
 // A claimed wake (a worker death under a plan) has two delivery paths: the mod submits the wake line, or, when the mod's delivered-wakes
 // file has not named it within the publisher's delivery bound, the claim is released and worker_wait returns it. Delivery across the two
-// is at least once, with ids (ADR 0074 amendment 1): a wake whose mod write fails past the bound, or whose mod is absent past it, is
-// returned by worker_wait and later submitted by the mod as well, both naming the same ref. It is never lost.
+// is at least once, with ids (ADR 0074 amendment 1): a wake whose mod record write fails past the bound is submitted by the mod and
+// returned by worker_wait as well, and one whose mod is absent past it is returned by worker_wait and later submitted by the mod, both
+// naming the same ref. It is never lost.
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -63,7 +64,7 @@ function claimedLine(pipe, deadlineMs = 10000) {
 
 const deliveryOf = (createDelivery, s, io) => createDelivery({ file: s.deliveredFile, now: s.now, io: { log: () => {}, ...io } });
 
-test('a claimed wake whose mod write fails past the bound is returned by worker_wait and later by the mod, both with the same ref', async () => {
+test('a claimed wake whose mod record write fails past the bound is submitted by the mod and returned by worker_wait, both with the same ref', async () => {
   const { createDelivery } = await import(MOD);
   const s = await setup('fail');
   try {
@@ -74,18 +75,18 @@ test('a claimed wake whose mod write fails past the bound is returned by worker_
       write: async (f, c) => { if (failing) throw Object.assign(new Error('EBUSY: resource busy or locked'), { code: 'EBUSY' }); fs.writeFileSync(f, c); },
       submit: async (text) => { submits.push(text); },
     });
-    assert.strictEqual(await delivery.deliver(death.id, death.text), 'write-failed');
-    for (const t of [1000, 3000, 7000, 15000]) { s.clock.skew = t; await delivery.retryPending(); } // the mod's retry pauses, all failing
+    assert.strictEqual(await delivery.deliver(death.id, death.text), 'submitted', 'the submit comes first; the record follows');
+    assert.deepStrictEqual(submits, [death.text]);
+    for (const t of [1000, 3000, 7000, 15000]) { s.clock.skew = t; await delivery.retryPending(); } // the mod's record retries, all failing
+    assert.deepStrictEqual(submits, [death.text], 'a failed record is written again, never submitted again');
     s.clock.skew = BOUND + 1000;
-    assert.ok(await until(() => !D.isClaimed({ dataDir: s.dataDir, runId, uid: s.uid })), 'the publisher released the undelivered claim');
+    assert.ok(await until(() => !D.isClaimed({ dataDir: s.dataDir, runId, uid: s.uid })), 'the publisher released the claim the file never named');
     const r = await s.wait();
-    assert.strictEqual(r.event, 'exception', 'worker_wait returns the death');
-    assert.deepStrictEqual(submits, [], 'not yet submitted by the mod');
-    failing = false;
-    await delivery.retryPending(); // the write lands at last
-    assert.deepStrictEqual(submits, [death.text], 'the mod submits it too: at least once, never lost');
+    assert.strictEqual(r.event, 'exception', 'worker_wait returns the death too: at least once, never lost');
     assert.strictEqual(REF.exec(submits[0])[1], r.exceptions[0].ref, 'both paths name the same ref, so the repeat is recognisable');
-    await delivery.retryPending();
+    failing = false;
+    await delivery.retryPending(); // the record lands at last
+    assert.ok(fs.readFileSync(s.deliveredFile, 'utf8').includes(death.id));
     assert.deepStrictEqual(submits, [death.text], 'the mod submits it once');
   } finally { await s.pub.stop(); fs.rmSync(s.base, { recursive: true, force: true }); }
 });
@@ -118,7 +119,7 @@ test('a claimed wake whose write lands inside the bound is submitted by the mod 
     await delivery.deliver(death.id, death.text);
     s.clock.skew = 7000; await delivery.retryPending();
     s.clock.skew = 15000; failing = false; await delivery.retryPending();
-    assert.deepStrictEqual(submits, [death.text], 'the mod submitted it once its write landed');
+    assert.deepStrictEqual(submits, [death.text], 'the mod submitted it once; its record landed later');
     s.clock.skew = BOUND + 5000;
     const p0 = s.pub.stats().polls;
     assert.ok(await until(() => s.pub.stats().polls >= p0 + 3), 'three polls ran past the bound');

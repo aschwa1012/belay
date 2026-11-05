@@ -38,6 +38,7 @@ export function activeConfig(jsonText) {
   for (const k of ['run_id', 'data_dir', 'belay_cli', 'node', 'orchestrator_dir', 'wake_nonce']) {
     if (typeof c[k] !== 'string' || !c[k]) return null
   }
+  if (c.session_id !== undefined && (typeof c.session_id !== 'string' || !c.session_id)) return null // the launcher's --session-id, when it wrote one
   return c
 }
 
@@ -98,67 +99,86 @@ export async function readDelivered({ read, sleep, tries = 4, delayMs = 250 }) {
   return null
 }
 
-// Claude Code's refusal of a submit made while no session is bound in the process: nothing was submitted.
-export const isUnboundSubmit = (message) => /not available in this mode|no session is bound/i.test(String(message || ''))
+// Claude Code's refusal of a submit made while no session is bound in its process (the text 2.1.293 gives: "$.prompt.submit is not
+// available in this mode: no session is bound in this process ..."). Nothing was submitted. Only that clause counts: another mode
+// refusal is permanent and is not held.
+export const isUnboundSubmit = (message) => /no session is bound/i.test(String(message || ''))
 // While a wake is held, the mod tries again at most this far apart, so a session that comes back gets it within seconds.
 export const HELD_RETRY_MS = 5000
 // The status line the mod pins while wakes are held: what Claude Code said, and what happens next. '' when none is held.
-export const heldNotice = (n) => (n > 0 ? `belay: ${n} wake${n === 1 ? '' : 's'} not delivered: Claude Code says no session is open in this window; ${n === 1 ? 'it is' : 'they are'} sent when it is back` : '')
+export const heldNotice = (n, why = 'unbound') => (n > 0 ? `belay: ${n} wake${n === 1 ? '' : 's'} not delivered: ${why === 'other-session' ? 'this window holds a session that is not the orchestrator session' : 'Claude Code says no session is open in this window'}; ${n === 1 ? 'it is' : 'they are'} sent when the orchestrator session is back` : '')
+// The toast once held wakes have gone out.
+export const releasedNotice = (n) => `belay: ${n} held wake${n === 1 ? '' : 's'} delivered now that the session is back`
 
-// Delivery, at most once (ADR 0037 amendment 5): the id is recorded (memory and file) ONLY after the file write
-// has succeeded, and the submit happens only after that, so a failed write submits nothing (the wake is retried
-// on a replay) and a crash between the record and the submit loses that wake but never duplicates one.
-// `io` = { write(file, content) -> Promise, submit(text) -> Promise, log(entry) }; `initial` is the file's text.
-// One submit failure is known not to have submitted anything: Claude Code refuses `$.prompt.submit` while no session is bound in its
-// process (the person opened the background-sessions list, which unmounts the orchestrator's REPL). That wake is held, not lost: its
-// record is taken back and it waits in `pending` with the failed writes, tried again until a session takes it.
+// Delivery (ADR 0037 amendment 5, item 7 as amended), at least once per id and in the order the wakes came. A wake is submitted
+// first and recorded after: a crash or reload between the two delivers it again on the next load, and its ref id (ADR 0074
+// amendment 1) lets the reader see that it is the same wake. A wake that cannot be submitted now, because Claude Code says no
+// session is bound or because this window holds a session other than the orchestrator's (`io.bound`), is held: nothing is written,
+// it stays first in line, and every later wake waits behind it. Any other submit failure is recorded and never re-run. A record
+// write that fails is tried again; the wake is not submitted again for it.
+// `io` = { write(file, content) -> Promise, submit(text) -> Promise, log(entry), bound?() -> Promise<boolean> }; `initial` is the file's text.
+// Each id is logged once per kind: the first hold, the delivery after a hold, a submit failure, a record write that failed.
 export function createDelivery({ file, initial = '', io, now = () => Date.now(), cap = capText }) {
   let content = String(initial || '')
   const delivered = parseDelivered(content)
-  const inflight = new Set()
-  const pending = new Map() // id -> text of a wake whose record write failed: kept until the write lands, never dropped
-  const held = new Set() // the ids in pending because no session was bound (isUnboundSubmit), for the status line
+  const pending = new Map() // id -> text, in arrival order: a held wake first, then every wake that came behind it
+  const held = new Set() // the ids in pending that could not be submitted for want of a bound session
+  const unrecorded = new Set() // submitted (or failed for good) but the record write failed: written again, never submitted again
+  const logged = new Set()
+  let released = 0 // held wakes delivered since the last read of it (takeReleased)
+  let heldWhy = null // 'unbound' | 'other-session': why the first held wake was last refused
+  const logOnce = (id, stage, entry) => {
+    if (logged.has(`${stage}:${id}`)) return
+    logged.add(`${stage}:${id}`)
+    try { io.log({ at: now(), id, stage, ...entry }) } catch { /* nowhere to log */ }
+  }
+  const record = async (id) => {
+    const next = content + deliveredLine(id, now())
+    try { await io.write(file, next) } catch (e) { unrecorded.add(id); logOnce(id, 'write', { error: String((e && e.message) || e) }); return false }
+    content = next
+    unrecorded.delete(id)
+    return true
+  }
+  const done = new Map() // id -> how the flush that took it ended
+  const flush = async () => {
+    for (const id of [...unrecorded]) await record(id)
+    for (const [id, text] of [...pending]) {
+      let bound = true
+      if (io.bound) { try { bound = (await io.bound()) !== false } catch { bound = false } }
+      let error = null
+      if (bound) { try { await io.submit(cap(text)) } catch (e) { error = String((e && e.message) || e) } }
+      if (!bound || (error !== null && isUnboundSubmit(error))) {
+        heldWhy = bound ? 'unbound' : 'other-session'
+        const why = error || 'this window holds a session that is not the orchestrator session'
+        for (const w of pending.keys()) { held.add(w); logOnce(w, 'held', { held: true, error: why }) } // this one and everything behind it waits
+        done.set(id, 'held')
+        return
+      }
+      pending.delete(id)
+      delivered.add(id)
+      if (held.delete(id)) { released += 1; logOnce(id, 'released', {}) }
+      if (error !== null) logOnce(id, 'submit', { error })
+      done.set(id, error !== null ? 'submit-failed' : 'submitted')
+      await record(id)
+    }
+  }
   const self = {
     delivered,
     pending,
     held,
-    // Tries every wake whose write failed again, in the order they arrived; the caller schedules this until `pending` is empty.
-    async retryPending() {
-      for (const [id, text] of [...pending]) await self.deliver(id, text)
-      return pending.size
-    },
+    unrecorded,
+    // Held wakes delivered since the last call. -> a count.
+    takeReleased() { const n = released; released = 0; return n },
+    get heldWhy() { return held.size ? heldWhy : null },
+    // Tries the held wakes and the unwritten records again, in order; the caller schedules this while either is non-empty.
+    async retryPending() { await flush(); return pending.size + unrecorded.size },
+    // -> 'skip' (delivered before) | 'held' (waits, in order) | 'submitted' | 'submit-failed' (recorded, never re-run).
     async deliver(id, text) {
-      if (delivered.has(id) || inflight.has(id)) return 'skip'
-      inflight.add(id)
-      try {
-        const next = content + deliveredLine(id, now())
-        try { await io.write(file, next) } catch (e) {
-          pending.set(id, text)
-          try { io.log({ at: now(), id, stage: 'write', error: String((e && e.message) || e) }) } catch { /* nowhere to log */ }
-          return 'write-failed'
-        }
-        pending.delete(id)
-        const before = content
-        content = next
-        delivered.add(id)
-        try { await io.submit(cap(text)) } catch (e) {
-          const error = String((e && e.message) || e)
-          if (isUnboundSubmit(error)) {
-            delivered.delete(id)
-            pending.set(id, text)
-            held.add(id)
-            // A retraction that cannot be written leaves the line on disk: a reload would take the wake as delivered, this process still holds it.
-            try { await io.write(file, before); content = before } catch { /* see above */ }
-            try { io.log({ at: now(), id, stage: 'submit', held: true, error }) } catch { /* nowhere to log */ }
-            return 'held'
-          }
-          held.delete(id)
-          try { io.log({ at: now(), id, stage: 'submit', error }) } catch { /* nowhere to log */ }
-          return 'submit-failed'
-        }
-        held.delete(id)
-        return 'submitted'
-      } finally { inflight.delete(id) }
+      if (delivered.has(id)) return 'skip'
+      if (!pending.has(id)) pending.set(id, text)
+      done.delete(id)
+      await flush()
+      return done.get(id) || 'held'
     },
   }
   return self
