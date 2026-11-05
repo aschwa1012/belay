@@ -32,7 +32,7 @@ const { decideBranch, restartFirstText, holdForLaunch, leaseField, leaseNote, CL
 // build step 6e-4: pause and resume (the park design, ADR 0023 amendment 2), and the one per-worker
 // operation slot pause, resume, restart and stop all share.
 const { createPause, INTERRUPT_TIMEOUT_MS, EXIT_TIMEOUT_MS } = require('./pause.cjs');
-const LC = require('./lifecycle.cjs'); const WT = require('./worker-temp.cjs'); // WT: ADR 0084 amendment 1, a worker's own temp folder const WT = require('./worker-temp.cjs'); // WT: ADR 0084 amendment 1, a worker's own temp folder
+const LC = require('./lifecycle.cjs'); const WT = require('./worker-temp.cjs'); // WT: ADR 0084 amendment 1, a worker's own temp folder
 // build step 6i-2 design item 3 (R4): writeRow moved verbatim here to keep this file under its own
 // 500-line budget once the closed-flag fix (shutdownFlags below) landed.
 const { createWriteRow } = require('./write-row.cjs');
@@ -148,7 +148,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       // MCP_TOOL_TIMEOUT is set only with permission_prompt, always outside permit_wait_ms's own bound.
       exe: spec.exe, args: spec.args, cwd: w.worktree,
       env: L.buildEnv(process.env, {
-        substrate: w.substrate, cwd: w.worktree, workerId: w.id, tempDir: WT.make(w.dir),
+        substrate: w.substrate, cwd: w.worktree, workerId: w.id, tempDir: WT.make(runId, w.id, { dataDir: root }),
         mcpToolTimeoutMs: w.permissionPrompt ? w.permitWaitMs + 60000 : null,
       }),
       stdin: w.substrate === 'claude-code' ? 'pipe' : 'ignore', input: spec.stdinText, // a Codex prompt on stdin is written and closed by spawnWorker
@@ -468,7 +468,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     markOwnerGone: () => { shutdownFlags.ownerGone = true; return shutdownFlags.paired; },
     beforeStop: (ms) => NR.drainVerdicts(ctx, ms),
     onDrained: () => MP.runEnd(ctx),
-  }).finally(() => WT.removeAll(workers)); // the workers' temp folders go with the run
+  }).then((res) => WT.closeRun(workers, runId, res)); // the workers' temp folders go with the run, but not those the shutdown left running or parked
 
   const manager = {
     spawn, message, stop, restart, list, shutdown,

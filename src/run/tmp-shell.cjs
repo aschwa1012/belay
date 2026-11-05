@@ -12,7 +12,7 @@ const path = require('node:path');
 
 const MAX_DEPTH = 3;
 const SCRIPT_MAX_BYTES = 200000;
-const SCRIPT_FRESH_MS = 60 * 60 * 1000; // only a script written or edited in the last hour is read (see readScript)
+const SCRIPT_FRESH_MS = 60 * 60 * 1000; // outside a belay worker folder (no launch time to compare), only a script edited in the last hour is read
 
 const DRIVE_FORM = /^(?:[a-z]:|\/[a-z]\/|\/[?.]\/)/i;
 const base = (w) => String(w).replace(/\\/g, '/').split('/').pop().toLowerCase().replace(/\.exe$/, '');
@@ -21,7 +21,7 @@ const PREFIX = new Set(['env', 'sudo', 'command', 'exec', 'time', 'nohup', 'buil
 const SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh']);
 const INTERP = /^(?:node(?:js)?|bun|deno|python[\d.]*|py|perl|ruby|bash|sh|zsh|dash|ksh|pwsh|powershell)$/;
 const SCRIPT_EXT = /\.(?:[cm]?js|py|sh|ps1|cmd|bat)$/i;
-const TESTY = /(?:^|[\\/])(?:tests?|__tests__|specs?)[\\/]|\.(?:test|spec)\./i; // a repository's own test files name /tmp on purpose
+const CD_VERBS = new Set(['cd', 'chdir', 'pushd', 'set-location', 'sl']);
 
 // Commands whose every path argument is written, and commands whose last one (or -t / -Destination) is.
 const ANY_BASH = new Set(['tee', 'touch', 'mkdir', 'truncate']);
@@ -29,8 +29,11 @@ const DEST_BASH = new Set(['cp', 'mv', 'install', 'ln', 'rsync']);
 const ANY_WIN = new Set(['out-file', 'set-content', 'add-content', 'new-item', 'tee-object', 'export-csv', 'export-clixml', 'start-transcript',
   'expand-archive', 'compress-archive', 'invoke-webrequest', 'invoke-restmethod', 'iwr', 'irm', 'ni', 'sc', 'ac', 'tee', 'mkdir', 'md', 'touch', 'curl', 'wget']);
 const DEST_WIN = new Set(['copy-item', 'cpi', 'copy', 'cp', 'move-item', 'mi', 'move', 'mv', 'xcopy', 'robocopy']);
-const PS_PATH = /^-(?:path|literalpath|filepath|outfile|destination|destinationpath|pspath|lp)$/i;
-const PS_VALUE = /^-(?:value|encoding|inputobject|itemtype|type|stream|width|delimiter|header|include|exclude|filter|body|method|uri|headers|contenttype)$/i;
+// PowerShell takes any unambiguous prefix of a parameter name, so `-Dest` and `-D` are `-Destination`. A name counts when it is a prefix
+// of one of the full names (`-f` alone stays out: it is -Force far more often than -FilePath).
+const PS_PATH = ['path', 'literalpath', 'filepath', 'outfile', 'destination', 'destinationpath', 'pspath'];
+const PS_VALUE = ['value', 'encoding', 'inputobject', 'itemtype', 'stream', 'width', 'delimiter', 'header', 'include', 'exclude', 'filter', 'body', 'method', 'uri', 'headers', 'contenttype'];
+const psIs = (name, list) => { const n = name.slice(1).toLowerCase(); return n.length >= 1 && list.some((f) => f.startsWith(n) && (n.length >= 2 || n[0] !== 'f')); };
 const DOTNET = /\[(?:System\.)?IO\.(?:File|Directory|StreamWriter|FileStream)\]::(?:Write|Append|Create|Copy|Move|Open|Set)\w*\(([^)]*)\)|New-Object\s+(?:System\.)?IO\.(?:StreamWriter|FileStream)\s*\(?([^)\n]*)/gi;
 
 // Heredoc bodies are scanned as script text by tmp-guard; here they are removed so prose in a body is not read as commands.
@@ -48,7 +51,7 @@ function stripHeredocs(command) {
   return out.join('\n');
 }
 
-// Commands as { words, reds }: unquoted words, and the targets of `>`, `>>`, `>|`, `&>` and `N>` (a `>&N` duplicate and an input
+// Commands as { words, reds }: unquoted words, and the targets of `>`, `>>`, `>|`, `&>` and `N>` (a `>&N` descriptor and an input
 // redirect `<` name nothing written). Separators: newline ; | & and parentheses (braces too, for a PowerShell block).
 function parse(command, mode) {
   const bash = mode === 'bash';
@@ -82,10 +85,9 @@ function parse(command, mode) {
       let k = i + 1;
       if (s[k] === '>') k++;
       if (s[k] === '|') k++;
-      const dup = s[k] === '&';
-      if (dup) k++;
+      if (s[k] === '&') k++; // `>&2` duplicates a descriptor; `>&file` is `&>file`, so the next word is a target either way (a descriptor names no tmp)
       i = k - 1;
-      if (!dup) pend = 'w';
+      pend = 'w';
       continue;
     }
     if (c === '<') { push(); while (s[i + 1] === '<') i++; pend = 'skip'; continue; }
@@ -99,7 +101,10 @@ function parse(command, mode) {
 }
 
 function createCheck(ctx) {
-  const hitPath = (t, mode) => typeof t === 'string' && t !== '' && ctx.rooted(t) && (mode !== 'bash' || DRIVE_FORM.test(t.replace(/\\/g, '/').replace(/^\/{2,}/, '/')));
+  // After `cd C:/tmp` (or pushd, Set-Location) in the same text, a relative write target lands in the drive root's tmp.
+  let cwdTmp = false;
+  const relative = (t) => !/^[\\/~$%]|^[a-z]:|^-|\.\.|^\d+$|^(?:nul|con)$/i.test(t);
+  const hitPath = (t, mode) => typeof t === 'string' && t !== '' && ((ctx.rooted(t) && (mode !== 'bash' || DRIVE_FORM.test(t.replace(/\\/g, '/').replace(/^\/{2,}/, '/')))) || (cwdTmp && relative(t)));
 
   // PowerShell parameters: -Path-like parameters carry a path, value-like ones are skipped, anything else is a switch or unknown.
   function psWords(args) {
@@ -108,7 +113,7 @@ function createCheck(ctx) {
       const a = args[i];
       const m = /^(-[a-z]+)(?::(.*))?$/i.exec(a);
       if (m && a.startsWith('-')) {
-        if (PS_PATH.test(m[1])) { const v = m[2] !== undefined && m[2] !== '' ? m[2] : args[++i]; if (v !== undefined) named.push({ name: m[1].toLowerCase(), v }); } else if (PS_VALUE.test(m[1]) && m[2] === undefined) i++;
+        if (psIs(m[1], PS_PATH)) { const v = m[2] !== undefined && m[2] !== '' ? m[2] : args[++i]; if (v !== undefined) named.push({ name: m[1].toLowerCase(), v }); } else if (psIs(m[1], PS_VALUE) && m[2] === undefined) i++;
       } else if (!/^\/[a-z]{1,3}(?::\S*)?$/i.test(a) || /^\/tmp$/i.test(a)) pos.push(a);
     }
     return { named, pos };
@@ -119,7 +124,7 @@ function createCheck(ctx) {
     if (win && (ANY_WIN.has(verb) || DEST_WIN.has(verb))) {
       const { named, pos } = psWords(args);
       if (ANY_WIN.has(verb)) return named.some((n) => hitPath(n.v, mode)) || pos.some((p) => hitPath(p, mode));
-      const dest = named.filter((n) => n.name.includes('destination'));
+      const dest = named.filter((n) => 'destination'.startsWith(n.name.slice(1)) || 'destinationpath'.startsWith(n.name.slice(1)));
       if (dest.length) return dest.some((n) => hitPath(n.v, mode));
       if (verb === 'robocopy') return pos.slice(1).some((p) => hitPath(p, mode));
       return pos.length > 1 && hitPath(pos[pos.length - 1], mode);
@@ -140,15 +145,17 @@ function createCheck(ctx) {
   }
 
   // A script run by name. One that lives under the drive root's tmp is refused. One that does not is read when it is small and was
-  // written lately (a worker's throwaway script; a stable repository file that merely mentions /tmp, a test above all, is not
-  // read), and refused when its own text writes there. A test file or `node --test` is never read.
+  // written or edited since the worker's first launch (the birth of its temp folder: its own throwaway script or test; a stable
+  // repository file that merely mentions /tmp is not read), and refused when its own text writes there. Outside a worker's folder
+  // there is no launch time and the last hour stands in. No folder is exempt: a test the worker just wrote is read like any script.
   function readScript(file, mode, depth) {
-    if (!file || TESTY.test(file)) return false;
+    if (!file || /^[\\/]{2}[^?.]/.test(file)) return false; // a UNC path could stall the stat
     const fs = require('node:fs');
     try {
       const abs = path.resolve(ctx.cwd || process.cwd(), String(file).replace(/^\/([a-z])\//i, '$1:/'));
       const st = fs.statSync(abs);
-      if (!st.isFile() || st.size > SCRIPT_MAX_BYTES || Date.now() - st.mtimeMs > SCRIPT_FRESH_MS) return false;
+      const since = typeof ctx.since === 'function' ? ctx.since() : null; // the worker's first launch, when the hook runs in a worker's own temp folder
+      if (!st.isFile() || st.size > SCRIPT_MAX_BYTES || (since !== null && since !== undefined ? st.mtimeMs <= since : Date.now() - st.mtimeMs > SCRIPT_FRESH_MS)) return false;
       const text = fs.readFileSync(abs, 'utf8');
       if (/\.sh$/i.test(abs)) return analyze(text, 'bash', depth + 1);
       if (/\.(?:ps1|cmd|bat)$/i.test(abs)) return analyze(text, 'win', depth + 1);
@@ -158,7 +165,7 @@ function createCheck(ctx) {
   // Every word of an interpreter's command line that looks like a script (`node -r ./hook.js app.js` names two).
   function scriptsOf(raw, verb, args) {
     if (SCRIPT_EXT.test(raw)) return [raw];
-    if (!INTERP.test(verb) || args.includes('--test') || args.some((a) => /^(?:-e|-c|-p|--eval|--print)$/.test(a))) return [];
+    if (!INTERP.test(verb) || args.some((a) => /^(?:-e|-c|-p|--eval|--print)$/.test(a))) return [];
     if (/^(?:pwsh|powershell)$/.test(verb)) { const k = args.findIndex((a) => /^-f(?:ile)?$/i.test(a)); return k >= 0 && args[k + 1] ? [args[k + 1]] : []; }
     return args.filter((a) => SCRIPT_EXT.test(a));
   }
@@ -187,6 +194,11 @@ function createCheck(ctx) {
       k = args.findIndex((a) => /^-e(?:c|nc(?:odedcommand)?)?$/i.test(a));
       if (k >= 0 && args[k + 1] && analyze(Buffer.from(args[k + 1], 'base64').toString('utf16le'), 'win', depth + 1)) return true;
     }
+    if (CD_VERBS.has(verb)) {
+      const to = args.filter((a) => !/^(?:\/d|-(?:literal)?path|-l|-p|--)$/i.test(a))[0];
+      if (to !== undefined) cwdTmp = (ctx.rooted(to) && (mode !== 'bash' || DRIVE_FORM.test(to.replace(/\\/g, '/').replace(/^\/{2,}/, '/')))) || (cwdTmp && relative(to));
+      return false;
+    }
     if (writesTo(verb, args, mode)) return true;
     return scriptsOf(raw, verb, args).some((s) => hitPath(s, mode) || readScript(s, mode, depth));
   }
@@ -197,12 +209,13 @@ function createCheck(ctx) {
     if (mode === 'win') {
       for (const m of text.matchAll(DOTNET)) if (ctx.literal.test(m[1] || m[2] || '')) return true;
     }
-    return parse(text, mode).some((c) => command(c, mode, depth));
+    const saved = cwdTmp; // a `cd` is the text's own: an inner command starts where the outer one is, and the outer one is not moved by it
+    try { return parse(text, mode).some((c) => command(c, mode, depth)); } finally { cwdTmp = saved; }
   }
   return analyze;
 }
 
-// `ctx`: { cwd, rooted(path), literal (RegExp), hit(text) } from tmp-guard. True when the command writes the drive root's tmp.
+// `ctx`: { cwd, since() (ms: scripts edited after it are read), rooted(path), literal (RegExp), hit(text) } from tmp-guard. True when the command writes the drive root's tmp.
 function analyze(text, mode, ctx) { return createCheck(ctx)(text, mode, 0); }
 
 module.exports = { analyze, parse };

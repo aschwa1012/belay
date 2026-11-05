@@ -194,7 +194,7 @@ const ps = (command, extra = {}) => ({ tool_name: 'PowerShell', tool_input: { co
 
 const BAD_SHELL = [
   // (a) a redirect or write command naming a drive (Git Bash converts only a bare /tmp, so only the drive forms reach the root)
-  'echo x > C:/tmp/f', 'echo x >> c:/tmp/f', 'echo x 2>C:/tmp/f', 'echo x &>/c/tmp/f', 'echo x >|C:/tmp/f', 'echo x | tee C:/tmp/f', 'echo x | tee -a /d/tmp/f',
+  'echo x > C:/tmp/f', 'echo x >&C:/tmp/f', 'echo x >& C:/tmp/f', 'echo x >> c:/tmp/f', 'echo x 2>C:/tmp/f', 'echo x &>/c/tmp/f', 'echo x >|C:/tmp/f', 'echo x | tee C:/tmp/f', 'echo x | tee -a /d/tmp/f',
   `echo x > "C:${BS}tmp${BS}f"`, 'cp a.txt C:/tmp/b', 'cp -t C:/tmp a.txt', 'mv a.txt //?/C:/tmp/b', 'mkdir -p C:/tmp/x', 'touch C:/tmp/x', 'install a C:/tmp/a',
   'dd if=a of=C:/tmp/b', 'curl -o C:/tmp/b http://h/x', 'wget -O C:/tmp/b http://h/x', 'FOO=1 env -i cp a C:/tmp/b',
   // (c) wrappers, to any depth up to three
@@ -210,20 +210,28 @@ const OK_SHELL = [
   'echo x > /tmp/f', 'echo x >> /tmp/f', 'echo x 2> /tmp/f', 'echo x | tee /tmp/f', 'cp a /tmp/b', 'mkdir -p /tmp/x', `bash -c 'echo x > /tmp/f'`,
   'cp C:/tmp/a ./b', 'mv C:/tmp/a b', 'cat C:/tmp/a > out.txt', 'cat C:/tmp/a | tee out.txt', 'ls C:/tmp', 'diff C:/tmp/a b', 'echo x 2>&1 | tee out.txt',
   'echo "C:/tmp is the drive root"', 'git commit -m "no writes to C:/tmp"', 'echo x > src/tmp/f', 'echo x > C:/tmp.old/f', 'echo x > C:/tmpfoo',
-  `bash -c 'echo hi'`, 'cmd /c dir',  'node --test tests/run/tmp-guard.test.cjs', 'node ./tmp/mv.js', 'node nothere.js', 'curl -o out.bin http://h/tmp/x', 'curl http://h/x > C:/tmp.old/x',
+  `bash -c 'echo hi'`, 'cmd /c dir',  'node ./tmp/mv.js', 'node nothere.js', 'curl -o out.bin http://h/tmp/x', 'curl http://h/x > C:/tmp.old/x',
 ];
+const BAD_CD = [
+  'cd C:/tmp && echo x > f', 'cd /c/tmp; cat > t1.py', `cd "C:${BS}tmp" && echo x >> out.txt`, 'pushd C:/tmp; touch x', 'cd C:/tmp && mkdir sub && cd sub && echo x > f', 'cd /d C:/tmp && echo x > f',
+  'cd C:/tmp && echo x | tee out.txt', 'cd C:/tmp && cp a b', "bash -c 'cd C:/tmp && echo x > f'",
+];
+const OK_CD = [
+  'cd C:/tmp && cat f', 'cd C:/tmp && echo x > /tmp/f', 'cd C:/tmp; cd ~/work; echo x > f', 'cd src && echo x > f', 'cd /tmp && echo x > f', 'cd C:/tmp && echo x >&2', 'cd C:/tmp && echo x > /dev/null', 'cd C:/tmp && echo x > ../out.txt', 'cd C:/tmp && cd /home/x && echo x > f', '(cd C:/tmp) ; echo x', 'cd C:/tmp.old && echo x > f',
+];
+const BAD_PS_CD = ['Set-Location C:' + BS + 'tmp; "a" > f', 'cd ' + BS + 'tmp; Get-Date | Out-File f', 'sl C:/tmp; Set-Content f x', 'Set-Location -Path /tmp; ni f'];
 const BAD_PS = [
   `'x' | Out-File /tmp/f`, `Set-Content -Path C:${BS}tmp${BS}f -Value hi`, `Set-Content C:${BS}tmp${BS}f hi`, 'Add-Content /tmp/f x', 'New-Item -ItemType File -Path /tmp/x',
   'ni C:/tmp/x', `mkdir C:${BS}tmp${BS}x`, 'Get-Date | tee C:/tmp/f', 'Get-Date | Tee-Object -FilePath /tmp/f', 'Export-Csv -Path /tmp/x.csv -InputObject $o',
   'echo hi > /tmp/f', `echo hi >> C:${BS}tmp${BS}f`, `echo hi 2> ${BS}tmp${BS}err.txt`, 'Get-Process *> /tmp/p.txt',
-  'Copy-Item a.txt /tmp/b', 'Copy-Item -Path a -Destination C:/tmp/', `Move-Item a C:${BS}tmp${BS}a`, `copy a ${BS}tmp${BS}a`, `xcopy a C:${BS}tmp${BS} /y`,
+  'Copy-Item a.txt /tmp/b', 'Copy-Item -Path a -Destination C:/tmp/', 'Copy-Item -Dest C:/tmp/ -Path a.txt', 'Copy-Item -Path a -D C:/tmp/b', `Move-Item -Path a -Dest C:${BS}tmp${BS}b`, 'Set-Content -Pa /tmp/x -Va hi', 'Out-File -FilePath /tmp/x', 'Out-File -Fi /tmp/x', `Move-Item a C:${BS}tmp${BS}a`, `copy a ${BS}tmp${BS}a`, `xcopy a C:${BS}tmp${BS} /y`,
   'Invoke-WebRequest http://h/x -OutFile /tmp/x', 'Out-File -FilePath:/tmp/f -InputObject x',
   '[IO.File]::WriteAllText("/tmp/x","y")', "[System.IO.File]::AppendAllText('C:/tmp/x','y')", "$w = New-Object IO.StreamWriter('/tmp/x')",
   `cmd /c "echo x > ${BS}tmp${BS}f"`, `bash -c 'echo x > C:/tmp/f'`, `node -e "fs.writeFileSync('/tmp/x','')"`, `Set-Location x; 'a' | Set-Content /tmp/a`,
 ];
 const OK_PS = [
   'Get-Content /tmp/f', 'Get-ChildItem C:/tmp', 'Copy-Item C:/tmp/a ./b', 'Copy-Item -Path C:/tmp/a -Destination out.txt', 'Set-Content -Path x.txt -Value "/tmp/x"',
-  'Set-Content x.txt -Encoding utf8 -Value C:/tmp/x', 'echo hi > out.txt', 'echo hi 2>&1', '[IO.File]::ReadAllText("/tmp/x")', 'Get-Date | Out-File out.txt',
+  'Set-Content x.txt -Encoding utf8 -Value C:/tmp/x', 'echo hi > out.txt', 'echo hi 2>&1', 'echo hi >&2', 'Copy-Item a b -Force', 'Set-Content x.txt -Va /tmp/v', '[IO.File]::ReadAllText("/tmp/x")', 'Get-Date | Out-File out.txt',
   'Write-Output "C:/tmp"', 'New-Item -Path src/tmp/x', `Out-File $env:TEMP${BS}x.txt`, 'Copy-Item a $env:TEMP', 'echo hi > C:/tmp.old/f', 'git commit -m "x"', '',
 ];
 
@@ -238,6 +246,12 @@ test('what git bash converts itself, and reads of the drive root, stay allowed (
 test('the PowerShell tool is guarded: every rooted spelling is the drive root, so bare /tmp is refused too', () => {
   for (const c of BAD_PS) assert.ok(TG.refusal(ps(c), TEMP), `should refuse: ${JSON.stringify(c)}`);
   for (const c of OK_PS) assert.strictEqual(TG.refusal(ps(c), TEMP), null, `should allow: ${JSON.stringify(c)}`);
+});
+
+test('a cd into the drive root tmp makes a following relative write a write there, until the next cd', () => {
+  for (const c of BAD_CD) assert.ok(TG.refusal(bash(c), TEMP), `should refuse: ${JSON.stringify(c)}`);
+  for (const c of OK_CD) assert.strictEqual(TG.refusal(bash(c), TEMP), null, `should allow: ${JSON.stringify(c)}`);
+  for (const c of BAD_PS_CD) assert.ok(TG.refusal(ps(c), TEMP), `should refuse: ${JSON.stringify(c)}`);
 });
 
 test('a PowerShell call that is not a string command, or a tool the guard does not cover, is allowed', () => {
@@ -268,10 +282,29 @@ test('a script run by name is read when it is small and fresh, and refused when 
     put('big.js', '// /tmp/x\n' + 'x'.repeat(250000));
     fs.mkdirSync(`${dir}/tests`); put('tests/t.js', "'/tmp/x'\n");
     const run = (c, tool = 'Bash') => TG.refusal({ tool_name: tool, cwd: dir, tool_input: { command: c } }, TEMP);
-    for (const c of ['node w.js', 'node --require ./x.js w.js', 'python w.py', 'python3 ./w.py', 'bash w.sh', './w.sh', 'sh w.sh', 'cd . && node w.js', `node ${dir}/w.js`, 'powershell -File w.ps1', 'pwsh -NoProfile -File ./w.ps1', 'cmd /c w.cmd', 'w.cmd']) assert.ok(run(c), `should refuse: ${c}`);
+    for (const c of ['node w.js', 'node --require ./x.js w.js', 'python w.py', 'python3 ./w.py', 'bash w.sh', './w.sh', 'sh w.sh', 'cd . && node w.js', `node ${dir}/w.js`, 'powershell -File w.ps1', 'pwsh -NoProfile -File ./w.ps1', 'cmd /c w.cmd', 'w.cmd', 'node tests/t.js', 'node --test w.js', 'node --test tests/t.js']) assert.ok(run(c), `should refuse: ${c}`);
     assert.ok(run(`.${BS}w.ps1`, 'PowerShell'), 'PowerShell runs a script by name too');
-    for (const c of ['node fine.js', 'bash ok.sh', 'node old.js', 'node big.js', 'node tests/t.js', 'node --test w.js', 'node missing.js', 'node -e "console.log(1)" w.js']) assert.strictEqual(run(c), null, `should allow: ${c}`);
+    for (const c of ['node fine.js', 'bash ok.sh', 'node old.js', 'node big.js', 'node missing.js', 'node -e "console.log(1)" w.js']) assert.strictEqual(run(c), null, `should allow: ${c}`);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('in a worker temp folder a script is read when it was edited after the first launch of the worker, however long ago, and not before', () => {
+  const WT = require('../../src/run/worker-temp.cjs');
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-tmpbirth-')).split(path.sep).join('/');
+  try {
+    const wtemp = WT.make('run-b', 'w1', { root });
+    assert.ok(wtemp);
+    const birth = WT.birthOf(wtemp);
+    assert.ok(birth > 0, 'a folder under belay/<run>/ with the marker has a birth time');
+    assert.strictEqual(WT.birthOf(root), null, 'any other folder has none');
+    const put = (name, text, whenMs) => { const p = root + '/' + name; fs.writeFileSync(p, text); const t = new Date(whenMs); fs.utimesSync(p, t, t); };
+    const body = "require('fs').writeFileSync('/tmp/x', 'y')\n";
+    put('after.js', body, birth + 90 * 60 * 1000);       // written 90 minutes after launch: past the old one-hour gate, still the worker's
+    put('before.js', body, birth - 5 * 60 * 1000);       // five minutes before launch: a repository file the worker did not touch
+    const run = (c) => TG.refusal({ tool_name: 'Bash', cwd: root, tool_input: { command: c } }, wtemp);
+    assert.ok(run('node after.js'));
+    assert.strictEqual(run('node before.js'), null);
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test('the hook process answers a PowerShell call and a Bash redirect with a deny, and stays silent for the allowed forms', () => {

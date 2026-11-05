@@ -94,7 +94,7 @@ function refusal(payload, tempDir) {
   if (Object.prototype.hasOwnProperty.call(FILE_TOOLS, tool)) return rootedTmp(input[FILE_TOOLS[tool]]) ? message(tempDir) : null;
   if ((tool === 'Bash' || tool === 'PowerShell') && typeof input.command === 'string' && input.command) {
     const hit = (text) => scriptRegions(text).some((r) => LITERAL.test(r));
-    if (TS.analyze(input.command, tool === 'Bash' ? 'bash' : 'win', { cwd: payload.cwd, rooted: rootedTmp, literal: LITERAL, hit })) return message(tempDir);
+    if (TS.analyze(input.command, tool === 'Bash' ? 'bash' : 'win', { cwd: payload.cwd, since: () => require('./worker-temp.cjs').birthOf(tempDir || os.tmpdir()), rooted: rootedTmp, literal: LITERAL, hit })) return message(tempDir);
   }
   return null;
 }

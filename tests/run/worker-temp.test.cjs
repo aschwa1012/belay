@@ -1,13 +1,15 @@
 'use strict';
 require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // worker-temp.test.cjs — a worker gets its own temp folder (ADR 0084 amendment 1): the environment names it, belay makes it at
-// launch and removes it when the run's manager shuts down, and the first message says so. Fake executables only.
+// launch under the OS temp dir (never the data directory), removes it when the run's manager shuts down except for workers the
+// shutdown left alone, and sweeps a crashed run's leftovers. Fake executables only.
 
 const test = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const { spawnSync } = require('node:child_process');
 
 const L = require('../../src/run/launch.cjs');
 const WT = require('../../src/run/worker-temp.cjs');
@@ -20,6 +22,9 @@ const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(/\\/g, '/'
 const ECHO = path.join(__dirname, 'fakes', 'echo-temp.cjs');
 const fwd = (p) => String(p).replace(/\\/g, '/');
 const norm = (p) => fwd(path.resolve(p)).toLowerCase();
+const sandbox = () => fs.mkdtempSync(path.join(os.tmpdir(), 'belay-wtemp-'));
+const deadPid = () => spawnSync(process.execPath, ['-e', '0']).pid;
+const junction = (target, at) => fs.symlinkSync(target, at, 'junction');
 
 test('buildEnv replaces every spelling of TEMP, TMP and TMPDIR with the worker folder, and leaves them alone without one', () => {
   const base = { PATH: 'C:/bin', Temp: 'C:/op/tmp', TMP: 'C:/op/tmp', tmpdir: 'C:/op/tmp', HOME: 'C:/h' };
@@ -33,45 +38,121 @@ test('buildEnv replaces every spelling of TEMP, TMP and TMPDIR with the worker f
   assert.strictEqual(L.buildEnv(base, { substrate: 'claude-code', tempDir: '' }).TMP, 'C:/op/tmp', 'an empty name sets nothing');
 });
 
-test('make creates the folder under the worker directory, is idempotent, and refuses a link or a bad directory', () => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-wtemp-'));
-  try {
-    const w = path.join(d, 'w1');
-    fs.mkdirSync(w);
-    const dir = WT.make(w);
-    assert.strictEqual(norm(dir), norm(path.join(w, 'tmp')));
-    assert.ok(fs.statSync(dir).isDirectory());
-    fs.writeFileSync(path.join(dir, 'keep.txt'), 'x');
-    assert.strictEqual(WT.make(w), dir);
-    assert.ok(fs.existsSync(path.join(dir, 'keep.txt')), 'a second launch of the same worker keeps what its first left');
-    for (const bad of [null, undefined, '', 5]) assert.strictEqual(WT.make(bad), null);
-    const w2 = path.join(d, 'w2');
-    fs.mkdirSync(w2);
-    const target = path.join(d, 'elsewhere');
-    fs.mkdirSync(target);
-    fs.writeFileSync(path.join(target, 'precious.txt'), 'x');
-    fs.symlinkSync(target, path.join(w2, 'tmp'), 'junction');
-    assert.strictEqual(WT.make(w2), null, 'a link in the folder place is not used');
-    const r = WT.removeAll(new Map([['w2', { id: 'w2', dir: w2 }]]));
-    assert.strictEqual(r.removed, 1);
-    assert.ok(fs.existsSync(path.join(target, 'precious.txt')), 'removing a link never reaches what it points to');
-  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+test('the base is the OS temp dir, and %LOCALAPPDATA%\\Temp when that dir lies in the home folder outside AppData (an indexed place)', () => {
+  const tmp = os.tmpdir();
+  assert.strictEqual(WT.base({}, path.join(tmp, 'nohome'), 'win32'), tmp, 'a temp dir outside the home folder is kept');
+  assert.strictEqual(WT.base({ LOCALAPPDATA: 'C:/home/x/AppData/Local' }, tmp, 'win32'), path.join('C:/home/x/AppData/Local', 'Temp'), 'a temp dir inside the home folder is refused');
+  assert.strictEqual(WT.base({}, path.dirname(tmp), 'linux'), tmp, 'the rule is Windows only');
 });
 
-test('removeAll removes each worker folder with its contents, counts the bytes, and skips a worker that has none', () => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-wtemp-'));
+test('make creates <base>/belay/<run>/<worker> with an owner marker, keeps it across launches, and refuses a link or an odd id', () => {
+  const root = sandbox();
   try {
-    const workers = new Map();
-    for (const id of ['a', 'b', 'c']) { fs.mkdirSync(path.join(d, id)); workers.set(id, { id, dir: path.join(d, id) }); }
-    const a = WT.make(path.join(d, 'a')); const b = WT.make(path.join(d, 'b'));
-    fs.mkdirSync(path.join(a, 'sub', 'deep'), { recursive: true });
-    fs.writeFileSync(path.join(a, 'sub', 'deep', 'f.bin'), Buffer.alloc(1000));
-    fs.writeFileSync(path.join(b, 'g.txt'), 'abc');
-    const r = WT.removeAll(workers);
-    assert.deepStrictEqual({ removed: r.removed, bytes: r.bytes, failed: r.failed }, { removed: 2, bytes: 1003, failed: [] });
-    for (const id of ['a', 'b', 'c']) assert.ok(!fs.existsSync(path.join(d, id, 'tmp')), id);
-    assert.ok(fs.existsSync(path.join(d, 'a')), 'the worker directory itself stays: it holds the transcript');
-  } finally { fs.rmSync(d, { recursive: true, force: true }); }
+    const dir = WT.make('run-1', 'w1', { root, dataDir: 'C:/data' });
+    assert.strictEqual(norm(dir), norm(path.join(root, 'belay', 'run-1', 'w1')));
+    assert.ok(fs.statSync(dir).isDirectory());
+    const marker = JSON.parse(fs.readFileSync(path.join(root, 'belay', 'run-1', WT.MARKER), 'utf8'));
+    assert.deepStrictEqual([marker.pid, marker.run_id, marker.data_dir], [process.pid, 'run-1', 'C:/data']);
+    fs.writeFileSync(path.join(dir, 'keep.txt'), 'x');
+    assert.strictEqual(WT.make('run-1', 'w1', { root }), dir);
+    assert.ok(fs.existsSync(path.join(dir, 'keep.txt')), 'a second launch of the same worker keeps what its first left');
+    for (const bad of ['', '.', '..', 'a/b', 'a\\b', 'x:y', null, undefined]) assert.strictEqual(WT.make('run-1', bad, { root }), null, String(bad));
+    assert.strictEqual(WT.make('../run', 'w1', { root }), null);
+    assert.strictEqual(WT.make('..', 'w1', { root }), null);
+    const target = path.join(root, 'elsewhere');
+    fs.mkdirSync(target);
+    fs.writeFileSync(path.join(target, 'precious.txt'), 'x');
+    junction(target, path.join(root, 'belay', 'run-1', 'w2'));
+    assert.strictEqual(WT.make('run-1', 'w2', { root }), null, 'a link in the worker place is not used');
+    junction(target, path.join(root, 'belay', 'run-2'));
+    assert.strictEqual(WT.make('run-2', 'w1', { root }), null, 'a link in the run place is not used');
+    assert.ok(fs.existsSync(path.join(target, 'precious.txt')));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('the worker folder is under the OS temp base, not under a data directory or a .belay', () => {
+  const dir = WT.make('run-loc', 'w1');
+  try {
+    assert.ok(dir);
+    assert.ok(!norm(dir).includes('/.belay/'));
+    assert.ok(norm(dir).startsWith(norm(WT.base())));
+  } finally { WT.closeRun(new Map([['w1', { id: 'w1' }]]), 'run-loc', {}); }
+});
+
+test('closeRun removes the folders of the workers that stopped, counts the bytes, and leaves the folders of workers left parked, stale or running after a failed stop', () => {
+  const root = sandbox();
+  try {
+    const ids = ['a', 'b', 'parked', 'stale', 'failed', 'nofolder'];
+    const workers = new Map(ids.map((id) => [id, { id }]));
+    for (const id of ids.filter((i) => i !== 'nofolder')) fs.writeFileSync(path.join(WT.make('run-c', id, { root }), 'f.bin'), Buffer.alloc(id === 'a' ? 1000 : 3));
+    const res = WT.closeRun(workers, 'run-c', { stopped: ['a', 'b'], left_parked: ['parked'], left_stale: ['stale'], stop_failed: [{ worker_id: 'failed', pid: 1 }] }, { root });
+    assert.strictEqual(res.stopped.length, 2, 'the shutdown result is returned with the block added');
+    assert.deepStrictEqual({ removed: res.worker_temp.removed, bytes: res.worker_temp.bytes, failed: res.worker_temp.failed }, { removed: 2, bytes: 1003, failed: [] });
+    assert.deepStrictEqual([...res.worker_temp.kept].sort(), ['failed', 'parked', 'stale']);
+    for (const id of ['a', 'b']) assert.ok(!fs.existsSync(path.join(root, 'belay', 'run-c', id)), id);
+    for (const id of ['parked', 'stale', 'failed']) assert.ok(fs.existsSync(path.join(root, 'belay', 'run-c', id, 'f.bin')), `${id} keeps its folder and its files`);
+    assert.ok(fs.existsSync(path.join(root, 'belay', 'run-c')), 'the run folder stays while a worker may still use it');
+    assert.match(WT.describe(res.worker_temp), /^temp removed=2 bytes=1003 kept=3 failed=0/);
+    const res2 = WT.closeRun(workers, 'run-c', {}, { root }); // the last workers go: the run folder goes with them
+    assert.strictEqual(res2.worker_temp.removed, 3);
+    assert.ok(!fs.existsSync(path.join(root, 'belay', 'run-c')));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('closeRun unlinks a junction at the folder and a junction nested in it, and never reaches what they point to', () => {
+  const root = sandbox();
+  try {
+    const keep = path.join(root, 'precious');
+    fs.mkdirSync(path.join(keep, 'deep'), { recursive: true });
+    fs.writeFileSync(path.join(keep, 'deep', 'file.txt'), 'x');
+    const nested = WT.make('run-j', 'nest', { root });
+    fs.mkdirSync(path.join(nested, 'sub'));
+    junction(keep, path.join(nested, 'sub', 'node_modules'));
+    junction(keep, path.join(nested, 'direct'));
+    const top = WT.make('run-j', 'top', { root });
+    fs.rmSync(top, { recursive: true });
+    junction(keep, top);
+    const res = WT.closeRun(new Map([['nest', { id: 'nest' }], ['top', { id: 'top' }]]), 'run-j', {}, { root });
+    assert.deepStrictEqual(res.worker_temp.failed, []);
+    assert.ok(!fs.existsSync(nested) && !fs.existsSync(top), 'both are gone');
+    assert.ok(fs.existsSync(path.join(keep, 'deep', 'file.txt')), 'what the junctions pointed to is untouched');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('sweep removes only the run folders of a dead owner that have been idle, matched by name and marker, and never follows a link', () => {
+  const root = sandbox();
+  try {
+    const mk = (run, marker, ageMs) => {
+      const dir = path.join(root, 'belay', run);
+      fs.mkdirSync(path.join(dir, 'w1', 'sub'), { recursive: true });
+      fs.writeFileSync(path.join(dir, 'w1', 'sub', 'f.txt'), 'abc');
+      if (marker !== null) { fs.writeFileSync(path.join(dir, WT.MARKER), typeof marker === 'string' ? marker : JSON.stringify(marker)); const t = new Date(Date.now() - ageMs); fs.utimesSync(path.join(dir, WT.MARKER), t, t); }
+      return dir;
+    };
+    const DAY = 24 * 60 * 60 * 1000;
+    const dead = deadPid();
+    const gone = mk('gone', { pid: dead, run_id: 'gone' }, 2 * DAY);
+    const young = mk('young', { pid: dead, run_id: 'young' }, 60 * 1000);
+    const live = mk('live', { pid: process.pid, run_id: 'live' }, 2 * DAY);
+    const renamed = mk('renamed', { pid: dead, run_id: 'other' }, 2 * DAY);
+    const nomarker = mk('nomarker', null, 0);
+    const junky = mk('junky', 'not json', 2 * DAY);
+    const strange = mk('has space', { pid: dead, run_id: 'has space' }, 2 * DAY);
+    const mine = mk('mine', { pid: dead, run_id: 'mine' }, 2 * DAY);
+    const keep = path.join(root, 'precious');
+    fs.mkdirSync(keep);
+    fs.writeFileSync(path.join(keep, 'file.txt'), 'x');
+    junction(keep, path.join(gone, 'w1', 'link'));
+    junction(keep, path.join(root, 'belay', 'linkrun'));
+    fs.writeFileSync(path.join(root, 'belay', 'afile'), 'x');
+    const r = WT.sweep({ root, skipRun: 'mine' });
+    assert.strictEqual(r.swept, 1);
+    assert.deepStrictEqual(r.failed, []);
+    assert.ok(!fs.existsSync(gone), 'a dead owner idle for a day is swept');
+    for (const d of [young, live, renamed, nomarker, junky, strange, mine]) assert.ok(fs.existsSync(d), `${path.basename(d)} is left`);
+    assert.ok(fs.existsSync(path.join(keep, 'file.txt')) && fs.existsSync(path.join(root, 'belay', 'linkrun')) && fs.existsSync(path.join(root, 'belay', 'afile')));
+    assert.strictEqual(WT.sweep({ root: path.join(root, 'none') }).swept, 0, 'no belay folder is no error');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
 test('the first message of a worker says where its temp is, without a path that could go stale', () => {
@@ -79,27 +160,31 @@ test('the first message of a worker says where its temp is, without a path that 
   assert.ok(TB.PROCESS_LINE.endsWith('never in /tmp or C:\\tmp.'));
 });
 
-test('spawn: the worker process runs with TEMP, TMP and TMPDIR at <worker dir>/tmp, and shutdown removes the folder', async () => {
-  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-wtemp-run-'));
+test('spawn: the worker process runs with TEMP, TMP and TMPDIR at belay/<run>/<worker> under the OS temp, and shutdown removes the folder and reports it', async () => {
+  const d = sandbox();
   fs.mkdirSync(path.join(d, 'wt'));
   const data = fwd(d); const out = path.join(d, 'temp-seen.json');
   const core = createFakeCore();
   const m = createRunManager({ core, dataDir: data, runId: 'run-wtemp', paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
   process.env.FAKE_SPAWN_SCRIPT = ECHO; process.env.FAKE_TEMP_OUT = out;
-  let dir = null;
+  const dir = WT.dirFor('run-wtemp', 'w-temp');
+  let res = null;
   try {
     const row = await m.spawn({ substrate: 'claude-code', worktree: fwd(path.join(d, 'wt')), prompt: 'hi', worker_id: 'w-temp' });
     assert.equal(row.state, 'running');
-    dir = path.join(L.workerDir(data, 'w-temp'), 'tmp');
     for (let i = 0; i < 400 && !fs.existsSync(out); i++) await new Promise((r) => setTimeout(r, 25)); // the echo script is a grandchild: its file is the event
     const seen = JSON.parse(fs.readFileSync(out, 'utf8'));
     for (const k of ['TEMP', 'TMP', 'TMPDIR']) assert.strictEqual(norm(seen[k]), norm(dir), k);
     assert.ok(fs.statSync(dir).isDirectory());
+    assert.ok(!norm(dir).startsWith(norm(data)), 'not under the data directory');
     fs.writeFileSync(path.join(dir, 'scratch.txt'), 'x');
   } finally {
     delete process.env.FAKE_SPAWN_SCRIPT; delete process.env.FAKE_TEMP_OUT;
-    await m.shutdown();
-    if (dir) assert.ok(!fs.existsSync(dir), 'the folder is gone once the run is shut down');
+    res = await m.shutdown();
     cleanup(data);
   }
+  assert.ok(!fs.existsSync(dir), 'the folder is gone once the run is shut down');
+  assert.strictEqual(res.worker_temp.removed, 1);
+  assert.strictEqual(res.worker_temp.bytes, 1);
+  assert.ok(!fs.existsSync(WT.runDirOf('run-wtemp')), 'and the run folder with it');
 });
