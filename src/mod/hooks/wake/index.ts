@@ -1,19 +1,23 @@
 import type { Register } from 'claude-code'
-import { activeConfig, streamArgv, deliveredPath, errorsPath, parseLine, createDelivery, lineSplitter, decide, readDelivered } from './core.mjs'
+import { activeConfig, streamArgv, deliveredPath, errorsPath, parseLine, createDelivery, lineSplitter, decide, readDelivered, heldNotice, releasedNotice, HELD_RETRY_MS } from './core.mjs'
 
 // ADR 0037 amendment 5 decision 3. Thin: it decides nothing. It starts `belay wake-stream` (a child the
-// engine kills on reload and at exit), and for each wake line records the id in a file outside this copy
-// (after the write has succeeded) and only then submits the text: at most once, never twice (core.mjs createDelivery). A session with no
-// belay-run.json naming the orchestrator role (a watching session) does nothing. A delivered file that cannot be read
-// (anything but a missing file) starts nothing and is read again later: it is never taken for "nothing delivered". A wake
-// whose record write fails stays pending and is retried until the write lands.
+// engine kills on reload and at exit), and for each wake line submits the text and records the id in a file outside this copy, in
+// order: a claimed wake (a halt or a death) at least once, every other wake at most once (core.mjs createDelivery). A session with no
+// belay-run.json naming the orchestrator role (a watching session) does nothing. A delivered file that cannot be read (anything but a
+// missing file) starts nothing and is read again later: it is never taken for "nothing delivered". A wake Claude Code refuses because
+// no session is bound in its process is held, said on this plugin's status line, and tried again every few seconds ahead of every
+// later wake; a toast says how many were held and for how long once they have gone out. One delivery per module load: a
+// session.start that fires again in the same load starts nothing.
 export const registerWake = (on: Parameters<Register>[0]): void => {
+  let active = false
   // The matcher keeps this apart from the panel's own unmatched session.start hook (one per module is allowed).
   on('session.start', { isInteractive: true }, async ($, e, next) => {
     const started = await next(e)
     let cfg
     try { cfg = activeConfig(await $.fs.read(`${$.plugin.root}/belay-run.json`)) } catch { return started }
-    if (!cfg) return started
+    if (!cfg || active) return started
+    active = true
     const file = deliveredPath(cfg)
     const errFile = errorsPath(cfg)
     let errors = ''
@@ -39,14 +43,26 @@ export const registerWake = (on: Parameters<Register>[0]): void => {
       let gotLine = false
       let retrying = false
       let retryMs = 1000
-      // A wake whose record write failed is not lost: it stays in delivery.pending and is tried again, with a growing pause.
+      // Held wakes are said on this plugin's status line, and cleared once they are sent, with a toast saying so.
+      let shown = ''
+      const showHeld = (): void => {
+        const out = delivery.takeReleased()
+        if (out.n) { try { $.ui.toast(releasedNotice(out.n, out.longestMs)) } catch { /* no surface: the status line below still clears */ } }
+        const n = delivery.held.size
+        const said = n ? heldNotice(n) : ''
+        if (said === shown) return
+        shown = said
+        try { $.ui.status(n ? said : undefined) } catch { /* no surface to pin it on right now: the next change tries again */ shown = '?' }
+      }
+      // A held wake, or a record whose write failed, is tried again with a growing pause (at most a few seconds while one is held).
       const scheduleRetry = (): void => {
-        if (retrying || !delivery.pending.size) return
+        if (retrying || !(delivery.pending.size || delivery.unrecorded.size)) return
         retrying = true
         $.clock.after(retryMs, () => {
           retrying = false
           chain = chain.then(() => delivery.retryPending()).then(() => undefined, () => undefined).then(() => {
-            if (delivery.pending.size) { retryMs = Math.min(retryMs * 2, 30000); scheduleRetry() } else retryMs = 1000
+            showHeld()
+            if (delivery.pending.size || delivery.unrecorded.size) { retryMs = Math.min(retryMs * 2, delivery.held.size ? HELD_RETRY_MS : 30000); scheduleRetry() } else retryMs = 1000
           })
         })
       }
@@ -60,7 +76,7 @@ export const registerWake = (on: Parameters<Register>[0]): void => {
               const p = parseLine(line)
               if (p.kind === 'wake' && decide(p, delivered) === 'submit') {
                 const { id, text } = p
-                chain = chain.then(() => delivery.deliver(id, text)).then(() => undefined, () => undefined).then(scheduleRetry)
+                chain = chain.then(() => delivery.deliver(id, text)).then(() => undefined, () => undefined).then(() => { showHeld(); scheduleRetry() })
               }
             }
           }
