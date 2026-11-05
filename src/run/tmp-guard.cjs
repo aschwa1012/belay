@@ -19,6 +19,9 @@ const FILE_TOOLS = { Write: 'file_path', Edit: 'file_path', MultiEdit: 'file_pat
 const MAX_JSON = 380;
 const RULE_HEAD = 'Do not write to /tmp or <drive>:\\tmp: it is the root of the current drive, not a temp folder. Use ';
 const RULE_TAIL = ' (os.tmpdir(), tempfile, $TEMP) or a path in your worktree.';
+// A script run by name that only names /tmp in its text is not a write the hook saw: its own line, so the worker builds the path at run time
+// (or runs the file through npm test) and does not edit /tmp out of a test of this guard. Fixed text, well inside the byte bound.
+const SCRIPT_MESSAGE = 'This script names /tmp or <drive>:\\tmp in its text, which the hook cannot tell from a write. Build the path at run time, use $TEMP, or run the file through npm test.';
 function message(tempDir) {
   let dir = String(tempDir || os.tmpdir());
   while (dir.length > 8 && Buffer.byteLength(denyOutput(RULE_HEAD + dir + RULE_TAIL), 'utf8') > MAX_JSON) dir = dir.replace(/^(?:\.\.\.)?[\s\S]{1,10}/, '...');
@@ -94,7 +97,8 @@ function refusal(payload, tempDir) {
   if (Object.prototype.hasOwnProperty.call(FILE_TOOLS, tool)) return rootedTmp(input[FILE_TOOLS[tool]]) ? message(tempDir) : null;
   if ((tool === 'Bash' || tool === 'PowerShell') && typeof input.command === 'string' && input.command) {
     const hit = (text) => scriptRegions(text).some((r) => LITERAL.test(r));
-    if (TS.analyze(input.command, tool === 'Bash' ? 'bash' : 'win', { cwd: payload.cwd, since: () => require('./worker-temp.cjs').birthOf(tempDir || os.tmpdir()), rooted: rootedTmp, literal: LITERAL, hit })) return message(tempDir);
+    const ctx = { cwd: payload.cwd, since: () => require('./worker-temp.cjs').birthOf(tempDir || os.tmpdir()), rooted: rootedTmp, literal: LITERAL, hit, note: null };
+    if (TS.analyze(input.command, tool === 'Bash' ? 'bash' : 'win', ctx)) return ctx.note === 'script' ? SCRIPT_MESSAGE : message(tempDir);
   }
   return null;
 }
@@ -104,4 +108,4 @@ function denyOutput(reason) {
   return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } });
 }
 
-module.exports = { refusal, denyOutput, rootedTmp, message };
+module.exports = { refusal, denyOutput, rootedTmp, message, SCRIPT_MESSAGE };

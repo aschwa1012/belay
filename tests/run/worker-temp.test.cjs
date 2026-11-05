@@ -263,6 +263,41 @@ test('closeRun removes only this adapter\'s owner file while another adapter of 
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('the test helper removes at exit only the run folders this process made, and only when the temp dir is a scratch dir of the tests', () => {
+  const helper = globalThis[Symbol.for('belay.tests.tmp')];
+  assert.strictEqual(typeof helper.removeOwnRunFolders, 'function');
+  const parent = sandbox();
+  const saved = { TEMP: process.env.TEMP, TMP: process.env.TMP, TMPDIR: process.env.TMPDIR };
+  const setTemp = (d) => { process.env.TEMP = process.env.TMP = process.env.TMPDIR = d; };
+  const owner = (dir, pid, over = {}) => fs.writeFileSync(path.join(dir, WT.ownerFile(pid)), JSON.stringify({ pid, created: Math.round(Date.now() - process.uptime() * 1000), run_id: path.basename(dir), at: Date.now(), ...over }));
+  try {
+    const build = (root) => {
+      const made = {};
+      for (const name of ['mine', 'otherpid', 'wrongcreated', 'wrongrun', 'two']) { made[name] = path.join(root, 'belay', name); fs.mkdirSync(path.join(made[name], 'w1'), { recursive: true }); }
+      owner(made.mine, process.pid);
+      owner(made.otherpid, process.ppid);
+      owner(made.wrongcreated, process.pid, { created: 1 });
+      owner(made.wrongrun, process.pid, { run_id: 'something-else' });
+      owner(made.two, process.pid); owner(made.two, process.ppid);
+      return made;
+    };
+    // a real-looking temp dir: nothing is removed, not even the folder that is ours
+    const real = path.join(parent, 'Temp'); fs.mkdirSync(real);
+    const inReal = build(real);
+    setTemp(real); helper.removeOwnRunFolders();
+    for (const d of Object.values(inReal)) assert.ok(fs.existsSync(d), `${path.basename(d)} stays under a real-looking temp dir`);
+    // a scratch dir of the tests: only the folder whose single owner file is this process's, with its start time and its run, goes
+    const scratch = path.join(parent, 'belay-test-tmp-unit'); fs.mkdirSync(scratch);
+    const inScratch = build(scratch);
+    setTemp(scratch); helper.removeOwnRunFolders();
+    assert.ok(!fs.existsSync(inScratch.mine), 'the folder this process made is removed');
+    for (const n of ['otherpid', 'wrongcreated', 'wrongrun', 'two']) assert.ok(fs.existsSync(inScratch[n]), `${n} is left`);
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    fs.rmSync(parent, { recursive: true, force: true });
+  }
+});
+
 test('the first message of a worker says where its temp is, without a path that could go stale', () => {
   assert.match(TB.PROCESS_LINE, /Your TEMP is a folder belay made for you/);
   assert.ok(('echo: one' + TB.PROCESS_LINE).length < 200, 'a turn row that echoes the first message stays under the 200-character list text bound');

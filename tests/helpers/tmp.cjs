@@ -82,11 +82,15 @@ if (!globalThis[KEY]) {
   require('./git-env.cjs');
 
   // A worker's temp folder (src/run/worker-temp.cjs) is <temp>/belay/<run>/<worker>, made by whichever process launched the worker. A test
-  // whose manager is never shut down leaves it. The run folders this process alone launched into (its owner file is the only one) are
-  // removed with the rest; another process's folder, in a temp dir the suite shares, is never touched.
+  // whose manager is never shut down leaves it. Only when the temp dir is a scratch dir of the tests (the suite's or this helper's own) are
+  // the run folders this process launched into removed with the rest, and only those whose single owner file is this process's: its pid,
+  // a start time that is this process's, and the run id the folder is named for. A real-looking temp dir, another process's folder and a
+  // folder that merely has this pid in a name are never touched.
   function removeOwnRunFolders() {
+    if (!/^belay-(suite|test)-tmp-/.test(path.basename(os.tmpdir()))) return;
     const top = path.join(os.tmpdir(), 'belay');
     const mine = `.owner-${process.pid}.json`;
+    const started = Date.now() - process.uptime() * 1000;
     let runs = [];
     try { runs = fs.readdirSync(top); } catch { return; }
     for (const run of runs) {
@@ -94,8 +98,10 @@ if (!globalThis[KEY]) {
       try {
         if (fs.lstatSync(dir).isSymbolicLink()) continue;
         const owners = fs.readdirSync(dir).filter((n) => /^\.owner-\d+\.json$/.test(n));
-        if (owners.length === 1 && owners[0] === mine) fs.rmSync(dir, { recursive: true, force: true });
-      } catch { /* busy or gone */ }
+        if (owners.length !== 1 || owners[0] !== mine) continue;
+        const m = JSON.parse(fs.readFileSync(path.join(dir, mine), 'utf8'));
+        if (m && m.pid === process.pid && m.run_id === run && Math.abs(m.created - started) < 5000) fs.rmSync(dir, { recursive: true, force: true });
+      } catch { /* busy, gone or not ours */ }
     }
     try { fs.rmdirSync(top); } catch { /* not empty: others' folders */ }
   }
@@ -118,6 +124,6 @@ if (!globalThis[KEY]) {
   }
   process.on('exit', () => { try { cleanup(0); } catch { /* exiting */ } });
   if (ownScratch) process.on('exit', () => { try { fs.rmSync(ownScratch, { recursive: true, force: true }); } catch { /* held by a surviving child */ } });
-  globalThis[KEY] = { cleanup, made };
+  globalThis[KEY] = { cleanup, made, removeOwnRunFolders };
 }
 module.exports = globalThis[KEY];

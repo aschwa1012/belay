@@ -158,7 +158,9 @@ function createCheck(ctx) {
       const text = fs.readFileSync(abs, 'utf8');
       if (/\.sh$/i.test(abs)) return analyze(text, 'bash', depth + 1);
       if (/\.(?:ps1|cmd|bat)$/i.test(abs)) return analyze(text, 'win', depth + 1);
-      return ctx.literal.test(text);
+      if (!ctx.literal.test(text)) return false;
+      ctx.note = 'script'; // a script read by name that names the path: the guard gives it its own reason
+      return true;
     } catch { return false; }
   }
   // Every word of an interpreter's command line that looks like a script (`node -r ./hook.js app.js` names two).
