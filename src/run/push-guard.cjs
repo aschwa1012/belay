@@ -82,4 +82,4 @@ function refusal(rawCommand) {
   return null;
 }
 
-module.exports = { refusal, MESSAGE };
+module.exports = { refusal, MESSAGE, WORD, GIT_VALUE_OPTS, forms, segments, normalize };
