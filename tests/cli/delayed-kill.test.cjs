@@ -1,9 +1,10 @@
 'use strict';
 require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
-// The fake orchestrator's delayed adapter kill (fakes/fake-orch-adapter.cjs) used to send SIGKILL to a bare pid 350 ms or more after
-// its own exit, with no handle and no creation-time check. If the adapter had already gone, Windows could give that pid to an unrelated
-// process, such as a test file running beside it, and the kill ended that process silently. It now goes through delayed-kill.cjs,
-// which signals only an exact { pid, created } match in one snapshot taken just before the signal.
+// A test-file process once died silently in a full suite: an unattributed outside kill. Every kill in the tests that could reach a
+// reused pid was removed (tests/crash.cjs). This is one of them: the fake orchestrator's delayed adapter kill
+// (fakes/fake-orch-adapter.cjs) sent SIGKILL to a bare pid 350 ms or more after its own exit, with no handle and no creation-time
+// check, so an adapter already gone could leave its pid to an unrelated process. It now goes through delayed-kill.cjs, which signals
+// only an exact { pid, created, image } match in one snapshot taken just before the signal.
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -32,6 +33,15 @@ test('delayed kill: a pid another process now holds (another creation time) is n
   const r = await killIfSame({ pid: PID, created: CREATED, snapshot: snapOf([[PID, { created: CREATED + 5000, ppid: 1, image: 'node.exe' }]]), signal });
   assert.deepStrictEqual(signal.calls, []);
   assert.strictEqual(r.outcome, 'mismatch');
+});
+
+test('delayed kill: a matching creation time under another image is not signalled; the image is compared case aside', async () => {
+  const signal = spy();
+  const snapshot = snapOf([[PID, { created: CREATED, ppid: 1, image: 'Node.EXE' }]]);
+  assert.strictEqual((await killIfSame({ pid: PID, created: CREATED, image: 'powershell.exe', snapshot, signal })).outcome, 'mismatch');
+  assert.deepStrictEqual(signal.calls, []);
+  assert.strictEqual((await killIfSame({ pid: PID, created: CREATED, image: 'node.exe', snapshot, signal })).outcome, 'killed');
+  assert.deepStrictEqual(signal.calls, [PID]);
 });
 
 test('delayed kill: a pid nothing holds is not signalled', async () => {
