@@ -4,18 +4,22 @@
 // and Git Bash's own `/tmp` mount land in a folder belay owns instead of the operator's. <base> is the OS temp dir, or
 // %LOCALAPPDATA%\Temp when that lies in the home folder outside AppData (the Windows Search index and Defender crawl it, and a
 // worker's temp traffic would pin kernel pool memory: tests/helpers/temp-root.cjs refuses the same place). It is never under the
-// data directory, which defaults to <project>/.belay. Each run folder holds `.owner.json` (the adapter's pid, the data directory,
-// the time), refreshed at every launch; a later start sweeps a run folder whose owner is gone and that has been idle a day.
+// data directory, which defaults to <project>/.belay. Each run folder holds one owner file per adapter that launched into it (pid,
+// start time, run, data directory, time), rewritten at every launch; a later start sweeps a run folder whose launchers are all gone and
+// that has been idle a day, by renaming it aside and re-checking before it removes anything.
 // Never throws: a folder that cannot be made means the worker keeps the inherited temp dir (make returns null).
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
+const crypto = require('node:crypto');
 
 const ROOT = 'belay';
-const MARKER = '.owner.json';
+const OWNER_RE = /^\.owner-(\d+)\.json$/; // one file per adapter that launched into the run, so no launcher overwrites another's
+const ownerFile = (pid) => `.owner-${pid}.json`;
+const TOMB_RE = /^\.gone-(.+)-[0-9a-f]{8}$/; // a run folder renamed aside by a sweep, before it is removed
 const SWEEP_IDLE_MS = 24 * 60 * 60 * 1000;
 const SEGMENT = /^(?!\.{1,2}$)[\w.-]+$/; // a run or worker id used as a folder name; anything else gets no folder
-const seg = (x) => typeof x === 'string' && SEGMENT.test(x);
+const seg = (x) => typeof x === 'string' && SEGMENT.test(x) && !x.startsWith('.gone-');
 
 const norm = (p) => { let r = path.resolve(String(p)); try { r = fs.realpathSync.native(r); } catch { /* not there yet: as written */ } return r.replace(/\\/g, '/').replace(/\/+$/, '').toLowerCase(); };
 const under = (child, parent) => child === parent || child.startsWith(`${parent}/`);
@@ -37,28 +41,37 @@ function realDir(p) { try { const st = fs.lstatSync(p); return st.isDirectory() 
 let swept = null; // the summary of this process's one sweep, reported by closeRun
 
 // The folder for a worker of a run, made if it is not there. A link in any of the three places is refused (a worker's own `mklink`
-// must not turn the cleanup into a delete of another tree).
+// must not turn the cleanup into a delete of another tree). This adapter's owner file (pid, start time, run, data dir, time) is
+// rewritten first; a sweep by another process that renames the run folder aside between two steps makes the step fail, and the
+// whole sequence is run once more. The sweep skips this run: a process resuming a parked worker long after its folder went idle
+// must not delete the folder it is about to use.
+function makeOnce(runId, workerId, root, dataDir) {
+  const top = path.join(root, ROOT);
+  if (!realDir(top)) { if (isLink(top)) return null; fs.mkdirSync(top, { recursive: true }); }
+  const run = path.join(top, String(runId));
+  if (!realDir(run)) { if (isLink(run)) return null; fs.mkdirSync(run); }
+  fs.writeFileSync(path.join(run, ownerFile(process.pid)), JSON.stringify({ pid: process.pid, created: Math.round(Date.now() - process.uptime() * 1000), run_id: String(runId), data_dir: dataDir, at: Date.now() }));
+  const dir = path.join(run, String(workerId));
+  if (!realDir(dir)) { if (isLink(dir)) return null; fs.mkdirSync(dir); }
+  return realDir(dir) ? path.resolve(dir) : null;
+}
 function make(runId, workerId, { root = base(), dataDir = null } = {}) {
   if (!seg(runId) || !seg(workerId)) return null;
   try {
-    const top = path.join(root, ROOT);
-    if (!realDir(top)) { if (isLink(top)) return null; fs.mkdirSync(top, { recursive: true }); }
-    if (swept === null) swept = sweep({ root });
-    const run = path.join(top, String(runId));
-    if (!realDir(run)) { if (isLink(run)) return null; fs.mkdirSync(run); }
-    fs.writeFileSync(path.join(run, MARKER), JSON.stringify({ pid: process.pid, run_id: String(runId), data_dir: dataDir, at: Date.now() }));
-    const dir = path.join(run, String(workerId));
-    if (!realDir(dir)) { if (isLink(dir)) return null; fs.mkdirSync(dir); }
-    return realDir(dir) ? path.resolve(dir) : null;
-  } catch { return null; }
+    if (swept === null) { fs.mkdirSync(path.join(root, ROOT), { recursive: true }); swept = sweep({ root, skipRun: String(runId) }); }
+  } catch { /* no sweep this time */ }
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    try { return makeOnce(runId, workerId, root, dataDir); } catch { /* a sweep renamed the folder aside, or a transient error: once more */ }
+  }
+  return null;
 }
 
 // The birth time of a worker's temp folder, the moment of its first launch; null for any other folder (one without a belay run folder
-// above it carrying the marker), so a hook running in the operator's own temp dir never takes its birth for a launch.
+// above it carrying an owner file), so a hook running in the operator's own temp dir never takes its birth for a launch.
 function birthOf(dir) {
   try {
     const run = path.dirname(path.resolve(dir));
-    if (!fs.lstatSync(path.join(run, MARKER)).isFile() || path.basename(path.dirname(run)) !== ROOT) return null;
+    if (path.basename(path.dirname(run)) !== ROOT || !fs.readdirSync(run).some((n) => OWNER_RE.test(n))) return null;
     const st = fs.lstatSync(dir);
     return st.isDirectory() && !st.isSymbolicLink() ? st.birthtimeMs : null;
   } catch { return null; }
@@ -88,38 +101,73 @@ function removeDir(dir, out, id) {
 }
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return !!(e && e.code === 'EPERM'); } };
 
-// A run folder is belay's own, and abandoned, when its name is a plain segment, its marker is a small regular file naming that same run,
-// its owner's pid is gone and nothing has refreshed it for `idleMs`. Anything else is left alone.
+// The owner files of a run folder, each { pid, mtimeMs }; null when there is none, one is not a small regular file of valid JSON naming
+// this run and the pid in its name, so a folder that is not plainly belay's own is never judged abandoned.
+function owners(dir, name) {
+  try {
+    const list = fs.readdirSync(dir).filter((n) => OWNER_RE.test(n));
+    if (!list.length) return null;
+    const out = [];
+    for (const n of list) {
+      const p = path.join(dir, n);
+      const st = fs.lstatSync(p);
+      if (!st.isFile() || st.size >= 4096) return null;
+      const m = JSON.parse(fs.readFileSync(p, 'utf8'));
+      if (!m || m.run_id !== name || !Number.isInteger(m.pid) || ownerFile(m.pid) !== n) return null;
+      out.push({ pid: m.pid, mtimeMs: st.mtimeMs });
+    }
+    return out;
+  } catch { return null; }
+}
+const abandoned = (dir, name, now, idleMs) => { const o = owners(dir, name); return !!o && o.every((x) => !alive(x.pid) && now - x.mtimeMs >= idleMs); };
+
+// A run folder is belay's own, and abandoned, when its name is a plain segment and every owner file in it names a pid that is gone and has
+// not been rewritten for `idleMs`; any live launcher keeps it. Removal is two steps so a process starting at the same moment is not
+// cut: the folder is renamed to a tombstone (atomic; it fails if the folder is in use or already taken), the owner files are read again
+// on the renamed folder, and only if it is still abandoned is it removed. On any doubt it is renamed back, or left under the tombstone
+// name, which a later sweep judges the same way. Links are never followed. Anything else is left alone.
 function sweep({ root = base(), idleMs = SWEEP_IDLE_MS, now = Date.now(), skipRun = null } = {}) {
   const out = { swept: 0, bytes: 0, failed: [], kept: 0 };
   const top = path.join(root, ROOT);
   let names = [];
   try { if (!realDir(top)) return out; names = fs.readdirSync(top); } catch { return out; }
+  const drop = (dir, id) => { const r = { removed: 0, bytes: 0, failed: [] }; removeDir(dir, r, id); out.swept += r.removed; out.bytes += r.bytes; out.failed.push(...r.failed); };
   for (const name of names) {
     const run = path.join(top, name);
     try {
-      if (name === skipRun || !seg(name) || !realDir(run)) { out.kept += 1; continue; }
-      const mp = path.join(run, MARKER);
-      const st = fs.lstatSync(mp);
-      const m = st.isFile() && st.size < 4096 ? JSON.parse(fs.readFileSync(mp, 'utf8')) : null;
-      if (!m || m.run_id !== name || !Number.isInteger(m.pid) || alive(m.pid) || now - st.mtimeMs < idleMs) { out.kept += 1; continue; }
-      const r = { removed: 0, bytes: 0, failed: [] };
-      removeDir(run, r, name);
-      out.swept += r.removed; out.bytes += r.bytes; out.failed.push(...r.failed);
+      const tomb = TOMB_RE.exec(name);
+      if (tomb) { if (realDir(run) && abandoned(run, tomb[1], now, idleMs)) drop(run, tomb[1]); else out.kept += 1; continue; }
+      if (name === skipRun || !seg(name) || !realDir(run) || !abandoned(run, name, now, idleMs)) { out.kept += 1; continue; }
+      const aside = path.join(top, `.gone-${name}-${crypto.randomBytes(4).toString('hex')}`);
+      try { fs.renameSync(run, aside); } catch { out.kept += 1; continue; }
+      if (abandoned(aside, name, now, idleMs)) { drop(aside, name); continue; }
+      out.kept += 1;
+      try { fs.renameSync(aside, run); } catch { /* the folder was recreated meanwhile: the tombstone stays for a later sweep */ }
     } catch { out.kept += 1; }
   }
   return out;
 }
 
 // The run's end: every worker's folder goes, except those the shutdown left alone because the worker may still run or be resumed
-// (`left_parked`, `left_stale`, `stop_failed`). The run folder goes with the last one. Returns `res` with a `worker_temp` block.
+// (`left_parked`, `left_stale`, `stop_failed`). This adapter's owner file goes with them; the run folder goes when nothing else is in it
+// but owner files of adapters that are gone. Returns `res` with a `worker_temp` block.
 function closeRun(workers, runId, res, { root = base() } = {}) {
   const keep = new Set([...((res && res.left_parked) || []), ...((res && res.left_stale) || []), ...(((res && res.stop_failed) || []).map((s) => s && s.worker_id))]);
   const out = { removed: 0, bytes: 0, failed: [], kept: [...keep].filter(Boolean), swept };
   if (seg(runId)) {
     for (const w of workers.values()) if (w && w.id && !keep.has(w.id) && seg(w.id)) removeDir(dirFor(runId, w.id, root), out, w.id);
     const run = runDirOf(runId, root);
-    try { if (realDir(run) && fs.readdirSync(run).every((n) => n === MARKER)) fs.rmSync(run, { recursive: true, force: true }); } catch { /* left; the sweep takes it */ }
+    try {
+      if (realDir(run)) {
+        const rest = fs.readdirSync(run);
+        const mine = ownerFile(process.pid);
+        if (rest.every((n) => OWNER_RE.test(n))) {
+          const others = rest.filter((n) => n !== mine).map((n) => Number(OWNER_RE.exec(n)[1]));
+          if (!others.some(alive)) fs.rmSync(run, { recursive: true, force: true });
+          else fs.rmSync(path.join(run, mine), { force: true });
+        }
+      }
+    } catch { /* left; the sweep takes it */ }
   }
   return { ...(res || {}), worker_temp: out };
 }
@@ -127,4 +175,4 @@ function closeRun(workers, runId, res, { root = base() } = {}) {
 // One log line for the adapter's shutdown line.
 const describe = (t) => (t ? `temp removed=${t.removed} bytes=${t.bytes} kept=${t.kept.length} failed=${t.failed.length}${t.swept && t.swept.swept ? ` swept=${t.swept.swept}` : ''}` : '');
 
-module.exports = { make, closeRun, sweep, birthOf, dirFor, runDirOf, base, describe, MARKER, ROOT };
+module.exports = { make, closeRun, sweep, birthOf, dirFor, runDirOf, base, describe, OWNER_RE, ownerFile, forgetSweep: () => { swept = null; }, ROOT };

@@ -1,5 +1,5 @@
 'use strict';
-require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
+require('../helpers/tmp.cjs'); // points TEMP at a scratch dir of the tests: the first launch sweeps the base's belay folder, which must never be the real one
 // worker-temp.test.cjs — a worker gets its own temp folder (ADR 0084 amendment 1): the environment names it, belay makes it at
 // launch under the OS temp dir (never the data directory), removes it when the run's manager shuts down except for workers the
 // shutdown left alone, and sweeps a crashed run's leftovers. Fake executables only.
@@ -22,6 +22,7 @@ const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(/\\/g, '/'
 const ECHO = path.join(__dirname, 'fakes', 'echo-temp.cjs');
 const fwd = (p) => String(p).replace(/\\/g, '/');
 const norm = (p) => fwd(path.resolve(p)).toLowerCase();
+if (!/^belay-(suite|test)-tmp-/.test(path.basename(os.tmpdir()))) throw new Error('worker-temp.test.cjs makes and sweeps folders under the OS temp dir: run it with --require ./tests/helpers/tmp.cjs (or through npm test), never against the real temp dir');
 const sandbox = () => fs.mkdtempSync(path.join(os.tmpdir(), 'belay-wtemp-'));
 const deadPid = () => spawnSync(process.execPath, ['-e', '0']).pid;
 const junction = (target, at) => fs.symlinkSync(target, at, 'junction');
@@ -51,8 +52,9 @@ test('make creates <base>/belay/<run>/<worker> with an owner marker, keeps it ac
     const dir = WT.make('run-1', 'w1', { root, dataDir: 'C:/data' });
     assert.strictEqual(norm(dir), norm(path.join(root, 'belay', 'run-1', 'w1')));
     assert.ok(fs.statSync(dir).isDirectory());
-    const marker = JSON.parse(fs.readFileSync(path.join(root, 'belay', 'run-1', WT.MARKER), 'utf8'));
+    const marker = JSON.parse(fs.readFileSync(path.join(root, 'belay', 'run-1', WT.ownerFile(process.pid)), 'utf8'));
     assert.deepStrictEqual([marker.pid, marker.run_id, marker.data_dir], [process.pid, 'run-1', 'C:/data']);
+    assert.ok(marker.created > 0 && marker.created <= Date.now(), 'the launcher\'s start time is recorded');
     fs.writeFileSync(path.join(dir, 'keep.txt'), 'x');
     assert.strictEqual(WT.make('run-1', 'w1', { root }), dir);
     assert.ok(fs.existsSync(path.join(dir, 'keep.txt')), 'a second launch of the same worker keeps what its first left');
@@ -119,26 +121,35 @@ test('closeRun unlinks a junction at the folder and a junction nested in it, and
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
-test('sweep removes only the run folders of a dead owner that have been idle, matched by name and marker, and never follows a link', () => {
+const DAY = 24 * 60 * 60 * 1000;
+// A run folder with a worker folder and the given owner files: [{ pid, run_id?, ageMs }] (a string is written as is under the first pid).
+function mkRun(root, run, owners) {
+  const dir = path.join(root, 'belay', run);
+  fs.mkdirSync(path.join(dir, 'w1', 'sub'), { recursive: true });
+  fs.writeFileSync(path.join(dir, 'w1', 'sub', 'f.txt'), 'abc');
+  for (const o of owners) {
+    const p = path.join(dir, WT.ownerFile(o.pid));
+    fs.writeFileSync(p, o.raw !== undefined ? o.raw : JSON.stringify({ pid: o.pid, created: 1, run_id: o.run_id || run, at: 1 }));
+    const t = new Date(Date.now() - o.ageMs); fs.utimesSync(p, t, t);
+  }
+  return dir;
+}
+
+test('sweep removes only the run folders whose launchers are all gone and idle, matched by name and owner files, and never follows a link', () => {
   const root = sandbox();
   try {
-    const mk = (run, marker, ageMs) => {
-      const dir = path.join(root, 'belay', run);
-      fs.mkdirSync(path.join(dir, 'w1', 'sub'), { recursive: true });
-      fs.writeFileSync(path.join(dir, 'w1', 'sub', 'f.txt'), 'abc');
-      if (marker !== null) { fs.writeFileSync(path.join(dir, WT.MARKER), typeof marker === 'string' ? marker : JSON.stringify(marker)); const t = new Date(Date.now() - ageMs); fs.utimesSync(path.join(dir, WT.MARKER), t, t); }
-      return dir;
-    };
-    const DAY = 24 * 60 * 60 * 1000;
-    const dead = deadPid();
-    const gone = mk('gone', { pid: dead, run_id: 'gone' }, 2 * DAY);
-    const young = mk('young', { pid: dead, run_id: 'young' }, 60 * 1000);
-    const live = mk('live', { pid: process.pid, run_id: 'live' }, 2 * DAY);
-    const renamed = mk('renamed', { pid: dead, run_id: 'other' }, 2 * DAY);
-    const nomarker = mk('nomarker', null, 0);
-    const junky = mk('junky', 'not json', 2 * DAY);
-    const strange = mk('has space', { pid: dead, run_id: 'has space' }, 2 * DAY);
-    const mine = mk('mine', { pid: dead, run_id: 'mine' }, 2 * DAY);
+    const dead = deadPid(); const dead2 = deadPid();
+    const gone = mkRun(root, 'gone', [{ pid: dead, ageMs: 2 * DAY }, { pid: dead2 + 1000000, ageMs: 3 * DAY }]);
+    const young = mkRun(root, 'young', [{ pid: dead, ageMs: 60 * 1000 }]);
+    const oneYoung = mkRun(root, 'oneyoung', [{ pid: dead, ageMs: 2 * DAY }, { pid: dead2 + 1000000, ageMs: 60 * 1000 }]);
+    const live = mkRun(root, 'live', [{ pid: process.pid, ageMs: 2 * DAY }]);
+    const oneLive = mkRun(root, 'onelive', [{ pid: dead, ageMs: 2 * DAY }, { pid: process.pid, ageMs: 2 * DAY }]);
+    const renamed = mkRun(root, 'renamed', [{ pid: dead, run_id: 'other', ageMs: 2 * DAY }]);
+    const nomarker = mkRun(root, 'nomarker', []);
+    const junky = mkRun(root, 'junky', [{ pid: dead, raw: 'not json', ageMs: 2 * DAY }]);
+    const wrongname = mkRun(root, 'wrongname', [{ pid: dead, raw: JSON.stringify({ pid: dead + 1, run_id: 'wrongname' }), ageMs: 2 * DAY }]);
+    const strange = mkRun(root, 'has space', [{ pid: dead, ageMs: 2 * DAY }]);
+    const mine = mkRun(root, 'mine', [{ pid: dead, ageMs: 2 * DAY }]);
     const keep = path.join(root, 'precious');
     fs.mkdirSync(keep);
     fs.writeFileSync(path.join(keep, 'file.txt'), 'x');
@@ -148,10 +159,90 @@ test('sweep removes only the run folders of a dead owner that have been idle, ma
     const r = WT.sweep({ root, skipRun: 'mine' });
     assert.strictEqual(r.swept, 1);
     assert.deepStrictEqual(r.failed, []);
-    assert.ok(!fs.existsSync(gone), 'a dead owner idle for a day is swept');
-    for (const d of [young, live, renamed, nomarker, junky, strange, mine]) assert.ok(fs.existsSync(d), `${path.basename(d)} is left`);
+    assert.ok(!fs.existsSync(gone), 'every launcher dead and idle for a day: swept');
+    for (const d of [young, oneYoung, live, oneLive, renamed, nomarker, junky, wrongname, strange, mine]) assert.ok(fs.existsSync(d), `${path.basename(d)} is left`);
     assert.ok(fs.existsSync(path.join(keep, 'file.txt')) && fs.existsSync(path.join(root, 'belay', 'linkrun')) && fs.existsSync(path.join(root, 'belay', 'afile')));
+    assert.deepStrictEqual(fs.readdirSync(path.join(root, 'belay')).filter((n) => n.startsWith('.gone-')), [], 'no tombstone is left behind');
     assert.strictEqual(WT.sweep({ root: path.join(root, 'none') }).swept, 0, 'no belay folder is no error');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('sweep skips the run of the process that is launching, however idle, and make passes it', () => {
+  const root = sandbox();
+  try {
+    const dead = deadPid();
+    const parked = mkRun(root, 'parked-run', [{ pid: dead, ageMs: 5 * DAY }]);
+    fs.writeFileSync(path.join(parked, 'w1', 'resume.txt'), 'x');
+    assert.strictEqual(WT.sweep({ root, skipRun: 'parked-run' }).swept, 0);
+    assert.ok(fs.existsSync(path.join(parked, 'w1', 'resume.txt')));
+    WT.forgetSweep(); // the first launch of this process sweeps; it must skip the run it launches into
+    const dir = WT.make('parked-run', 'w1', { root }); // resuming the parked worker five days later
+    assert.ok(dir && fs.existsSync(path.join(dir, 'resume.txt')), 'its folder and files are there');
+    assert.ok(fs.existsSync(path.join(parked, WT.ownerFile(process.pid))), 'and this adapter is now a launcher of the run');
+    assert.strictEqual(WT.sweep({ root }).swept, 0, 'a live launcher keeps the run even for a later sweep');
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a launcher that writes its owner file between a sweep\'s check and its rename stops the removal: the folder is renamed back whole', () => {
+  const root = sandbox();
+  const realRename = fs.renameSync;
+  try {
+    const dead = deadPid();
+    const stale = mkRun(root, 'racy', [{ pid: dead, ageMs: 3 * DAY }]);
+    fs.renameSync = function renameSync(from, to) {
+      const out = realRename.apply(this, arguments);
+      if (path.basename(String(to)).startsWith('.gone-racy-')) fs.writeFileSync(path.join(to, WT.ownerFile(process.pid)), JSON.stringify({ pid: process.pid, created: 1, run_id: 'racy', at: Date.now() })); // P2 arrives after the check, before the re-check
+      return out;
+    };
+    const r = WT.sweep({ root });
+    fs.renameSync = realRename;
+    assert.strictEqual(r.swept, 0);
+    assert.ok(fs.existsSync(path.join(stale, 'w1', 'sub', 'f.txt')), 'nothing was deleted');
+    assert.ok(fs.existsSync(path.join(stale, WT.ownerFile(process.pid))), 'and the new launcher\'s file is in the restored folder');
+    assert.deepStrictEqual(fs.readdirSync(path.join(root, 'belay')).filter((n) => n.startsWith('.gone-')), []);
+  } finally { fs.renameSync = realRename; fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('a tombstone left by a crashed sweep is judged by the same rule and removed when it is abandoned', () => {
+  const root = sandbox();
+  try {
+    const dead = deadPid();
+    const tomb = mkRun(root, '.gone-old-run-deadbeef', []);
+    fs.writeFileSync(path.join(tomb, WT.ownerFile(dead)), JSON.stringify({ pid: dead, created: 1, run_id: 'old-run', at: 1 }));
+    const t = new Date(Date.now() - 3 * DAY); fs.utimesSync(path.join(tomb, WT.ownerFile(dead)), t, t);
+    assert.strictEqual(WT.sweep({ root }).swept, 1);
+    assert.ok(!fs.existsSync(tomb));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('make survives a sweep that renames the run folder aside under it: the sequence is run once more', () => {
+  const root = sandbox();
+  const realWrite = fs.writeFileSync;
+  try {
+    let n = 0;
+    fs.writeFileSync = function writeFileSync(p) {
+      if (n++ === 0 && /\.owner-/.test(String(p))) { fs.rmSync(path.dirname(String(p)), { recursive: true, force: true }); const e = new Error('gone'); e.code = 'ENOENT'; throw e; }
+      return realWrite.apply(this, arguments);
+    };
+    const dir = WT.make('run-race', 'w1', { root });
+    fs.writeFileSync = realWrite;
+    assert.ok(dir && fs.statSync(dir).isDirectory(), 'the worker still gets its folder');
+    assert.ok(fs.existsSync(path.join(root, 'belay', 'run-race', WT.ownerFile(process.pid))));
+  } finally { fs.writeFileSync = realWrite; fs.rmSync(root, { recursive: true, force: true }); }
+});
+
+test('closeRun removes only this adapter\'s owner file while another adapter of the run is alive, and the run folder when none is', () => {
+  const root = sandbox();
+  try {
+    const other = process.ppid; // alive for the length of the test
+    WT.make('run-m', 'w1', { root });
+    fs.writeFileSync(path.join(root, 'belay', 'run-m', WT.ownerFile(other)), JSON.stringify({ pid: other, created: 1, run_id: 'run-m', at: Date.now() }));
+    WT.closeRun(new Map([['w1', { id: 'w1' }]]), 'run-m', {}, { root });
+    assert.deepStrictEqual(fs.readdirSync(path.join(root, 'belay', 'run-m')), [WT.ownerFile(other)], 'the live adapter keeps its marker and the run folder');
+    fs.rmSync(path.join(root, 'belay', 'run-m', WT.ownerFile(other)));
+    WT.make('run-m', 'w2', { root });
+    WT.closeRun(new Map([['w2', { id: 'w2' }]]), 'run-m', {}, { root });
+    assert.ok(!fs.existsSync(path.join(root, 'belay', 'run-m')));
   } finally { fs.rmSync(root, { recursive: true, force: true }); }
 });
 
