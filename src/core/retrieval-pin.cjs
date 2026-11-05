@@ -69,11 +69,11 @@ function tierFailure(ctx, code, cause, message, extra) {
 }
 
 // The fetch command for a model whose files are missing or wrong: only for an ONNX reranker (the one kind whose command is --reranker) whose error
-// says its cause is an absence (detail.cause 'absent') that is not the transformers package (detail.pkg), and only when the error does not already
-// say it. A timeout, a dead child or a missing package is not cured by a fetch.
+// says its cause is an absence (detail.cause 'absent') and names the model (detail.model, which only the model-file check sets: the package errors,
+// parent side or child side, carry none), and only when the error does not already say it. A timeout, a dead child or a missing package is not cured by a fetch.
 function fetchHint(message, extra) {
   const m = extra && extra.model && RP.describeModel(extra.model);
-  if (!m || m.kind !== 'reranker' || m.runtime !== 'onnx' || extra.reason !== 'E_MODEL_ABSENT' || !extra.cause_detail || extra.cause_detail.cause !== 'absent' || 'pkg' in extra.cause_detail || /fetch it with/i.test(message)) return '';
+  if (!m || m.kind !== 'reranker' || m.runtime !== 'onnx' || extra.reason !== 'E_MODEL_ABSENT' || !extra.cause_detail || extra.cause_detail.cause !== 'absent' || typeof extra.cause_detail.model !== 'string' || /fetch it with/i.test(message)) return '';
   return `Fetch it with: belay embedder fetch --reranker ${extra.model}. `;
 }
 
