@@ -89,7 +89,8 @@ function spawnedMatch(chain, spawned) {
 // root_unfollowable (the walk did not reach a root), root_in_window (a chain root recorded as a descendant of a spawned process),
 // root_after_owner (the root was created after the owner started), direct_spawn (a chain process is itself one belay spawned).
 // `persist` is true only for a method that writes (owner-admit.cjs): the check then saves the register's retirements; for a read it
-// computes the same answer from the same files and writes nothing (invariant 6). `spawned({ snap, persist })` lists the spawned
+// computes the same answer from the same files and writes nothing (invariant 6); the owner may prune closed tombstones afterwards,
+// as its own write (register-prune.cjs). `spawned({ snap, persist })` lists the spawned
 // processes with the register's records judged against the same snapshot `provenance(snap, { persist })` is given.
 // `provenance(snap)` -> { alive: [{ pid, created, kind }] }, the orphans of spawned processes found in this snapshot; it throws when
 // the spawn history cannot be read, which is a refusal.
