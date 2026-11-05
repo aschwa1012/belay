@@ -42,7 +42,7 @@ const COMMANDS = {
   transcript: { mode: 'R', module: './cmd-transcript.cjs', summary: "the orchestrator's stream.jsonl as panel entries: its text, one line per tool call, turn ends; -f follows, bounded" },
   notices: { mode: 'R', module: './cmd-notices.cjs', summary: "a run's events from store rows: pending requests, dead or stopped workers, stalls, review verdicts, pause and end" },
   agents:  { mode: 'R', module: './cmd-agents.cjs',  summary: "the orchestrator and each worker: role, model, effort, state, context size, cost; the run cost meter" },
-  'panel-read': { mode: 'R', module: './cmd-panel-read.cjs', summary: "panel-read [run-id] [--dir <dir>] [--tail <n>] [--fixed] [--settings]: the panel's reads (agents, notices, awaiting list, transcript, settings) in one process, as one JSON document" },
+  'panel-read': { mode: 'R', module: './cmd-panel-read.cjs', summary: "panel-read [run-id] [--dir <dir>] [--tail <n>] [--fixed] [--prev-mode <mode>] [--prev-run <id>] [--settings]: the panel's reads (agents, notices, awaiting list, transcript, settings) in one process, as one JSON document" },
   'wake-stream': { mode: 'R', module: './cmd-wake-stream.cjs', summary: "wake-stream --run <id> --nonce <n>: print the interactive run's wake lines from its harness-owned pipe; exits on close or after 15 s of silence" },
   memory:  { mode: 'R', module: './cmd-memory.cjs',  summary: MEMORY_SUMMARY },
   usage:   { mode: 'R', module: './cmd-usage.cjs',   summary: 'usage [run-id] [--by task|worker|model|turn]: tokens and dollars per turn from the usage ledger; a turn with no dollars is not zero' },
