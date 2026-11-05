@@ -65,7 +65,15 @@ function tierFailure(ctx, code, cause, message, extra) {
   ctx.routing.run = { ...ctx.routing.run, fallback_from: from('run') };
   for (const k of Object.keys(ctx.routing.tiers)) ctx.routing.tiers[k] = { ...ctx.routing.tiers[k], fallback_from: from(k) };
   const moved = [...new Set(Object.entries(was.tiers).filter(([, t]) => t.device === 'gpu' || t.reranker || t.embedder !== RP.NANO).map(([k]) => k))];
-  ctx.notices.push({ code, message: `${message}. ${extra && extra.model && !/fetch it with/i.test(message) && RP.describeModel(extra.model) && RP.describeModel(extra.model).runtime === 'onnx' ? `Fetch it with: belay embedder fetch --reranker ${extra.model}. ` : ''}The run is served on the ${target} profile${target === RP.FALLBACK_PROFILE ? ' (nano, no reranker)' : ''}.`, ...(extra && extra.reason ? { reason: extra.reason } : {}), options: (extra && extra.options) || [], agent_types: moved });
+  ctx.notices.push({ code, message: `${message}. ${fetchHint(message, extra)}The run is served on the ${target} profile${target === RP.FALLBACK_PROFILE ? ' (nano, no reranker)' : ''}.`, ...(extra && extra.reason ? { reason: extra.reason } : {}), options: (extra && extra.options) || [], agent_types: moved });
+}
+
+// The fetch command for a model whose files are absent: only for an ONNX reranker (the one kind whose command is --reranker) that failed with
+// E_MODEL_ABSENT, and only when the error does not already say it. A timeout, a dead child or a missing package is not cured by a fetch.
+function fetchHint(message, extra) {
+  const m = extra && extra.model && RP.describeModel(extra.model);
+  if (!m || m.kind !== 'reranker' || m.runtime !== 'onnx' || extra.reason !== 'E_MODEL_ABSENT' || /fetch it with/i.test(message)) return '';
+  return `Fetch it with: belay embedder fetch --reranker ${extra.model}. `;
 }
 
 async function pinRouting(E, caller, args = {}) {
@@ -124,4 +132,4 @@ async function pinRouting(E, caller, args = {}) {
   return { pinned: true, action: 'pinned', ...record };
 }
 
-module.exports = { pinRouting, AGENT_TYPES, scopeOf };
+module.exports = { pinRouting, AGENT_TYPES, scopeOf, fetchHint };

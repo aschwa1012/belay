@@ -254,6 +254,36 @@ test('S5: an unfetched CPU reranker warm-up notice names the fetch command exact
   assert.strictEqual(m.split(cmd).length - 1, 1, m);
 });
 
+const failingReranker = (code, message) => RPV.register(JINA, { rerank: async () => { const e = new Error(message); e.code = code; throw e; } });
+
+test('S5: a warm-up failure that is not an absence gets no fetch hint', async () => {
+  await R.restore(); fresh();
+  failingReranker('E_EMBEDDER_TIMEOUT', 'the reranker child did not answer in time');
+  await attach('wr-w6', { project: 'wrw6', profile: 'cpu-rerank-light' });
+  const r = await pin('wr-w6');
+  assert.deepStrictEqual(r.notices.map(n => n.code), ['retrieval_warmup_failed']);
+  assert.doesNotMatch(r.notices[0].message, /fetch it with/i, r.notices[0].message);
+});
+
+test('S5: an absent reranker whose error does not name the command gets the --reranker command once', async () => {
+  await R.restore(); fresh();
+  failingReranker('E_MODEL_ABSENT', 'the reranker files are missing');
+  await attach('wr-w7', { project: 'wrw7', profile: 'cpu-rerank-light' });
+  const r = await pin('wr-w7');
+  const m = r.notices[0].message;
+  assert.strictEqual(m.split('belay embedder fetch --reranker ' + JINA).length - 1, 1, m);
+});
+
+test('S5: fetchHint names --reranker for an ONNX reranker only, and never for an embedder, a GGUF model or another failure', () => {
+  const PIN = core('retrieval-pin.cjs');
+  const absent = { reason: 'E_MODEL_ABSENT' };
+  assert.match(PIN.fetchHint('x', { ...absent, model: JINA }), /belay embedder fetch --reranker /);
+  assert.strictEqual(PIN.fetchHint('x', { ...absent, model: 'Xenova/all-MiniLM-L6-v2' }), '', 'an ONNX embedder is not fetched with --reranker');
+  assert.strictEqual(PIN.fetchHint('x', { ...absent, model: RR4 }), '', 'a GGUF reranker has its own command in its error');
+  assert.strictEqual(PIN.fetchHint('x', { reason: 'E_EMBEDDER_TIMEOUT', model: JINA }), '');
+  assert.strictEqual(PIN.fetchHint('fetch it with `y`', { ...absent, model: JINA }), '');
+});
+
 test('B2 (owner side): a drain the caller reports failed pins the demoted routing with ONE heavy_drain_failed notice', async () => {
   await R.restore(); fresh();
   for (let i = 0; i < 2; i += 1) T.note(`wrd2 note ${'q'.repeat(i + 1)}`, { ns: ns('wrd2'), vec: [1, i / 10, 0] });
