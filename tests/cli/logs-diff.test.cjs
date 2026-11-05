@@ -144,7 +144,7 @@ test('logs: a stream whose last line is partial at the tail read is printed as a
     assert.ok(outLines.includes('}'), `the remainder must arrive as its own followed line: ${st.out}`);
     assert.ok(!outLines.includes('{"line":3,"partial":true}'), `the tail's partial line must not be re-printed whole by the follow: ${st.out}`);
   } finally {
-    if (hangChild && hangChild.pid && pidAlive(hangChild.pid)) { try { process.kill(hangChild.pid); } catch { /* already gone */ } }
+    if (hangChild) require('../crash.cjs').crash(hangChild); // by its live handle: an exit already seen leaves the pid to whoever holds it now
     cleanup(dir);
   }
 });
@@ -242,7 +242,7 @@ test('logs -f: follows a growing stream for the bound, emitting each line as it 
     assert.ok(Array.isArray(jFollow.lines), 'the json follow receipt must carry a lines array');
   } finally {
     for (const child of [appenderChild, hangChild]) {
-      if (child && child.pid && pidAlive(child.pid)) { try { process.kill(child.pid); } catch { /* already gone */ } }
+      if (child) require('../crash.cjs').crash(child); // by its live handle: an exit already seen leaves the pid to whoever holds it now
     }
     fs.rmSync(scriptsDir, { recursive: true, force: true });
     cleanup(dir);
@@ -307,7 +307,7 @@ test('logs -f: a line written between the tail read and the first follow poll is
     }
   } finally {
     if (appendTimer) clearInterval(appendTimer);
-    if (hangChild && hangChild.pid && pidAlive(hangChild.pid)) { try { process.kill(hangChild.pid); } catch { /* already gone */ } }
+    if (hangChild) require('../crash.cjs').crash(hangChild); // by its live handle: an exit already seen leaves the pid to whoever holds it now
     cleanup(dir);
   }
 });

@@ -25,7 +25,7 @@ async function startReaders(dir, n = 3) {
     await sleep(20);
   }
   await sleep(100);
-  return () => { for (const k of kids) { try { process.kill(k.pid); } catch { /* exited */ } } };
+  return () => { for (const k of kids) require('../crash.cjs').crash(k); }; // each by its live handle
 }
 
 test('markListening succeeds against three readers polling owner.json, and readers then see listening', async () => {

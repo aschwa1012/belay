@@ -22,7 +22,7 @@ async function liveChild() {
   return child;
 }
 async function killChild(child) {
-  try { process.kill(child.pid); } catch { /* gone */ }
+  require('../crash.cjs').crash(child); // by its live handle, never a pid whose exit was already seen
   await new Promise((r) => (child.exitCode !== null || child.signalCode !== null ? r() : child.once('exit', r)));
 }
 function plant(dir, meta) {

@@ -19,5 +19,5 @@ require('../../../src/core/proc-identity.cjs').processSnapshot().then((snap) => 
   fs.writeFileSync(process.env.H1_PIDS_FILE, JSON.stringify({ child: process.pid, grandchild: grandchild.pid, child_created: c ? c.created : null, grandchild_created: g ? g.created : null }));
 }).catch(() => {});
 // Bounded: a runner that fails to stop this tree must not hang the test that uses it.
-setTimeout(() => { try { process.kill(grandchild.pid); } catch { /* gone */ } process.exit(0); }, 20000);
+setTimeout(() => { if (grandchild.exitCode === null && grandchild.signalCode === null) { try { grandchild.kill(); } catch { /* gone */ } } process.exit(0); }, 20000); // by its live handle only
 setInterval(() => {}, 1000);

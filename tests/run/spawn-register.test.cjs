@@ -107,7 +107,7 @@ test('a register refusal ends the worker and the helper it started during the re
   } finally {
     SR.io.rename = keepRename; SR.io.sleep = keepSleep; process.env.BELAY_SPAWN_REGISTRY = keepDir;
     delete process.env.FAKE_SPAWN_SCRIPT; delete process.env.FAKE_HELPER_PIDFILE;
-    const h = helperPid(); if (h && P.pidAlive(h)) { try { process.kill(h); } catch { /* gone */ } } // exact pid, only if the assertions failed
+    const h = helperPid(); if (h) require('../crash.cjs').crashDescendant(h); // only if the assertions failed, and only while it is in this process's own tree
     await m.shutdown().catch(() => {});
     fs.rmSync(regDir, { recursive: true, force: true });
     cleanup(data);

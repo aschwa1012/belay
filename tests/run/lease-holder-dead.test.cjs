@@ -35,7 +35,7 @@ test('a worker killed by its exact pid releases its lease in its death handling,
     assert.strictEqual(lease.holder, 'w1');
     const baseline = diffWorkers({ prev: {}, rows: (await core.worker.list({})).workers, runId: RUN, nowMs: 0, graceMs: 0 }).next;
 
-    process.kill(row.pid); // the exact pid belay spawned and recorded
+    assert.ok(require('../crash.cjs').crash(m._worker('w1').child), 'the worker is ended by the handle its manager holds');
     const exited = await m._waitExit('w1', 30000);
     assert.ok(exited, 'the exit event arrived');
     await m._worker('w1').queue; // the dead row's write
@@ -88,7 +88,7 @@ async function withRun(acceptance, body) {
     const spawn = (id, task_id) => m.spawn({ substrate: 'claude-code', worktree: fwd(wt), prompt: 'one', worker_id: id, task_id });
     const row = await spawn('w1', task.id);
     const lease = (await core.task.get({ task_id: task.id })).lease;
-    const kill = async () => { process.kill(row.pid); assert.ok(await m._waitExit('w1', 30000)); await m._worker('w1').queue; };
+    const kill = async () => { assert.ok(require('../crash.cjs').crash(m._worker('w1').child), 'the worker is ended by the handle its manager holds'); assert.ok(await m._waitExit('w1', 30000)); await m._worker('w1').queue; };
     const workerCore = async (id) => { const c = await openCore({ dataDir: dir, caller: callerFor('worker', { worker_id: id, run_id: RUN }), embed: false }); extra.push(c); return c; };
     return await body({ core, m, task, lease, kill, spawn, workerCore, dir });
   } finally {

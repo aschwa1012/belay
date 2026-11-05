@@ -72,7 +72,7 @@ test('a restart of a worker whose dead row is still queued records that death fi
     // The seam: another write holds the queue, so the death's own row is queued behind it.
     const gate = new SpyPromise((r) => { spy.open = r; });
     w.queue = SpyPromise.resolve(w.queue).then(() => gate);
-    process.kill(row.pid); // the exact pid belay spawned
+    assert.ok(require('../crash.cjs').crash(w.child), 'the worker is ended by the handle its manager holds');
     assert.ok(await m._waitExit('lr', 30000), 'the exit event arrived');
     const before = core.rowsFor('lr').length;
     spy.armed = true; // from here, the first wait on the queue opens the gate; so does the new life's first row

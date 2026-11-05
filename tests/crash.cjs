@@ -67,6 +67,22 @@ async function crashAsync(pid, created) {
   try { process.kill(pid, 'SIGKILL'); return Date.now(); } catch { return false; }
 }
 
+// Several { pid, created } identities (read while each lived, tests/helpers/proc-gone.cjs identify) from one async snapshot: each is
+// signalled only on an exact match, so a teardown never reaches a pid that another process took after the one it meant had gone.
+// Resolves the pids signalled.
+async function crashIdentities(ids) {
+  const want = (ids || []).filter((d) => d && Number.isInteger(d.pid) && d.pid > 0 && d.created != null);
+  if (!want.length) return [];
+  const s = await ID.snapshotRetry({ attempts: SNAPSHOT_ATTEMPTS });
+  const killed = [];
+  for (const d of want) {
+    const e = s && s.get(d.pid);
+    if (!e || e.created !== d.created) continue;
+    try { process.kill(d.pid, 'SIGKILL'); killed.push(d.pid); } catch { /* gone */ }
+  }
+  return killed;
+}
+
 // One snapshot, leaves first: killing a parent first would hide its children (their recorded parent is gone).
 function crashDescendants(pids) {
   const s = snapshotSync();
@@ -91,4 +107,4 @@ function noteDescendant(pid) {
   return true;
 }
 
-module.exports = { crash, crashAsync, note, crashDescendant, crashDescendants, noteDescendant, noted, noteSettled };
+module.exports = { crash, crashAsync, crashIdentities, note, crashDescendant, crashDescendants, noteDescendant, noted, noteSettled };

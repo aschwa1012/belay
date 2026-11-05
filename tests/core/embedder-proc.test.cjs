@@ -101,7 +101,8 @@ test('embedder: killing the owner by its exact pid mid-embed takes the embedder 
     for (let i = 0; i < 4800 && !info; i += 1) await new Promise(r => setTimeout(r, 25));
     assert.ok(info, `the owner never had an embed in flight: ${out}`);
     assert.ok(pidAlive(info.embedder_pid), 'the embedder child is up and busy');
-    process.kill(info.owner_pid); // the exact pid of the owner this test spawned
+    assert.strictEqual(info.owner_pid, owner.pid, 'the owner is the process this test spawned');
+    assert.ok(require('../crash.cjs').crash(owner), 'the owner is ended by its live handle');
     const t0 = Date.now();
     const embedderId = G.recorded(info.embedder_pid, info.embedder_created); // the creation time the fixture read while the child lived
     const goneInTime = await G.waitGone(embedderId, { deadlineMs: 5000, intervalMs: 20 });

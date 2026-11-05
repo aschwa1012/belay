@@ -75,6 +75,10 @@ test('run close e2e: the real adapter terminated 350 ms after the orchestrator e
     const receipt = receiptOf(ctx.run, exited.code);
     assert.strictEqual(exited.code, 0, `exit ${exited.code}; ended_by: ${receipt.ended_by}`);
     const adapterPid = lines.find((l) => l.ev === 'adapter-spawned').adapter_pid;
+    // The adapter was ended by its exact pid, creation time and image (fakes/delayed-kill.cjs), not by a bare pid; the line follows the signal.
+    const kill = await require('../helpers/wait.cjs').waitFor(() => ctx.sweep().find((l) => l.ev === 'delayed-kill'), { deadlineMs: 10000, label: 'the delayed kill\'s line' });
+    const identity = ctx.sweep().find((l) => /^adapter-created/.test(l.ev)) || null; // the fake's read of the adapter, or why it failed
+    assert.deepStrictEqual({ pid: kill.pid, outcome: kill.outcome }, { pid: adapterPid, outcome: 'killed' }, JSON.stringify({ kill, identity }));
     const rows = workerRows(ctx.dataDir);
     const last = rows[rows.length - 1];
     const prior = rows[rows.length - 2];

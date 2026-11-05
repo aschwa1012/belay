@@ -252,7 +252,7 @@ test('embedder: stopping an owner mid-embed exits 0 within 5 s and the embedder 
       out += d;
       for (const line of out.split('\n')) { if (line.includes('"stopping"') && !info) { info = JSON.parse(line); stoppingAt = Date.now(); } }
     });
-    const killer = setTimeout(() => { try { process.kill(child.pid); } catch { /* gone */ } }, 120000);
+    const killer = setTimeout(() => require('../crash.cjs').crash(child), 120000); // by its live handle
     t.after(() => clearTimeout(killer));
     const r = await exited;
     clearTimeout(killer);
@@ -272,7 +272,7 @@ test('embedder: a child that dies after a good load makes later calls say so, an
     const o = c.owner.embedderObj;
     const pid = o.pid;
     assert.ok((await c.memory.stats({})).owner.embedder.pid === pid, 'stats report the embedder pid');
-    process.kill(pid); // exact pid of the child this owner started
+    assert.ok(require('../crash.cjs').crash(o.child), 'the embedder child is ended by the handle its owner holds'); // the child this owner started
     for (let i = 0; i < 100 && !o.exit; i += 1) await new Promise(r => setTimeout(r, 50));
     assert.ok(o.exit, 'the exit was observed');
     await assert.rejects(c.memory.store({ namespace: 'sf1', text: 'second' }), x => {

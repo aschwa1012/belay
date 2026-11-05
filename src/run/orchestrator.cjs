@@ -115,8 +115,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   // with no listener Node crashes this process. Record it; the exit handler still settles the run.
   if (child.stdin) child.stdin.on('error', (e) => { state.stdinError = { code: e && e.code, message: e && e.message }; });
 
-  const streamFd = fs.openSync(path.join(written.dir, 'stream.jsonl'), 'a');
-  const stderrFd = fs.openSync(path.join(written.dir, 'stderr.txt'), 'a');
+  const streamFiles = require('./stream-files.cjs').openStreamFiles(written.dir); // stream.jsonl and stderr.txt; output read after the settle is appended by path
   const parser = createParser('claude-code');
   const usage = createUsage();
   let pollHandle = null;
@@ -390,10 +389,10 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
 
   child.stdout.on('data', (chunk) => {
     const { lines, events } = parser.pushChunk(chunk);
-    for (const l of lines) { try { fs.writeSync(streamFd, l + '\n'); } catch { /* fd may be closing */ } if (spec.budgetWake) spec.budgetWake.noteOrchestratorLine(l); } // the turn in flight, priced as it arrives (budget-guard.cjs)
+    for (const l of lines) { streamFiles.stream(l + '\n'); if (spec.budgetWake) spec.budgetWake.noteOrchestratorLine(l); } // the turn in flight, priced as it arrives (budget-guard.cjs)
     for (const ev of events) handleEvent(ev);
   });
-  child.stderr.on('data', (chunk) => { try { fs.writeSync(stderrFd, chunk); } catch { /* closing */ } });
+  child.stderr.on('data', (chunk) => streamFiles.stderr(chunk));
 
   function orchestratorBlock() {
     return buildOrchestratorBlock({ child, state, model, argvHash, initFacts, usage: usage.snapshot() });
@@ -405,8 +404,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       if (settled) return;
       settled = true;
       clearTimers();
-      try { fs.closeSync(streamFd); } catch { /* already closed */ }
-      try { fs.closeSync(stderrFd); } catch { /* already closed */ }
+      streamFiles.close();
       expireStalePendingWrites(); for (const ev of require('./release-eval.cjs').drainHeld(state.evalSeen)) state.wakesSuppressed.push({ ...ev, reason: 'the run ended while this turn end was held for its release evaluation' }); // recorded either way
       const out = {
         orchestrator: orchestratorBlock(), ended_by: state.endedBy, holds: state.holds, polls: state.polls,

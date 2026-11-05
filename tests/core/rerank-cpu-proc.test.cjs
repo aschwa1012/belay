@@ -202,7 +202,8 @@ test('killing the owner by its exact pid takes the REAL rerank child with it pro
     const info = await waitLine(owner.stdout, 'rerank_pid'); // printed once the child announced its op is in flight
     assert.ok(pidAlive(info.rerank_pid), 'the child is up and busy');
     const rerankId = await G.identify(info.rerank_pid);
-    process.kill(info.owner_pid); // the exact pid of the owner this test spawned
+    assert.strictEqual(info.owner_pid, owner.pid, 'the owner is the process this test spawned');
+    assert.ok(require('../crash.cjs').crash(owner), 'the owner is ended by its live handle');
     assert.ok(await waitGone(rerankId), 'the child outlived its owner');
   } finally { if (owner && owner.exitCode === null) { try { process.kill(owner.pid); } catch { /* gone */ } } r.done(); }
 });

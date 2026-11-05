@@ -41,7 +41,7 @@ test('a search after the shared GPU child died gets the real error, not warming'
   assert.ok(ok.rerank, JSON.stringify(ok.modes_failed));
   const child = GS.client();
   const gone = waitFor({ emitter: child.child, event: 'exit' });
-  process.kill(child.pid);
+  assert.ok(require('../crash.cjs').crash(child.child), 'the GPU child is ended by its live handle');
   await gone;
   assert.strictEqual(GS.dead(), true);
   // The reranked search itself, after the heavy embed step (which would already have moved the run to its fallback tier): the rerank stage alone.

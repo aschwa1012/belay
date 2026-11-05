@@ -132,6 +132,6 @@ test('a Codex message to a live process says mid-turn during a turn, and still e
   assert.deepStrictEqual(await refusal(), { code: 'E_SUBSTRATE', message: 'codex worker is mid-turn; one process per turn', exiting: false });
   w.turnEnded = true; // its result has landed and the idle row is written; the process has not exited yet
   assert.deepStrictEqual(await refusal(), { code: 'E_SUBSTRATE', message: "codex worker w1's previous turn is still exiting; retry in a moment", exiting: true });
-  process.kill(w.pid); // the exact pid belay spawned
+  assert.ok(require('../crash.cjs').crash(w.child), 'the worker is ended by the handle its manager holds');
   assert.ok(await m._waitExit('w1', 20000));
 });
