@@ -12,8 +12,8 @@ import { clip, INDENT, Line, Section, shortModel, type Act, type Ctx, type Els }
 import { Table } from './table'
 import { badgeOf } from './memory'
 import { MemoryPane } from './memview'
-import { costSegs, Fatal, Footer, Header, hhmm, Legend, Notices, taskSegs, widthOf } from './sections'
-import { ACCENT, BRAND, ERR, OK, WARN } from './theme'
+import { Fatal, Footer, Header, hhmm, Legend, Notices, taskSegs, widthOf } from './sections'
+import { BRAND, ERR, headSeg, OK, WARN } from './theme'
 import { modelRows } from './warm'
 
 export type { Act, Ctx, Els }
@@ -239,17 +239,24 @@ export function MemoryRow({ E, snap, act, cols, menu }: Ctx) {
   const label = '◇ memory menu'
   const emb: Seg[] = snap.embedder ? [{ t: '  embedder ', dim: true }, { t: snap.embedder, c: snap.embedder === 'ok' ? OK : WARN }] : []
   const used = cells('MEMORY  ') + cells(label) + (badge > 0 ? cells(` [${badge}]`) : 0)
-  const beside = emb.length > 0 && used + widthOf(emb) <= cols
+  const tight = used > cols // a very narrow pane: the button goes under the heading
+  const beside = !tight && emb.length > 0 && used + widthOf(emb) <= cols
+  const button = (
+    <Box key="smem-b">
+      <Button key="mem" plain dimColor label={label} onPress={() => act.mem({ kind: 'tab', tab: 'profiles' })} />
+      {badge > 0 && <Line E={E} k="badge" segs={[{ t: ` [${badge}]`, c: WARN }]} />}
+    </Box>
+  )
   return (
     <Box key="smem" flexDirection="column" marginTop={1}>
       <Box key="smem-h">
-        <Line E={E} k="smem-t" segs={[{ t: 'MEMORY', bold: true, c: ACCENT }, { t: '  ' }]} />
-        <Button key="mem" plain dimColor label={label} onPress={() => act.mem({ kind: 'tab', tab: 'profiles' })} />
-        {badge > 0 && <Line E={E} k="badge" segs={[{ t: ` [${badge}]`, c: WARN }]} />}
+        <Line E={E} k="smem-t" segs={[headSeg('MEMORY'), { t: '  ' }]} />
+        {!tight && button}
         {beside && <Line E={E} k="smem-e" segs={emb} />}
       </Box>
-      {(emb.length > 0 && !beside) || snap.retrievalModels.length
+      {tight || (emb.length > 0 && !beside) || snap.retrievalModels.length
         ? <Box paddingLeft={INDENT} flexDirection="column">
+          {tight && button}
           {emb.length > 0 && !beside && <Line E={E} w={cols - INDENT} k="smem-e2" segs={[{ ...emb[0]!, t: emb[0]!.t.trimStart() }, emb[1]!]} />}
           {modelRows(snap.retrievalModels).map((segs, i) => <Line E={E} w={cols - INDENT} k={`pm${i}`} segs={segs} />)}
         </Box>
@@ -276,8 +283,8 @@ export function Pane(c: Ctx) {
         {snap.agents.length ? <Table {...inner} /> : <Line E={E} w={cols - INDENT} k="pn" segs={[{ t: 'no agents read', dim: true }]} />}
       </Section>
       {(snap.held || snap.memoryNotice) && <Held {...c} />}
-      <Notices {...c} />
       <MemoryRow {...c} />
+      <Notices {...c} />
       <Orchestrator {...c} />
       <Footer {...c} />
     </Box>
@@ -290,7 +297,7 @@ export function Fallback(c: Ctx) {
   const { E, snap, ui, now, cols } = c
   const { Box } = E
   const tasks = taskSegs(snap, cols)
-  const lines: Seg[][] = [runLine(snap, now), [...tasks, ...(tasks.length ? [{ t: '   ' }] : []), ...costSegs(snap)]]
+  const lines: Seg[][] = [runLine(snap, now), ...(tasks.length ? [tasks] : [])] // the run line carries the cost
   for (const a of snap.agents) {
     lines.push([markSeg(a.state, snap.settings.marks), { t: ` ${a.id} ${shortModel(a.model)} · ` }, ...ctxSegs(a, snap.settings), { t: ' · ' },
       ...cacheSegs(a, snap.settings, snap.fetchedAt, now), { t: ` · ${money(a.costUsd)}` }, { t: a.task ? ` · ${a.task.id}` : '', dim: true }])

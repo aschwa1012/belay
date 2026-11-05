@@ -118,6 +118,8 @@ export type World = {
   agentOver?: Record<string, Record<string, unknown>>
   /** The run's embedder word in the agents read. */
   embedder?: string
+  /** The run's task counts in the agents read (default { done: 1, total: 3 }). */
+  tasks?: unknown
   heavy?: boolean; menuSlow?: number; menu?: unknown | null; writeResult?: (argv: string[]) => { exitCode: number; stdout: string; stderr: string }
 }
 
@@ -234,7 +236,7 @@ export function world(on: any, w: World) {
     const body: Record<string, unknown> = {
       agents: {
         run_id: w.noRun ? null : (w.runId ?? RUN), mode: 'mode' in w ? w.mode : 'headless', mode_source: 'test', started_at_ms: T0 - (w.startedAgo ?? 42 * 60000), paused_at_ms: w.paused ?? null, ended_at_ms: w.ended ?? null,
-        tasks: { done: 1, total: 3 }, max_fix_rounds: 'maxFix' in w ? w.maxFix : 2, fix_hard_cap: 'hardCap' in w ? w.hardCap : null, memory_notice: w.memoryNotice ? NOTICE : null, ...(w.retrievalModels ? { retrieval_models: w.retrievalModels } : {}), ...(w.embedder ? { embedder: w.embedder } : {}), agents: w.noRun ? [] : [...agents, ...extra, ...named, ...dead], footer: 'footer' in w ? w.footer : FOOTER,
+        tasks: 'tasks' in w ? w.tasks : { done: 1, total: 3 }, max_fix_rounds: 'maxFix' in w ? w.maxFix : 2, fix_hard_cap: 'hardCap' in w ? w.hardCap : null, memory_notice: w.memoryNotice ? NOTICE : null, ...(w.retrievalModels ? { retrieval_models: w.retrievalModels } : {}), ...(w.embedder ? { embedder: w.embedder } : {}), agents: w.noRun ? [] : [...agents, ...extra, ...named, ...dead], footer: 'footer' in w ? w.footer : FOOTER,
       },
       notices: w.notices ?? (w.longNotices ? LONG_NOTICES : NOTICES),
       transcript: w.nullTs ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.map(x => ({ ...x, ts: null })) } : w.manyTexts ? { run_id: RUN, entries: MANY } : w.toolsOnly ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.filter(x => x.kind !== 'text') } : w.longTranscript ? { run_id: RUN, entries: LONG_ENTRIES.slice(-Number(argv[argv.indexOf('--tail') + 1])) } : w.honorTail ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.slice(-Number(argv[argv.indexOf('--tail') + 1])) } : TRANSCRIPT,

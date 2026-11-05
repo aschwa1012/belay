@@ -26,7 +26,7 @@ import type { BelayMenu as BelayMenuT, BelayPanelMenu, BelayPanelSettled, BelayP
 import { argvFor, buildSnapshot, sameWatch, fatalSnapshot, fwd, launcherLine, isWindowsPath, needsRun, parseRan, parseRunFile, projectRootOf, refreshEvery, repoCliGuess, roundParts, type Ran, type RunFileRead } from './fetch'
 import { CONFIRM_MS, reasonProblem, reviewProject, SETTLE_ACTIONS, SETTLE_UNKNOWN, PENDING_STALE_MS, pruneSettled, settleArgs, settleKind, settleLine, settledActive, shortId, type SettleAction } from './held'
 import { COMMAND_TIMEOUT_MS, MEM_TIMEOUT_MS, MENU_EVERY_MS, MENU_OPEN_EVERY_MS, ROUND_TIMEOUT_MS, SETTINGS_EVERY_MS, START_TIMEOUT_MS, TRANSCRIPT_TAIL } from './limits'
-import { calm, DEFAULT_SETTINGS, DEFAULT_UI } from './model'
+import { calm, DEFAULT_SETTINGS, DEFAULT_UI, drawnNotices } from './model'
 import { actionId, PROFILE_KEYS, cmdToast, confirmText, cycleDraft, draftOf, gb, modelById, normBadge, normMenu, resultLine, routeFit, routingWrites, sameDraft, writeArgv, type MemAction } from './memory'
 import { Band, BandWaiting, Fallback, Pane, type Act, type Ctx, type Els } from './view'
 
@@ -147,8 +147,8 @@ async function setOpen($: Host, open: boolean): Promise<void> {
   if (open && (snap?.settings ?? DEFAULT_SETTINGS).pane === 'docked') placed = (await $.ui.open({ id: PANE, title: 'belay' })).isPlaced
   if (!open && ui.placed) await $.ui.close({ id: PANE })
   if (!open) await update($, settleA, () => null) // a pending settle does not survive the panel closing
-  // Opening the panel is the person seeing the notices (decision 3): the current ones are marked seen.
-  const seen = open ? [...new Set([...ui.seen, ...(snap?.notices ?? []).map(n => n.key)])].slice(-200) : ui.seen
+  // Opening the panel is the person seeing the notices (decision 3): the ones it draws are marked seen (none while NOTICES is folded).
+  const seen = open ? [...new Set([...ui.seen, ...drawnNotices(snap?.notices ?? [], ui).map(n => n.key)])].slice(-200) : ui.seen
   await update($, uiA, u => ({ ...u, open, placed, seen }))
   lastFetchAt = 0; backoffUntil = 0 // opening or closing the pane, like a press, reads at once, back-off or not
   $.ui.invalidate('ui.render')
@@ -191,8 +191,8 @@ async function tick($: Host): Promise<void> {
         if (!snap.memWanted && ui.memTab === null) await update($, menuA, m => (m.behind === 0 ? m : { ...m, behind: 0 }))
         // `/belay watch` with no id resolved the newest run: pin that id once.
         if (!watch.runId && snap.runId) await update($, watchA, w => (w && !w.runId ? { ...w, runId: snap.runId } : w))
-        // While the panel is open, notices that arrive are seen as they arrive.
-        if (ui.open) await update($, uiA, u => ({ ...u, seen: [...new Set([...u.seen, ...snap.notices.map(n => n.key)])].slice(-200) }))
+        // While the panel is open, notices that arrive are seen as they arrive, if the pane draws them (not while NOTICES is folded).
+        if (ui.open) await update($, uiA, u => ({ ...u, seen: [...new Set([...u.seen, ...drawnNotices(snap.notices, u).map(n => n.key)])].slice(-200) }))
         // A pending settle whose note left the list, or whose run changed, is cleared.
         await settleCheck($, snap, watch)
         // A note that has left the list closes.
