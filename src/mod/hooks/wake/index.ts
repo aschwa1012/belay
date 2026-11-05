@@ -6,7 +6,8 @@ import { activeConfig, streamArgv, deliveredPath, errorsPath, parseLine, createD
 // (after the write has succeeded) and only then submits the text: at most once, never twice (core.mjs createDelivery). A session with no
 // belay-run.json naming the orchestrator role (a watching session) does nothing. A delivered file that cannot be read
 // (anything but a missing file) starts nothing and is read again later: it is never taken for "nothing delivered". A wake
-// whose record write fails stays pending and is retried until the write lands.
+// whose record write fails stays pending and is retried until the write lands, and so does one Claude Code refused because no session
+// is bound in its process (core.mjs isUnboundSubmit).
 export const registerWake = (on: Parameters<Register>[0]): void => {
   // The matcher keeps this apart from the panel's own unmatched session.start hook (one per module is allowed).
   on('session.start', { isInteractive: true }, async ($, e, next) => {

@@ -98,10 +98,16 @@ export async function readDelivered({ read, sleep, tries = 4, delayMs = 250 }) {
   return null
 }
 
+// Claude Code's refusal of a submit made while no session is bound in the process: nothing was submitted.
+export const isUnboundSubmit = (message) => /not available in this mode|no session is bound/i.test(String(message || ''))
+
 // Delivery, at most once (ADR 0037 amendment 5): the id is recorded (memory and file) ONLY after the file write
 // has succeeded, and the submit happens only after that, so a failed write submits nothing (the wake is retried
 // on a replay) and a crash between the record and the submit loses that wake but never duplicates one.
 // `io` = { write(file, content) -> Promise, submit(text) -> Promise, log(entry) }; `initial` is the file's text.
+// One submit failure is known not to have submitted anything: Claude Code refuses `$.prompt.submit` while no session is bound in its
+// process (the person opened the background-sessions list, which unmounts the orchestrator's REPL). That wake is held, not lost: its
+// record is taken back and it waits in `pending` with the failed writes, tried again until a session takes it.
 export function createDelivery({ file, initial = '', io, now = () => Date.now(), cap = capText }) {
   let content = String(initial || '')
   const delivered = parseDelivered(content)
@@ -126,10 +132,20 @@ export function createDelivery({ file, initial = '', io, now = () => Date.now(),
           return 'write-failed'
         }
         pending.delete(id)
+        const before = content
         content = next
         delivered.add(id)
         try { await io.submit(cap(text)) } catch (e) {
-          try { io.log({ at: now(), id, stage: 'submit', error: String((e && e.message) || e) }) } catch { /* nowhere to log */ }
+          const error = String((e && e.message) || e)
+          if (isUnboundSubmit(error)) {
+            delivered.delete(id)
+            pending.set(id, text)
+            // A retraction that cannot be written leaves the line on disk: a reload would take the wake as delivered, this process still holds it.
+            try { await io.write(file, before); content = before } catch { /* see above */ }
+            try { io.log({ at: now(), id, stage: 'submit', held: true, error }) } catch { /* nowhere to log */ }
+            return 'held'
+          }
+          try { io.log({ at: now(), id, stage: 'submit', error }) } catch { /* nowhere to log */ }
           return 'submit-failed'
         }
         return 'submitted'
