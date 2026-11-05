@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // The panel's refresh cadence and the reading of `belay panel-read`'s one document, tested in npm test and CI by type stripping (the plugin's
 // own tests in src/mod/tests run only in Claude Code's plugin harness). Pure functions of fetch.ts: no host, no clock, no process.
 const test = require('node:test');
