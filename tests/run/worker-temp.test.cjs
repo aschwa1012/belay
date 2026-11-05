@@ -9,7 +9,6 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const os = require('node:os');
 const path = require('node:path');
-const { spawnSync } = require('node:child_process');
 
 const L = require('../../src/run/launch.cjs');
 const WT = require('../../src/run/worker-temp.cjs');
@@ -24,7 +23,7 @@ const fwd = (p) => String(p).replace(/\\/g, '/');
 const norm = (p) => fwd(path.resolve(p)).toLowerCase();
 if (!/^belay-(suite|test)-tmp-/.test(path.basename(os.tmpdir()))) throw new Error('worker-temp.test.cjs makes and sweeps folders under the OS temp dir: run it with --require ./tests/helpers/tmp.cjs (or through npm test), never against the real temp dir');
 const sandbox = () => fs.mkdtempSync(path.join(os.tmpdir(), 'belay-wtemp-'));
-const deadPid = () => spawnSync(process.execPath, ['-e', '0']).pid;
+const { deadPid } = require('../helpers/dead-pid.cjs');
 const junction = (target, at) => fs.symlinkSync(target, at, 'junction');
 
 test('buildEnv replaces every spelling of TEMP, TMP and TMPDIR with the worker folder, and leaves them alone without one', () => {
@@ -139,9 +138,9 @@ test('sweep removes only the run folders whose launchers are all gone and idle, 
   const root = sandbox();
   try {
     const dead = deadPid(); const dead2 = deadPid();
-    const gone = mkRun(root, 'gone', [{ pid: dead, ageMs: 2 * DAY }, { pid: dead2 + 1000000, ageMs: 3 * DAY }]);
+    const gone = mkRun(root, 'gone', [{ pid: dead, ageMs: 2 * DAY }, { pid: dead2, ageMs: 3 * DAY }]);
     const young = mkRun(root, 'young', [{ pid: dead, ageMs: 60 * 1000 }]);
-    const oneYoung = mkRun(root, 'oneyoung', [{ pid: dead, ageMs: 2 * DAY }, { pid: dead2 + 1000000, ageMs: 60 * 1000 }]);
+    const oneYoung = mkRun(root, 'oneyoung', [{ pid: dead, ageMs: 2 * DAY }, { pid: dead2, ageMs: 60 * 1000 }]);
     const live = mkRun(root, 'live', [{ pid: process.pid, ageMs: 2 * DAY }]);
     const oneLive = mkRun(root, 'onelive', [{ pid: dead, ageMs: 2 * DAY }, { pid: process.pid, ageMs: 2 * DAY }]);
     const renamed = mkRun(root, 'renamed', [{ pid: dead, run_id: 'other', ageMs: 2 * DAY }]);
@@ -265,7 +264,8 @@ test('closeRun removes only this adapter\'s owner file while another adapter of 
 });
 
 test('the first message of a worker says where its temp is, without a path that could go stale', () => {
-  assert.match(TB.PROCESS_LINE, /Your TEMP, TMP and TMPDIR name a folder belay made for you and removes when the run ends/);
+  assert.match(TB.PROCESS_LINE, /Your TEMP is a folder belay made for you/);
+  assert.ok(('echo: one' + TB.PROCESS_LINE).length < 200, 'a turn row that echoes the first message stays under the 200-character list text bound');
   assert.ok(TB.PROCESS_LINE.endsWith('never in /tmp or C:\\tmp.'));
 });
 

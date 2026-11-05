@@ -81,9 +81,29 @@ if (!globalThis[KEY]) {
   // which the runner removes with the tree even when this process is killed; otherwise git-env.cjs uses its own belay-gitcfg-* dir.
   require('./git-env.cjs');
 
+  // A worker's temp folder (src/run/worker-temp.cjs) is <temp>/belay/<run>/<worker>, made by whichever process launched the worker. A test
+  // whose manager is never shut down leaves it. The run folders this process alone launched into (its owner file is the only one) are
+  // removed with the rest; another process's folder, in a temp dir the suite shares, is never touched.
+  function removeOwnRunFolders() {
+    const top = path.join(os.tmpdir(), 'belay');
+    const mine = `.owner-${process.pid}.json`;
+    let runs = [];
+    try { runs = fs.readdirSync(top); } catch { return; }
+    for (const run of runs) {
+      const dir = path.join(top, run);
+      try {
+        if (fs.lstatSync(dir).isSymbolicLink()) continue;
+        const owners = fs.readdirSync(dir).filter((n) => /^\.owner-\d+\.json$/.test(n));
+        if (owners.length === 1 && owners[0] === mine) fs.rmSync(dir, { recursive: true, force: true });
+      } catch { /* busy or gone */ }
+    }
+    try { fs.rmdirSync(top); } catch { /* not empty: others' folders */ }
+  }
+
   // One attempt per directory when budgetMs is 0; otherwise retried within the budget. Returns what remains.
   function cleanup(budgetMs = 3000) {
     const deadline = Date.now() + budgetMs;
+    removeOwnRunFolders();
     let left = [...made];
     for (let wait = 25; left.length; wait = Math.min(wait * 2, 400)) {
       left = left.filter((p) => {

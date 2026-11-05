@@ -267,24 +267,33 @@ test('the refusals added by the amendment keep the one-line rule and the 400-byt
   }
 });
 
-test('a script run by name is read when it is small and fresh, and refused when its own text writes the drive root', () => {
+test('a script run by name is read when it was edited after the worker\'s first launch, and refused when its own text writes the drive root', () => {
+  const WT = require('../../src/run/worker-temp.cjs');
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-tmpscript-')).split(path.sep).join('/');
   try {
-    const put = (name, text, ageMs = 0) => { const p = `${dir}/${name}`; fs.writeFileSync(p, text); if (ageMs) { const t = new Date(Date.now() - ageMs); fs.utimesSync(p, t, t); } return p; };
-    put('w.js', "require('fs').writeFileSync('/tmp/x', 'y')\n");
-    put('w.py', "open('/tmp/x', 'w').write('y')\n");
-    put('w.sh', 'echo x > C:/tmp/f\n');
-    put('ok.sh', 'echo x > /tmp/f\n');
-    put('w.ps1', "Set-Content '/tmp/x' 1\n");
-    put('w.cmd', `echo x > ${BS}tmp${BS}f\r\n`);
-    put('fine.js', "console.log('hi')\n");
-    put('old.js', "require('fs').writeFileSync('/tmp/x', 'y')\n", 2 * 60 * 60 * 1000);
-    put('big.js', '// /tmp/x\n' + 'x'.repeat(250000));
-    fs.mkdirSync(`${dir}/tests`); put('tests/t.js', "'/tmp/x'\n");
-    const run = (c, tool = 'Bash') => TG.refusal({ tool_name: tool, cwd: dir, tool_input: { command: c } }, TEMP);
+    const wtemp = WT.make('run-script', 'w1', { root: dir });
+    const birth = WT.birthOf(wtemp);
+    assert.ok(birth > 0);
+    const put = (name, text, whenMs) => { const p = `${dir}/${name}`; fs.mkdirSync(path.dirname(p), { recursive: true }); fs.writeFileSync(p, text); const t = new Date(whenMs); fs.utimesSync(p, t, t); };
+    const after = birth + 60 * 1000; const before = birth - 60 * 1000;
+    put('w.js', "require('fs').writeFileSync('/tmp/x', 'y')\n", after);
+    put('w.py', "open('/tmp/x', 'w').write('y')\n", after);
+    put('w.sh', 'echo x > C:/tmp/f\n', after);
+    put('ok.sh', 'echo x > /tmp/f\n', after);
+    put('w.ps1', "Set-Content '/tmp/x' 1\n", after);
+    put('w.cmd', `echo x > ${BS}tmp${BS}f\r\n`, after);
+    put('fine.js', "console.log('hi')\n", after);
+    put('old.js', "require('fs').writeFileSync('/tmp/x', 'y')\n", before);
+    put('big.js', '// /tmp/x\n' + 'x'.repeat(250000), after);
+    put('tests/t.js', "'/tmp/x'\n", after);
+    put('tests/old.test.js', "'/tmp/x'\n", before);
+    const run = (c, tool = 'Bash', temp = wtemp) => TG.refusal({ tool_name: tool, cwd: dir, tool_input: { command: c } }, temp);
     for (const c of ['node w.js', 'node --require ./x.js w.js', 'python w.py', 'python3 ./w.py', 'bash w.sh', './w.sh', 'sh w.sh', 'cd . && node w.js', `node ${dir}/w.js`, 'powershell -File w.ps1', 'pwsh -NoProfile -File ./w.ps1', 'cmd /c w.cmd', 'w.cmd', 'node tests/t.js', 'node --test w.js', 'node --test tests/t.js']) assert.ok(run(c), `should refuse: ${c}`);
     assert.ok(run(`.${BS}w.ps1`, 'PowerShell'), 'PowerShell runs a script by name too');
-    for (const c of ['node fine.js', 'bash ok.sh', 'node old.js', 'node big.js', 'node missing.js', 'node -e "console.log(1)" w.js']) assert.strictEqual(run(c), null, `should allow: ${c}`);
+    for (const c of ['node fine.js', 'bash ok.sh', 'node old.js', 'node big.js', 'node tests/old.test.js', 'node --test tests/old.test.js', 'node missing.js', 'node -e "console.log(1)" w.js']) assert.strictEqual(run(c), null, `should allow: ${c}`);
+    // not a worker folder (the headless orchestrator's, an operator's): there is no launch time, so no file is read, however fresh
+    for (const c of ['node w.js', 'bash w.sh', 'node --test tests/t.js']) assert.strictEqual(run(c, 'Bash', TEMP), null, `no launch time, nothing read: ${c}`);
+    assert.strictEqual(run('node w.js', 'Bash', dir), null, 'a folder without a belay run above it has no launch time');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
 

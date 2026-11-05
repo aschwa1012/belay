@@ -12,7 +12,6 @@ const path = require('node:path');
 
 const MAX_DEPTH = 3;
 const SCRIPT_MAX_BYTES = 200000;
-const SCRIPT_FRESH_MS = 60 * 60 * 1000; // outside a belay worker folder (no launch time to compare), only a script edited in the last hour is read
 
 const DRIVE_FORM = /^(?:[a-z]:|\/[a-z]\/|\/[?.]\/)/i;
 const base = (w) => String(w).replace(/\\/g, '/').split('/').pop().toLowerCase().replace(/\.exe$/, '');
@@ -147,15 +146,15 @@ function createCheck(ctx) {
   // A script run by name. One that lives under the drive root's tmp is refused. One that does not is read when it is small and was
   // written or edited since the worker's first launch (the birth of its temp folder: its own throwaway script or test; a stable
   // repository file that merely mentions /tmp is not read), and refused when its own text writes there. Outside a worker's folder
-  // there is no launch time and the last hour stands in. No folder is exempt: a test the worker just wrote is read like any script.
+  // there is no launch time and no file is read. No folder is exempt: a test the worker just wrote is read like any script.
   function readScript(file, mode, depth) {
     if (!file || /^[\\/]{2}[^?.]/.test(file)) return false; // a UNC path could stall the stat
     const fs = require('node:fs');
     try {
       const abs = path.resolve(ctx.cwd || process.cwd(), String(file).replace(/^\/([a-z])\//i, '$1:/'));
       const st = fs.statSync(abs);
-      const since = typeof ctx.since === 'function' ? ctx.since() : null; // the worker's first launch, when the hook runs in a worker's own temp folder
-      if (!st.isFile() || st.size > SCRIPT_MAX_BYTES || (since !== null && since !== undefined ? st.mtimeMs <= since : Date.now() - st.mtimeMs > SCRIPT_FRESH_MS)) return false;
+      const since = typeof ctx.since === 'function' ? ctx.since() : null; // the worker's first launch; null when the hook's TEMP is not a worker folder
+      if (since === null || since === undefined || !st.isFile() || st.size > SCRIPT_MAX_BYTES || st.mtimeMs <= since) return false;
       const text = fs.readFileSync(abs, 'utf8');
       if (/\.sh$/i.test(abs)) return analyze(text, 'bash', depth + 1);
       if (/\.(?:ps1|cmd|bat)$/i.test(abs)) return analyze(text, 'win', depth + 1);
