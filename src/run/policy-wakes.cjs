@@ -282,20 +282,21 @@ async function readRevisions(policy, runId, tasks) {
 function createPolicyWatcher({ core, runId, enabled = false }) {
   const sent = new Set();
   let last = [];
-  let lastSnap = null; // this poll's rows, for the idle close (policy-close-hold.cjs); null when the read failed or the watcher is off
+  let lastSnap = null; // this poll's rows, for the idle close (policy-close-hold.cjs); null while the watcher is off, { failed } when the read failed
   async function snapshot(seen) {
     let tasks = seen && seen.policyTasks; if (seen) seen.policyTasks = null;
     if (!tasks) { try { tasks = ((await core.task.list({})) || {}).tasks || []; } catch { return null; } }
-    const ints = core.integration && core.integration.list ? await core.integration.list({}).then((r) => (r && r.integrations) || [], () => []) : [];
-    const steps = core.policy && core.policy.list ? await core.policy.list({}).then((r) => (r && r.rows) || [], () => []) : [];
+    let readFailed = false; // a failed integration or step read is [] for the wakes, as before, and unknown facts for the idle close
+    const ints = core.integration && core.integration.list ? await core.integration.list({}).then((r) => (r && r.integrations) || [], () => { readFailed = true; return []; }) : [];
+    const steps = core.policy && core.policy.list ? await core.policy.list({}).then((r) => (r && r.rows) || [], () => { readFailed = true; return []; }) : [];
     const failures = core.memory && core.memory.events ? await core.memory.events({ run_id: runId, kinds: ['release_failed'] }).then((r) => ((r && r.events) || []).map((e) => ({ ...e, task_id: e.task_id || (Array.isArray(e.row_ids) ? e.row_ids[0] : null) })), () => []) : [];
     const revisions = await readRevisions(core.policy, runId, tasks);
-    return { runId, tasks, integrations: ints, steps, failures, ...(revisions ? { revisions } : {}) };
+    return { runId, tasks, integrations: ints, steps, failures, ...(revisions ? { revisions } : {}), ...(readFailed ? { readFailed } : {}) };
   }
   async function poll(seen) {
     if (!enabled && !(seen && seen.policyArmed)) { lastSnap = null; return []; }
     const snap = await snapshot(seen);
-    lastSnap = snap;
+    lastSnap = snap || { failed: true };
     if (!snap) return [];
     last = derive(snap);
     const out = [];

@@ -8,7 +8,7 @@ const { isMidTurn } = require('./wake.cjs');
 async function idleClose(c) {
   const { state, rows, runId, pending_deaths, turnAtCall, hold, awaitingWakeIds, callWatcher, recordHold, preClose, writeWake, closeThenKillOnDeadline, policyWatcher = null } = c;
   // A plan's step due or in flight holds the close too (policy-close-hold.cjs): belay's own next step is not left to a closing run.
-  const planHolds = policyWatcher ? require('./policy-close-hold.cjs').policyHolds(policyWatcher.snapshot(), state.policyDueSince || (state.policyDueSince = new Map()), { exceptions: policyWatcher.active() }) : [];
+  const planHolds = policyWatcher ? (state.policyHold || (state.policyHold = require('./policy-close-hold.cjs').createPolicyCloseHold())).holds(policyWatcher.snapshot(), { exceptions: policyWatcher.active() }) : [];
   const busy = rows.filter((w) => w.run_id === runId && isMidTurn(w)).map((w) => w.id);
   const awaiting = awaitingWakeIds(); // also prunes state.pendingWrites of anything past its expiry
   const pendingIds = pending_deaths.map((p) => p.worker_id);
