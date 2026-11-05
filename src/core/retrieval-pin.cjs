@@ -65,7 +65,7 @@ function tierFailure(ctx, code, cause, message, extra) {
   ctx.routing.run = { ...ctx.routing.run, fallback_from: from('run') };
   for (const k of Object.keys(ctx.routing.tiers)) ctx.routing.tiers[k] = { ...ctx.routing.tiers[k], fallback_from: from(k) };
   const moved = [...new Set(Object.entries(was.tiers).filter(([, t]) => t.device === 'gpu' || t.reranker || t.embedder !== RP.NANO).map(([k]) => k))];
-  ctx.notices.push({ code, message: `${message}. ${extra && extra.model && RP.describeModel(extra.model) && RP.describeModel(extra.model).runtime === 'onnx' ? `Fetch it with: belay embedder fetch --reranker ${extra.model}. ` : ''}The run is served on the ${target} profile${target === RP.FALLBACK_PROFILE ? ' (nano, no reranker)' : ''}.`, ...(extra && extra.reason ? { reason: extra.reason } : {}), options: (extra && extra.options) || [], agent_types: moved });
+  ctx.notices.push({ code, message: `${message}. ${extra && extra.model && !/fetch it with/i.test(message) && RP.describeModel(extra.model) && RP.describeModel(extra.model).runtime === 'onnx' ? `Fetch it with: belay embedder fetch --reranker ${extra.model}. ` : ''}The run is served on the ${target} profile${target === RP.FALLBACK_PROFILE ? ' (nano, no reranker)' : ''}.`, ...(extra && extra.reason ? { reason: extra.reason } : {}), options: (extra && extra.options) || [], agent_types: moved });
 }
 
 async function pinRouting(E, caller, args = {}) {
