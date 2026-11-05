@@ -279,7 +279,7 @@ export function Pane(c: Ctx) {
     <Box flexDirection="column">
       <Header {...c} />
       {ui.legend && <Legend {...c} />}
-      <Section E={E} k="sa" title="AGENTS" cols={cols} summary={snap.agents.length ? [{ t: `${live} live` }, ...(busy ? [{ t: ' · ', dim: true } as Seg, { t: `${busy} busy`, dim: true } as Seg] : [])] : []}>
+      <Section E={E} k="sa" title="AGENTS" cols={cols} summary={snap.agents.length ? [{ t: `${live} live` }, ...(busy ? [{ t: ` · ${busy} busy`, dim: true } as Seg] : [])] : []}>
         {snap.agents.length ? <Table {...inner} /> : <Line E={E} w={cols - INDENT} k="pn" segs={[{ t: 'no agents read', dim: true }]} />}
       </Section>
       {(snap.held || snap.memoryNotice) && <Held {...c} />}
