@@ -14,6 +14,7 @@ test('orchestrator prompt: every mcp__belay__ tool name the template mentions is
   const raw = fs.readFileSync(TEMPLATE, 'utf8');
   const text = raw.replace(/\{\{\/?memory_(use|outcome)\}\}/g, ''); // as a run without notes renders it
   assert.ok(raw.split('\n').length < 120, 'the template stays under 120 lines');
+  assert.ok(fs.readFileSync(path.join(ROOT, 'src/run/prompts/orchestrator-interactive.md'), 'utf8').split('\n').length < 120, 'and so does its interactive twin');
   const T = require(path.join(ROOT, 'src/mcp/tools.cjs'));
   const listed = new Set();
   for (const role of T.ROLES) for (const t of T.toolsFor(role)) listed.add(t.name);

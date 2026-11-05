@@ -105,7 +105,7 @@ function hasFieldOrNested(listing, tool, key) {
   if (key.includes('.')) return false;
   // or a property of the items of an array one object down (acceptance.commands[].retries_on_fail).
   const itemHas = (o) => Object.values((o && o.properties) || {}).some((p) => p.type === 'array' && p.items && p.items.properties && p.items.properties[key]);
-  return Object.keys(props).some((k) => props[k].type === 'object' && (hasField(listing, tool, `${k}.${key}`) || itemHas(props[k])));
+  return Object.keys(props).some((k) => [].concat(props[k].type).includes('object') && (hasField(listing, tool, `${k}.${key}`) || itemHas(props[k]))); // a nullable object (task_create's policy) counts
 }
 
 function check(label, text, listing, impliedTool) {
@@ -168,11 +168,11 @@ test('tripwire: invented fields appended to a prompt are caught, in both prompts
 test('A5 the largest orchestrator listing (every lever on) is pinned and inside the 20,480 byte budget', () => {
   const bytes = tools.listingBytes('orchestrator', { notes: true, knowledge: true, queries: true });
   assert.ok(bytes <= tools.BUDGET.orchestrator, `everything-on orchestrator listing is ${bytes} bytes, over ${tools.BUDGET.orchestrator} by ${bytes - tools.BUDGET.orchestrator}`);
-  assert.strictEqual(bytes, 16715, 'the everything-on orchestrator listing size is pinned; change this with the ADR 0010 amendment that changes it');
+  assert.strictEqual(bytes, 16859, 'the everything-on orchestrator listing size is pinned; change this with the ADR 0010 amendment that changes it');
 });
 
 test('the everything-on listing with the permission channel is pinned and inside the budget (ADR 0010 amendment 16)', () => {
   const bytes = tools.listingBytes('orchestrator', { notes: true, knowledge: true, queries: true, permissions: true });
   assert.ok(bytes <= tools.BUDGET.orchestrator, `permissions-on orchestrator listing is ${bytes} bytes, over ${tools.BUDGET.orchestrator} by ${bytes - tools.BUDGET.orchestrator}`);
-  assert.strictEqual(bytes, 17480, 'pinned; change this with the ADR 0010 amendment that changes it');
+  assert.strictEqual(bytes, 17624, 'pinned; change this with the ADR 0010 amendment that changes it');
 });
