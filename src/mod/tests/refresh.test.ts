@@ -1,6 +1,6 @@
 import { describe, expect } from 'claude-code/testing'
 import { test } from './support'
-import { boot, colours, EVENTS, later, leaves, openPane, pane, RUN, squeezed, T0, words } from './support'
+import { band, boot, colours, EVENTS, later, leaves, openPane, pane, RUN, squeezed, T0, words } from './support'
 
 // The refreshed pane: a header card (run, state, elapsed, task progress and cost), bold headings that carry no colour, colour on state and
 // severity only, a NOTICES heading that reads "N (M new)" and folds without marking anything seen, a one-line MEMORY row, the
@@ -111,6 +111,22 @@ describe('notices', () => {
     expect(wd.writes).toEqual([])
     await ui.press({ key: 'fold:sn' })
     expect(between(words(await ui.drawn()))).toContain('p-19')
+  })
+  test('with more notices than rows, the open list marks every one seen, the older ones it only counts included', async ($, on) => {
+    const stalled = (i: number) => ({ kind: 'worker_stalled', ts: T0 - i * 1000, run_id: RUN, worker_id: `w-${i}`, state: 'running', last_event_age_ms: 320000, pid: 100 + i, pid_alive: true })
+    const wd = await boot($, on, { notices: { run_id: RUN, events: Array.from({ length: 12 }, (_, i) => stalled(i + 1)) } })
+    await openPane($, wd)
+    const text = flat((await pane($, 'terminal', 70)).text)
+    expect(text).toContain('and 4 older') // 8 rows drawn, 4 counted
+    expect(text).toContain('NOTICES 12')
+    expect(text).not.toMatch(/NOTICES 12 \(\d+ new\)/)
+    wd.w.notices = { run_id: RUN, events: Array.from({ length: 13 }, (_, i) => stalled(i)) } // one more arrives while the list is open
+    await later(wd, 6000)
+    const after = flat((await pane($, 'terminal', 70)).text)
+    expect(after).toContain('NOTICES 13')
+    expect(after).not.toMatch(/NOTICES 13 \(\d+ new\)/)
+    await openPane($, wd) // /orch closes the panel
+    expect(flat((await band($, 'terminal', 110)).text)).not.toContain('stalled') // the band names no old notice as new
   })
   test('a notice that arrives while the list is folded stays new until the list is opened', async ($, on) => {
     const wd = await boot($, on)
