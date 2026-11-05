@@ -42,6 +42,7 @@ async function scenario(substrate, relaunch, hooks = {}, env = {}) {
     if (substrate === 'codex') process.env.FAKE_CODEX_HANG = '1'; // its turn never ends, so the kill is a death, not Codex's idle
     const row = await m.spawn({ substrate, worktree: wt.split(path.sep).join('/'), prompt: 'one', worker_id: 'w1', task_id: task.id });
     ctx.pid = row.pid;
+    ctx.child = m._worker('w1').child; // the first life's handle: every kill below ends that process by it, never by the bare pid
     if (substrate === 'claude-code') await m.wait({ worker_ids: ['w1'], timeout_ms: 30000 });
     ctx.w = m._worker('w1');
     await ctx.w.queue;
@@ -63,11 +64,14 @@ async function scenario(substrate, relaunch, hooks = {}, env = {}) {
   }
 }
 
+// Ends the first life by its live handle (tests/crash.cjs). A handle whose exit was already seen is refused, and the test fails here.
+const killFirst = (ctx) => assert.ok(require('../crash.cjs').crash(ctx.child), 'the first life is ended by its live handle');
+
 // The old life dies (by its exact pid) with its dead row queued behind a gate; the caller decides when the row may land.
 async function killQueued(ctx) {
   let open; const gate = new Promise((res) => { open = res; });
   ctx.w.queue = ctx.w.queue.then(() => gate); // another write in flight: the death's row queues behind it
-  process.kill(ctx.pid);
+  killFirst(ctx);
   assert.ok(await ctx.m._waitExit('w1', 30000), 'the exit event arrived');
   return open;
 }
@@ -101,7 +105,7 @@ test('a restart whose worker dies during its second drain keeps the lease too: n
   keptLease(await scenario('claude-code', restart, { ask: async (ctx, ask) => {
     const r = await ask();
     let open; const gate = new Promise((g) => { open = g; });
-    ctx.w.queue = ctx.w.queue.then(() => new Promise((res) => setImmediate(() => { process.kill(ctx.pid); ctx.m._waitExit('w1', 30000).then(() => setImmediate(open)); res(); }))).then(() => gate);
+    ctx.w.queue = ctx.w.queue.then(() => new Promise((res) => setImmediate(() => { killFirst(ctx); ctx.m._waitExit('w1', 30000).then(() => setImmediate(open)); res(); }))).then(() => gate);
     return r;
   } }));
 });
@@ -109,7 +113,7 @@ test('a restart whose worker dies during its second drain keeps the lease too: n
 test('a relaunch that fails after a death it kept the lease for releases that lease, before and after launching', { timeout: 90000 }, async () => {
   // Before launch: the death lands kept, then the ask itself fails. The guard restates the dead row with release_leases.
   const before = await scenario('claude-code', restart, { ask: async (ctx) => {
-    process.kill(ctx.pid);
+    killFirst(ctx);
     assert.ok(await ctx.m._waitExit('w1', 30000));
     await ctx.w.queue; // the dead row has landed, kept
     throw Object.assign(new Error('refused for the test'), { code: 'E_FILES_OVERLAP' });
@@ -132,7 +136,7 @@ test('a restart granted its lease back, then refused before any process, release
   const failed = await scenario('claude-code', restart, {
     core: (h, ctx) => Object.defineProperty(Object.create(h), 'bindOpen', { value: async (...a) => { if (ctx.failBind) throw Object.assign(new Error('refused for the test'), { code: 'E_ARGS' }); return h.bindOpen(...a); } }),
     before: async (ctx) => {
-      process.kill(ctx.pid);
+      killFirst(ctx);
       assert.ok(await ctx.m._waitExit('w1', 30000));
       await ctx.w.queue; // the death is recorded: the lease released, the task open
       ctx.failBind = true;
@@ -155,7 +159,7 @@ test('a relaunch that fails while its kept dead row is still in flight releases 
     },
     ask: async (ctx) => {
       let open; ctx.held = new Promise((res) => { open = res; });
-      process.kill(ctx.pid); // the exact pid belay spawned
+      killFirst(ctx); // by the handle belay spawned it with
       assert.ok(await ctx.m._waitExit('w1', 30000), 'the exit event arrived');
       setImmediate(open); // the kept row lands after the failure has been thrown
       throw Object.assign(new Error('refused for the test'), { code: 'E_FILES_OVERLAP' });
@@ -211,7 +215,7 @@ test('two concurrent messages to a dead Codex worker: one relaunches holding the
     const a = m.message({ worker_id: 'w1', text: 'one' }).catch((e) => e);
     const b = m.message({ worker_id: 'w1', text: 'two' }).catch((e) => e);
     return Promise.all([a, b]);
-  }, { before: async (ctx) => { process.kill(ctx.pid); assert.ok(await ctx.m._waitExit('w1', 30000)); await ctx.w.queue; } });
+  }, { before: async (ctx) => { killFirst(ctx); assert.ok(await ctx.m._waitExit('w1', 30000)); await ctx.w.queue; } });
   const [a, b] = out.r;
   const ok = [a, b].filter((x) => x && x.channel === 'codex-resume');
   const busy = [a, b].filter((x) => x instanceof Error && x.code === 'E_BUSY');
@@ -223,7 +227,7 @@ test('two concurrent messages to a dead Codex worker: one relaunches holding the
 test('a restart while a Codex message is relaunching the worker is refused E_BUSY, and the message keeps its lease', { timeout: 90000 }, async () => {
   let refused = null;
   const out = await scenario('codex', (m) => m.message({ worker_id: 'w1', text: 'again' }), {
-    before: async (ctx) => { process.kill(ctx.pid); assert.ok(await ctx.m._waitExit('w1', 30000)); await ctx.w.queue; },
+    before: async (ctx) => { killFirst(ctx); assert.ok(await ctx.m._waitExit('w1', 30000)); await ctx.w.queue; },
     ask: async (ctx, ask) => { refused = await ctx.m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 }).then(() => null, (e) => e); return ask(); },
   });
   assert.strictEqual(refused && refused.code, 'E_BUSY');

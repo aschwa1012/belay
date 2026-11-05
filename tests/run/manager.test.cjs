@@ -434,12 +434,13 @@ test('a stop walks the worker subtree, and the taskkill receipt proves it', asyn
   const pidFile = sb.data + '/grandchild.pid';
   const m = mgr(sb, core, FAKE_WITH_CHILD);
   process.env.FAKE_CHILD_PID_FILE = pidFile;
-  let gpid = 0;
+  let gpid = 0, left = null; // left: the grandchild's identity, ended in the finally only if an assertion failed before it was gone
   try {
     const row = await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'wt' });
     gpid = Number(fs.readFileSync(pidFile, 'utf8').trim());
     assert.ok(gpid > 0 && P.pidAlive(gpid), 'the worker must really have a child to lose');
     const [rowId, gId] = await G.identifyAll([row.pid, gpid]);
+    left = gId;
 
     const s = await m.stop({ worker_id: 'wt', mode: 'kill', timeout_ms: 8000 });
     assert.equal(s.killed, true);
@@ -458,10 +459,10 @@ test('a stop walks the worker subtree, and the taskkill receipt proves it', asyn
       assert.ok(tk.terminated >= 2, `the tree kill must reach past the direct child, and it named ${tk.terminated} process(es): ${tk.output}`);
     }
     assert.ok(await G.waitGone(gId, { deadlineMs: 3000, intervalMs: 100 }), `the child (pid ${gpid}) outlived the worker that spawned it`);
-    gpid = 0;
+    left = null;
   } finally {
     delete process.env.FAKE_CHILD_PID_FILE;
-    if (gpid) { try { process.kill(gpid); } catch { /* already gone */ } }
+    if (left) await require('../crash.cjs').crashIdentities([left]); // by pid and creation time, never the bare pid
     await teardown(m, sb);
   }
 });

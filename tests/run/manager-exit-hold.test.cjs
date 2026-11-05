@@ -49,7 +49,7 @@ async function killWithExitLag(id, delayMs) {
       return true;
     };
     const t0 = Date.now();
-    process.kill(w.pid); // exact pid
+    assert.ok(require('../crash.cjs').crash(w.child), 'the worker is ended by the handle its manager holds');
     let dead;
     while (!(dead = core.rowsFor(id).find((r) => r.state === 'dead'))) {
       assert.ok(Date.now() - t0 < POLL_EXIT_HOLD_MS + 8000, 'no dead row');
@@ -85,7 +85,7 @@ async function heldDeath(id, m, core, sb) {
   };
   const oldPid = w.pid;
   const oldId = await G.identify(oldPid); // while it lives
-  process.kill(oldPid); // exact pid
+  assert.ok(require('../crash.cjs').crash(w.child), 'the worker is ended by the handle its manager holds');
   assert.ok(await G.waitGone(oldId, { deadlineMs: 15000, intervalMs: 20 }), `the killed worker (pid ${oldPid}) is still alive`);
   assert.equal(w.settled, false, 'premise: the death is held, not settled');
   return oldPid;
@@ -132,7 +132,7 @@ test('a starting worker killed by exact pid, its exit event late: the first dead
       setTimeout(() => emit.call(this, ev, ...a), 2500); // the OS exit notice is late; the 1 s poll sees the death first
       return true;
     };
-    process.kill(w.pid); // exact pid
+    assert.ok(require('../crash.cjs').crash(w.child), 'the worker is ended by the handle its manager holds');
     let dead;
     while (!(dead = core.rowsFor('hold5').find((r) => r.state === 'dead'))) { assert.ok(Date.now() - t0 < 30000, 'no dead row'); await sleep(25); }
     assert.ok(Number.isInteger(dead.exit_code) || typeof dead.exit_signal === 'string', JSON.stringify([dead.exit_code, dead.exit_signal, dead.death_established_by]));
