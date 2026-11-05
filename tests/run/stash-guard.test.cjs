@@ -1,6 +1,6 @@
 'use strict';
 require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
-// stash-guard.test.cjs — the stash check (ADR 0086): the matcher's table, its place in the one hook process behind the worker role
+// stash-guard.test.cjs — the stash check (ADR 0087): the matcher's table, its place in the one hook process behind the worker role
 // flag, and the worker settings files that carry it.
 
 const { test } = require('node:test');
@@ -23,12 +23,17 @@ const REFUSED = [
   'git add -A && git stash', 'git stash list $(git stash pop)', 'cd x | git stash',
   'cmd /c "git stash"', 'powershell -Command "git stash pop"', "bash -c 'git -C y stash'", 'g"it" stash', 'git ^stash', 'GIT STASH',
   'git \\\n  stash', 'git `\n  stash pop', 'Set-Location C:\\\ngit stash',
+  'powershell -Command "& {git stash}"', 'Invoke-Command {git stash pop}', 'if (1) {git stash}', '& { git -C x stash drop }', 'powershell -Command "& {git stash list; git stash}"',
+  'git-stash pop', 'git-stash.exe', 'C:/Program Files/Git/mingw64/libexec/git-core/git-stash.exe pop', '"git-stash" push',
+  'git rebase --autostash main', 'git pull --rebase --autostash', 'git merge --autostash x', 'git -c rebase.autoStash=true rebase main', 'git -c merge.autostash=true merge x',
+  'git update-ref -d refs/stash', 'git update-ref refs/stash HEAD', 'git reflog delete refs/stash@{0}', 'git reflog expire --expire=now refs/stash', 'git reflog expire --expire=now --all',
 ];
 const ALLOWED = [
   'git stash list', 'git stash list --stat', 'git stash show', 'git stash show -p stash@{0}', 'git -C ../repo stash list', 'git.exe stash show',
   'git stash list>out.txt', 'git status', 'git commit -m "fix the stash path"', 'git checkout stash@{0} -- f', 'git branch stash-fix',
   'git stash-helper', 'git log --grep stash', 'echo stashed', 'ls .git/stash', 'git worktree add ../w', 'git switch -c tmp/x',
   'git reflog show refs/stash', 'npm run stash', 'rg -n "stash" src',
+  'git rebase --no-autostash main', 'git pull --rebase', 'git update-ref refs/heads/x HEAD', 'git reflog', 'git reflog expire --expire=now refs/heads/x', 'docs/git-stash.md', 'cat docs/git-stash.md', '& {git status}', 'Invoke-Command {git stash list}',
 ];
 
 test('the matcher refuses every writing git stash shape', () => {
@@ -39,7 +44,7 @@ test('the matcher allows the read-only list and show and text that only names a 
   for (const c of ALLOWED) assert.strictEqual(SG.refusal(c), null, JSON.stringify(c));
 });
 
-// Stated limits (ADR 0086), the push check's: text that only names a stash is refused; an alias or a run-time command is not followed.
+// Stated limits (ADR 0087), the push check's: text that only names a stash is refused; an alias or a run-time command is not followed.
 test('the stated limits: a command that only names a stash is refused, and a shape the text cannot follow is allowed', () => {
   for (const c of ['echo "never run git stash"', 'git commit -m "git stash pop"']) assert.strictEqual(SG.refusal(c), SG.MESSAGE, c);
   for (const c of ['git -c alias.s=stash s', 'p=stash; git $p', 'sh stash.sh', 'git sta\\sh']) assert.strictEqual(SG.refusal(c), null, c);
@@ -49,6 +54,7 @@ test('the refusal is one line, names the alternatives, and fits the deny JSON bo
   assert.ok(!SG.MESSAGE.includes('\n'));
   assert.match(SG.MESSAGE, /temporary branch/);
   assert.match(SG.MESSAGE, /git worktree add/);
+  assert.match(SG.MESSAGE, /git commit -F/);
   assert.ok(Buffer.byteLength(G.denyOutput(SG.MESSAGE), 'utf8') < 400);
 });
 

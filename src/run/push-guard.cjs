@@ -7,10 +7,10 @@
 // requires: guard.cjs runs it in the one hook process spawned for every shell call of a worker.
 const MESSAGE = 'Do not push or write to a remote (git push, gh pr/issue/release/repo/api writes). Commit in your worktree and report the branch.';
 
-const WORD = String.raw`(?:^|[\s(/\\])`; // a command word starts a segment or follows a space, `(` or a path separator, never `.git`
+const WORD = String.raw`(?:^|[\s({/\\])`; // a command word starts a segment or follows a space, `(`, `{` (a PowerShell script block) or a path separator, never `.git`
 const GIT_VALUE_OPTS = '-c|-C|--git-dir|--work-tree|--namespace|--exec-path|--config-env|--super-prefix|--attr-source';
 // The subcommands that send to a remote: push, send-pack, http-push, and the push of `subtree` and `lfs`.
-const GIT_PUSH = new RegExp(String.raw`${WORD}git(?:\.exe)?((?:\s+(?:${GIT_VALUE_OPTS})\s+\S+|\s+-\S*)*)\s+(?:push|send-pack|http-push|(?:subtree|lfs)\s+push)(?=$|[\s);<>|&])`);
+const GIT_PUSH = new RegExp(String.raw`${WORD}git(?:\.exe)?((?:\s+(?:${GIT_VALUE_OPTS})\s+\S+|\s+-\S*)*)\s+(?:push|send-pack|http-push|(?:subtree|lfs)\s+push)(?=$|[\s);<>|&}])`);
 const GH_WORD = new RegExp(String.raw`${WORD}gh(?:\.exe)?(?=\s|$)(.*)$`);
 
 // gh command groups whose verbs write to the remote unless the verb is one of these readers.
@@ -53,7 +53,7 @@ function ghApiWrites(tokens, seg) {
 function ghWrites(seg) {
   const m = GH_WORD.exec(seg);
   if (!m) return false;
-  const tokens = m[1].trim().split(/\s+/).filter(Boolean);
+  const tokens = m[1].trim().split(/\s+/).map((t) => t.replace(/\}+$/, '')).filter(Boolean); // `& {gh pr view 3}`: the block's brace is not part of the word
   const words = [];
   for (let i = 0; i < tokens.length; i++) {
     if (tokens[i] === '-r' || tokens[i] === '--repo') { i++; continue; } // -R owner/repo takes a value; it is not the verb

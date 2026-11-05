@@ -1,6 +1,6 @@
 'use strict';
 // guard.cjs — the one PreToolUse hook for a worker's tool calls (ADR 0024 amendment 7 and ADR 0084). The kill-by-name check
-// (kill-guard.cjs), the drive-root `\tmp` check (tmp-guard.cjs) and, for a worker, the push check (push-guard.cjs) and the stash check (stash-guard.cjs, ADR 0086) keep their
+// (kill-guard.cjs), the drive-root `\tmp` check (tmp-guard.cjs) and, for a worker, the push check (push-guard.cjs) and the stash check (stash-guard.cjs, ADR 0087) keep their
 // own rules; this module runs them in one hook process, so a Bash call starts one node process. `decide(payload, tempDir, { push })`
 // returns the refusal text, or null; `push` (the worker role: push and stash checks) is true only in a worker's settings (ADR 0085), never the orchestrator's. The kill
 // check comes first, then the push check: one deny carries one reason, which keeps the injected bytes within invariant 9's bound.
@@ -19,7 +19,7 @@ function decide(payload, tempDir, { push = false } = {}) {
   return KG.refusal(command) || (push ? PG.refusal(command) || SG.refusal(command) : null) || TG.refusal(payload, tempDir);
 }
 
-// The hooks block for a worker's or headless orchestrator's settings file. `push` adds the push check through the hook's own command
+// The hooks block for a worker's or headless orchestrator's settings file. `push` marks a worker (both the push and the stash check) through the hook's own command
 // line: the role comes from an argument belay writes, never from a prompt (invariant 3).
 function hooksBlock({ push = false } = {}) {
   const fwd = (p) => p.split(path.sep).join('/');
