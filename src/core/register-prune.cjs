@@ -5,15 +5,17 @@
 // for a write ever dropped one, and the client asks for the check with a ping (a read) before its first write, so on a busy machine
 // none was dropped: the exited directory grew by every process any harness spawned. A bound owner whose check finds many closed
 // tombstones prunes them itself. What it may touch, and nothing else:
-//   - closed tombstones only: a valid lifetime whose end (`until`) is set and more than the slack in the past. Never a register
-//     record (a live process's entry), never an open tombstone (a recorded descendant), never an unreadable file;
+//   - spent tombstones only: a valid lifetime whose end (`until`) is set and more than the slack in the past, or an open one (a
+//     recorded descendant, `until` null) from before the last boot, which the boot ended (the boot rule a check uses). Never a
+//     register record (a live process's entry), never an open tombstone from this boot, never an unreadable file;
 //   - before any closed tombstone goes, every live chain root it covers is recorded as a descendant, exactly as a check records one,
 //     judged against a process snapshot taken after the tombstones were read;
 //   - in two passes at least `gapMs` apart: the first records what the closed lifetimes cover and marks them; a later pass records
 //     again from its own snapshot and only then drops what it marked. A check anywhere that lists the directory after the first pass
 //     finds the recorded roots whether or not the lifetime is still there. Two owners pruning at once each drop what they marked, and
 //     a file already gone is not an error. Nothing is created but the descendant tombstones, in the directory that holds them.
-// Started by the owner after a check, never inside one: the check's answer is computed before and does not wait for it. A read
+// Started by the owner after a check, on a later turn of its loop, never inside one: the check has answered before the pass lists a
+// file, and the pass lists, stats and reads the directory asynchronously. A read
 // command's own check still writes nothing; the prune is the owner's write (ADR 0045 amendment 8).
 // Fails quiet: a pass that cannot take a snapshot or read the directory leaves everything for the next one.
 
@@ -32,14 +34,17 @@ function createPruner({ snapshot, now = () => Date.now(), at = PRUNE_AT, gapMs =
   let lastAt = -Infinity;
   const marked = new Map(); // key -> when the pass that first marked the tombstone began
   const run = async () => {
-    await null; // after the check that asked for it has answered
-    const listed = SR.tombstoneScan({ snap: null }).list.filter((t) => !t.unproven); // the reads come first
+    await new Promise((resolve) => setImmediate(resolve)); // a later turn of the loop: nothing of the pass runs before the check that asked for it has answered
+    const { names, list } = await SR.tombstonesAsync(); // the reads come first, off the loop
     const began = now();
     const snap = await snapshot(); // then the snapshot, so every root a listed lifetime covers is in it or already recorded
     if (!snap) return { dropped: 0, saved: 0, marked: marked.size, skipped: 'no snapshot' };
-    const closed = listed.filter((t) => t.until != null && t.until + SP.SLACK_MS < began);
-    const known = new Set(listed.map(keyOf));
-    const windows = closed.map((t) => ({ ...t, window: t.via == null && !t.ppid_only }));
+    const boot = SR.bootMs(began);
+    // spent: a closed lifetime whose end is past, or an open tombstone from before the last boot (the boot ended that process and
+    // everything it could cover, by the boot rule a check uses)
+    const closed = list.filter((t) => (t.until != null && t.until + SP.SLACK_MS < began) || (t.until == null && SP.beforeBoot(t, boot)));
+    const known = new Set(names.map((n) => n.replace(/[.]json$/, ''))); // every tombstone by its name, read or not
+    const windows = closed.filter((t) => t.until != null).map((t) => ({ ...t, window: t.via == null && !t.ppid_only }));
     let saved = 0;
     for (const [pid, e] of snap) {
       if (e.created == null || !SP.isRoot(pid, e, snap) || known.has(`${pid}-${e.created}`)) continue;
