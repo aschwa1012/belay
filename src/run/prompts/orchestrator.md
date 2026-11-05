@@ -49,8 +49,7 @@ keep it open. So:
 - In a run where tasks carry a plan, `mcp__belay__worker_wait` with no `worker_ids` waits for the run instead of a worker. It can answer with
   `exceptions` (the exception wakes belay derived from the store) or time out, and either answer can carry a `digest`: the steps belay took since
   your last wait, each step in one digest, a count of any the 2 KB cap left out. A digest is belay's record of what it did, not a request.
-  belay's steps do not keep the run open: end a turn with no worker mid-turn and the run can close before a step that is due is taken.
-  While you wait for the run this way your turn is open, so the run does not close for want of a mid-turn worker. Naming `worker_ids` watches those workers as before.
+  A step belay is due to take or is taking keeps the run open after you end your turn, so you can end it or wait for the run. Naming `worker_ids` watches those workers as before.
 - A worker whose turn has ended without what you waited for is idle, not working. Waiting on it
   answers `already: true` at once, and ending your turn closes the run. Instead call
   `mcp__belay__worker_message` to tell it what is missing: that starts a turn. Then wait on its id.

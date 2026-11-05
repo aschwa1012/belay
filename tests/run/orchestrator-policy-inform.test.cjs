@@ -41,10 +41,11 @@ test('the plan values the section names are the ones the core accepts', () => {
   assert.match(s, /`review: \{ spawn: \{ agent_type: "reviewer" \} \}`/);
 });
 
-test('headless only: the prompt says belay\'s steps do not keep the run open, and that waiting for the run does', () => {
+test('headless only: the prompt says a step belay is due to take or is taking keeps the run open', () => {
+  // True with the idle close's policy hold (src/run/policy-close-hold.cjs); without it the run could close before a due step was taken.
   const h = flat(read('orchestrator.md'));
-  assert.ok(h.includes("belay's steps do not keep the run open: end a turn with no worker mid-turn and the run can close before a step that is due is taken. While you wait for the run this way your turn is open, so the run does not close for want of a mid-turn worker."));
-  assert.ok(!flat(read('orchestrator-interactive.md')).includes('do not keep the run open'), 'an interactive run does not close on an idle turn');
+  assert.ok(h.includes('A step belay is due to take or is taking keeps the run open after you end your turn, so you can end it or wait for the run.'));
+  assert.ok(!flat(read('orchestrator-interactive.md')).includes('keeps the run open'), 'an interactive run does not close on an idle turn');
 });
 
 test('task_create\'s policy description says what a plan saves, and orders nothing', () => {
