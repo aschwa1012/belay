@@ -22,12 +22,13 @@
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On, Timer } from 'claude-code'
-import type { BelayMenu as BelayMenuT, BelayPanelMenu, BelayPanelSettled, BelayPanelSnap, BelayPanelUi, BelayPanelWatch } from '../../types/index'
-import { argvFor, buildSnapshot, fatalSnapshot, fwd, launcherLine, isWindowsPath, needsRun, parseRan, parseRunFile, projectRootOf, refreshEvery, repoCliGuess, roundParts, type Ran, type RunFileRead } from './fetch'
+import type { BelayMenu as BelayMenuT, BelayPanelMenu, BelayPanelSettled, BelayPanelSnap, BelayPanelWatch } from '../../types/index'
+import { argvFor, buildSnapshot, sameWatch, fatalSnapshot, fwd, launcherLine, isWindowsPath, needsRun, parseRan, parseRunFile, projectRootOf, refreshEvery, repoCliGuess, roundParts, type Ran, type RunFileRead } from './fetch'
 import { CONFIRM_MS, reasonProblem, reviewProject, SETTLE_ACTIONS, SETTLE_UNKNOWN, PENDING_STALE_MS, pruneSettled, settleArgs, settleKind, settleLine, settledActive, shortId, type SettleAction } from './held'
-import { DEFAULT_SETTINGS, DEFAULT_UI } from './model'
+import { COMMAND_TIMEOUT_MS, MEM_TIMEOUT_MS, MENU_EVERY_MS, MENU_OPEN_EVERY_MS, ROUND_TIMEOUT_MS, SETTINGS_EVERY_MS, START_TIMEOUT_MS, TRANSCRIPT_TAIL } from './limits'
+import { calm, DEFAULT_SETTINGS, DEFAULT_UI } from './model'
 import { actionId, PROFILE_KEYS, cmdToast, confirmText, cycleDraft, draftOf, gb, modelById, normBadge, normMenu, resultLine, routeFit, routingWrites, sameDraft, writeArgv, type MemAction } from './memory'
-import { Band, BandWaiting, Fallback, Pane, type Act, type Els } from './view'
+import { Band, BandWaiting, Fallback, Pane, type Act, type Ctx, type Els } from './view'
 
 const PANE = 'belay'
 const watchA = atom({ plugin: 'belay', key: 'panelWatch' } as const, null)
@@ -37,12 +38,7 @@ const menuA = atom({ plugin: 'belay', key: 'panelMenu' } as const, { menu: null,
 const settleA = atom({ plugin: 'belay', key: 'panelSettle' } as const, null)
 const settledA = atom({ plugin: 'belay', key: 'panelSettled' } as const, {} as BelayPanelSettled)
 
-// A round starts after the previous round ENDS (a slow belay is never chased): refreshEvery (fetch.ts) gives the wait, by whether the pane is open and whether the run has ended.
-const SETTINGS_EVERY_MS = 10000
-const COMMAND_TIMEOUT_MS = 8000 // the panel's patience under host load (reads of 3.5 to 4.8 s were seen), not a product budget
-const ROUND_TIMEOUT_MS = 25000 // one panel-read runs up to five reads, each bounded at 6 s inside the verb; this bounds the process
-// `belay transcript --tail N`: the band reads the last 10 entries (it shows the newest words among them), the pane the last 50. Null would read it all.
-const TRANSCRIPT_TAIL: { band: number | null; pane: number | null } = { band: 10, pane: 50 }
+// A round starts after the previous round ENDS (a slow belay is never chased): refreshEvery (fetch.ts) gives the wait. The other waits are in limits.ts.
 const BACKOFF_FIRST_MS = 10000
 const BACKOFF_MAX_MS = 60000
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/
@@ -50,10 +46,6 @@ const REVIEW_ARGS = ['memory', 'review', '--project'] // the one write the panel
 const START_FLAG = '--start'
 const RUN_FLAG = '--run' // the review acts for the watched run, a live one included (the CLI never defaults to a live run)
 const READ_VERBS = ['panel-read'] // the only command runJson runs besides the Memory menu's read: one process that runs the panel's reads
-const MENU_EVERY_MS = 30000 // the Memory menu's facts while only the badge needs them; 10 s while the menu is open
-const MENU_OPEN_EVERY_MS = 10000
-const MEM_TIMEOUT_MS = { set: 20000, delete: 30000, verify: 180000 } as const // a verify hashes the whole model
-const START_TIMEOUT_MS = 40000 // the launcher waits up to 20 s for the claim
 const NO_CLI_WINDOWS = 'belay CLI not found: on Windows set belay_cli and node in belay-run.json, or load this plugin from <repo>/src/mod'
 
 type Host = EngineInterface
@@ -226,9 +218,6 @@ function ensureTicker($: Host): void {
   if (timer) return
   timer = $.clock.every(1000, () => { void tick($) })
 }
-
-const sameWatch = (a: BelayPanelWatch | null, b: BelayPanelWatch): boolean =>
-  !!a && a.runId === b.runId && a.dataDir === b.dataDir && a.cli === b.cli && a.node === b.node && a.orchDir === b.orchDir && a.fixed === b.fixed && a.error === b.error
 
 // A repeated session.start (a hot reload) with an unchanged watch keeps the snapshot and the seen notices.
 async function watchRun($: Host, next: BelayPanelWatch): Promise<void> {
@@ -495,14 +484,12 @@ async function settleCheck($: Host, snap: BelayPanelSnap, watch: BelayPanelWatch
   $.ui.toast(same ? `belay: note ${shortId(p.id)} no longer awaits you, so the settle was cleared.` : 'belay: the watched run changed, so the settle was cleared.')
 }
 
-// Every press that is not the review button cancels a pending confirm.
-const calm = (u: BelayPanelUi): BelayPanelUi => (u.confirm || u.memConfirm ? { ...u, confirm: null, memConfirm: null } : u)
-
 function acts($: Host): Act {
   return {
     select: id => { void update($, uiA, u => ({ ...calm(u), selected: u.selected === id ? null : id })) },
     legend: () => { void update($, uiA, u => ({ ...calm(u), legend: !u.legend })) },
     fold: () => { void update($, uiA, u => ({ ...calm(u), foldOpen: !u.foldOpen })) },
+    notices: () => { void update($, uiA, u => ({ ...calm(u), noticesFold: !u.noticesFold })) },
     group: key => { void update($, uiA, u => ({ ...calm(u), groups: u.groups.includes(key) ? u.groups.filter(g => g !== key) : [...u.groups, key].slice(-50) })) },
     seen: key => { void update($, uiA, u => (u.seen.includes(key) && !u.confirm ? u : { ...calm(u), seen: u.seen.includes(key) ? u.seen : [...u.seen, key].slice(-200) })) },
     close: () => { void update($, settleA, () => null); void update($, uiA, calm).then(() => setOpen($, false)) },
@@ -516,6 +503,11 @@ function acts($: Host): Act {
     commit: id => { void settlePress($, id) },
     note: id => { void update($, settleA, () => null); void update($, uiA, u => ({ ...calm(u), openNote: u.openNote === id ? null : id })) }, // opening, switching or closing a note drops a pending settle
   }
+}
+
+// What a drawing reads: the atoms, the clock and the handlers, for the width it draws at.
+async function drawCtx($: Host, E: Els, snap: BelayPanelSnap, cols: number, focused: boolean): Promise<Ctx> {
+  return { E, snap, ui: await read($, uiA), now: await $.clock.now(), cols, act: acts($), pend: await read($, settleA), focused, settled: await read($, settledA), menu: await read($, menuA) }
 }
 
 export function registerPanel(on: On): void {
@@ -572,12 +564,9 @@ export function registerPanel(on: On): void {
     const { Box, Text } = E
     const watch = await read($, watchA)
     const snap = await read($, snapA)
-    const ui = await read($, uiA)
-    const now = await $.clock.now()
-    const menu = await read($, menuA)
     if (!watch) return <Box><Text dimColor>No belay run is watched. /belay watch [run-id]</Text></Box>
     if (!snap) return <BandWaiting E={E} runId={watch.runId} errors={[]} cols={e.props.bodyColumns} />
-    const c = { E, snap, ui, now, cols: e.props.bodyColumns, act: acts($), pend: await read($, settleA), focused: e.props.isFocused, settled: await read($, settledA), menu }
+    const c = await drawCtx($, E, snap, e.props.bodyColumns, e.props.isFocused)
     return e.surface === 'terminal' ? <Pane {...c} /> : <Fallback {...c} />
   })
 
@@ -587,11 +576,9 @@ export function registerPanel(on: On): void {
     const E = $.ui.resolve(e) as unknown as Els
     const { Box } = E
     const snap = await read($, snapA)
-    const ui = await read($, uiA)
-    const now = await $.clock.now()
-    const menu = await read($, menuA)
     if (!snap) return <BandWaiting E={E} runId={watch.runId} errors={[]} cols={e.props.bodyColumns} />
-    const c = { E, snap, ui, now, cols: e.props.bodyColumns, act: acts($), pend: await read($, settleA), focused: inlineFocused, settled: await read($, settledA), menu } // the band has no focus prop: the hint is for the docked pane
+    const c = await drawCtx($, E, snap, e.props.bodyColumns, inlineFocused) // the band has no focus prop: the hint is for the docked pane
+    const ui = c.ui
     // Inline when the person chose above-prompt, or when the docked pane is not seated (a narrow terminal).
     const inline = ui.open && (snap.settings.pane === 'above-prompt' || !ui.placed)
     if (e.surface !== 'terminal') return inline ? <Fallback {...c} /> : <Band {...c} />

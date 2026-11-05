@@ -8,6 +8,7 @@ import type {
 } from '../../types/index'
 import { cells, clipCells } from './wrap'
 import { normRetrievalModels } from './warm'
+import { ctxColor, CTX_WARN_PCT, ERR, MUTED, OK, WARN } from './theme'
 
 // `brk` marks the first segment of a part that may be dropped whole when the line is too wide (fitSegs).
 export type Seg = { t: string; c?: string; dim?: boolean; bold?: boolean; brk?: true }
@@ -15,7 +16,10 @@ export type Seg = { t: string; c?: string; dim?: boolean; bold?: boolean; brk?: 
 export const DEFAULT_SETTINGS: BelaySettings = {
   pane: 'docked', marks: 'shapes', cache: 'both', context: 'both', band: 'two-lines', task: 'kind',
 }
-export const DEFAULT_UI: BelayPanelUi = { open: false, selected: null, legend: false, foldOpen: false, groups: [], placed: false, seen: [], confirm: null, memTab: null, memConfirm: null, memNote: null, routeDraft: null }
+export const DEFAULT_UI: BelayPanelUi = { open: false, selected: null, legend: false, foldOpen: false, noticesFold: false, groups: [], placed: false, seen: [], confirm: null, memTab: null, memConfirm: null, memNote: null, routeDraft: null }
+
+// Every press that is not the review button cancels a pending confirm.
+export const calm = (u: BelayPanelUi): BelayPanelUi => (u.confirm || u.memConfirm ? { ...u, confirm: null, memConfirm: null } : u)
 
 export const num = (x: unknown): number | null => (typeof x === 'number' && Number.isFinite(x) ? x : null)
 export const str = (x: unknown): string | null => (typeof x === 'string' && x !== '' ? x : null)
@@ -105,7 +109,7 @@ function normAgent(raw: unknown): BelayAgent | null {
     costUsd: num(a.cost_usd), costSource: str(a.cost_source), costBasis: str(a.cost_basis),
     cache: normCache(a.cache), task,
     launchMode: str(a.permission_mode) ?? str(a.launch_mode), version: str(a.claude_code_version) ?? str(a.version),
-    pid: num(a.pid),
+    pid: num(a.pid), startedAtMs: num(a.started_at_ms), exitedAtMs: num(a.exited_at_ms),
   }
 }
 
@@ -141,8 +145,8 @@ export const TONE: Record<BelayNotice['tone'], { glyph: string; color: string; r
   dead: { glyph: '✕', color: 'error', rank: 1 },
   refuted: { glyph: '✕', color: 'error', rank: 2 },
   stalled: { glyph: '◌', color: 'warning', rank: 3 },
-  paused: { glyph: '‖', color: 'planMode', rank: 4 },
-  holds: { glyph: '✓', color: 'merged', rank: 5 },
+  paused: { glyph: '‖', color: WARN, rank: 4 },
+  holds: { glyph: '✓', color: OK, rank: 5 },
   stopped: { glyph: '✓', color: 'inactive', rank: 6 },
   ended: { glyph: '✓', color: 'inactive', rank: 7 },
   memory: { glyph: '◇', color: 'warning', rank: 8 },
@@ -281,9 +285,9 @@ export function ctxSegs(a: BelayAgent, s: BelaySettings, mode: CtxMode = 'full')
   const tok: Seg | null = a.ctxTokens !== null ? { t: tokensShort(a.ctxTokens) } : null
   const pct = a.ctxPct
   if (pct === null) return [tok ?? { t: '—', dim: true }]
-  const fig: Seg = { t: `${Math.round(pct)}%` }
+  const c = ctxColor(pct) // the pressure: the accent, amber from 70%, red from 90%
+  const fig: Seg = { t: `${Math.round(pct)}%`, ...(pct >= CTX_WARN_PCT ? { c } : {}) }
   if (mode === 'tokens') return [tok ?? fig]
-  const c = pct > 75 ? 'warning' : 'suggestion'
   const b = bar(pct / 100, 6)
   const barSegs: Seg[] = [{ t: b.on, c }, { t: b.off, dim: true }]
   const both: Seg[] = tok ? [tok, { t: ' · ', dim: true }, fig] : [fig]
@@ -349,7 +353,7 @@ export function staleLine(snap: BelayPanelSnap): string | null {
 export function runBrief(snap: BelayPanelSnap, now: number): Seg[] {
   const segs: Seg[] = [{ t: 'belay', c: 'claude', bold: true }, { t: ` ${snap.runId ?? '—'}` }]
   if (snap.runState) {
-    const c = snap.runState === 'paused' ? 'planMode' : snap.runState === 'dead' ? 'error' : snap.runState === 'ended' ? 'inactive' : 'success'
+    const c = snap.runState === 'paused' ? WARN : snap.runState === 'dead' ? ERR : snap.runState === 'ended' ? MUTED : OK
     segs.push({ t: '  ', brk: true }, { t: '●', c }, { t: ` ${snap.runState}` })
     const el = elapsedMs(snap, now)
     if (el !== null) segs.push({ t: ` ${dur(el)}` })
