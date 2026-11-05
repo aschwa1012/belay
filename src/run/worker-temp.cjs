@@ -45,10 +45,19 @@ let swept = null; // the summary of this process's one sweep, reported by closeR
 // rewritten first; a sweep by another process that renames the run folder aside between two steps makes the step fail, and the
 // whole sequence is run once more. The sweep skips this run: a process resuming a parked worker long after its folder went idle
 // must not delete the folder it is about to use.
+function restoreTomb(top, runId, run) {
+  try {
+    for (const n of fs.readdirSync(top)) {
+      const m = TOMB_RE.exec(n);
+      if (m && m[1] === runId && realDir(path.join(top, n))) { fs.renameSync(path.join(top, n), run); return; }
+    }
+  } catch { /* the folder is made new */ }
+}
 function makeOnce(runId, workerId, root, dataDir) {
   const top = path.join(root, ROOT);
   if (!realDir(top)) { if (isLink(top)) return null; fs.mkdirSync(top, { recursive: true }); }
   const run = path.join(top, String(runId));
+  if (!realDir(run) && !isLink(run)) restoreTomb(top, String(runId), run); // a sweep that renamed this run aside: take it back whole
   if (!realDir(run)) { if (isLink(run)) return null; fs.mkdirSync(run); }
   fs.writeFileSync(path.join(run, ownerFile(process.pid)), JSON.stringify({ pid: process.pid, created: Math.round(Date.now() - process.uptime() * 1000), run_id: String(runId), data_dir: dataDir, at: Date.now() }));
   const dir = path.join(run, String(workerId));
@@ -136,7 +145,7 @@ function sweep({ root = base(), idleMs = SWEEP_IDLE_MS, now = Date.now(), skipRu
     const run = path.join(top, name);
     try {
       const tomb = TOMB_RE.exec(name);
-      if (tomb) { if (realDir(run) && abandoned(run, tomb[1], now, idleMs)) drop(run, tomb[1]); else out.kept += 1; continue; }
+      if (tomb) { if (tomb[1] !== skipRun && realDir(run) && abandoned(run, tomb[1], now, idleMs)) drop(run, tomb[1]); else out.kept += 1; continue; }
       if (name === skipRun || !seg(name) || !realDir(run) || !abandoned(run, name, now, idleMs)) { out.kept += 1; continue; }
       const aside = path.join(top, `.gone-${name}-${crypto.randomBytes(4).toString('hex')}`);
       try { fs.renameSync(run, aside); } catch { out.kept += 1; continue; }

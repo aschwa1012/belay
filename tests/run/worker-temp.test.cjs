@@ -203,6 +203,24 @@ test('a launcher that writes its owner file between a sweep\'s check and its ren
   } finally { fs.renameSync = realRename; fs.rmSync(root, { recursive: true, force: true }); }
 });
 
+test('a tombstone of the run being launched into is neither removed by the sweep nor lost: make takes it back whole', () => {
+  const root = sandbox();
+  try {
+    const dead = deadPid();
+    const tomb = mkRun(root, '.gone-resumed-run-cafebabe', []);
+    fs.writeFileSync(path.join(tomb, WT.ownerFile(dead)), JSON.stringify({ pid: dead, created: 1, run_id: 'resumed-run', at: 1 }));
+    const t = new Date(Date.now() - 3 * DAY); fs.utimesSync(path.join(tomb, WT.ownerFile(dead)), t, t);
+    fs.writeFileSync(path.join(tomb, 'w1', 'parked.txt'), 'x');
+    assert.strictEqual(WT.sweep({ root, skipRun: 'resumed-run' }).swept, 0, 'the tombstone of the launching run is skipped like its folder');
+    assert.ok(fs.existsSync(path.join(tomb, 'w1', 'parked.txt')));
+    WT.forgetSweep();
+    const dir = WT.make('resumed-run', 'w1', { root });
+    assert.ok(dir && fs.existsSync(path.join(dir, 'parked.txt')), 'the files of the parked worker are back in its folder');
+    assert.ok(!fs.existsSync(tomb), 'the tombstone was renamed back, not left beside it');
+    assert.ok(fs.existsSync(path.join(root, 'belay', 'resumed-run', WT.ownerFile(process.pid))));
+  } finally { fs.rmSync(root, { recursive: true, force: true }); }
+});
+
 test('a tombstone left by a crashed sweep is judged by the same rule and removed when it is abandoned', () => {
   const root = sandbox();
   try {
