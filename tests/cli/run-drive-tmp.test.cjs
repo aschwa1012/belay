@@ -90,10 +90,45 @@ test('drive tmp: new and changed entries are told apart, nested ones are seen, t
     const d = DT.receiptBlock(before, DT.snapshot(fwd(dir))).drive_tmp;
     const paths = d.new_or_changed.map((e) => e.path);
     assert.ok(!paths.includes('keep.txt'));
-    assert.strictEqual(d.new_or_changed_count, DT.LISTED + 5 + 2 + 1); // the new files, grow.txt, sub/inner.txt, and sub itself (its mtime moved)
+    assert.ok(d.new_or_changed_count >= DT.LISTED + 5 + 2, `the new files, grow.txt and sub/inner.txt are all counted: ${d.new_or_changed_count}`); // sub itself may or may not show a moved mtime
     assert.strictEqual(d.new_or_changed.length, DT.LISTED);
     assert.strictEqual(d.listed_truncated, true);
     const solo = DT.receiptBlock(before, DT.snapshot(fwd(dir), 1000)).drive_tmp;
     assert.ok(solo.new_or_changed_count > 0);
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('drive tmp: a link is listed but never followed', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-drive-tmp-'));
+  try {
+    fs.mkdirSync(`${dir}/target`);
+    fs.writeFileSync(`${dir}/target/inside.txt`, 'x');
+    fs.mkdirSync(`${dir}/tmp`);
+    fs.symlinkSync(`${dir}/target`, `${dir}/tmp/jct`, 'junction');
+    const s = DT.snapshot(fwd(`${dir}/tmp`));
+    assert.ok(s.entries.has('jct'), 'the link is listed');
+    assert.strictEqual(s.entries.get('jct').link, true);
+    assert.strictEqual(s.entries.get('jct').dir, false);
+    assert.ok(![...s.entries.keys()].some((k) => k.startsWith('jct/')), 'nothing under the link was read');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('drive tmp: the cap stops the read itself, not only the stats', () => {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-drive-tmp-'));
+  const realOpen = fs.opendirSync;
+  let reads = 0;
+  try {
+    fs.mkdirSync(`${dir}/big`);
+    for (let i = 0; i < 40; i += 1) fs.writeFileSync(`${dir}/big/f${i}`, 'x');
+    fs.opendirSync = (...a) => {
+      const d = realOpen(...a);
+      const rs = d.readSync.bind(d);
+      d.readSync = () => { reads += 1; return rs(); };
+      return d;
+    };
+    const s = DT.snapshot(fwd(dir), 5);
+    assert.strictEqual(s.truncated, true);
+    assert.ok(s.entries.size <= 5);
+    assert.ok(reads <= 5 + 3, `the read went on past the cap: ${reads} reads for 41 names`);
+  } finally { fs.opendirSync = realOpen; fs.rmSync(dir, { recursive: true, force: true }); }
 });

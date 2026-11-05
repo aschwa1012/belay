@@ -24,27 +24,46 @@ function cap(env = process.env) {
   return env.BELAY_TEST_MODE === '1' && Number.isInteger(n) && n > 0 ? n : CAP;
 }
 
-// { dir, scanned, reason?, truncated, entries: Map(rel -> {size, mtime_ms, dir}) }
+// The names in one folder, read through a handle so the read itself stops: at most `max` of them, and `more` says whether another existed.
+function readNames(full, max) {
+  const d = fs.opendirSync(full);
+  const list = [];
+  let more = false;
+  try {
+    for (;;) {
+      const e = d.readSync();
+      if (!e) break;
+      if (list.length >= max) { more = true; break; }
+      list.push(e);
+    }
+  } finally { try { d.closeSync(); } catch { /* already closed */ } }
+  return { list, more };
+}
+
+// { dir, scanned, reason?, truncated, entries: Map(rel -> {size, mtime_ms, dir, link?}) }. A link (symlink or junction) is listed
+// by lstat and never followed or descended into.
 function snapshot(dir, limit = cap()) {
   const snap = { dir, scanned: false, truncated: false, entries: new Map() };
   if (!dir) { snap.reason = 'no drive-root tmp folder on this platform'; return snap; }
   try {
-    const top = fs.readdirSync(dir, { withFileTypes: true });
+    const top = readNames(dir, limit);
     snap.scanned = true;
+    if (top.more) snap.truncated = true;
     const add = (rel, full, isDir) => {
-      if (snap.entries.size >= limit) { snap.truncated = true; return false; }
-      try { const st = fs.statSync(full); snap.entries.set(rel, { size: st.size, mtime_ms: Math.round(st.mtimeMs), dir: isDir }); } catch { /* gone between the listing and the stat */ }
-      return true;
+      try {
+        const st = fs.lstatSync(full);
+        const link = st.isSymbolicLink();
+        snap.entries.set(rel, { size: st.size, mtime_ms: Math.round(st.mtimeMs), dir: isDir && !link, ...(link ? { link: true } : {}) });
+      } catch { /* gone between the listing and the stat */ }
     };
-    for (const e of top) {
-      if (!add(e.name, path.join(dir, e.name), e.isDirectory())) break;
-    }
-    for (const e of top) {
-      if (snap.truncated) break;
+    for (const e of top.list) add(e.name, path.join(dir, e.name), e.isDirectory());
+    for (const e of top.list) {
       if (!e.isDirectory()) continue;
-      let kids = [];
-      try { kids = fs.readdirSync(path.join(dir, e.name), { withFileTypes: true }); } catch { continue; }
-      for (const k of kids) if (!add(`${e.name}/${k.name}`, path.join(dir, e.name, k.name), k.isDirectory())) break;
+      const room = limit - snap.entries.size;
+      let kids;
+      try { kids = readNames(path.join(dir, e.name), Math.max(room, 0)); } catch { continue; }
+      for (const k of kids.list) add(`${e.name}/${k.name}`, path.join(dir, e.name, k.name), k.isDirectory());
+      if (kids.more) { snap.truncated = true; break; }
     }
   } catch (e) {
     snap.scanned = false;
@@ -73,7 +92,7 @@ function receiptBlock(before, after) {
 
 function lines(receipt) {
   const d = receipt && receipt.drive_tmp;
-  if (!d || !d.scanned || !d.new_or_changed_count) return [];
+  if (!d || !d.scanned || !(d.new_or_changed_count || d.truncated)) return [];
   return [`drive tmp ${d.dir}: ${d.new_or_changed_count} new or changed during the run${d.truncated ? ' (scan truncated)' : ''}; see the receipt`];
 }
 
