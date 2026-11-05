@@ -105,7 +105,7 @@ function hasFieldOrNested(listing, tool, key) {
   if (key.includes('.')) return false;
   // or a property of the items of an array one object down (acceptance.commands[].retries_on_fail).
   const itemHas = (o) => Object.values((o && o.properties) || {}).some((p) => p.type === 'array' && p.items && p.items.properties && p.items.properties[key]);
-  return Object.keys(props).some((k) => props[k].type === 'object' && (hasField(listing, tool, `${k}.${key}`) || itemHas(props[k])));
+  return Object.keys(props).some((k) => [].concat(props[k].type).includes('object') && (hasField(listing, tool, `${k}.${key}`) || itemHas(props[k]))); // a nullable object (task_create's policy) counts
 }
 
 function check(label, text, listing, impliedTool) {
