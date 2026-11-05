@@ -3,7 +3,7 @@ import { test } from './support'
 import { band, boot, colours, EVENTS, later, leaves, openPane, pane, RUN, squeezed, T0, words } from './support'
 
 // The refreshed pane: a header card (run, state, elapsed, task progress and cost), bold headings that carry no colour, colour on state and
-// severity only, a NOTICES heading that reads "N (M new)" and folds without marking anything seen, a one-line MEMORY row, the
+// severity only, a NOTICES heading that reads "N listed (M new)" and folds without marking anything seen, a one-line MEMORY row, the
 // context-pressure colour and when a worker row was first started.
 const flat = (s: string) => s.replace(/\s+/g, ' ')
 const hh = (ms: number) => new Date(ms).toTimeString().slice(0, 5)
@@ -96,7 +96,7 @@ describe('notices', () => {
   test('the heading reads "N (M new)" before the pane has marked them seen', async ($, on) => {
     await boot($, on)
     const { text } = await pane($, 'terminal', 70) // drawn without /orch: nothing is marked seen yet
-    expect(flat(text)).toContain('NOTICES 4 (3 new)') // the stopped worker is listed but never new
+    expect(flat(text)).toContain('NOTICES 4 listed (3 new)') // the stopped worker is listed but never new
   })
   test('the ▾ folds the list to its heading, led by the worst tone, and opens it again', async ($, on) => {
     const wd = await boot($, on)
@@ -106,7 +106,7 @@ describe('notices', () => {
     await ui.press({ key: 'fold:sn' })
     const folded = words(await ui.drawn())
     expect(between(folded)).not.toContain('p-19')
-    expect(flat(between(folded))).toContain('NOTICES ▲ 4')
+    expect(flat(between(folded))).toContain('NOTICES ▲ 4 listed')
     expect((await ui.find({ key: 'fold:sn' }))?.props.label).toBe(' ▸')
     expect(wd.writes).toEqual([])
     await ui.press({ key: 'fold:sn' })
@@ -118,13 +118,13 @@ describe('notices', () => {
     await openPane($, wd)
     const text = flat((await pane($, 'terminal', 70)).text)
     expect(text).toContain('and 4 older') // 8 rows drawn, 4 counted
-    expect(text).toContain('NOTICES 12')
-    expect(text).not.toMatch(/NOTICES 12 \(\d+ new\)/)
+    expect(text).toContain('NOTICES 12 listed')
+    expect(text).not.toMatch(/NOTICES 12 listed \(\d+ new\)/)
     wd.w.notices = { run_id: RUN, events: Array.from({ length: 13 }, (_, i) => stalled(i)) } // one more arrives while the list is open
     await later(wd, 6000)
     const after = flat((await pane($, 'terminal', 70)).text)
-    expect(after).toContain('NOTICES 13')
-    expect(after).not.toMatch(/NOTICES 13 \(\d+ new\)/)
+    expect(after).toContain('NOTICES 13 listed')
+    expect(after).not.toMatch(/NOTICES 13 listed \(\d+ new\)/)
     await openPane($, wd) // /orch closes the panel
     expect(flat((await band($, 'terminal', 110)).text)).not.toContain('stalled') // the band names no old notice as new
   })
@@ -136,13 +136,13 @@ describe('notices', () => {
     wd.w.notices = { run_id: RUN, events: [...EVENTS, { kind: 'worker_stalled', ts: T0 + 4000, run_id: RUN, worker_id: 'rev-1', state: 'running', last_event_age_ms: 320000, pid: 4, pid_alive: true }] }
     await later(wd, 6000) // a round with the pane open: the new notice is read but not drawn
     await later(wd, 6000) // and another, so a mark-seen in the round would have landed
-    expect(flat((await pane($, 'terminal', 70)).text)).toContain('NOTICES ◌ 5 (1 new)') // led by the new one's mark, not the older ▲
+    expect(flat((await pane($, 'terminal', 70)).text)).toContain('NOTICES ◌ 5 listed (1 new)') // led by the new one's mark, not the older ▲
     const p = await pane($, 'terminal', 70)
     await p.ui.press({ key: 'fold:sn' })
-    expect(flat(words(await p.ui.drawn()))).toContain('NOTICES 5 (1 new)') // drawn now, marked seen by the next round
+    expect(flat(words(await p.ui.drawn()))).toContain('NOTICES 5 listed (1 new)') // drawn now, marked seen by the next round
     await later(wd, 6000)
     const opened = flat((await pane($, 'terminal', 70)).text)
-    expect(opened).toContain('NOTICES 5')
+    expect(opened).toContain('NOTICES 5 listed')
     expect(opened).not.toContain('(1 new)')
   })
 })

@@ -45,15 +45,17 @@ function fixLines(snap: BelayPanelSnap, w: number): Seg[][] {
   const rounds: Seg[] = snap.maxFixRounds !== null ? [{ t: 'fix rounds ', dim: true }, { t: `notice at ${snap.maxFixRounds}` }] : []
   const cap: Seg[] = snap.fixHardCap !== null ? [{ t: 'hard cap ', dim: true }, { t: `${snap.fixHardCap}${snap.fixHardCapSource ? ` (${snap.fixHardCapSource})` : ''}` }] : []
   if (!rounds.length || !cap.length) return [rounds, cap].filter(l => l.length)
-  return widthOf(rounds) + 3 + widthOf(cap) <= w ? [[...rounds, { t: ' · ', dim: true }, ...cap]] : [rounds, cap]
+  return widthOf(rounds) + 3 + widthOf(cap) <= w ? [[...rounds, { ...cap[0]!, t: ` · ${cap[0]!.t}` }, ...cap.slice(1)]] : [rounds, cap]
 }
 
 // The card at the top: the run line with the ? and ✕ buttons, then task progress and cost on one line when both fit (else one line each),
-// then the fix-round levers and a stale line, all inside a round dim border when the pane has the room for one.
+// then the fix-round levers and a stale line, all inside a round dim border when the pane has the room for one: the border is left out when
+// it would cut "belay <run id>" (the four columns it takes are the ones the id needs).
 export function Header(c: Ctx) {
   const { E, snap, now, act, cols } = c
   const { Box, Button } = E
-  const w = cardInner(cols)
+  const card = cols >= CARD_MIN_COLS && cells(`belay ${snap.runId ?? '—'}`) <= cardInner(cols) - 4
+  const w = card ? cardInner(cols) : cols
   const tasks = taskSegs(snap, w)
   const cost = costSegs(snap)
   const gap = '   '
@@ -77,7 +79,7 @@ export function Header(c: Ctx) {
       {stale && wrapHard(stale, w).map((t, i) => <Line E={E} w={w} k={`pstale${i}`} segs={[{ t, dim: true }]} />)}
     </Box>
   )
-  return cols >= CARD_MIN_COLS
+  return card
     ? <Box key="card" flexDirection="column" borderStyle="round" borderColor={MUTED} borderDimColor paddingX={1}>{body}</Box>
     : <Box key="card" flexDirection="column">{body}</Box>
 }
@@ -112,7 +114,7 @@ export function Notices({ E, snap, ui, act, cols }: Ctx) {
   const worst = [...(fresh.length ? fresh : ordered)].sort((a, b) => TONE[a.tone].rank - TONE[b.tone].rank)[0]!
   const summary: Seg[] = [
     ...(open ? [] : [{ t: `${TONE[worst.tone].glyph} `, c: TONE[worst.tone].color } as Seg]),
-    { t: String(ordered.length) },
+    { t: `${ordered.length} listed` }, // never a bare digit: a one-cell leaf reads as a wrap gone wrong
     ...(fresh.length ? [{ t: ` (${fresh.length} new)`, c: WARN } as Seg] : []),
   ]
   return (
