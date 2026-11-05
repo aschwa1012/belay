@@ -1,11 +1,11 @@
 // The pane's blocks other than the agents table, the notes and the memory row: the header card (run, state, elapsed, task progress, cost), the
 // notices, the legend and the footer. Drawing only: a press calls one of the `Act` handlers the caller passes.
 
-import type { BelayNotice, BelayPanelSnap } from '../../types/index'
-import { bar, money, runBrief, staleLine, TONE, unseenNotices, type Seg } from './model'
+import type { BelayPanelSnap } from '../../types/index'
+import { bar, byNewest, money, NOTICE_ROWS, runBrief, staleLine, TONE, unseenNotices, type Seg } from './model'
 import { cells, cmdLines, wordWrap, wrapHard } from './wrap'
 import { clip, INDENT, Line, Section, type Ctx, type Els } from './base'
-import { ACCENT, ATTN, BRAND, cardInner, CARD_MIN_COLS, ERR, MUTED, OK, WARN } from './theme'
+import { ATTN, BRAND, cardInner, CARD_MIN_COLS, ERR, MUTED, OK, WARN } from './theme'
 
 export const hhmm = (ts: number | null): string => (ts === null ? '--:--' : new Date(ts).toTimeString().slice(0, 5))
 const plural = (n: number, w: string): string => `${n} ${w}${n === 1 ? '' : 's'}`
@@ -17,11 +17,13 @@ export function taskSegs(snap: BelayPanelSnap, cols: number): Seg[] {
   const t = snap.tasks
   if (!t) return []
   if (t.total === null) return [{ t: 'tasks ', dim: true }, { t: `${t.held} held by agents` }]
+  if (t.total === 0) return [{ t: 'tasks ', dim: true }, { t: 'none yet', dim: true }]
   const b = bar(t.total ? (t.done ?? 0) / t.total : 0, cols >= 50 ? 10 : 6)
   return [{ t: 'tasks ', dim: true }, { t: b.on, c: OK }, { t: b.off, dim: true }, { t: ` ${t.done ?? 0}/${t.total}` }]
 }
 
-// The run's cost: the figure, then dim parts that drop whole from the end (when it is as of, how many agents have none recorded).
+// The run's cost: the figure with its as-of time, one part that is never dropped; then how many agents have none recorded and the hint that
+// the figure moves at a turn end, each dropped whole from the end when the line is narrow (the legend says the same).
 export function costSegs(snap: BelayPanelSnap): Seg[] {
   const f = snap.footer
   if (!f) return [{ t: 'cost not read', dim: true }]
@@ -29,8 +31,9 @@ export function costSegs(snap: BelayPanelSnap): Seg[] {
   if (f.totalCostUsd === null && !f.asOfMs) return [{ t: `no cost recorded yet${unrec ? ` · ${unrec}` : ''}`, dim: true }]
   return [
     { t: money(f.totalCostUsd) },
-    ...(f.asOfMs ? [{ t: ` @${hhmm(f.asOfMs)}`, dim: true, brk: true } as Seg] : []),
-    ...(f.notRecorded ? [{ t: ` · ${f.notRecorded} unrecorded`, dim: true, brk: true } as Seg] : []),
+    { t: ` as of ${f.asOfMs ? hhmm(f.asOfMs) : 'unknown'}`, dim: true },
+    ...(unrec ? [{ t: ` · ${unrec}`, dim: true, brk: true } as Seg] : []),
+    { t: ' · moves at turn end', dim: true, brk: true },
   ]
 }
 
@@ -54,7 +57,8 @@ export function Header(c: Ctx) {
   const tasks = taskSegs(snap, w)
   const cost = costSegs(snap)
   const gap = '   '
-  const together = tasks.length > 0 && widthOf(tasks) + gap.length + widthOf(cost) <= w
+  // Together when the tasks, the figure with its as-of and the unrecorded count fit; the turn-end hint then drops first if it does not.
+  const together = tasks.length > 0 && widthOf(tasks) + gap.length + widthOf(cost.filter(s => !/moves at turn end/.test(s.t))) <= w
   const fix = fixLines(snap, w)
   const stale = staleLine(snap)
   const body = (
@@ -100,7 +104,7 @@ const cpl = (cmd: string, inner: number): number => (cmd.split(/\s+·\s+/).every
 // text already names it; only an id that does not fit beside the text takes the line under it.
 export function Notices({ E, snap, ui, act, cols }: Ctx) {
   const { Box, Text, Button } = E
-  const ordered = [...snap.notices].sort((a: BelayNotice, b: BelayNotice) => (b.ts ?? 0) - (a.ts ?? 0))
+  const ordered = byNewest(snap.notices)
   const fresh = unseenNotices(ordered, ui)
   const inner = cols - INDENT
   if (!ordered.length) return <Section E={E} k="sn" title="NOTICES" cols={cols} summary={[{ t: 'none', dim: true }]} />
@@ -113,7 +117,7 @@ export function Notices({ E, snap, ui, act, cols }: Ctx) {
   ]
   return (
     <Section E={E} k="sn" title="NOTICES" cols={cols} summary={summary} fold={{ open, press: act.notices }}>
-      {open && ordered.slice(0, 8).map(n => {
+      {open && ordered.slice(0, NOTICE_ROWS).map(n => {
         const t = TONE[n.tone]
         const seen = ui.seen.includes(n.key)
         const room = inner - 8
@@ -136,7 +140,7 @@ export function Notices({ E, snap, ui, act, cols }: Ctx) {
           </Box>
         )
       })}
-      {open && ordered.length > 8 && <Line E={E} w={inner} k="nm" segs={[{ t: `and ${ordered.length - 8} older`, dim: true }]} />}
+      {open && ordered.length > NOTICE_ROWS && <Line E={E} w={inner} k="nm" segs={[{ t: `and ${ordered.length - NOTICE_ROWS} older`, dim: true }]} />}
     </Section>
   )
 }
@@ -154,7 +158,7 @@ export function Legend({ E, cols }: Ctx) {
   const b = bar(0.6, 4)
   const c: Seg[][] = [
     [{ t: b.on, c: OK }, { t: b.off, dim: true }, { t: ' cache time left; tasks done', dim: true }],
-    [{ t: b.on, c: ACCENT }, { t: b.off, dim: true }, { t: ' context used: amber from 70%, red from 90%', dim: true }],
+    [{ t: b.on }, { t: b.off, dim: true }, { t: ' context used: amber from 70%, red from 90%', dim: true }],
     [{ t: '18.2k · 2%', dim: false }, { t: ' context: tokens, and the share of the window when known', dim: true }],
     [{ t: '■', c: OK }, { t: ' ok, review holds  ', dim: true }, { t: '■', c: WARN, brk: true }, { t: ' look soon, paused', dim: true }],
     [{ t: '■', c: ERR }, { t: ' failed  ', dim: true }, { t: '■', c: ATTN, brk: true }, { t: ' waits on you', dim: true }],
@@ -163,7 +167,7 @@ export function Legend({ E, cols }: Ctx) {
     <Section E={E} k="sl" title="LEGEND" cols={cols} summary={[{ t: '? closes', dim: true }]}>
       {m.map(([col, g, t]) => <Line E={E} w={inner} k={`lg${g}${t}`} segs={[{ t: g, c: col }, { t: ` ${t}`, dim: true }]} />)}
       {c.map((s, i) => <Line E={E} w={inner} k={`lc${i}`} segs={s} />)}
-      <Line E={E} w={inner} k="lz" segs={[{ t: '@hh:mm cost is as of the last turn end · → command to act', dim: true }]} />
+      <Line E={E} w={inner} k="lz" segs={[{ t: 'cost as of / @hh:mm: at the last turn end, it moves when a turn ends · → command to act', dim: true }]} />
     </Section>
   )
 }

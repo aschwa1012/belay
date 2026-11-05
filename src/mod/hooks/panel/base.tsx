@@ -6,7 +6,7 @@ import { fitSegs, type Seg } from './model'
 import { cells, clipCells } from './wrap'
 import type { SettleAction } from './held'
 import type { MemAction } from './memory'
-import { ACCENT } from './theme'
+import { headSeg } from './theme'
 
 export type Els = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button' | 'Input'>
 export type Act = {
@@ -68,7 +68,7 @@ export function shortModel(m: string | null): string {
 
 // ---- sections ----------------------------------------------------------------------------------
 
-// Every block of the pane is a Section: one bold heading in caps in the accent colour, an optional summary beside it, one blank line above,
+// Every block of the pane is a Section: one bold heading in caps, an optional summary beside it, one blank line above,
 // and its rows indented by one space. A caller draws the rows at `cols - 1`. A section that folds has a dim ▾/▸ button after its heading.
 export const INDENT = 1
 // Pack segments onto lines of at most `room` cells, never splitting one. A bare ' · ' joiner that would start a line is dropped.
@@ -97,7 +97,7 @@ export function Section({ E, k, title, summary, cols, fold, children }: { E: Els
   // The summary sits beside the heading when the whole of it fits; otherwise it wraps on its own lines under the heading. It is never dropped.
   const sw = (summary ?? []).reduce((n, s) => n + cells(s.t), 0)
   const beside = !summary || !summary.length || cells(title) + 2 + sw + fw <= cols
-  const head: Seg[] = [{ t: title, bold: true, c: ACCENT }, ...(summary && summary.length && beside ? [{ t: '  ' } as Seg, ...summary] : [])]
+  const head: Seg[] = [headSeg(title), ...(summary && summary.length && beside ? [{ t: '  ' } as Seg, ...summary] : [])]
   const below = !beside && summary ? packSegs(summary, Math.max(1, cols - INDENT)) : []
   return (
     <Box key={k} flexDirection="column" marginTop={1}>

@@ -200,6 +200,13 @@ export function normNotices(json: unknown): BelayNotice[] {
   return out
 }
 
+// The pane draws the newest NOTICE_ROWS notices and counts the older ones under them ("and N older").
+export const NOTICE_ROWS = 8
+export const byNewest = (ns: BelayNotice[]): BelayNotice[] => [...ns].sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0))
+// The notices that opening or watching the pane marks seen (decision 3): every one while the NOTICES list is open, older ones counted under it
+// included (marking only the drawn rows would leave the older ones new for ever); none while the list is folded or the Memory menu covers the pane.
+export const noticesSeen = (ns: BelayNotice[], ui: BelayPanelUi): BelayNotice[] => (ui.noticesFold || ui.memTab !== null ? [] : ns)
+
 // A stopped worker is not one of decision 5's notices: it is listed in the pane, never in the band or the count.
 export const unseenNotices = (ns: BelayNotice[], ui: BelayPanelUi): BelayNotice[] =>
   ns.filter(n => n.tone !== 'stopped' && !ui.seen.includes(n.key)).sort((a, b) => TONE[a.tone].rank - TONE[b.tone].rank || (b.ts ?? 0) - (a.ts ?? 0))
@@ -285,7 +292,7 @@ export function ctxSegs(a: BelayAgent, s: BelaySettings, mode: CtxMode = 'full')
   const tok: Seg | null = a.ctxTokens !== null ? { t: tokensShort(a.ctxTokens) } : null
   const pct = a.ctxPct
   if (pct === null) return [tok ?? { t: '—', dim: true }]
-  const c = ctxColor(pct) // the pressure: the accent, amber from 70%, red from 90%
+  const c = ctxColor(pct) // the pressure: the default colour, amber from 70%, red from 90%
   const fig: Seg = { t: `${Math.round(pct)}%`, ...(pct >= CTX_WARN_PCT ? { c } : {}) }
   if (mode === 'tokens') return [tok ?? fig]
   const b = bar(pct / 100, 6)
