@@ -3,12 +3,14 @@
 // `/tmp` only in its own argument conversion. A native program a worker runs (node, python, the Write tool) that opens the
 // literal `/tmp/x` gets the root of the current drive, `C:\tmp\x`, which is the operator's folder and not the session's
 // temp dir. `refusal(payload, tempDir)` returns the one-line refusal for a PreToolUse payload that would do that, or null.
-// Two checks: Write, Edit, MultiEdit and NotebookEdit by exact path, and a Bash command by a textual scan of its heredoc
-// bodies and inline scripts (`node -e`, `python -c`). The Bash check is a safety net, not a parser: a path built at run
+// Two checks: Write, Edit, MultiEdit and NotebookEdit by exact path, and a Bash or PowerShell command by a textual scan of its heredoc
+// bodies and inline scripts (`node -e`, `python -c`) and, in tmp-shell.cjs (amendment 1), of its redirects, write commands, wrappers and
+// scripts run by name. The command check is a safety net, not a parser: a path built at run
 // time out of pieces escapes it, and a heredoc that only mentions `/tmp` in prose is refused. Plain node, no requires
 // beyond os: guard.cjs runs it in the one hook process spawned for every Write, Edit and Bash call.
 const os = require('node:os');
 const path = require('node:path');
+const TS = require('./tmp-shell.cjs');
 
 const FILE_TOOLS = { Write: 'file_path', Edit: 'file_path', MultiEdit: 'file_path', NotebookEdit: 'notebook_path' };
 
@@ -17,6 +19,9 @@ const FILE_TOOLS = { Write: 'file_path', Edit: 'file_path', MultiEdit: 'file_pat
 const MAX_JSON = 380;
 const RULE_HEAD = 'Do not write to /tmp or <drive>:\\tmp: it is the root of the current drive, not a temp folder. Use ';
 const RULE_TAIL = ' (os.tmpdir(), tempfile, $TEMP) or a path in your worktree.';
+// A script run by name that only names /tmp in its text is not a write the hook saw: its own line, which sends a writer to $TEMP and a
+// script that only holds the path as data to npm test, so nobody edits /tmp out of a test of this guard. Fixed text, inside the byte bound.
+const SCRIPT_MESSAGE = 'This script names /tmp or <drive>:\\tmp. If it writes there, use $TEMP instead; if it only names the path as data, run it through npm test.';
 function message(tempDir) {
   let dir = String(tempDir || os.tmpdir());
   while (dir.length > 8 && Buffer.byteLength(denyOutput(RULE_HEAD + dir + RULE_TAIL), 'utf8') > MAX_JSON) dir = dir.replace(/^(?:\.\.\.)?[\s\S]{1,10}/, '...');
@@ -90,8 +95,10 @@ function refusal(payload, tempDir) {
   const tool = payload.tool_name;
   const input = payload.tool_input;
   if (Object.prototype.hasOwnProperty.call(FILE_TOOLS, tool)) return rootedTmp(input[FILE_TOOLS[tool]]) ? message(tempDir) : null;
-  if (tool === 'Bash' && typeof input.command === 'string' && input.command) {
-    if (scriptRegions(input.command).some((r) => LITERAL.test(r))) return message(tempDir);
+  if ((tool === 'Bash' || tool === 'PowerShell') && typeof input.command === 'string' && input.command) {
+    const hit = (text) => scriptRegions(text).some((r) => LITERAL.test(r));
+    const ctx = { cwd: payload.cwd, since: () => require('./worker-temp.cjs').birthOf(tempDir || os.tmpdir()), rooted: rootedTmp, literal: LITERAL, hit, note: null };
+    if (TS.analyze(input.command, tool === 'Bash' ? 'bash' : 'win', ctx)) return ctx.note === 'script' ? SCRIPT_MESSAGE : message(tempDir);
   }
   return null;
 }
@@ -101,4 +108,4 @@ function denyOutput(reason) {
   return JSON.stringify({ hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny', permissionDecisionReason: reason } });
 }
 
-module.exports = { refusal, denyOutput, rootedTmp, message };
+module.exports = { refusal, denyOutput, rootedTmp, message, SCRIPT_MESSAGE };

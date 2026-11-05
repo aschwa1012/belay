@@ -7,7 +7,7 @@ function body(spec, prompt) {
   return s && p ? `${s}\n\n${p}` : s || p;
 }
 // The one standing line every worker's first message carries (a spawn and a fresh restart, which start a new session; a resume, a park-resume and a task_assign to a running worker do not repeat it).
-const PROCESS_LINE = '\n\nOther processes on this machine are not yours: stop a process only by its exact pid.';
+const PROCESS_LINE = '\n\nOther processes on this machine are not yours: stop a process only by its exact pid. Your TEMP is a folder belay made for you: put scratch files there, never in /tmp or C:\\tmp.';
 // A worker whose built-in tools were narrowed at spawn (by its agent type or by the spawn's allowed_tools) is told what it has and why,
 // so it does not guess ("the Bash tool was disabled"). A worker with all six, or a harness job, gets nothing added.
 function toolsLine(w) {

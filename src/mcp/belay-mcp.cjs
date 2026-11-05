@@ -455,7 +455,7 @@ async function shutdown() {
       // A verdict drain that was cut off or failed is named here (the review tasks still pending and what became of the receipt), never dropped.
       const vd = res && res.verdict_drain;
       const drainText = vd ? ` verdict_drain=[pending ${(vd.pending || []).join(', ') || 'none'}; receipt ${vd.receipt === 'written' ? 'written' : (vd.receipt && vd.receipt.error) || 'none'}${vd.error ? `; error ${vd.error}` : ''}]` : '';
-      const line = `shutdown stopped=${stopped.length}${stopped.length ? ` [${stopped.join(', ')}]` : ''} ms=${res && res.ms}${drainText}`;
+      const line = `shutdown stopped=${stopped.length}${stopped.length ? ` [${stopped.join(', ')}]` : ''} ms=${res && res.ms}${drainText} ${require('../run/worker-temp.cjs').describe(res && res.worker_temp)}`.trimEnd();
       wlog('##', line);
       process.stderr.write(`belay-mcp: ${line}\n`);
     } else if (core) {
