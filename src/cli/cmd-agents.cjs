@@ -238,7 +238,7 @@ function workerRow(w, tasksById, dataDir, { now, pending, leaseTaskOf = new Map(
   return {
     id: w.id, ...roleOf(w.task_id ? tasksById.get(w.task_id) : null), substrate: nn(w.substrate),
     task: D.currentTask(w, tasksById, leaseTaskOf),
-    pid: nn(w.pid), permission_mode: nn(w.permission_mode_effective), permission_mode_is: 'effective', claude_code_version: nn(w.claude_code_version),
+    pid: nn(w.pid), started_at_ms: nn(w.started_at), exited_at_ms: nn(w.exited_at), permission_mode: nn(w.permission_mode_effective), permission_mode_is: 'effective', claude_code_version: nn(w.claude_code_version),
     model: w.model != null ? w.model : ctx.model_seen, model_seen: ctx.model_seen, effort: nn(w.effort_requested), effort_is: 'requested',
     state: nn(w.state), context_tokens: ctx.context_tokens, context_window: ctx.context_window, context_pct: ctx.context_pct,
     window_source: ctx.context_window != null ? 'own result line' : null,

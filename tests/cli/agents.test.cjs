@@ -95,6 +95,9 @@ test('agents: one row for the orchestrator and one per worker, context from the 
     assert.strictEqual(by.w1.context_window, 500000, 'the window is the stream\'s own, not a constant');
     assert.strictEqual(by.w1.context_pct, 0.8);
     assert.strictEqual(by.w1.role, null);
+    assert.strictEqual(typeof by.w1.started_at_ms, 'number', 'the worker row\'s started_at, for the panel\'s uptime');
+    assert.ok(Date.now() - by.w1.started_at_ms >= 60000 && Date.now() - by.w1.started_at_ms < 600000, String(by.w1.started_at_ms));
+    assert.strictEqual(by.w1.exited_at_ms, null, 'a running worker has no exit time');
 
     assert.strictEqual(by.w2.context_tokens, null, 'a Codex stream is not parsed');
     assert.strictEqual(by.w2.cost_usd, null);
