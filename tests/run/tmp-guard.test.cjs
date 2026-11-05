@@ -314,7 +314,7 @@ test('in a worker temp folder a script is read when it was edited after the firs
     assert.ok(run('node after.js'));
     assert.strictEqual(run('node after.js'), TG.SCRIPT_MESSAGE, 'a script that only names the path has its own reason, not the write refusal');
     assert.ok(Buffer.byteLength(TG.denyOutput(TG.SCRIPT_MESSAGE), 'utf8') < 400 && !TG.SCRIPT_MESSAGE.includes('\n'));
-    assert.match(TG.SCRIPT_MESSAGE, /names \/tmp.*run time.*npm test/);
+    assert.match(TG.SCRIPT_MESSAGE, /names \/tmp.*use \$TEMP.*npm test/);
     put('writes.sh', 'echo x > C:/tmp/f\n', birth + 90 * 60 * 1000);
     assert.ok(run('bash writes.sh') && run('bash writes.sh') !== TG.SCRIPT_MESSAGE, 'a script whose text writes there keeps the write refusal');
     assert.match(run('echo x > C:/tmp/f'), /^Do not write to/, 'and so does a write on the command line');

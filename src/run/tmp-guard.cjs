@@ -19,9 +19,9 @@ const FILE_TOOLS = { Write: 'file_path', Edit: 'file_path', MultiEdit: 'file_pat
 const MAX_JSON = 380;
 const RULE_HEAD = 'Do not write to /tmp or <drive>:\\tmp: it is the root of the current drive, not a temp folder. Use ';
 const RULE_TAIL = ' (os.tmpdir(), tempfile, $TEMP) or a path in your worktree.';
-// A script run by name that only names /tmp in its text is not a write the hook saw: its own line, so the worker builds the path at run time
-// (or runs the file through npm test) and does not edit /tmp out of a test of this guard. Fixed text, well inside the byte bound.
-const SCRIPT_MESSAGE = 'This script names /tmp or <drive>:\\tmp in its text, which the hook cannot tell from a write. Build the path at run time, use $TEMP, or run the file through npm test.';
+// A script run by name that only names /tmp in its text is not a write the hook saw: its own line, which sends a writer to $TEMP and a
+// script that only holds the path as data to npm test, so nobody edits /tmp out of a test of this guard. Fixed text, inside the byte bound.
+const SCRIPT_MESSAGE = 'This script names /tmp or <drive>:\\tmp. If it writes there, use $TEMP instead; if it only names the path as data, run it through npm test.';
 function message(tempDir) {
   let dir = String(tempDir || os.tmpdir());
   while (dir.length > 8 && Buffer.byteLength(denyOutput(RULE_HEAD + dir + RULE_TAIL), 'utf8') > MAX_JSON) dir = dir.replace(/^(?:\.\.\.)?[\s\S]{1,10}/, '...');
