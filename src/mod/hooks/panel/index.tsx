@@ -158,7 +158,7 @@ async function setOpen($: Host, open: boolean): Promise<void> {
   // Opening the panel is the person seeing the notices (decision 3): the current ones are marked seen.
   const seen = open ? [...new Set([...ui.seen, ...(snap?.notices ?? []).map(n => n.key)])].slice(-200) : ui.seen
   await update($, uiA, u => ({ ...u, open, placed, seen }))
-  lastFetchAt = 0
+  lastFetchAt = 0; backoffUntil = 0 // opening or closing the pane, like a press, reads at once, back-off or not
   $.ui.invalidate('ui.render')
 }
 
@@ -327,7 +327,7 @@ async function dispatchMenu($: Host, a: MemAction, menu: BelayMenuT): Promise<vo
   }
   if (ok && a.kind === 'saveRouting') await update($, uiA, u => ({ ...u, routeDraft: null }))
   lastSettingsAt = 0 // what was written shows on the next round
-  lastFetchAt = 0
+  lastFetchAt = 0; backoffUntil = 0
   menuForce = true
   $.ui.invalidate('ui.render')
 }
@@ -470,7 +470,7 @@ async function recheckNote($: Host, id: string): Promise<void> {
   if (settling.has(id)) { $.ui.toast(`belay: note ${shortId(id)} is being settled; wait for it to finish.`); return }
   const at = await $.clock.now()
   await update($, settledA, m => (m[id] && (m[id]!.pending !== true || at - m[id]!.at > PENDING_STALE_MS) ? { ...m, [id]: { label: 're-checking', at } } : m))
-  lastFetchAt = 0
+  lastFetchAt = 0; backoffUntil = 0
   $.ui.invalidate('ui.render')
 }
 
@@ -480,7 +480,7 @@ async function markSettled($: Host, id: string, line: string): Promise<void> {
   const at = await $.clock.now() // stamped after the process returned; the API has only the epoch clock (no monotonic one), so this is compared with fetchedAt in the same clock
   const k = settleKind(line)
   await update($, settledA, m => pruneSettled({ ...m, [id]: { label: k.label, at, ...(k.kind === 'unknown' ? { unknown: true as const } : {}) } }, id))
-  lastFetchAt = 0
+  lastFetchAt = 0; backoffUntil = 0
   $.ui.invalidate('ui.render')
 }
 

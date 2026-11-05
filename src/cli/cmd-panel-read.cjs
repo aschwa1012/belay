@@ -12,7 +12,7 @@
 // no connection to the store is held between rounds. The verb writes nothing, starts nothing of its own, and imports the
 // embedder nowhere: every module is required only when its part is read.
 //
-//   belay panel-read [run-id] [--dir <orchestrator dir>] [--tail <n>] [--fixed] [--prev-mode <mode>] [--settings]
+//   belay panel-read [run-id] [--dir <orchestrator dir>] [--tail <n>] [--fixed] [--prev-mode <mode>] [--prev-run <id>] [--settings]
 //
 //   --fixed       the panel is the interactive orchestrator's own window: its transcript is never read, and settings are read
 //                 from the project root that holds the data dir
@@ -34,7 +34,7 @@ function parseArgs(argv) {
     if (a === '--dir') { out.dir = value(); if (!out.dir) return { error: '--dir needs a directory' }; }
     else if (a === '--tail') {
       const v = value();
-      if (!/^[1-9][0-9]{0,5}$/.test(v || '')) return { error: '--tail needs a positive whole number' };
+      if (!/^[1-9][0-9]{0,3}$/.test(v || '') || Number(v) > 1000) return { error: '--tail needs a whole number from 1 to 1000' };
       out.tail = v;
     }
     else if (a === '--prev-mode') { out.prevMode = value(); if (!out.prevMode) return { error: '--prev-mode needs a value' }; }
