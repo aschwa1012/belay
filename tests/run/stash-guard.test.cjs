@@ -27,6 +27,8 @@ const REFUSED = [
   'git-stash pop', 'git-stash.exe', 'C:/Program Files/Git/mingw64/libexec/git-core/git-stash.exe pop', '"git-stash" push',
   'git rebase --autostash main', 'git pull --rebase --autostash', 'git merge --autostash x', 'git -c rebase.autoStash=true rebase main', 'git -c merge.autostash=true merge x',
   'git update-ref -d refs/stash', 'git update-ref refs/stash HEAD', 'git reflog delete refs/stash@{0}', 'git reflog expire --expire=now refs/stash', 'git reflog expire --expire=now --all',
+  'git config rebase.autostash true', 'git config --global merge.autoStash yes', 'git config rebase.autostash on', 'git config rebase.autostash 1', 'git -c rebase.autostash rebase main', 'git -c rebase.autostash=1 pull',
+  'git stash --keep-index --help x', 'echo man; git-stash pop',
 ];
 const ALLOWED = [
   'git stash list', 'git stash list --stat', 'git stash show', 'git stash show -p stash@{0}', 'git -C ../repo stash list', 'git.exe stash show',
@@ -34,6 +36,9 @@ const ALLOWED = [
   'git stash-helper', 'git log --grep stash', 'echo stashed', 'ls .git/stash', 'git worktree add ../w', 'git switch -c tmp/x',
   'git reflog show refs/stash', 'npm run stash', 'rg -n "stash" src',
   'git rebase --no-autostash main', 'git pull --rebase', 'git update-ref refs/heads/x HEAD', 'git reflog', 'git reflog expire --expire=now refs/heads/x', 'docs/git-stash.md', 'cat docs/git-stash.md', '& {git status}', 'Invoke-Command {git stash list}',
+  'git config --get rebase.autostash', 'git config rebase.autostash', 'git config rebase.autostash false', 'git config --global rebase.autoStash no', 'git config --unset rebase.autoStash',
+  'git -c rebase.autostash=false rebase main', 'git -c merge.autostash=0 merge x', 'git config --get-all merge.autostash',
+  'man git-stash', 'help git-stash', 'git stash --help', 'git stash -h', 'git -C x stash --help',
 ];
 
 test('the matcher refuses every writing git stash shape', () => {
