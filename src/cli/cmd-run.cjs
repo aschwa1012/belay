@@ -104,6 +104,8 @@ async function run(ctx) {
   fs.mkdirSync(dataDir, { recursive: true });
 
   const t0 = Date.now();
+  const DT = require('../run/drive-tmp.cjs');
+  const driveTmpStart = DT.snapshot(DT.folder()); // the drive-root tmp, listed now and again at the end: a record, never a gate
   // 5c design item 5: `stopControl` is a `let` bound only after openCore, so the arrow below is late-bound: no owner exists until
   // the election, so no control can arrive before it is assigned.
   // ADR 0023 amendment 3 decision 4: `runPauseControl` (run-pause.cjs) joins it, registered as `run.pause`/`run.resume`. `hookBox` is the
@@ -440,7 +442,7 @@ async function run(ctx) {
     levers: parsed.levers, prompt_warnings: parsed.promptWarnings, on_embedder_failure_final: guard.mode(), memory_off: guard.memoryOff(), embedder: warm, embedder_failures: guard.events(), ...(guard.reloads().length ? { embedder_reloads: guard.reloads() } : {}), ...(embedBounds && embedBounds.length ? { embedder_bounds: embedBounds } : {}),
     review_rounds: reviewRounds.value, review_rounds_reason: reviewRounds.reason,
     workers_closed: closed ? workersClosedBlock(closed, endedRow ? (endedRow.workers_marked_dead || []) : null) : null,
-    ...(closeStages ? { close_stages: closeStages } : {}), ...(await require('./run-prepared.cjs').left(core, parsed.runId)), // close_stages only with notes on; prepared_left: merges kept for the user
+    ...(closeStages ? { close_stages: closeStages } : {}), ...DT.receiptBlock(driveTmpStart, DT.snapshot(DT.folder())), ...(await require('./run-prepared.cjs').left(core, parsed.runId)), // close_stages only with notes on; prepared_left: merges kept for the user
     ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), ...(treesClosed ? { worktrees_closed: treesClosed } : {}), ...(taskChecks || {}), ...(await require('../run/run-digest.cjs').receiptField(core, dataDir, parsed.runId)), ...require('../run/review-scratch.cjs').closeRun(dataDir, parsed.runId, parsed.levers), // the run-end memory jobs; the reviewers' scratch removed (ADR 0054 amendment 1)
   };
   try {
