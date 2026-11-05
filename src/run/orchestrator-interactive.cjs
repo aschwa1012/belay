@@ -188,7 +188,7 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
     src: PC.modSourceDir(), dest: path.join(written.dir, 'plugin'),
     run: {
       role: 'orchestrator', run_id: runId, data_dir: fwd(dataDir), belay_cli: fwd(path.join(__dirname, '..', 'cli', 'belay.cjs')),
-      node: fwd(process.execPath), orchestrator_dir: fwd(written.dir), wake_nonce: wakeNonce, session_id: sessionId,
+      node: fwd(process.execPath), orchestrator_dir: fwd(written.dir), wake_nonce: wakeNonce,
     },
   });
   const argv = argvFn({

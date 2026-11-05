@@ -2,13 +2,13 @@ import type { Register } from 'claude-code'
 import { activeConfig, streamArgv, deliveredPath, errorsPath, parseLine, createDelivery, lineSplitter, decide, readDelivered, heldNotice, releasedNotice, HELD_RETRY_MS } from './core.mjs'
 
 // ADR 0037 amendment 5 decision 3. Thin: it decides nothing. It starts `belay wake-stream` (a child the
-// engine kills on reload and at exit), and for each wake line submits the text and then records the id in a file outside this copy:
-// at least once, in order (core.mjs createDelivery). A session with no belay-run.json naming the orchestrator role (a watching session)
-// does nothing. A delivered file that cannot be read (anything but a missing file) starts nothing and is read again later: it is never
-// taken for "nothing delivered". A wake Claude Code cannot take now (no session bound in its process, or a window holding a session
-// that is not the orchestrator's, by `$.session.id()` against the launcher's session id) is held, said on this plugin's status line,
-// and tried again every few seconds ahead of every later wake; a toast says when held wakes have gone out. One delivery per module
-// load: a session.start that fires again in the same load starts nothing.
+// engine kills on reload and at exit), and for each wake line submits the text and records the id in a file outside this copy, in
+// order: a claimed wake (a halt or a death) at least once, every other wake at most once (core.mjs createDelivery). A session with no
+// belay-run.json naming the orchestrator role (a watching session) does nothing. A delivered file that cannot be read (anything but a
+// missing file) starts nothing and is read again later: it is never taken for "nothing delivered". A wake Claude Code refuses because
+// no session is bound in its process is held, said on this plugin's status line, and tried again every few seconds ahead of every
+// later wake; a toast says how many were held and for how long once they have gone out. One delivery per module load: a
+// session.start that fires again in the same load starts nothing.
 export const registerWake = (on: Parameters<Register>[0]): void => {
   let active = false
   // The matcher keeps this apart from the panel's own unmatched session.start hook (one per module is allowed).
@@ -36,7 +36,6 @@ export const registerWake = (on: Parameters<Register>[0]): void => {
           write: (f: string, c: string) => $.fs.write(f, c),
           submit: (text: string) => $.prompt.submit({ text }),
           log,
-          bound: async () => (cfg.session_id ? (await $.session.id()) === cfg.session_id : true),
         },
       })
       const delivered = delivery.delivered
@@ -48,9 +47,9 @@ export const registerWake = (on: Parameters<Register>[0]): void => {
       let shown = ''
       const showHeld = (): void => {
         const out = delivery.takeReleased()
-        if (out) { try { $.ui.toast(releasedNotice(out)) } catch { /* no surface: the status line below still clears */ } }
+        if (out.n) { try { $.ui.toast(releasedNotice(out.n, out.longestMs)) } catch { /* no surface: the status line below still clears */ } }
         const n = delivery.held.size
-        const said = n ? heldNotice(n, delivery.heldWhy || 'unbound') : ''
+        const said = n ? heldNotice(n) : ''
         if (said === shown) return
         shown = said
         try { $.ui.status(n ? said : undefined) } catch { /* no surface to pin it on right now: the next change tries again */ shown = '?' }

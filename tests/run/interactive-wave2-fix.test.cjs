@@ -30,7 +30,7 @@ const modUrl = `file://${path.resolve(__dirname, '../../src/mod/hooks/wake/core.
 
 // ---------------------------------------------------------------- delivered-file ordering (finding 3)
 
-test('delivery: the submit comes first and the record after; a failed record is written again, never submitted again', async () => {
+test('delivery: the id is recorded only after the file write succeeds, and the submit only after the record is persisted', async () => {
   const m = await import(modUrl);
   const log = [];
   let failWrite = true;
@@ -40,20 +40,18 @@ test('delivery: the submit comes first and the record after; a failed record is 
     file: 'F', initial: '',
     io: {
       write: async (f, c) => { if (failWrite) throw new Error('disk full'); files[f] = c; },
-      submit: async (t) => { assert.ok(!(files.F || '').includes('"id":"a"'), 'the record was on disk before the submit'); submitted.push(t); },
+      submit: async (t) => { assert.ok((files.F || '').includes('"id":"a"'), 'the submit ran before the record was on disk'); submitted.push(t); },
       log: (e) => log.push(e),
     },
   });
-  assert.strictEqual(await d.deliver('a', 'one'), 'submitted');
-  assert.deepStrictEqual(submitted, ['one']);
-  assert.strictEqual(d.delivered.has('a'), true, 'a submitted wake is delivered in memory, written or not');
-  assert.deepStrictEqual([...d.unrecorded], ['a']);
-  await d.retryPending(); await d.retryPending();
-  assert.deepStrictEqual(log.map((e) => e.stage), ['write'], 'one log line for the failed write, however many retries');
+  assert.strictEqual(await d.deliver('a', 'one'), 'write-failed');
+  assert.deepStrictEqual(submitted, [], 'a failed write submitted anyway');
+  assert.strictEqual(d.delivered.has('a'), false, 'a failed write recorded the id in memory');
+  assert.strictEqual(log.length, 1);
+  assert.strictEqual(log[0].stage, 'write');
   failWrite = false;
-  assert.strictEqual(await d.retryPending(), 0);
-  assert.ok(files.F.includes('"id":"a"'), 'the record lands');
-  assert.deepStrictEqual(submitted, ['one'], 'and the wake was submitted once');
+  assert.strictEqual(await d.deliver('a', 'one'), 'submitted', 'a wake whose write failed is deliverable on a replay');
+  assert.deepStrictEqual(submitted, ['one']);
   assert.strictEqual(await d.deliver('a', 'one'), 'skip');
 });
 
