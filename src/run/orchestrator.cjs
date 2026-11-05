@@ -305,7 +305,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     if (state.finishing) return; // a wake's own write may have found the child already gone
 
     if (pollAgain) { pollHandle = setTimeout(pollOnce, pollMs); return; } // a turn ended after the read: decide on the re-poll's rows
-    if (state.idle && await require('./orchestrator-idle-close.cjs').idleClose({ state, rows, runId, pending_deaths, turnAtCall, hold, awaitingWakeIds, callWatcher, recordHold, preClose, writeWake, closeThenKillOnDeadline })) return;
+    if (state.idle && await require('./orchestrator-idle-close.cjs').idleClose({ state, rows, runId, pending_deaths, turnAtCall, hold, awaitingWakeIds, callWatcher, recordHold, preClose, writeWake, closeThenKillOnDeadline, policyWatcher })) return;
     pollHandle = setTimeout(pollOnce, pollMs);
   }
 
