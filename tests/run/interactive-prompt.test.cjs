@@ -114,7 +114,7 @@ test('interactive prompt: apart from three named ranges the twin equals orchestr
   const role = hs.get('## Your role').map((l) => l.replace('and when you end the run (the outcome', 'and when you stop (the outcome'));
   assert.notDeepStrictEqual(role, hs.get('## Your role'), 'the substitution applied');
   assert.deepStrictEqual(ts.get('## Your role'), role);
-  for (const k of ['## Tasks', '## Handing a task to a worker', '## Rules of thumb']) assert.deepStrictEqual(ts.get(k), hs.get(k), k);
+  for (const k of ['## Tasks', '## Handing a task to a worker', "## Plans: belay's policy manager", '## Rules of thumb']) assert.deepStrictEqual(ts.get(k), hs.get(k), k);
   // ADR 0037 amendment 6: each "wait on its id" becomes "end your turn until its wake".
   const WAKE_PHRASES = [
     ['wait on its id, and evaluate again', 'end your turn until its wake, and evaluate again'],
