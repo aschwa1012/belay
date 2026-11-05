@@ -273,12 +273,17 @@ test('the test helper removes at exit only the run folders this process made, an
   try {
     const build = (root) => {
       const made = {};
-      for (const name of ['mine', 'otherpid', 'wrongcreated', 'wrongrun', 'two']) { made[name] = path.join(root, 'belay', name); fs.mkdirSync(path.join(made[name], 'w1'), { recursive: true }); }
+      for (const name of ['mine', 'otherpid', 'wrongcreated', 'wrongrun', 'two', 'deadowner', 'deadandlive', 'deadwrongrun', 'noowner', 'noownerold']) { made[name] = path.join(root, 'belay', name); fs.mkdirSync(path.join(made[name], 'w1'), { recursive: true }); }
       owner(made.mine, process.pid);
       owner(made.otherpid, process.ppid);
       owner(made.wrongcreated, process.pid, { created: 1 });
       owner(made.wrongrun, process.pid, { run_id: 'something-else' });
       owner(made.two, process.pid); owner(made.two, process.ppid);
+      const gone = deadPid(); const gone2 = deadPid();
+      owner(made.deadowner, gone); owner(made.deadowner, gone2); // launchers that were killed with their test: every one dead
+      owner(made.deadandlive, gone); owner(made.deadandlive, process.ppid);
+      owner(made.deadwrongrun, gone, { run_id: 'something-else' });
+      const old = new Date(Date.now() - 5 * 60 * 1000); fs.utimesSync(made.noownerold, old, old);
       return made;
     };
     // a real-looking temp dir: nothing is removed, not even the folder that is ours
@@ -291,7 +296,29 @@ test('the test helper removes at exit only the run folders this process made, an
     const inScratch = build(scratch);
     setTemp(scratch); helper.removeOwnRunFolders();
     assert.ok(!fs.existsSync(inScratch.mine), 'the folder this process made is removed');
-    for (const n of ['otherpid', 'wrongcreated', 'wrongrun', 'two']) assert.ok(fs.existsSync(inScratch[n]), `${n} is left`);
+    for (const n of ['otherpid', 'wrongcreated', 'wrongrun', 'two', 'deadandlive', 'deadwrongrun', 'noowner']) assert.ok(fs.existsSync(inScratch[n]), `${n} is left`);
+    for (const n of ['deadowner', 'noownerold']) assert.ok(!fs.existsSync(inScratch[n]), `${n}: nothing alive owns it, so it is removed`);
+    for (const n of ['otherpid', 'wrongcreated', 'wrongrun', 'two', 'deadandlive', 'deadwrongrun', 'noowner']) fs.rmSync(inScratch[n], { recursive: true, force: true });
+    helper.removeOwnRunFolders();
+    assert.ok(!fs.existsSync(path.join(scratch, 'belay')), 'and the empty belay folder goes with the last of them');
+  } finally {
+    for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
+    fs.rmSync(parent, { recursive: true, force: true });
+  }
+});
+
+test('the test helper removes the run folder of a child process that made it and was gone before the test process exits', () => {
+  const helper = globalThis[Symbol.for('belay.tests.tmp')];
+  const parent = sandbox();
+  const scratch = path.join(parent, 'belay-test-tmp-child'); fs.mkdirSync(scratch);
+  const saved = { TEMP: process.env.TEMP, TMP: process.env.TMP, TMPDIR: process.env.TMPDIR };
+  try {
+    const r = require('node:child_process').spawnSync(process.execPath, [path.join(__dirname, 'fakes', 'make-temp-and-exit.cjs'), 'run-child', scratch], { encoding: 'utf8' });
+    assert.strictEqual(r.status, 0);
+    assert.ok(fs.existsSync(path.join(scratch, 'belay', 'run-child', 'w1', 'left.txt')), 'the child left its folder behind');
+    process.env.TEMP = process.env.TMP = process.env.TMPDIR = scratch;
+    helper.removeOwnRunFolders();
+    assert.ok(!fs.existsSync(path.join(scratch, 'belay')), 'the folder of the dead child and the empty belay folder are gone');
   } finally {
     for (const [k, v] of Object.entries(saved)) { if (v === undefined) delete process.env[k]; else process.env[k] = v; }
     fs.rmSync(parent, { recursive: true, force: true });

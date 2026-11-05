@@ -81,29 +81,37 @@ if (!globalThis[KEY]) {
   // which the runner removes with the tree even when this process is killed; otherwise git-env.cjs uses its own belay-gitcfg-* dir.
   require('./git-env.cjs');
 
-  // A worker's temp folder (src/run/worker-temp.cjs) is <temp>/belay/<run>/<worker>, made by whichever process launched the worker. A test
-  // whose manager is never shut down leaves it. Only when the temp dir is a scratch dir of the tests (the suite's or this helper's own) are
-  // the run folders this process launched into removed with the rest, and only those whose single owner file is this process's: its pid,
-  // a start time that is this process's, and the run id the folder is named for. A real-looking temp dir, another process's folder and a
-  // folder that merely has this pid in a name are never touched.
+  // A worker's temp folder (src/run/worker-temp.cjs) is <temp>/belay/<run>/<worker>, made by whichever process launched the worker: the
+  // test process, or an adapter or manager process it spawned and then killed. A test whose manager is never shut down leaves it. Only when
+  // the temp dir is a scratch dir of the tests (the suite's or this helper's own) is a run folder removed, and only when every owner file in
+  // it is plainly ours to judge: valid, naming the run the folder is called and the pid in its own name, and each pid is either this
+  // process (with its start time) or not alive. A folder with one live launcher, one odd owner file or another process's live pid is left. A
+  // folder with no owner file at all (a launch cut off between its two steps) goes once it is a minute old. An empty belay/ goes too. A
+  // real-looking temp dir is never touched. Several test processes share the suite's temp dir, so a folder whose launcher is alive in
+  // another test process stays; the last process to exit sweeps what the earlier ones' dead children left.
   function removeOwnRunFolders() {
     if (!/^belay-(suite|test)-tmp-/.test(path.basename(os.tmpdir()))) return;
     const top = path.join(os.tmpdir(), 'belay');
-    const mine = `.owner-${process.pid}.json`;
     const started = Date.now() - process.uptime() * 1000;
+    const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return !!(e && e.code === 'EPERM'); } };
     let runs = [];
     try { runs = fs.readdirSync(top); } catch { return; }
     for (const run of runs) {
       const dir = path.join(top, run);
       try {
-        if (fs.lstatSync(dir).isSymbolicLink()) continue;
+        const st = fs.lstatSync(dir);
+        if (st.isSymbolicLink() || !st.isDirectory()) continue;
         const owners = fs.readdirSync(dir).filter((n) => /^\.owner-\d+\.json$/.test(n));
-        if (owners.length !== 1 || owners[0] !== mine) continue;
-        const m = JSON.parse(fs.readFileSync(path.join(dir, mine), 'utf8'));
-        if (m && m.pid === process.pid && m.run_id === run && Math.abs(m.created - started) < 5000) fs.rmSync(dir, { recursive: true, force: true });
+        if (!owners.length) { if (Date.now() - st.mtimeMs > 60000) fs.rmSync(dir, { recursive: true, force: true }); continue; }
+        const ours = owners.every((n) => {
+          const m = JSON.parse(fs.readFileSync(path.join(dir, n), 'utf8'));
+          if (!m || m.run_id !== run || n !== `.owner-${m.pid}.json`) return false;
+          return m.pid === process.pid ? Math.abs(m.created - started) < 5000 : !alive(m.pid);
+        });
+        if (ours) fs.rmSync(dir, { recursive: true, force: true });
       } catch { /* busy, gone or not ours */ }
     }
-    try { fs.rmdirSync(top); } catch { /* not empty: others' folders */ }
+    try { fs.rmdirSync(top); } catch { /* not empty: folders of live launchers */ }
   }
 
   // One attempt per directory when budgetMs is 0; otherwise retried within the budget. Returns what remains.
