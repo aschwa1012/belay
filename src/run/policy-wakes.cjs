@@ -282,6 +282,7 @@ async function readRevisions(policy, runId, tasks) {
 function createPolicyWatcher({ core, runId, enabled = false }) {
   const sent = new Set();
   let last = [];
+  let lastSnap = null; // this poll's rows, for the idle close (policy-close-hold.cjs); null when the read failed or the watcher is off
   async function snapshot(seen) {
     let tasks = seen && seen.policyTasks; if (seen) seen.policyTasks = null;
     if (!tasks) { try { tasks = ((await core.task.list({})) || {}).tasks || []; } catch { return null; } }
@@ -292,15 +293,16 @@ function createPolicyWatcher({ core, runId, enabled = false }) {
     return { runId, tasks, integrations: ints, steps, failures, ...(revisions ? { revisions } : {}) };
   }
   async function poll(seen) {
-    if (!enabled && !(seen && seen.policyArmed)) return [];
+    if (!enabled && !(seen && seen.policyArmed)) { lastSnap = null; return []; }
     const snap = await snapshot(seen);
+    lastSnap = snap;
     if (!snap) return [];
     last = derive(snap);
     const out = [];
     for (const e of last) if (!sent.has(e.uid)) { sent.add(e.uid); out.push(wakeOf(e)); }
     return out;
   }
-  return { poll, active: () => last.slice() };
+  return { poll, active: () => last.slice(), snapshot: () => lastSnap };
 }
 
 module.exports = { fixRoundsLeft, derive, readRevisions, familyIds, exceptionOf, policyOf, rootOf, haltScope, haltedIds, textOf, wakeOf, createPolicyWatcher, HALTING, HALT_SCOPE, WAKE_TEXT_MAX };
