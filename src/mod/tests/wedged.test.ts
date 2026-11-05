@@ -12,7 +12,7 @@ describe('a wedged belay', () => {
     expect(wd.rounds.every(a => a.timeoutMs === 25000)).toBe(true) // one process per refresh, bounded as a whole; each read inside is bounded by the verb
     const before = wd.attempts.filter(a => a.verb === 'notices').length
     wd.w.hang = 'agents'
-    await later(wd, 5000)
+    await later(wd, 11000) // the band alone refreshes 10 s after the last round ended
     const t = (await band($)).text
     expect(t).toContain('reads slow (agents timed out)')
     expect(t).toContain('stale: last read failed')
