@@ -56,7 +56,7 @@ for (const cols of [30, 40, 72]) {
       expect(await paneText($, cols)).toContain('readsslow(awaitinglisttimedout)')
       wd.w.awaitingHang = false
       wd.w.awaitingFail = true
-      await later(wd, 11000)
+      await later(wd, 21000) // opening the pane read at once and timed out again, so the back-off is on its second step (20 s)
       const p = await paneText($, cols)
       expect(p).toContain('awaitinglistfailed')
       expect(p).not.toContain('readsslow')
