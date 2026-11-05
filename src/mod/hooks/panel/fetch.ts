@@ -237,3 +237,7 @@ export function roundParts(r: Ran): { parts: RoundParts; slow: boolean } {
   const parts: RoundParts = { agents: one(raw.agents) ?? { error: 'belay panel-read gave no agents part' }, notices: one(raw.notices), transcript: one(raw.transcript), settings: one(raw.settings), awaiting: one(raw.awaiting) }
   return { parts, slow: (r.json as { partial?: unknown }).partial === true || Object.values(parts).some(x => x !== null && 'timedOut' in x) }
 }
+
+// The same watch: a repeated session.start (a hot reload) with it keeps the snapshot and the seen notices.
+export const sameWatch = (a: BelayPanelWatch | null, b: BelayPanelWatch): boolean =>
+  !!a && a.runId === b.runId && a.dataDir === b.dataDir && a.cli === b.cli && a.node === b.node && a.orchDir === b.orchDir && a.fixed === b.fixed && a.error === b.error

@@ -34,6 +34,9 @@ export type BelayAgent = {
   launchMode: string | null
   version: string | null
   pid: number | null
+  /** The worker row's started_at and exited_at (epoch ms), as `belay agents --json` gives them; null when not recorded. */
+  startedAtMs: number | null
+  exitedAtMs: number | null
 }
 
 export type BelayNotice = {
@@ -151,6 +154,8 @@ export type BelayPanelUi = {
   selected: string | null
   legend: boolean
   foldOpen: boolean
+  /** The NOTICES section is folded to its heading (the count and how many are new). */
+  noticesFold?: boolean
   /** Keys of the orchestrator's tool-call groups the person expanded. */
   groups: string[]
   /** A docked Pane is actually seated; the inline panel is drawn while it is not. */

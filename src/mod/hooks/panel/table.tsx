@@ -4,6 +4,7 @@ import type { BelayAgent, BelayPanelSnap } from '../../types/index'
 import { cacheSegs, ctxSegs, type CtxMode, dur, fitSegs, interactiveMark, interactiveOrch, isLive, isReviewWorker, markSeg, markWidth, money, STATE_NAME, type Seg } from './model'
 import { cells, clipCells, wrapParts } from './wrap'
 import { clip, Line, pad, padName, shortModel, tp, type Act, type Ctx, type Els } from './base'
+import { ATTN, ERR, OK } from './theme'
 
 type Cols = { mark: number; agent: number; id: number; model: boolean; task: number; ctx: number; ctxMode: CtxMode; cache: number; cost: number }
 
@@ -78,12 +79,12 @@ function taskSegs(a: BelayAgent, snap: BelayPanelSnap, room: number): Seg[] {
   const perm = snap.notices.find(n => n.tone === 'permission' && n.agentId === a.id)
   const v = a.task && snap.notices.find(n => n.taskId === a.task!.id && (n.tone === 'holds' || n.tone === 'refuted'))
   const tail: Seg[] = []
-  if (v) tail.push({ t: ' → ', brk: true }, { t: v.tone === 'holds' ? 'holds' : 'refuted', c: v.tone === 'holds' ? 'merged' : 'error' })
-  if (perm) tail.push({ t: ` ▲ ${perm.ids}`, c: 'permission', brk: true })
+  if (v) tail.push({ t: ' → ', brk: true }, { t: v.tone === 'holds' ? 'holds' : 'refuted', c: v.tone === 'holds' ? OK : ERR })
+  if (perm) tail.push({ t: ` ▲ ${perm.ids}`, c: ATTN, brk: true })
   if (snap.settings.task === 'kind') {
     // The kind label is kept last: the permission mark drops first, then the verdict. A request id is about 30 cells, so
     // the mark stands alone here; the id and the commands are in the permission notice.
-    const kt: Seg[] = tail.map(x => (x.c === 'permission' ? { ...x, t: ' ▲' } : x))
+    const kt: Seg[] = tail.map(x => (x.c === ATTN ? { ...x, t: ' ▲' } : x))
     return fitSegs([a.task ? { t: clip(kindOf(a), room) } : { t: '—', dim: true }, ...kt], room)
   }
   const kept = fitSegs([{ t: '' }, ...tail], Math.max(1, room - 6)).slice(1)
@@ -111,6 +112,8 @@ function Detail({ E, a, snap, now, cols, last }: { E: Els; a: BelayAgent; snap: 
   const { Box } = E
   const rows: DRow[] = []
   rows.push({ k: 'status', sep: ' · ', parts: [interactiveOrch(a, snap) ? 'interactive — its words are in its own window' : `${STATE_NAME[a.state]} — established by ${a.stateBy ?? 'not recorded'}`, a.pid !== null ? `pid ${a.pid}` : ''] })
+  // How long the worker has run: from its row's started_at to its exit, or to now while it runs. Not shown when belay recorded no start.
+  if (a.startedAtMs !== null) rows.push({ k: 'uptime', sep: ' ', parts: [a.exitedAtMs !== null ? `ran ${dur(Math.max(0, a.exitedAtMs - a.startedAtMs))}, exited` : `${dur(Math.max(0, now - a.startedAtMs))}`] })
   const launch = [a.model, a.effort ? `effort ${a.effort}` : null, a.launchMode ? `mode ${a.launchMode}` : null, a.version ? `Claude Code ${a.version}` : null]
   rows.push({ k: 'launch', sep: ' · ', parts: launch.filter(Boolean).length ? launch.filter(Boolean) as string[] : ['not recorded'] })
   if (a.task) {
@@ -170,7 +173,7 @@ function AgentRow(c: Ctx & { a: BelayAgent; c: Cols; last: boolean }) {
           {w.model ? <Text dimColor> {pad(shortModel(a.model), 7)}</Text> : null}
         </Box>
         {w.task > 0 && cell('t', w.task, taskSegs(a, snap, w.task))}
-        {w.ctx > 0 && cell('x', w.ctx, ctxSegs(a, snap.settings, w.ctxMode))}
+        {w.ctx > 0 && cell('x', w.ctx, ctxSegs(a, snap.settings, w.ctxMode), true)}
         {w.cache > 0 && cell('k', w.cache, cacheSegs(a, snap.settings, snap.fetchedAt, now))}
         {cell('$', w.cost, [{ t: a.costUsd === null && io ? 'n/a' : costText(a), dim: a.costUsd === null }], true)}
       </Box>
@@ -192,7 +195,7 @@ export function Table(c: Ctx) {
       <Box key="th">
         <Box width={w.mark} marginRight={1}>{null}</Box>
         <Line E={E} w={cols - w.mark - 1} k="th1" segs={[{ t: pad('agent', w.agent + 1), dim: true }, ...(w.task > 0 ? [{ t: pad('task', w.task + 1), dim: true }] : []),
-          ...(w.ctx > 0 ? [{ t: pad('ctx', w.ctx + 1), dim: true }] : []), ...(w.cache > 0 ? [{ t: pad('cache', w.cache + 1), dim: true }] : []), { t: ' '.repeat(Math.max(0, w.cost - 4)) + 'cost', dim: true }]} />
+          ...(w.ctx > 0 ? [{ t: `${' '.repeat(Math.max(0, w.ctx - 3))}ctx `, dim: true }] : []), ...(w.cache > 0 ? [{ t: pad('cache', w.cache + 1), dim: true }] : []), { t: ' '.repeat(Math.max(0, w.cost - 4)) + 'cost', dim: true }]} />
       </Box>
       {live.map(a => <AgentRow {...c} a={a} c={w} last={a === lastRow} />)}
       {fin.length > 0 && (

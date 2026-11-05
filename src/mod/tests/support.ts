@@ -114,6 +114,10 @@ export type World = {
   /** Held at the settle's consuming write (the confirm press): the test changes the world meanwhile, then opens the gate. */
   settleGate?: Promise<void>
   settleOut?: { exitCode: number; stdout: string; stderr: string }
+  /** Fields merged into one agent's row of the agents read, by id (a context percent, started_at_ms, exited_at_ms). */
+  agentOver?: Record<string, Record<string, unknown>>
+  /** The run's embedder word in the agents read. */
+  embedder?: string
   heavy?: boolean; menuSlow?: number; menu?: unknown | null; writeResult?: (argv: string[]) => { exitCode: number; stdout: string; stderr: string }
 }
 
@@ -221,6 +225,7 @@ export function world(on: any, w: World) {
       if (a.id === 'coder-2' && w.coder2Left !== undefined) x.cache = { ttl_s: 300, left_ms: w.coder2Left, state: 'warm' }
       if (a.id === 'coder-1' && w.coder1Title) x.task = { ...a.task, title: w.coder1Title }
       if (w.noDisplay) delete x.display_state
+      if (w.agentOver?.[a.id]) Object.assign(x, w.agentOver[a.id])
       return x
     })
     const extra = (w.extra ?? []).map(d => ({ id: `w-${d}`, role: null, model: 'claude-sonnet-5-5', state: d, display_state: d, display_state_established_by: `test ${d}`, context_pct: 5, cost_usd: null, task: null }))
@@ -229,7 +234,7 @@ export function world(on: any, w: World) {
     const body: Record<string, unknown> = {
       agents: {
         run_id: w.noRun ? null : (w.runId ?? RUN), mode: 'mode' in w ? w.mode : 'headless', mode_source: 'test', started_at_ms: T0 - (w.startedAgo ?? 42 * 60000), paused_at_ms: w.paused ?? null, ended_at_ms: w.ended ?? null,
-        tasks: { done: 1, total: 3 }, max_fix_rounds: 'maxFix' in w ? w.maxFix : 2, fix_hard_cap: 'hardCap' in w ? w.hardCap : null, memory_notice: w.memoryNotice ? NOTICE : null, ...(w.retrievalModels ? { retrieval_models: w.retrievalModels } : {}), agents: w.noRun ? [] : [...agents, ...extra, ...named, ...dead], footer: 'footer' in w ? w.footer : FOOTER,
+        tasks: { done: 1, total: 3 }, max_fix_rounds: 'maxFix' in w ? w.maxFix : 2, fix_hard_cap: 'hardCap' in w ? w.hardCap : null, memory_notice: w.memoryNotice ? NOTICE : null, ...(w.retrievalModels ? { retrieval_models: w.retrievalModels } : {}), ...(w.embedder ? { embedder: w.embedder } : {}), agents: w.noRun ? [] : [...agents, ...extra, ...named, ...dead], footer: 'footer' in w ? w.footer : FOOTER,
       },
       notices: w.notices ?? (w.longNotices ? LONG_NOTICES : NOTICES),
       transcript: w.nullTs ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.map(x => ({ ...x, ts: null })) } : w.manyTexts ? { run_id: RUN, entries: MANY } : w.toolsOnly ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.filter(x => x.kind !== 'text') } : w.longTranscript ? { run_id: RUN, entries: LONG_ENTRIES.slice(-Number(argv[argv.indexOf('--tail') + 1])) } : w.honorTail ? { ...TRANSCRIPT, entries: TRANSCRIPT.entries.slice(-Number(argv[argv.indexOf('--tail') + 1])) } : TRANSCRIPT,
