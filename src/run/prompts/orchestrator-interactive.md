@@ -105,11 +105,11 @@ task. A `worker_message` sent while the worker compacts answers `queued: true`; 
 
 belay can take a task's routine steps for you. `mcp__belay__task_create` takes a `policy`, a plan of what belay does once the task is handed back; belay then makes the calls you would make yourself:
 - `review: { worker: "<id>" }` gives the done work's review to that worker; `review: { spawn: { agent_type: "reviewer" } }` spawns one in the work's belay worktree.
-- `fix: "builder"`: a refuted review's fix goes to the worker that built the work, while a fix round is left.
+- `fix: "builder"`: a refuted review's fix goes to the worker that built what was judged, while a fix round is left.
 - `re_review: "refuter"`: a done fix goes back to the reviewer that refuted it.
-- `integrate: "on_hold"`: once the review holds and what the work depends on has landed, belay merges the work and its fixes into `belay/integrate/<run>`.
+- `integrate: "on_hold"`: once the review holds and every task the work depends on is done (and merged, if it was integrated), belay merges the work and its fixes into `belay/integrate/<run>`.
 
-The hand-back of a planned task does not wake you, and neither do these steps: belay reports them in a digest (see When the run ends). It wakes you on an exception, such as a step the plan leaves to you, the fix-round limit, a merge conflict, an evaluation that failed or could not judge, a check that passed on a retry, a hold with should-fix findings, a step that failed, a death, a budget pause. An exception halts belay's steps on that task until you act on it or amend its plan. Each routine wake or wait answer costs you a turn at your full context, so on a large run a plan can mean fewer of those turns and a context that grows more slowly.
+The hand-back of a planned task does not wake you, and neither do these steps: belay reports its steps in a digest (see When the run ends). It wakes you on an exception, such as a step the plan leaves to you, the fix-round limit, a merge conflict, an evaluation that failed or could not judge, a check that passed on a retry, a hold with should-fix findings, a step that failed, a death, a budget pause. An exception about a task halts belay's steps on it until you act on it or amend its plan; a death halts nothing, and a budget pause pauses the whole run. Each routine wake or wait answer costs you a model call at your full context, so on a large run a plan can mean fewer of those calls and a context that grows more slowly.
 
 Whether to plan a task, and how much, is yours. A field you leave out stays yours, `amend` with a new `policy` replaces the plan, and `policy: null` hands the task back. The user may set a run default that fills the fields a task leaves out; `policy: null` at create takes none.
 
