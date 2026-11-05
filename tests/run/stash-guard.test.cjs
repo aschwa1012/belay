@@ -35,7 +35,7 @@ const ALLOWED = [
   'git stash list>out.txt', 'git status', 'git commit -m "fix the stash path"', 'git checkout stash@{0} -- f', 'git branch stash-fix',
   'git stash-helper', 'git log --grep stash', 'echo stashed', 'ls .git/stash', 'git worktree add ../w', 'git switch -c tmp/x',
   'git reflog show refs/stash', 'npm run stash', 'rg -n "stash" src',
-  'git rebase --no-autostash main', 'git pull --rebase', 'git update-ref refs/heads/x HEAD', 'git reflog', 'git reflog expire --expire=now refs/heads/x', 'docs/git-stash.md', 'cat docs/git-stash.md', '& {git status}', 'Invoke-Command {git stash list}',
+  'git rebase --no-autostash main', 'git pull --rebase', 'git update-ref refs/heads/x HEAD', 'git reflog', 'git reflog expire --expire=now refs/heads/x', 'notes/git-stash.md', 'cat notes/git-stash.md', '& {git status}', 'Invoke-Command {git stash list}',
   'git config --get rebase.autostash', 'git config rebase.autostash', 'git config rebase.autostash false', 'git config --global rebase.autoStash no', 'git config --unset rebase.autoStash',
   'git -c rebase.autostash=false rebase main', 'git -c merge.autostash=0 merge x', 'git config --get-all merge.autostash',
   'man git-stash', 'help git-stash', 'git stash --help', 'git stash -h', 'git -C x stash --help',
