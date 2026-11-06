@@ -1,8 +1,9 @@
 'use strict';
 require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // orchestrator-policy-inform.test.cjs — the orchestrator is told that the policy manager exists, what it does and what it saves
-// (fewer routine wakes, a leaner context on big runs), in both shipped prompts and in task_create's `policy` description. It is
-// told, not ordered: neither text carries a mandate word. The plan values the prompt names are the ones the core accepts.
+// (fewer routine wakes, a leaner context on big runs), in both shipped prompts and in task_create's `policy` description. The
+// operator chose directive wording for this run: on a run of more than a few tasks, both texts tell it to state its plan as policy
+// fields and to handle a step itself only for a stated reason. The plan values the prompt names are the ones the core accepts.
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -12,8 +13,8 @@ const ROOT = path.resolve(__dirname, '..', '..');
 const read = (f) => fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8').replace(/\r\n/g, '\n');
 const flat = (s) => s.replace(/\s+/g, ' ');
 const HEADING = "## Plans: belay's policy manager";
-// A floor, not proof of tone: it catches these five words only ("should", "do not" or "only" pass). Reading the text is the check.
-const MANDATE = /\b(must|always|never|required|mandatory)\b/i;
+const DIRECTIVE = 'When you create work tasks with `mcp__belay__task_create`, write your plan as `policy` fields on each (its review, fix, re_review and integrate steps) so belay carries them out; handle a step yourself only when you have a specific reason, and say why in your reply to the user. A spawned reviewer needs the work in its own belay worktree, and a builder or refuter busy with another task makes its step an exception, so plan steps for workers that are free.';
+const REVIEW_CLAUSE = 'When a work task carries a plan, belay runs the steps it names in this cycle for you (see Plans below); take a step by hand for a task or step without one, when belay wakes you with an exception on it, or for a stated reason.';
 const sectionOf = (text) => { const i = text.indexOf(`${HEADING}\n`); if (i < 0) return null; const j = text.indexOf('\n## ', i + 1); return text.slice(i, j < 0 ? text.length : j); };
 
 test('both prompts carry the policy manager section: what it does, what wakes the orchestrator, and why it helps', () => {
@@ -27,8 +28,11 @@ test('both prompts carry the policy manager section: what it does, what wakes th
     // E1 to E3 and E5 to E8 halt a task; a death (E4) halts nothing, a budget pause (E9) pauses the run.
     assert.match(s, /An exception about a task halts belay's steps on it until you act on it or amend its plan; a death halts nothing, and a budget pause pauses the whole run\./, `${f}: the halt`);
     assert.match(s, /fewer of those calls and a context that grows more slowly/, `${f}: the context benefit`);
-    assert.match(s, /Whether to plan a task, and how much, is yours/, `${f}: the choice is the orchestrator's`);
-    assert.doesNotMatch(s, MANDATE, `${f}: informs, never mandates`);
+    assert.ok(flat(s).includes(DIRECTIVE), `${f}: the directive to plan every work task as policy fields`);
+    assert.ok(/When you create work tasks/.test(s) && !/more than a few tasks/.test(s), `${f}: no task-count threshold`);
+    const review = read(f).split('## Review tasks')[1] || '';
+    assert.ok(flat(review).startsWith(` ${REVIEW_CLAUSE}`), `${f}: Review tasks opens by pointing to the plan`);
+    assert.ok(!s.includes('Whether to plan a task, and how much, is yours'), `${f}: the informative wording it replaced is gone`);
   }
 });
 
@@ -48,11 +52,10 @@ test('headless only: the prompt says which steps keep the run open, with the bou
   assert.ok(!flat(read('orchestrator-interactive.md')).includes('keeps the run open'), 'an interactive run does not close on an idle turn');
 });
 
-test('task_create\'s policy description says what a plan saves, and orders nothing', () => {
+test('task_create\'s policy description says what a plan saves, and directs a plan on a run of more than a few tasks', () => {
   const d = require(path.join(ROOT, 'src/mcp/tools-policy.cjs')).POLICY_PROPERTY.description;
   assert.match(d, /do not wake you/);
   assert.match(d, /exceptions do/);
   assert.match(d, /digest/);
-  assert.match(d, /it can mean fewer calls, a leaner context on big runs/);
-  assert.doesNotMatch(d, MANDATE);
+  assert.match(d, /When you create work tasks, set review, fix, re_review and integrate here for a leaner context; do a step yourself only for a stated reason/);
 });
