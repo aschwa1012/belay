@@ -287,7 +287,7 @@ test('a quiet digest whose step read fails is asked again on the next quiet pass
 
 test('a plan in the store arms the quiet digest without a turn end: a step is published with no wake before it', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-rw-wake-')).replace(/\\/g, '/');
-  const quietW = { ...W, policy: { fix: 'builder', review: { worker: 'rv' } }, review: { review_id: 'R', state: 'holds' } }; // planned, nothing owed: no exception wake
+  const quietW = { ...W, state: 'assigned', results: null, policy: { review: { worker: 'rv' }, fix: 'builder', re_review: 'refuter', integrate: 'on_hold' } }; // planned and still being worked: no step due, no exception
   const core = coreOf([step({ task_id: 'only' })]);
   core.task.list = async () => ({ tasks: [quietW] });
   const p = await publisher(core, dataDir);
