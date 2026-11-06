@@ -186,6 +186,7 @@ const ORCHESTRATOR = [
 
 // ADR 0037 amendment 7: worker_wait is a short check, so a call that names no timeout holds 5 s, not the run manager's own 110 s default.
 const WAIT_DEFAULT_MS = 5000;
-const waitArgs = (args) => (args && args.timeout_ms != null ? args : { ...(args || {}), timeout_ms: WAIT_DEFAULT_MS });
+// A missing, zero, negative or non-numeric timeout is the short default too: the run wait reads a falsy one as its own 110 s (run-wait.cjs boundOf).
+const waitArgs = (args) => (args && Number(args.timeout_ms) > 0 ? args : { ...(args || {}), timeout_ms: WAIT_DEFAULT_MS });
 
 module.exports = { ORCHESTRATOR, WAIT_DEFAULT_MS, waitArgs };

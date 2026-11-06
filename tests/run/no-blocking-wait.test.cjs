@@ -42,6 +42,7 @@ test('a worker_wait that names no timeout holds 5 s, not the run manager\'s 110 
   assert.deepStrictEqual(T.waitArgs({ worker_ids: ['w1'] }), { worker_ids: ['w1'], timeout_ms: 5000 });
   assert.deepStrictEqual(T.waitArgs({ timeout_ms: 700 }), { timeout_ms: 700 });
   assert.deepStrictEqual(T.waitArgs(undefined), { timeout_ms: 5000 });
+  for (const bad of [0, -1, 'soon', null, NaN]) assert.deepStrictEqual(T.waitArgs({ timeout_ms: bad }), { timeout_ms: 5000 }, `timeout_ms ${bad} is the short default, never the run wait's 110 s`);
   const schema = require(path.join(ROOT, 'src/mcp/tools.cjs')).toolsFor('orchestrator').find((x) => x.name === 'worker_wait').inputSchema.properties.timeout_ms;
   assert.match(schema.description, /default 5000/);
   assert.match(fs.readFileSync(path.join(ROOT, 'src/mcp/belay-mcp.cjs'), 'utf8'), /name === 'worker_wait' \? require\('\.\/tools-orchestrator\.cjs'\)\.waitArgs\(args\)/, 'the adapter applies it to the tool call');
