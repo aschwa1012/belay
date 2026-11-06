@@ -20,7 +20,7 @@ test('done: every task done, every planned work reviewed and merged, the newest 
   assert.ok(d, 'done');
   assert.strictEqual(d.n, 2);
   assert.strictEqual(d.key, 'i1@20');
-  assert.match(d.text, /^belay: implementation done: 2 planned tasks done, reviewed and merged into belay\/integrate\/r1 at 0123456789ab, checks passed\. Decide whether to end the run\.$/);
+  assert.match(d.text, /^belay: implementation done: 2 planned tasks done, reviewed and merged into belay\/integrate\/r1 at 0123456789ab, checks passed\. Decide whether you are done\.$/);
   assert.ok(Buffer.byteLength(d.text) <= PW.WAKE_TEXT_MAX, 'one wake line inside the wake cap');
   assert.deepStrictEqual(wakeOf(RUN, d), { event: 'policy_done', worker_id: `done:${RUN}`, turn: 0, seq: null, key: 'i1@20', text: d.text });
 });
@@ -65,4 +65,31 @@ test('the digest follows an exception or the done wake, not a routine wake', () 
   assert.ok(ridesDigest({ event: 'death', worker_id: 'w' }), 'a death is E4');
   assert.ok(ridesDigest({ event: 'budget_pause' }), 'E9');
   assert.ok(!ridesDigest({ event: 'turn_end', worker_id: 'w', turn: 2 }), 'a routine turn end carries none');
+});
+
+test('the run branch only; a merge whose checks were not run is done and says so; a plan that merges nothing needs no merge', () => {
+  // A merge the orchestrator made into its own branch is not the run branch's newest.
+  const other = merged({ id: 'iX', seq: 99, into_branch: 'release/1.0', passed: false });
+  assert.ok(doneOf(snap({ integrations: [merged(), other] })), 'another branch does not decide');
+  assert.strictEqual(doneOf(snap({ integrations: [other] })), null, 'nothing merged into the run branch: not done');
+  // evaluate: false leaves passed null: done, and the wake says the checks were not run.
+  const notRun = doneOf(snap({ integrations: [merged({ passed: null })] }));
+  assert.ok(notRun);
+  assert.strictEqual(notRun.checks, 'not_run');
+  assert.match(notRun.text, /checks not run on the merged head\./);
+  assert.ok(doneOf(snap({ integrations: [merged({ state: 'evaluated' })] })), 'evaluated: merged, then checked');
+  // A plan without integrate: reviews hold and tasks are done; no merge is needed.
+  const noMerge = { ...PLAN }; delete noMerge.integrate;
+  const tasks = [work('A', { policy: noMerge, integration: null }), review('R-A', 'A')];
+  const d = doneOf({ runId: RUN, tasks, integrations: [], steps: [] });
+  assert.ok(d);
+  assert.strictEqual(d.checks, 'none');
+  assert.match(d.text, /1 planned task done and reviewed; the plan merges nothing\./);
+});
+
+test('a refuted review a later review settled does not hold done back; an undecided one does', () => {
+  const refuted = { ...review('R-old', 'A'), state: 'released', results: { trigger: 'release', evaluated_at: 5, executable: true, passed: false, checks: [{ kind: 'verdict', executable: true, passed: false }] } };
+  assert.ok(doneOf(snap({ tasks: [work('A'), refuted, review('R-A', 'A')] })), 'A is decided by R-A: R-old is settled');
+  const open = { ...review('R-new', 'A'), state: 'assigned', results: null };
+  assert.strictEqual(doneOf(snap({ tasks: [work('A'), review('R-A', 'A'), open] })), null, 'a review with no verdict yet holds it back');
 });

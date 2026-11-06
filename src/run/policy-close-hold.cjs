@@ -28,6 +28,7 @@ const CLAIMANT_RECHECK_MS = 60000; // a claimant's creation time is read again a
 // `alive(pid)`: the cheap check every poll. `createdOf(pid)`: the creation time read (a process snapshot), at most one per claimant per
 // CLAIMANT_RECHECK_MS, never awaited by the close: until it answers, a live pid counts (fail toward holding).
 function createPolicyCloseHold({ alive = P.pidAlive, createdOf = P.createdOf, now = Date.now } = {}) {
+  let failedSince = null; // the first of an unbroken run of failed policy reads
   const since = new Map(); // due key -> the last time the executor was seen busy, or the key's first sighting while it was idle
   const finished = new Set(); // `${seq}|${finished_at}` of claims seen finished
   const ids = new Map(); // `${pid}|${created}` -> { match: true|false|null, at, reading }
@@ -49,7 +50,10 @@ function createPolicyCloseHold({ alive = P.pidAlive, createdOf = P.createdOf, no
   // needs failed). `exceptions`: derive() of the same snapshot, when the watcher made it.
   function holds(snap, { exceptions = null } = {}) {
     if (!snap) { since.clear(); return []; }
-    if (snap.failed || snap.readFailed || !Array.isArray(snap.tasks)) return ['policy-read'];
+    // A failed read holds, as a failed worker.list does, but not for ever: past DUE_HOLD_MS of unbroken failures the facts are taken as
+    // unknowable and the close goes ahead (the hold record names each pass it held).
+    if (snap.failed || snap.readFailed || !Array.isArray(snap.tasks)) { const t0 = now(); if (failedSince == null) failedSince = t0; return t0 - failedSince < DUE_HOLD_MS ? ['policy-read'] : []; }
+    failedSince = null;
     const { runId } = snap;
     const t = now();
     const steps = (snap.steps || []).filter((s) => s.run_id === runId);

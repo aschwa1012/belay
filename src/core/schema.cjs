@@ -320,6 +320,8 @@ const MIGRATIONS = [
   // ADR 0072 (fix round): the adapter that claimed a policy step, as its pid and creation time, so only a claim whose claimant is gone is swept.
   'ALTER TABLE policy_step ADD COLUMN claimant_pid INTEGER',
   'ALTER TABLE policy_step ADD COLUMN claimant_created TEXT',
+  // ADR 0074 amendment 4: the cap on a plan's builds in flight (null: belay's default, 4).
+  'ALTER TABLE run ADD COLUMN max_parallel_builds INTEGER',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot

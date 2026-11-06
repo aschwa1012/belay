@@ -21,6 +21,7 @@ test('once at 80% of the bound, never while the clock is stopped, never with no 
   assert.ok(Buffer.byteLength(ev.text) <= PW.WAKE_TEXT_MAX);
   left = 1000; assert.deepStrictEqual(w.poll(), [], 'once per run');
   assert.deepStrictEqual(createTimeWake({ totalMs: 0, remaining: () => 0 }).poll(), [], 'no bound, no wake');
+  assert.deepStrictEqual(createTimeWake({ totalMs: 1000, remaining: () => 0, armed: () => false }).poll(), [], 'a run without a plan is not told (rc.5)');
 });
 
 test('the time wake is a cap: E9, its text passed through, the digest follows it, the receipt names the clock', () => {
@@ -30,5 +31,5 @@ test('the time wake is a cap: E9, its text passed through, the digest follows it
   assert.ok(require('../../src/run/digest-wake.cjs').ridesDigest(ev));
   assert.strictEqual(require('../../src/run/wake-record.cjs').wakeRecord(ev, ev.text, 0, true).established_by, "the run's timeout clock: 100 ms of 1000 left");
   const src = require('node:fs').readFileSync(require('node:path').join(__dirname, '../../src/run/orchestrator.cjs'), 'utf8');
-  assert.match(src, /createTimeWake\(\{ totalMs: timeoutMs, remaining: \(\) => hold\.getTimeoutRemaining\(\) \}\)\)\)\.poll\(\)/, 'the headless poll asks it');
+  assert.match(src, /createTimeWake\(\{ totalMs: timeoutMs, remaining: \(\) => hold\.getTimeoutRemaining\(\), armed: \(\) => !!policyWatcher\.snapshot\(\) \|\| planned\.value\(\) \}\)\)\)\.poll\(\)/, 'the headless poll asks it, for a planned run');
 });
