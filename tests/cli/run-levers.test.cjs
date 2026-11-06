@@ -18,7 +18,7 @@ const FAKE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
 const FAKE_TASKS = `${ROOT}/tests/cli/fakes/core-fake-tasks.cjs`;
 const fwd = (p) => String(p).split(path.sep).join('/');
 const { parseLevers, substituteLevers } = require('../../src/cli/run-levers.cjs');
-const { SHIPPED_PLAN } = require('../../src/cli/run-policy-levers.cjs'); // a run that states no plan takes belay's (ADR 0071 plan-first amendment)
+const { SHIPPED_PLAN } = require('../../src/cli/run-policy-levers.cjs'); // a run that states no plan takes belay's (ADR 0074 amendment 4)
 
 function cleanup(dir) {
   for (let i = 0; i < 5; i += 1) {

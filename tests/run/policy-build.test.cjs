@@ -1,6 +1,6 @@
 'use strict';
 require('../helpers/tmp.cjs');
-// policy-build.test.cjs — the build step (ADR 0071 amendment, plan-first): an open work task nobody holds, whose dependencies are all done,
+// policy-build.test.cjs — the build step (ADR 0074 amendment 4, plan-first): an open work task nobody holds, whose dependencies are all done,
 // is given to the plan's builder: a named worker, or a coder belay spawns through the run manager's own spawn (the review step's path).
 // A task without a belay worktree to spawn in is an exception (E8) that halts it; a task the orchestrator assigned itself is skipped.
 // The REAL core and, for the spawn, the REAL run manager over the fake claude executable.

@@ -11,7 +11,7 @@ const path = require('node:path');
 
 const ROOT = path.resolve(__dirname, '..', '..');
 const { parseLevers, substituteLevers, stripMarkers } = require('../../src/cli/run-levers.cjs');
-const { SHIPPED_PLAN } = require('../../src/cli/run-policy-levers.cjs'); // a run that states no plan takes belay's (ADR 0071 plan-first amendment)
+const { SHIPPED_PLAN } = require('../../src/cli/run-policy-levers.cjs'); // a run that states no plan takes belay's (ADR 0074 amendment 4)
 const L = require('../../src/run/launch.cjs');
 const { parseArgv } = require('../../src/mcp/argv.cjs');
 const tools = require('../../src/mcp/tools.cjs');

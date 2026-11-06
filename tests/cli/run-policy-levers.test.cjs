@@ -1,6 +1,6 @@
 'use strict';
 require('../helpers/tmp.cjs');
-// run-policy-levers.test.cjs — the default plan for a run (ADR 0071 decision 3 and its plan-first amendment): the spec's `policy` over the
+// run-policy-levers.test.cjs — the default plan for a run (ADR 0071 decision 3; the shipped plan is ADR 0074 amendment 4): the spec's `policy` over the
 // config's `run.policy` over belay's shipped plan, field by field; null in the spec turns every default off for one run; a value v1 does
 // not accept is refused at launch.
 

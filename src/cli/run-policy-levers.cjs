@@ -1,7 +1,7 @@
 'use strict';
 // run-policy-levers.cjs — the user's default plan for a run (ADR 0071 decision 3). `policy` in the run spec (an object, or null to turn a
 // project default off for one run) merged field by field over `run.policy` in belay.config.json, over belay's own plan-first default
-// (SHIPPED_PLAN, ADR 0071 amendment, 0.4.0): every work task is built, reviewed, fixed by its builder, re-reviewed by its refuter and
+// (SHIPPED_PLAN, 0.4.0; ADR 0074 amendment 4): every work task is built, reviewed, fixed by its builder, re-reviewed by its refuter and
 // merged once its review holds, unless the spec or the config says otherwise or the orchestrator overrides a task. The object is checked with the
 // task plan's own rules, so a value v1 does not accept is refused at launch, before any process starts. A task's own policy still wins over
 // it, field by field, at task.create. Kept apart from the budget and memory levers so the three do not meet.
