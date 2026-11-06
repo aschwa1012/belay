@@ -32,10 +32,26 @@ function deliver(ev, { writeWake, state, dataDir, runId }) {
   return false;
 }
 
-// The wakes of one poll, then the digest when any were written.
+// The exceptions and deaths a wait had claimed first (writeWake keeps them in state.lostClaims) whose claim was given back since: a wait
+// cancelled before its reply, or the adapter that made it gone (run-digest.cjs release, releaseUnconfirmed). They are offered to the stdin
+// path again, so a released exception is not left to a later wait. writeWake claims each again before it writes it.
+function released({ state, dataDir, runId }) {
+  const lost = state.lostClaims;
+  if (!lost || !lost.size || !dataDir) return [];
+  const out = [];
+  for (const [uid, ev] of [...lost]) {
+    let claimed = true;
+    try { claimed = D.isClaimed({ dataDir, runId, uid }); } catch { claimed = true; } // unread: kept for the next poll
+    if (!claimed) { lost.delete(uid); out.push(ev); }
+  }
+  return out;
+}
+
+// The released wakes, the wakes of one poll, then the digest when any were written.
 async function writeAll(evs, ctx) {
-  for (const ev of evs) ctx.writeWake(ev);
-  if (!evs.length || ctx.state.finishing) return;
+  const all = released(ctx).concat(evs);
+  for (const ev of all) ctx.writeWake(ev);
+  if (!all.length || ctx.state.finishing) return;
   const d = await claim(ctx);
   if (d) deliver(d, ctx);
 }
@@ -48,4 +64,4 @@ async function flush(ctx) {
   return d ? deliver(d, ctx) : false;
 }
 
-module.exports = { claim, deliver, writeAll, flush, HEAD };
+module.exports = { claim, deliver, writeAll, flush, released, HEAD };

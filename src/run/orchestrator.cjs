@@ -241,7 +241,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     if (uid && (ev.exception || planned.value())) {
       let won = true;
       try { won = require('./run-digest.cjs').claimException({ dataDir, runId, uid }); } catch { won = true; }
-      if (!won) { state.wakesSuppressed.push({ ...ev, reason: 'delivered by worker_wait' }); return; }
+      if (!won) { state.wakesSuppressed.push({ ...ev, reason: 'delivered by worker_wait' }); (state.lostClaims || (state.lostClaims = new Map())).set(uid, ev); return; } // kept: a wait's claim given back is offered again (digest-wake.cjs writeAll)
     }
     const text = wakeText(ev);
     const rec = require('./wake-record.cjs').wakeRecord(ev, text, Date.now() - t0, state.idle);
