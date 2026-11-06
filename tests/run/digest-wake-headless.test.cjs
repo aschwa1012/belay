@@ -201,3 +201,31 @@ test('an exception a wait claimed and then released reaches the orchestrator by 
     assert.strictEqual(out.wakes.filter((x) => x.exception === 'E5').length, 1, `then written once the claim was given back: ${JSON.stringify(out.wakes)}`);
   } finally { cleanup(root); }
 });
+
+// The done wake is delivered once, headless as well: the stdin wake claims it like an exception, so a run wait that took it first suppresses it.
+test('headless: the done wake is written once, and not at all when the run wait claimed it first', async () => {
+  const PLAN = { review: { worker: 'rv' }, integrate: 'on_hold' };
+  const done = [
+    { id: 'A', seq: 10, run_id: RUN, state: 'done', policy: PLAN, policy_rev: 1, depends_on: [], repairs: null, lease: null, acceptance: { commands: [] }, review: { review_id: 'R', state: 'holds' }, integration: { state: 'merged' }, results: { trigger: 'release', executable: true, passed: true, checks: [] } },
+    { id: 'R', seq: 11, run_id: RUN, state: 'done', policy: null, depends_on: ['A'], repairs: null, lease: null, acceptance: { verdict: true }, results: { trigger: 'release', evaluated_at: 9, executable: true, passed: true, checks: [{ kind: 'verdict', executable: true, passed: true }] } },
+  ];
+  const ints = [{ id: 'i1', seq: 20, run_id: RUN, state: 'evaluated', passed: true, into_branch: `belay/integrate/${RUN}`, head_sha: '0123456789abcdef' }];
+  for (const waitFirst of [false, true]) {
+    const { root, sb, core } = setup(done, []);
+    try {
+      core.integration = { list: async () => ({ integrations: ints }) };
+      const { doneOf, wakeOf } = require('../../src/run/done-wake.cjs');
+      const uid = D.wakeUid(wakeOf(RUN, doneOf({ runId: RUN, tasks: done, integrations: ints, steps: [] })));
+      if (waitFirst) assert.ok(D.claimException({ dataDir: sb.dataDir, runId: RUN, uid }), 'the run wait returned it');
+      const out = await withFake(() => runWith(core, sb));
+      const written = out.wakes.filter((w) => w.event === 'policy_done');
+      if (waitFirst) {
+        assert.deepStrictEqual(written, [], 'not written to stdin: the wait has it');
+        assert.strictEqual(out.wakes_suppressed.filter((w) => w.event === 'policy_done' && w.reason === 'delivered by worker_wait').length, 1);
+      } else {
+        assert.strictEqual(written.length, 1, `written once: ${JSON.stringify(out.wakes)}`);
+        assert.ok(D.isClaimed({ dataDir: sb.dataDir, runId: RUN, uid }), 'and claimed, so a later wait does not return it');
+      }
+    } finally { cleanup(root); }
+  }
+});

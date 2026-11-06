@@ -21,6 +21,21 @@ const reviewWake = require('./review-wake.cjs');
 
 const WAKE_TEXT_MAX = 221; // release-eval.cjs WAKE_TEXT_MAX; the mod's text budget less the plugin name
 const ESC_KINDS = new Set(['question', 'blocked', 'scope', 'conflict', 'spec']);
+// A hand-back's escalation (ADR 0074 amendment 4): the facts, and whether the orchestrator has acted on the task since (re-assigned or
+// cancelled it after the hand-back). null when the hand-back asks for nothing.
+function escalationFact(x) {
+  const esc = x && x.handoff && x.handoff.result && x.handoff.result.escalate;
+  if (!esc || typeof esc !== 'object' || typeof esc.reason !== 'string' || !esc.reason.trim()) return null;
+  const at = Number(x.handoff.at) || 0;
+  const acted = x.written_by === 'orchestrator' && x.acted_by !== 'policy' && Number(x.written_at) > at && (x.state === 'assigned' || x.state === 'cancelled');
+  return { detail: { task: x.id, by: x.handoff.by || null, kind: ESC_KINDS.has(esc.kind) ? esc.kind : 'other', reason: esc.reason }, fact: { key: `${x.id}@${at}`, seq: at, at }, acted };
+}
+// The escalation of a task under no plan: it wakes and halts nothing. The same shape and key as derive's, so the wait and the wake claim it once.
+function unplannedEscalation(x) {
+  const es = escalationFact(x);
+  if (!es) return null;
+  return { exception: 'escalation', task_id: x.id, trigger: { table: 'task', id: x.id, seq: Number(x.seq) || 0 }, field: 'none', seq: es.fact.seq, key: es.fact.key, uid: `escalation:none:${es.fact.key}`, detail: { ...es.detail, planned: false } };
+}
 const REVISION_IDS = 200; // task ids per policy.revisions call (its cap is 500)
 const AMEND_LIFTS = new Set(['E1', 'E2', 'E5', 'E6', 'E7', 'escalation']); // a plan amend after the exception lifts these halts (E8's own lift reads its step's policy_rev)
 const HALTING = new Set(['E1', 'E2', 'E3', 'E5', 'E6', 'E7', 'E8', 'escalation']); // E4 is the worker's, E9 pauses the run, E10 is not a task's
@@ -52,7 +67,8 @@ function exceptionOf(ev) {
   if (ev.exception) return ev.exception;
   switch (ev.event) {
     case 'death': case 'stale': case 'restart_failed': return 'E4';
-    case 'budget_pause': case 'time_bound': return 'E9'; // a cap: the budget, or the run's time bound (time-wake.cjs)
+    case 'budget_pause': return 'E9';
+    case 'time_bound': return 'E11'; // the run's time bound (time-wake.cjs): a cap, with its own code beside the budget's E9
     case 'paused': case 'pre_close': case 'note_refuted': case 'scrub_alarm': return 'E10';
     default: return null;
   }
@@ -146,12 +162,8 @@ function derive(snap) {
     // escalation (ADR 0074 amendment 4, not an E-code): a worker's hand-back asks for the orchestrator (`result.escalate: { kind, reason }`).
     // It always wakes, planned task or not, and halts the task's planned steps until the orchestrator acts on the task after the hand-back
     // (re-assigns or cancels it) or amends its plan. The reason is the worker's words: quoted, cut, never an instruction.
-    const esc = x.handoff && x.handoff.result && x.handoff.result.escalate;
-    if (esc && typeof esc === 'object' && typeof esc.reason === 'string' && esc.reason.trim()) {
-      const at = Number(x.handoff.at) || 0;
-      const acted = x.written_by === 'orchestrator' && x.acted_by !== 'policy' && Number(x.written_at) > at && (x.state === 'assigned' || x.state === 'cancelled');
-      add('escalation', root, tref(x), 'none', { task: x.id, by: x.handoff.by || null, kind: ESC_KINDS.has(esc.kind) ? esc.kind : 'other', reason: esc.reason }, { key: `${x.id}@${at}`, seq: at, at }, acted ? { lifted: true } : {});
-    }
+    const es = escalationFact(x);
+    if (es) add('escalation', root, tref(x), 'none', { ...es.detail, planned: true }, es.fact, es.acted ? { lifted: true } : {});
     // E5: a release evaluation that ended without a result (a queue refusal, an error): the ledger's release_failed events.
     if (x.state === 'released' && x.handoff) {
       for (const f of fails) if (f.task_id === x.id && f.code !== 'E_CANCELLED' && Number(f.written_at) >= Number(x.handoff.at)) add('E5', root, tref(x), null, { executable: true, failing: [], error: f.code, task: x.id }, { key: `${x.id}!${f.id}`, seq: Number(f.seq) || 0, at: Number(f.written_at) || 0, rowSeq: rowSeqOf(f) });
@@ -239,7 +251,12 @@ const list = (a) => a.map((t) => `"${t}"`).join('; ');
 // The wake text. Head first (kind, task, trigger, field), then the facts; only the facts give way to the cap.
 function textOf(e) {
   const d = e.detail;
-  if (e.exception === 'escalation') return cut(`belay: escalation (${d.kind}) from ${d.by || 'a worker'} on task ${d.task}${d.task !== e.task_id ? ` (work ${e.task_id})` : ''}, its words: "${cut(clean(d.reason).replace(/"/g, "'"), 100)}". Its planned steps wait until you act on it or amend its plan.`, WAKE_TEXT_MAX);
+  if (e.exception === 'escalation') {
+    const head = `belay: escalation (${d.kind}) from ${d.by || 'a worker'}, task ${d.task}${d.task !== e.task_id ? ` (work ${e.task_id})` : ''}: "`;
+    const tail = d.planned === false ? '". No plan: answer as you see fit.' : '". Halted until you re-assign, cancel or amend it; a message alone lifts nothing.';
+    const room = Math.max(16, WAKE_TEXT_MAX - bytes(head) - bytes(tail));
+    return cut(`${head}${cut(clean(d.reason).replace(/"/g, "'"), room)}${tail}`, WAKE_TEXT_MAX);
+  }
   const head = `belay: exception ${e.exception}, task ${e.task_id}, trigger ${e.trigger.table}:${e.trigger.id}:${e.trigger.seq}, field ${e.field}.`;
   const halt = HALTING.has(e.exception) ? ' Halted.' : '';
   const titles = Array.isArray(d.titles) && d.titles.length ? ` ${list(d.titles)}.` : '';
@@ -319,4 +336,4 @@ function createPolicyWatcher({ core, runId, enabled = false }) {
   return { poll, active: () => last.slice(), snapshot: () => lastSnap };
 }
 
-module.exports = { fixRoundsLeft, derive, readRevisions, familyIds, exceptionOf, policyOf, rootOf, haltScope, haltedIds, textOf, wakeOf, createPolicyWatcher, HALTING, HALT_SCOPE, WAKE_TEXT_MAX };
+module.exports = { unplannedEscalation, escalationFact, fixRoundsLeft, derive, readRevisions, familyIds, exceptionOf, policyOf, rootOf, haltScope, haltedIds, textOf, wakeOf, createPolicyWatcher, HALTING, HALT_SCOPE, WAKE_TEXT_MAX };

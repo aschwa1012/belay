@@ -57,7 +57,7 @@ function doneOf(snap, exceptions = []) {
   if ((snap.steps || []).some((s) => s.run_id === runId && s.outcome === 'started')) return null;
   const n = work.length;
   // Should-fix findings a held review left with no follow-up (the run's max_follow_ups was reached, or the plan has no follow_up): named, not waking.
-  const left = work.filter((t) => { const R = byId.get(t.review && t.review.review_id); const f = R ? require('./review-wake.cjs').reviewOf(R) : null; return f && f.should_fix.n > 0 && !answeredBy(all, R); }).map((t) => t.id);
+  const left = tasks.filter((t) => !isReview(t) && !t.repairs && PW.policyOf(t, byId)).filter((t) => { /* the work and its follow-ups */ const R = byId.get(t.review && t.review.review_id); const f = R ? require('./review-wake.cjs').reviewOf(R) : null; return f && f.should_fix.n > 0 && !answeredBy(all, R); }).map((t) => t.id);
   const note = left.length ? ` Should-fix findings left on ${left.length} task${left.length === 1 ? ' (see its review)' : 's (see their reviews)'}.` : '';
   const where = !integrates ? 'done and reviewed; the plan merges nothing' : `done, reviewed and merged into ${own} at ${short(newest.head_sha)}, ${newest.passed === true ? 'checks passed' : 'checks not run on the merged head'}`;
   const text = `belay: implementation done: ${n} planned task${n === 1 ? '' : 's'} ${where}.${note} Decide whether you are done.`;
