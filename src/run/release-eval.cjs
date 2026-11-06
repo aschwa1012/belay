@@ -291,6 +291,7 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
       if (t.run_id !== runId || !t.handoff || t.handoff.by !== ev.worker_id) continue;
       if (t.handoff.stood_down) { const key = `${t.id}:${t.handoff.at}`; if (!(seen.stood = seen.stood || new Set()).has(key) && t.state === 'released') { seen.stood.add(key); evs.push({ task_id: t.id, stood_down: t.handoff.stood_down }); } continue; } // a stand-down is a fact for the wake, once
       const pol = polOf(t);
+      if (!pol) { const x = PW.unplannedEscalation(t); if (x && !(seen.escalated = seen.escalated || new Set()).has(x.uid)) { seen.escalated.add(x.uid); out.push(PW.wakeOf(x)); } } // ADR 0074 amendment 4: an escalation wakes for a task under no plan too; a planned one is the policy watcher's
       if (pol && (landed(t) || unevaluated(t, runId, ev.worker_id))) { sawPolicy = true; took.push(t.id); }
       if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); if (t.state === 'done') kick(t); if (!pol) evs.push(summaryOf(t, byId, forecasts)); } else if (unevaluated(t, runId, ev.worker_id) && failedOf(t, ev.turn)) { const s = failure(failedOf(t, ev.turn)); if (s && !pol) evs.push(s); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: t0, turn: ev.turn }); if (!pol) ing.push(t.id); kick(t); }
     }
