@@ -1,8 +1,9 @@
 'use strict';
 require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // orchestrator-policy-inform.test.cjs — the orchestrator is told that the policy manager exists, what it does and what it saves
-// (fewer routine wakes, a leaner context on big runs), in both shipped prompts and in task_create's `policy` description. It is
-// told, not ordered: neither text carries a mandate word. The plan values the prompt names are the ones the core accepts.
+// (fewer routine wakes, a leaner context on big runs), in both shipped prompts and in task_create's `policy` description. The
+// operator chose directive wording for this run: on a run of more than a few tasks, both texts tell it to state its plan as policy
+// fields and to handle a step itself only for a stated reason. The plan values the prompt names are the ones the core accepts.
 const { test } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
@@ -12,8 +13,7 @@ const ROOT = path.resolve(__dirname, '..', '..');
 const read = (f) => fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8').replace(/\r\n/g, '\n');
 const flat = (s) => s.replace(/\s+/g, ' ');
 const HEADING = "## Plans: belay's policy manager";
-// A floor, not proof of tone: it catches these five words only ("should", "do not" or "only" pass). Reading the text is the check.
-const MANDATE = /\b(must|always|never|required|mandatory)\b/i;
+const DIRECTIVE = 'On a run of more than a few tasks, write your plan as `policy` fields on each work task you create with `mcp__belay__task_create` (its review, fix, re_review and integrate steps) so belay carries them out; handle a step yourself only when you have a specific reason, and say why.';
 const sectionOf = (text) => { const i = text.indexOf(`${HEADING}\n`); if (i < 0) return null; const j = text.indexOf('\n## ', i + 1); return text.slice(i, j < 0 ? text.length : j); };
 
 test('both prompts carry the policy manager section: what it does, what wakes the orchestrator, and why it helps', () => {
@@ -27,8 +27,8 @@ test('both prompts carry the policy manager section: what it does, what wakes th
     // E1 to E3 and E5 to E8 halt a task; a death (E4) halts nothing, a budget pause (E9) pauses the run.
     assert.match(s, /An exception about a task halts belay's steps on it until you act on it or amend its plan; a death halts nothing, and a budget pause pauses the whole run\./, `${f}: the halt`);
     assert.match(s, /fewer of those calls and a context that grows more slowly/, `${f}: the context benefit`);
-    assert.match(s, /Whether to plan a task, and how much, is yours/, `${f}: the choice is the orchestrator's`);
-    assert.doesNotMatch(s, MANDATE, `${f}: informs, never mandates`);
+    assert.ok(flat(s).includes(DIRECTIVE), `${f}: the directive to plan as policy fields on a run of more than a few tasks`);
+    assert.ok(!s.includes('Whether to plan a task, and how much, is yours'), `${f}: the informative wording it replaced is gone`);
   }
 });
 
