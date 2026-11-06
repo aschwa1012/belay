@@ -41,18 +41,18 @@ belay ends a worker's first message with its lease id, the hand-back rule and th
 The run ends when you end a turn while no worker is mid-turn. A live worker that is idle does not
 keep it open. So:
 
-- To wait for a worker that is working, either end your turn (belay wakes you with a message when a worker's turn ends or a worker dies; that wake exists only when belay started you with `belay run`, and only while some worker is mid-turn) or call `mcp__belay__worker_wait` and always pass `worker_ids`
-  naming the workers you wait for (a timeout is a result: call it again; do not poll in a loop). With no `worker_ids` it
+- To wait for a worker that is working, end your turn: belay wakes you with a message when a worker's turn ends or a worker dies; that wake exists only when belay started you with `belay run`, and only while some worker is mid-turn. Do not hold a turn open in `mcp__belay__worker_wait`: what it returns also reaches you by a wake.
+  Use it at most as a short check, with `worker_ids` and `timeout_ms: 5000` (a timeout is a result: the worker is still working, so end your turn; do not poll in a loop). With no `worker_ids` it
   watches every worker and answers at once for any whose last turn has already ended, with
   `already: true`; `already: true` means that worker's turn ended before your call, not that the
   work you wait for is done.
-- In a run where tasks carry a plan, `mcp__belay__worker_wait` with no `worker_ids` waits for the run instead of a worker. It can answer with
-  `exceptions` (the exception wakes belay derived from the store) or time out, and either answer can carry a `digest`: the steps belay took since
-  your last wait, each step in one digest, a count of any the 2 KB cap left out. A digest is belay's record of what it did, not a request. belay also writes it to you as a `policy_digest` message after a wake, and before the run closes when steps are left.
-  A step belay has started, or one due for under 30 s while belay takes no other, keeps the run open after you end your turn; to keep the run open past that, wait for the run instead of ending your turn. Naming `worker_ids` watches those workers as before.
+- In a run where tasks carry a plan, belay wakes you on an exception it derived from the store, and writes you a `policy_digest` message with the steps it took:
+  after a wake, and before the run closes when steps are left. Each step is in one digest, with a count of any the 2 KB cap left out; a digest is belay's
+  record of what it did, not a request. `mcp__belay__worker_wait` with no `worker_ids` waits for the run and returns the same exceptions and digest; you do not need to call it.
+  A step belay has started, or one due for under 30 s while belay takes no other, keeps the run open after you end your turn. Naming `worker_ids` watches those workers as before.
 - A worker whose turn has ended without what you waited for is idle, not working. Waiting on it
   answers `already: true` at once, and ending your turn closes the run. Instead call
-  `mcp__belay__worker_message` to tell it what is missing: that starts a turn. Then wait on its id.
+  `mcp__belay__worker_message` to tell it what is missing: that starts a turn. Then end your turn until its wake.
 - Never end a turn just after a `task_assign` whose `delivered.sent` and `delivered.queued` are false: the worker
   was told nothing, is not mid-turn, and the run closes.
 - To stop on purpose, {{memory_outcome}}store the outcome in memory{{/memory_outcome}}, say why, then end a turn with no worker mid-turn. Do so when every
@@ -67,7 +67,7 @@ acceptance commands and returns the row and its results. Only `done` clears a ta
 it. The `files_within_owned` check's `detail.head_sha` is the commit that was checked. Read a worker's hand-back as the task's `handoff` in `mcp__belay__task_list` with its `task_ids` (a listing names only the fields), and its last reply with `mcp__belay__worker_last_reply`.
 
 If a work task is not `done`, read the failing checks in the results, then either
-`mcp__belay__worker_message` the worker with what failed, wait on its id, and evaluate again, or create a fix
+`mcp__belay__worker_message` the worker with what failed, end your turn until its wake, and evaluate again, or create a fix
 task. A `worker_message` sent while the worker compacts answers `queued: true`; belay sends it when the compaction ends. A follow-up that needs a new hand-back (a rebase, a new head) is a `mcp__belay__task_assign` of the same task to the same worker, its `prompt` the follow-up (sent after the task's spec), not a `worker_message`: a released lease takes no second result.
 
 ## Review tasks
@@ -87,7 +87,7 @@ When a work task carries a plan, belay runs the steps it names in this cycle for
 5. Read the `kind: "verdict"` check in the results. One with `detail.tree_changed: true` is suspect, holds or refuted: the reviewer changed the tree it judged (`detail.tree.changed_paths`); have a reviewer that did not change the tree judge the work again:
    - `executable: false`: no verdict yet (no hand-back, the lease not released, a stale lease, or
      the coder judging). This is not a refutation. If the reviewer's turn ended without releasing,
-     `mcp__belay__worker_message` it to call `lease_release` with its result, wait on its id; that hand-back is evaluated
+     `mcp__belay__worker_message` it to call `lease_release` with its result, end your turn until its wake; that hand-back is evaluated
      when it lands. If the coder judged, give the review to a worker that did not code it.
    - `executable: true, passed: true`: `holds`; the review is `done`.
    - `executable: true, passed: false` with `verdict: "refuted"`: only this means fix. Call

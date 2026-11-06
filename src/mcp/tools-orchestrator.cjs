@@ -31,7 +31,7 @@ const ORCHESTRATOR = [
     // the caller's own tool timeout has to be the outer bound, and a refusal would lose the fact that
     // nothing had finished yet.
     name: 'worker_wait',
-    description: 'Block until one of the named workers, or any worker this session launched, finishes a turn or dies, or the timeout passes. Returns which worker, what happened, what established it, its turn and checkpoint id, and how long the call held. timed_out is a result. already: turn ended earlier. In a run with a plan and no worker named: waits for the run, returns at an exception wake or the timeout, with a digest of the steps belay took since the last wait.',
+    description: 'Block until one of the named workers, or any worker this session launched, finishes a turn or dies, or the timeout passes. Returns which worker, what happened, what established it, its turn and checkpoint id, and how long the call held. timed_out is a result. already: turn ended earlier. In a run with a plan and no worker named: waits for the run, returns at an exception wake or the timeout, with a digest of the steps belay took since the last wait. Wakes deliver all of this without a call: end your turn to wait, and use this at most as a short check.',
     inputSchema: S({
       worker_ids: strs('Otherwise every worker this session launched'),
       timeout_ms: int('default 110000'),
