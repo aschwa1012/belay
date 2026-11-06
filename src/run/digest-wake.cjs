@@ -54,7 +54,7 @@ function released({ state, dataDir, runId }) {
 async function writeAll(evs, ctx) {
   const all = released(ctx).concat(evs);
   for (const ev of all) ctx.writeWake(ev);
-  if (!all.some(ridesDigest) || ctx.state.finishing) return; // ADR 0074 amendment 3: the digest follows an exception or the done wake, not a routine wake
+  if (!all.some(ridesDigest) || ctx.state.finishing) return; // ADR 0074 amendment 4: the digest follows an exception or the done wake, not a routine wake
   const d = await claim(ctx);
   if (d) deliver(d, ctx);
 }

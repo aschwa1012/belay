@@ -1,5 +1,5 @@
 'use strict';
-// done-wake.cjs — "implementation done", the plan-first run's one routine wake (ADR 0074 amendment 3). Under a plan the orchestrator is woken on
+// done-wake.cjs — "implementation done", the plan-first run's one routine wake (ADR 0074 amendment 4). Under a plan the orchestrator is woken on
 // exceptions only; when every planned task has gone the whole way, belay says so once, and the digest of its steps follows the wake. Derived
 // from the policy watcher's snapshot of the poll (no read of its own), from store rows only, never from a worker's words.
 //

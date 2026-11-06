@@ -1,6 +1,6 @@
 'use strict';
 require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
-// done-wake.test.cjs — ADR 0074 amendment 3, "implementation done": the plan-first run's one routine wake. The condition, clause by clause, from
+// done-wake.test.cjs — ADR 0074 amendment 4, "implementation done": the plan-first run's one routine wake. The condition, clause by clause, from
 // store rows alone; the watcher sends it once per state, and a later fix and merge make a new one.
 
 const { test } = require('node:test');

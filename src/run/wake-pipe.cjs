@@ -193,7 +193,7 @@ function startWakePublisher({
           }
         }
         let out = 0;
-        while (queue.length) { const q = queue.shift(); publish(q); if (require('./digest-wake.cjs').ridesDigest(q.ev || q)) out += 1; } // out: the wakes a digest follows (ADR 0074 amendment 3)
+        while (queue.length) { const q = queue.shift(); publish(q); if (require('./digest-wake.cjs').ridesDigest(q.ev || q)) out += 1; } // out: the wakes a digest follows (ADR 0074 amendment 4)
         const armed = dataDir && (evalSeen.policyArmed || planned.value() || !!policyWatcher.snapshot()); // the store's plan, not only a poll that saw a turn end
         if (out && armed) await rideDigest(); // ADR 0074 decision 4: the steps belay took since the last wake follow the wake
         else if (armed && list) { const k = require('./digest-quiet.cjs').due(quiet, policyWatcher.snapshot(), list.workers || [], runId); if (k && await rideDigest()) require('./digest-quiet.cjs').mark(quiet, k); } // amendment 2: at a quiet moment the steps no wake carried come on their own; a failed read is asked again
