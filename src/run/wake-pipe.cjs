@@ -59,6 +59,7 @@ function startWakePublisher({
   const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId, enabled: !!notes }); // wave 4: a refuted note
   const callWatcher = require('./call-wake.cjs').createCallWatcher({ core, runId }); // a still_running integrate or task_evaluate
   const policyWatcher = require('./policy-wakes.cjs').createPolicyWatcher({ core, runId }); // ADR 0073: the exceptions of a run under a plan
+  const quiet = require('./digest-quiet.cjs').createQuiet(); // ADR 0074 amendment 2: when the steps no wake carried are published on their own
   let wasHeld = false;
   let stopped = false;
   let inFlight = false;
@@ -189,7 +190,9 @@ function startWakePublisher({
         }
         let out = 0;
         while (queue.length) { publish(queue.shift()); out += 1; }
-        if (out && dataDir && evalSeen.policyArmed) await rideDigest(); // ADR 0074 decision 4: the steps belay took since the last wake follow the wake
+        const armed = dataDir && (evalSeen.policyArmed || planned.value() || !!policyWatcher.snapshot()); // the store's plan, not only a poll that saw a turn end
+        if (out && armed) await rideDigest(); // ADR 0074 decision 4: the steps belay took since the last wake follow the wake
+        else if (armed && list && require('./digest-quiet.cjs').due(quiet, policyWatcher.snapshot(), list.workers || [], runId)) await rideDigest(); // amendment 2: at a quiet moment the steps no wake carried come on their own
       }
     } finally {
       inFlight = false;

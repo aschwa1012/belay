@@ -65,15 +65,62 @@ test('the digest rides the wake as one more wake line inside the wake cap, and w
     assert.strictEqual(field.digests.length, 1);
     assert.strictEqual(field.digests[0].via, 'wake');
     assert.strictEqual(field.digests[0].lines.length + field.digests[0].dropped.count, 12, 'every step is shown or counted');
-    // The wait now has nothing of those steps to show, and a new one is shown once.
-    const clock = { t: 0, now: () => clock.t, sleep: async (ms) => { clock.t += ms; } };
-    const rw = createRunWait({ core, runId: RUN, dataDir, pollMs: 50, clock });
-    const quiet = await rw.wait({ ms: 100, t0: 0, workers: [] });
-    assert.strictEqual(quiet.digest, undefined);
-    steps.push(step({ task_id: 'later' }));
-    const later = await rw.wait({ ms: 100, t0: clock.t, workers: [] });
-    assert.strictEqual(later.digest.steps, 1);
-    assert.match(later.digest.text, /later done/);
+  } finally { await p.done(); }
+  // The wait now has nothing of those steps to show, and a new one is shown once. The publisher is stopped first: at a quiet moment it
+  // would publish the new step on its own (ADR 0074 amendment 2), which the next test covers.
+  const clock = { t: 0, now: () => clock.t, sleep: async (ms) => { clock.t += ms; } };
+  const rw = createRunWait({ core, runId: RUN, dataDir, pollMs: 50, clock });
+  const quiet = await rw.wait({ ms: 100, t0: 0, workers: [] });
+  assert.strictEqual(quiet.digest, undefined);
+  steps.push(step({ task_id: 'later' }));
+  const later = await rw.wait({ ms: 100, t0: clock.t, workers: [] });
+  assert.strictEqual(later.digest.steps, 1);
+  assert.match(later.digest.text, /later done/);
+});
+
+test('a step after the last wake is published on its own at a quiet moment, once, and the wait does not show it again', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-rw-wake-')).replace(/\\/g, '/');
+  const steps = [step({ task_id: 'first' })];
+  const core = coreOf(steps);
+  const p = await publisher(core, dataDir);
+  const digests = () => p.lines.filter((l) => l.text && /^belay: policy steps since the last wake: /.test(l.text));
+  try {
+    core.rows[0] = { ...core.rows[0], turns: 1, seq: 2 }; // a turn end: an exception wake, and the digest rides it
+    assert.ok(await p.until(() => digests().length === 1), JSON.stringify(p.lines));
+    assert.match(digests()[0].text, /first done/);
+    // No worker is mid-turn and no wake follows: the trailing step (here a merge) would have reached no digest before.
+    steps.push(step({ task_id: 'last', step: 'integrate', row_ref: 'integration:i1' }));
+    assert.ok(await p.until(() => digests().length === 2), JSON.stringify(p.lines));
+    assert.match(digests()[1].text, /integrate last done/);
+    assert.ok(B(digests()[1].text) <= 221, 'one wake line inside the wake cap');
+    const polls = p.pub.stats().polls;
+    assert.ok(await p.until(() => p.pub.stats().polls >= polls + 6));
+    assert.strictEqual(digests().length, 2, 'nothing is published twice');
+  } finally { await p.done(); }
+  const field = await D.receiptField(core, dataDir, RUN);
+  assert.deepStrictEqual(field.digests.map((d) => [d.via, d.lines.length + d.dropped.count]), [['wake', 1], ['wake', 1]], 'each step in exactly one digest');
+  const clock = { t: 0, now: () => clock.t, sleep: async (ms) => { clock.t += ms; } };
+  const r = await createRunWait({ core, runId: RUN, dataDir, pollMs: 50, clock }).wait({ ms: 100, t0: 0, workers: [] });
+  assert.strictEqual(r.digest, undefined, 'the wait shows neither again');
+});
+
+test('while a worker is mid-turn the trailing step waits: it is published once the run is quiet', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-rw-wake-')).replace(/\\/g, '/');
+  const steps = [step({ task_id: 'first' })];
+  const core = coreOf(steps);
+  const p = await publisher(core, dataDir);
+  const digests = () => p.lines.filter((l) => l.text && /^belay: policy steps since the last wake: /.test(l.text));
+  try {
+    core.rows[0] = { ...core.rows[0], turns: 1, seq: 2 };
+    assert.ok(await p.until(() => digests().length === 1));
+    core.rows[0] = { ...core.rows[0], mid_turn: 1 }; // a worker the step gave a turn
+    steps.push(step({ task_id: 'busy' }));
+    const polls = p.pub.stats().polls;
+    assert.ok(await p.until(() => p.pub.stats().polls >= polls + 6));
+    assert.strictEqual(digests().length, 1, 'not while a worker is mid-turn');
+    core.rows[0] = { ...core.rows[0], mid_turn: 0 }; // its turn ended with nothing to wake for (a routine hand-back)
+    assert.ok(await p.until(() => digests().length === 2), JSON.stringify(p.lines));
+    assert.match(digests()[1].text, /busy done/);
   } finally { await p.done(); }
 });
 
