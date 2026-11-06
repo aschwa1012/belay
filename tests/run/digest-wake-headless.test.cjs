@@ -183,3 +183,21 @@ test('an orchestrator that never calls worker_wait gets every exception, death a
     assert.deepStrictEqual(out.wakes_suppressed.filter((w) => w.reason === 'delivered by worker_wait'), [], 'nothing left to a wait');
   } finally { cleanup(root); }
 });
+
+// A wait that claimed an exception first and then gave the claim back (cancelled before its reply, or its adapter gone) leaves it to the
+// stdin path, which offers it again: a released exception is not left to a later wait.
+test('an exception a wait claimed and then released reaches the orchestrator by the stdin wake, once', async () => {
+  const { root, sb, core } = setup([W], []);
+  try {
+    const PW = require('../../src/run/policy-wakes.cjs');
+    const w = (await PW.createPolicyWatcher({ core, runId: RUN, enabled: true }).poll())[0];
+    const uid = `${w.worker_id}:${w.key}`;
+    assert.ok(D.claimException({ dataDir: sb.dataDir, runId: RUN, uid }), 'a wait claimed it first');
+    let polls = 0;
+    const list = core.worker && core.worker.list ? core.worker.list : async () => ({ workers: [] });
+    core.worker = { ...(core.worker || {}), list: async (a) => { polls += 1; if (polls === 2) D.release({ dataDir: sb.dataDir, runId: RUN, uids: [uid] }); return list(a); } }; // the wait's reply was never sent
+    const out = await withFake(() => runWith(core, sb));
+    assert.strictEqual(out.wakes_suppressed.filter((s) => s.exception === 'E5' && s.reason === 'delivered by worker_wait').length, 1, 'first held back for the wait');
+    assert.strictEqual(out.wakes.filter((x) => x.exception === 'E5').length, 1, `then written once the claim was given back: ${JSON.stringify(out.wakes)}`);
+  } finally { cleanup(root); }
+});
