@@ -25,7 +25,7 @@ const parse = (v) => { if (v && typeof v === 'object') return v; try { const p =
 const errText = (e) => `${(e && e.code) || 'E_INTERNAL'}: ${String((e && e.message) || e).replace(/[\x00-\x1f\x7f]+/g, ' ').slice(0, 800)}`;
 const keyOf = (step, t) => `${step}|${t.table}|${t.id}|${t.seq}`;
 const isRelease = (t) => !!(t && t.results && t.results.trigger === 'release');
-const SENDS = new Set(['build', 'review', 'fix', 're_review']); // the steps that send a worker work (the budget rule); integrate sends none
+const SENDS = new Set(['build', 'review', 'fix', 're_review']); // follow_up makes a task and sends it to no one // the steps that send a worker work (the budget rule); integrate sends none
 const leftOver = STEPS.leftOver; // a review a paused step made and did not hand over (never leased, never evaluated: policy-steps-run.cjs)
 const isReviewTask = (t) => !!(t.acceptance && t.acceptance.verdict === true);
 
@@ -60,8 +60,9 @@ function due(snap) {
     const { plan, rev } = p;
     const root = PW.rootOf(x, byId);
     // build: an open work task nobody holds, whose dependencies are all done, and the plan names who builds it (a worker, or a spawn).
-    // A task the orchestrator assigned has a lease and is skipped; a fix or a follow-up is made and assigned by its own step.
-    if (!x.repairs && !x.follows_up && plan.build && x.state === 'open' && !x.lease && (Array.isArray(x.depends_on) ? x.depends_on : []).every((d) => byId.get(d) && byId.get(d).state === 'done')) {
+    // A task the orchestrator assigned has a lease and is skipped; a fix is made and assigned by its own step. A follow-up the follow_up step
+    // made is open in its own tree, and is built here like any other planned task.
+    if (!x.repairs && plan.build && x.state === 'open' && !x.lease && (Array.isArray(x.depends_on) ? x.depends_on : []).every((d) => byId.get(d) && byId.get(d).state === 'done')) {
       out.push({ step: 'build', task_id: x.id, trigger: tref(x), policy_rev: rev, build: plan.build, worker: plan.build.worker || (plan.build.spawn && plan.build.spawn.worker_id) || null });
     }
     // review: the work is done on a release evaluation, nothing reviews it, and the plan names who does (a worker, or a spawn).
@@ -81,6 +82,17 @@ function due(snap) {
       const answered = (Array.isArray(x.answers) ? x.answers : []).slice().reverse().map((id) => byId.get(id)).find((r) => r && handBy(r));
       const R = answered || (root.review && byId.get(root.review.review_id)) || null;
       out.push({ step: 're_review', task_id: root.id, trigger: tref(x), policy_rev: rev, worker: handBy(R), fix_id: x.id, review_id: R ? R.id : null });
+    }
+    // follow_up (B1, ADR 0064): the work's review holds with should-fix findings, no follow-up answers that review yet and the run's
+    // max_follow_ups leaves one; the step makes the follow-up and the build step dispatches it. Past the cap nothing is due: the work
+    // integrates on its hold, and the findings are named in the done wake. The judged task stays done and integrable either way.
+    if (!x.repairs && !x.follows_up && plan.follow_up === 'plan' && x.review && x.review.state === 'holds' && x.review.follow_ups_left !== 0) {
+      const R = byId.get(x.review.review_id);
+      const facts = R && R.run_id === runId && isRelease(R) ? require('./review-wake.cjs').reviewOf(R) : null;
+      const answered = all.some((t) => t.follows_up && (t.follows_up.review_id === (R && R.id) || (Array.isArray(t.follows_up.review_ids) && t.follows_up.review_ids.includes(R && R.id))));
+      if (facts && facts.should_fix.n > 0 && !answered) {
+        out.push({ step: 'follow_up', task_id: x.id, trigger: tref(R), policy_rev: rev, review_id: R.id });
+      }
     }
     // integrate: the work's review holds, the work is done and not on the branch, and every task it depends on has landed.
     if (!x.repairs && plan.integrate === 'on_hold' && x.state === 'done' && x.review && x.review.state === 'holds' && !merged(x) && !merging) {

@@ -39,8 +39,11 @@ function doneOf(snap, exceptions = []) {
   if (due({ runId, tasks: all, integrations: snap.integrations || [] }).length) return null;
   if ((snap.steps || []).some((s) => s.run_id === runId && s.outcome === 'started')) return null;
   const n = work.length;
-  const text = `belay: implementation done: ${n} planned task${n === 1 ? '' : 's'} done, reviewed and merged into ${newest.into_branch} at ${short(newest.head_sha)}, checks passed. Decide whether to end the run.`;
-  return { key: `${newest.id}@${newest.seq}`, text: Buffer.byteLength(text) <= WAKE_TEXT_MAX ? text : `belay: implementation done: ${n} planned tasks merged at ${short(newest.head_sha)}, checks passed.`, n };
+  // Should-fix findings a held review left with no follow-up (the run's max_follow_ups was reached, or the plan has no follow_up): named, not waking.
+  const left = work.filter((t) => { const R = byId.get(t.review && t.review.review_id); const f = R ? require('./review-wake.cjs').reviewOf(R) : null; return f && f.should_fix.n > 0 && !all.some((u) => u.follows_up && (u.follows_up.review_id === R.id || (Array.isArray(u.follows_up.review_ids) && u.follows_up.review_ids.includes(R.id)))); }).map((t) => t.id);
+  const note = left.length ? ` Should-fix findings left on ${left.length} task${left.length === 1 ? ' (see its review)' : 's (see their reviews)'}.` : ''; // ids are in should_fix_left; a count keeps the line inside the wake cap
+  const text = `belay: implementation done: ${n} planned task${n === 1 ? '' : 's'} done, reviewed and merged into ${newest.into_branch} at ${short(newest.head_sha)}, checks passed.${note} Decide whether to end the run.`;
+  return { key: `${newest.id}@${newest.seq}`, text: Buffer.byteLength(text) <= WAKE_TEXT_MAX ? text : `belay: implementation done: ${n} planned tasks merged at ${short(newest.head_sha)}, checks passed.${left.length ? ` Should-fix left on ${left.length}.` : ''}`, n, should_fix_left: left };
 }
 
 // The wake event, as the exception wakes are: an `evaluated`-shaped event whose text wake.cjs passes through.

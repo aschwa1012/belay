@@ -14,6 +14,7 @@ const POLICY_PROPERTY = {
     fix: { enum: ['builder'] },
     re_review: { enum: ['refuter'] },
     integrate: { enum: ['on_hold'] },
+    follow_up: { enum: ['plan'] },
   },
 };
 

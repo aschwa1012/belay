@@ -15,7 +15,7 @@ const { SHIPPED_PLAN } = require('../../src/cli/run-policy-levers.cjs');
 
 const cfg = (run) => ({ config: { path: '/p/belay.config.json', memory: undefined, run } });
 const PLAN = { fix: 'builder', integrate: 'on_hold' };
-const SHIPPED = { build: { spawn: { agent_type: 'coder' } }, review: { spawn: { agent_type: 'reviewer' } }, fix: 'builder', re_review: 'refuter', integrate: 'on_hold' };
+const SHIPPED = { build: { spawn: { agent_type: 'coder' } }, review: { spawn: { agent_type: 'reviewer' } }, fix: 'builder', re_review: 'refuter', integrate: 'on_hold', follow_up: 'plan' };
 
 test('a run that states no plan takes belay\'s shipped plan: build, review, fix, re-review and merge', () => {
   assert.deepStrictEqual(SHIPPED_PLAN, SHIPPED);
@@ -42,7 +42,7 @@ test('the config run block over the shipped plan, the spec over both field by fi
 });
 
 test('a plan v1 does not accept is a usage error naming where it was written', () => {
-  assert.match(parseLevers({ policy: { follow_up: 'wake' } }).error, /spec policy\.follow_up is not accepted in 0\.4\.0/);
+  assert.match(parseLevers({ policy: { follow_up: 'wake' } }).error, /spec policy\.follow_up: "wake" is not accepted in 0\.4\.0/);
   assert.match(parseLevers({ policy: { review: { pool: ['a'] } } }).error, /not accepted in 0\.4\.0/);
   assert.match(parseLevers({ policy: 'builder' }).error, /spec policy must be an object/);
   assert.match(parseLevers({}, cfg({ policy: { fix: 'x' } })).error, /run\.policy in \/p\/belay\.config\.json\.fix: "x" is not accepted in 0\.4\.0/);

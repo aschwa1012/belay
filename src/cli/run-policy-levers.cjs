@@ -10,7 +10,7 @@ const PP = require('../core/policy-plan.cjs');
 
 // The plan a run takes when neither the spec nor the config states one. A spec or config field replaces its field; `policy: null` in the spec turns
 // it off for the run. The reviewer and the builder are spawned in the task's own belay worktree, so tasks are created with `worktree: true`.
-const SHIPPED_PLAN = Object.freeze({ build: { spawn: { agent_type: 'coder' } }, review: { spawn: { agent_type: 'reviewer' } }, fix: 'builder', re_review: 'refuter', integrate: 'on_hold' });
+const SHIPPED_PLAN = Object.freeze({ build: { spawn: { agent_type: 'coder' } }, review: { spawn: { agent_type: 'reviewer' } }, fix: 'builder', re_review: 'refuter', integrate: 'on_hold', follow_up: 'plan' });
 
 // Adds policy_default / policy_source to `out` when a default applies. Returns { error } or {}. `opts.config` is { path, memory, run }.
 // Field by field, spec over config: a spec field beats the config's, the config fills what the spec leaves unsaid; a spec null turns the

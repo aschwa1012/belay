@@ -20,6 +20,7 @@ const V1_ACCEPTS = Object.freeze({
   fix: Object.freeze(['builder']),
   re_review: Object.freeze(['refuter']),
   integrate: Object.freeze(['on_hold']),
+  follow_up: Object.freeze(['plan']), // a held review's should-fix findings become a follow-up task the plan builds, reviews and merges (ADR 0064), not a wake
 });
 
 const notAccepted = (path, value, accepted) => err('E_ARGS', `${path}${value === undefined ? '' : `: ${value}`} is not accepted in 0.4.0${accepted ? ` (accepted: ${accepted})` : ''}`, { field: path });
@@ -47,7 +48,7 @@ function checkReview(v, where) {
 // nothing. A null field is refused (`policy: null` is the whole-plan hand-back); an empty object is a valid plan that says nothing.
 // `where` names the source in the message (`policy`, `spec policy`, or the config path).
 function check(policy, where = 'policy') {
-  if (!policy || typeof policy !== 'object' || Array.isArray(policy)) throw err('E_ARGS', `${where} must be an object of what belay does for the task (build, review, fix, re_review, integrate)`, { field: where });
+  if (!policy || typeof policy !== 'object' || Array.isArray(policy)) throw err('E_ARGS', `${where} must be an object of what belay does for the task (build, review, fix, re_review, integrate, follow_up)`, { field: where });
   const out = {};
   for (const k of Object.keys(policy)) {
     const v = policy[k];
@@ -106,6 +107,7 @@ function tag(policy) {
   if (policy.fix) parts.push(`f:${policy.fix}`);
   if (policy.re_review) parts.push(`rr:${policy.re_review}`);
   if (policy.integrate) parts.push(`i:${policy.integrate}`);
+  if (policy.follow_up) parts.push(`fu:${policy.follow_up}`);
   return parts.join(' ') || null;
 }
 

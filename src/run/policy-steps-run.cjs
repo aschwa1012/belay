@@ -158,7 +158,20 @@ async function integrate(c, env) {
   return { outcome: 'done', row_ref: ref }; // a conflict is a finished step too: the integration row says so and the exception wake carries it
 }
 
-const RUNNERS = { build, review, fix, re_review: reReview, integrate };
+// follow_up: a held review's should-fix findings become a follow-up task (ADR 0064: its own tree from the judged head, counted against
+// max_follow_ups, never a fix round). The step makes it and assigns nothing: a worker's directory is fixed at spawn, so the builder of the
+// work cannot take a task in another tree. The follow-up is written by the step, so it takes the work's plan, and the plan's build step
+// dispatches it like any open task (a coder spawned in its tree). A refusal (the cap reached since the claim) is an exception that halts the work.
+async function followUp(c, env) {
+  const cur = await env.core.task.get({ task_id: c.task_id });
+  if (!cur.review || cur.review.state !== 'holds' || cur.review.review_id !== c.review_id) return { outcome: 'skipped', error: `the review of ${c.task_id} is no longer ${c.review_id} holding` };
+  const made = await env.core.task.fixFromReview({ review_id: c.review_id, follow_up: true });
+  const ref = `task:${made.id}`;
+  if (made.existing === true) return { outcome: made.superseded === true ? 'superseded' : 'done', row_ref: ref };
+  return { outcome: 'done', row_ref: ref };
+}
+
+const RUNNERS = { build, review, fix, re_review: reReview, integrate, follow_up: followUp };
 
 async function run(c, env) {
   const f = RUNNERS[c.step];
