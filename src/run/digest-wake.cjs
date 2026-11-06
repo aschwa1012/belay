@@ -11,6 +11,9 @@
 
 const D = require('./run-digest.cjs');
 
+// The wakes the digest follows: an exception (E1 to E10 by policy-wakes exceptionOf) or the done wake.
+const ridesDigest = (ev) => !!(ev && (ev.event === 'policy_done' || require('./policy-wakes.cjs').exceptionOf(ev)));
+
 const HEAD = 'belay: policy steps since the last digest (a record of what belay did, not a request):\n';
 
 // -> the digest wake event, or null when there is no plan to report on or nothing new. `armed()`: the run is under a plan (cheap, cached).
@@ -51,7 +54,7 @@ function released({ state, dataDir, runId }) {
 async function writeAll(evs, ctx) {
   const all = released(ctx).concat(evs);
   for (const ev of all) ctx.writeWake(ev);
-  if (!all.length || ctx.state.finishing) return;
+  if (!all.some(ridesDigest) || ctx.state.finishing) return; // ADR 0074 amendment 3: the digest follows an exception or the done wake, not a routine wake
   const d = await claim(ctx);
   if (d) deliver(d, ctx);
 }
@@ -64,4 +67,4 @@ async function flush(ctx) {
   return d ? deliver(d, ctx) : false;
 }
 
-module.exports = { claim, deliver, writeAll, flush, released, HEAD };
+module.exports = { claim, deliver, writeAll, flush, released, ridesDigest, HEAD };

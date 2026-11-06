@@ -301,6 +301,8 @@ function createPolicyWatcher({ core, runId, enabled = false }) {
     last = derive(snap);
     const out = [];
     for (const e of last) if (!sent.has(e.uid)) { sent.add(e.uid); out.push(wakeOf(e)); }
+    const done = require('./done-wake.cjs').doneOf(snap, last); // ADR 0074 amendment 3: the one routine wake, when every planned task has gone the whole way
+    if (done && !sent.has(`done:${done.key}`)) { sent.add(`done:${done.key}`); out.push(require('./done-wake.cjs').wakeOf(runId, done)); }
     return out;
   }
   return { poll, active: () => last.slice(), snapshot: () => lastSnap };
