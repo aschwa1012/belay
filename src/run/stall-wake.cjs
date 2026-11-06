@@ -27,21 +27,28 @@ function fit(build, ids) {
 
 const mine = (tasks, runId) => tasks.filter((t) => t.run_id === runId);
 const openOf = (tasks, runId) => mine(tasks, runId).filter((t) => t.state === 'open');
-const ready = (t, byId) => (Array.isArray(t.depends_on) ? t.depends_on : []).every((d) => { const u = byId.get(d); return u && u.state === 'done'; });
+// A dependency is ready when it is done and, if its plan merges it and a policy step is due or in flight on it (`carried`), merged: the plan's
+// own build gate (policy-exec.cjs due, depReady), so a task whose dependency is still to be reviewed or merged is not called free. A done
+// dependency no step will take further (its plan has no review to lead to the merge) is ready by done, as the core's assign reads it.
+const depReady = (u, byId, carried) => !!u && u.state === 'done' && (!carried.has(u.id) || !(PW.policyOf(u, byId) || {}).integrate || !!(u.integration && u.integration.state === 'merged'));
+const ready = (t, byId, carried = new Set()) => (Array.isArray(t.depends_on) ? t.depends_on : []).every((d) => depReady(byId.get(d), byId, carried));
 const maxSeq = (tasks, runId) => mine(tasks, runId).reduce((m, t) => Math.max(m, Number(t.seq) || 0), 0);
 const stateOf = (tasks, runId) => mine(tasks, runId).map((t) => `${t.id}:${t.seq}`).sort().join(',');
 const isPlanned = (tasks, runId) => { const byId = new Map(tasks.map((t) => [t.id, t])); return mine(tasks, runId).some((t) => PW.policyOf(t, byId)); };
 
 // The open, ready tasks of the run that no policy step names: neither due nor claimed and still in flight, and not halted.
+// `carried`: the tasks a due or in-flight step names, which the ready check reads for a dependency's merge still to come.
 function untaken(snap) {
   const { runId } = snap;
   const tasks = snap.tasks || [];
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const named = new Set(PW.haltedIds(PW.derive({ ...snap, failures: snap.failures || [] }), tasks)); // a halted task's exception wake has gone: it is not "no policy step due"
   // The steps go to due() so a task a step already took (a build whose builder then died) is not counted as carried: it is the orchestrator's.
-  for (const c of due({ runId, tasks, integrations: snap.integrations || [], steps: snap.steps || [] })) { named.add(c.task_id); for (const id of c.task_ids || []) named.add(id); }
-  for (const s of snap.steps || []) if (s.run_id === runId && s.outcome === 'started' && s.task_id) named.add(s.task_id);
-  return openOf(tasks, runId).filter((t) => ready(t, byId) && !named.has(t.id)).map((t) => t.id).sort();
+  const carried = new Set();
+  for (const c of due({ runId, tasks, integrations: snap.integrations || [], steps: snap.steps || [] })) { carried.add(c.task_id); for (const id of c.task_ids || []) carried.add(id); }
+  for (const s of snap.steps || []) if (s.run_id === runId && s.outcome === 'started' && s.task_id) carried.add(s.task_id);
+  for (const id of carried) named.add(id);
+  return openOf(tasks, runId).filter((t) => ready(t, byId, carried) && !named.has(t.id)).map((t) => t.id).sort();
 }
 
 // `planned()`: whether the store shows a plan for the run (planned.cjs), for an idle close with no policy snapshot.
