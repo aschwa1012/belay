@@ -19,7 +19,7 @@
 
 const path = require('node:path');
 
-const VERSION = '0.4.0-rc.4';
+const VERSION = '0.4.0-rc.5';
 
 // The slice-3a surface. `mode` is the connection mode each command declares, exactly one, per
 // command table §1: R read-only, W store client, C run control. The remaining 18 commands of
