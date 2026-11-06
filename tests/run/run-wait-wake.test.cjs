@@ -104,7 +104,7 @@ test('a step after the last wake is published on its own at a quiet moment, once
   assert.strictEqual(r.digest, undefined, 'the wait shows neither again');
 });
 
-test('while the wakes are held (the window unmounted) the quiet digest is held too, not lost: it is published once the hold ends', async () => {
+test('while the run is paused (the publisher\'s wake hold) the quiet digest is held too, not lost: it is published once the hold ends', async () => {
   const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-rw-wake-')).replace(/\\/g, '/');
   const steps = [step({ task_id: 'first' })];
   const core = coreOf(steps);

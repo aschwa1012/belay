@@ -129,3 +129,18 @@ test('only "no session is bound" holds a wake; any other refusal stays recorded 
   assert.strictEqual(submits, 1);
   assert.deepStrictEqual(log.map((e) => e.stage), ['submit']);
 });
+
+test('a digest line (a ridden digest, or one published on its own at a quiet moment) is held while no session is bound, not lost, and goes out once', async () => {
+  const m = await import(MOD);
+  const DIGEST = 'belay: policy steps since the last wake: #3 fix W done; #4 integrate W done';
+  assert.strictEqual(m.isClaimedWake(DIGEST), false, 'a digest line carries no ref: the record-then-submit order');
+  const s = harness(m);
+  assert.strictEqual(await s.d.deliver('r1:digest:2', DIGEST), 'held');
+  for (let i = 0; i < 3; i++) assert.strictEqual(await s.d.retryPending(), 1, 'still unbound: held');
+  assert.deepStrictEqual(s.submitted, [], 'nothing submitted while unbound');
+  assert.deepStrictEqual(m.parseDelivered(s.file), new Set(), 'and not recorded as delivered');
+  s.bound = true;
+  assert.strictEqual(await s.d.retryPending(), 0);
+  assert.deepStrictEqual(s.submitted.map((x) => x.t), [DIGEST], 'delivered once the session is back');
+  assert.strictEqual(await s.d.deliver('r1:digest:2', DIGEST), 'skip', 'and not again');
+});
