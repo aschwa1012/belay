@@ -264,3 +264,35 @@ test('an exception the wait claimed and then released is published on the pipe a
     assert.strictEqual(p.lines.filter((l) => l.text && /exception E1,/.test(l.text)).length, 1, 'once');
   } finally { await p.done(); }
 });
+
+test('a quiet digest whose step read fails is asked again on the next quiet pass, and published once', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-rw-wake-')).replace(/\\/g, '/');
+  const steps = [step({ task_id: 'first' })];
+  const core = coreOf(steps);
+  let failPaged = 0;
+  const list = core.policy.list;
+  core.policy.list = async (a = {}) => { if (a.run_id && failPaged > 0) { failPaged -= 1; throw Object.assign(new Error('owner busy'), { code: 'E_BUSY' }); } return list(a); }; // the digest's paged read, not the watcher's
+  const p = await publisher(core, dataDir);
+  const digests = () => p.lines.filter((l) => l.text && /^belay: policy steps since the last wake: /.test(l.text));
+  try {
+    core.rows[0] = { ...core.rows[0], turns: 1, seq: 2 };
+    assert.ok(await p.until(() => digests().length === 1));
+    failPaged = 1;
+    steps.push(step({ task_id: 'retried' }));
+    assert.ok(await p.until(() => digests().length === 2), JSON.stringify(p.lines));
+    assert.strictEqual(failPaged, 0, 'the first read failed');
+    assert.match(digests()[1].text, /retried done/);
+  } finally { await p.done(); }
+});
+
+test('a plan in the store arms the quiet digest without a turn end: a step is published with no wake before it', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-rw-wake-')).replace(/\\/g, '/');
+  const quietW = { ...W, policy: { fix: 'builder', review: { worker: 'rv' } }, review: { review_id: 'R', state: 'holds' } }; // planned, nothing owed: no exception wake
+  const core = coreOf([step({ task_id: 'only' })]);
+  core.task.list = async () => ({ tasks: [quietW] });
+  const p = await publisher(core, dataDir);
+  try {
+    assert.ok(await p.until(() => p.lines.some((l) => l.text && /only done/.test(l.text))), JSON.stringify(p.lines));
+    assert.strictEqual(p.lines.filter((l) => l.text && !/^belay: policy steps since the last wake: /.test(l.text)).length, 0, 'no other wake carried it');
+  } finally { await p.done(); }
+});

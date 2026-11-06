@@ -18,7 +18,8 @@ async function claim({ core, dataDir, runId, armed = () => true, now = Date.now 
   if (!dataDir || !armed()) return null;
   let rows;
   try { rows = await D.listSteps(core, runId); } catch { return null; } // unread: nothing is claimed, and the next pass asks again
-  const rec = D.claimDigest({ dataDir, runId, rows, form: { head: HEAD, sep: '\n' }, via: 'wake', now });
+  let rec;
+  try { rec = D.claimDigest({ dataDir, runId, rows, form: { head: HEAD, sep: '\n' }, via: 'wake', now }); } catch { return null; } // a file error (EPERM, EBUSY, E_BUSY) claims nothing: the steps stay for the next asker, and the run goes on
   return rec ? { event: 'policy_digest', worker_id: `digest:${runId}`, turn: 0, seq: null, text: rec.text, digest_n: rec.n } : null;
 }
 

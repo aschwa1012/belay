@@ -8,19 +8,19 @@
 const { isMidTurn } = require('./wake.cjs');
 const { createPolicyCloseHold } = require('./policy-close-hold.cjs');
 
-const reopened = (s) => s.outcome === 'skipped' && /^E_(PAUSED|NOT_NOW)/.test(s.error || '');
+const { finished } = require('./run-digest.cjs'); // a step a digest can take: finished, and not a skip the executor reopens
 
 function createQuiet() { return { hold: createPolicyCloseHold(), lastKey: '' }; }
 
-// -> true when the digest should be asked for now.
+// -> the key of the finished steps when the digest should be asked for now, else null. The caller marks it (`mark`) only once a read of the
+// steps succeeded, so a failed read is asked again on the next quiet pass.
 function due(q, snap, workers, runId) {
-  if (!snap || snap.failed || snap.readFailed || !Array.isArray(snap.tasks)) return false;
-  if ((workers || []).some((w) => w.run_id === runId && isMidTurn(w))) return false;
-  if (q.hold.holds(snap).length) return false;
-  const key = (snap.steps || []).filter((s) => s.run_id === runId && s.outcome && s.outcome !== 'started' && !reopened(s)).map((s) => `${s.seq}|${s.finished_at}`).join(',');
-  if (key === q.lastKey) return false;
-  q.lastKey = key;
-  return key !== '';
+  if (!snap || snap.failed || snap.readFailed || !Array.isArray(snap.tasks)) return null;
+  if ((workers || []).some((w) => w.run_id === runId && isMidTurn(w))) return null;
+  if (q.hold.holds(snap).length) return null;
+  const key = (snap.steps || []).filter((s) => s.run_id === runId && finished(s)).map((s) => `${s.seq}|${s.finished_at}`).join(',');
+  return key && key !== q.lastKey ? key : null;
 }
+const mark = (q, key) => { q.lastKey = key; };
 
-module.exports = { createQuiet, due };
+module.exports = { createQuiet, due, mark };

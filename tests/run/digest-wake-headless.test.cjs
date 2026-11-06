@@ -2,7 +2,7 @@
 require('../helpers/tmp.cjs');
 // digest-wake-headless.test.cjs — ADR 0074 amendment 2, the headless path: every policy step reaches the orchestrator in exactly one digest,
 // whether it waits for the run or is only woken. Before it, the headless run wrote wakes to stdin and never a digest, so an orchestrator that
-// never called worker_wait saw none of belay's steps (the e040 P2 run: 13 wakes, no wait, 11 steps in no digest). Through the run's own
+// never called worker_wait saw none of belay's steps (a run woken 13 times with no wait had 11 steps in no digest). Through the run's own
 // orchestrator loop (fake executable, fake core) and the run wait; the claim files are the record of what was shown.
 
 const test = require('node:test');
@@ -51,13 +51,14 @@ const digestWakes = (out) => out.wakes.filter((w) => w.event === 'policy_digest'
 const shownSeqs = (dataDir) => D.readDigests(dataDir, RUN).flatMap((d) => d.lines.map((l) => l.step_seq));
 const clock = () => { const c = { t: 0, now: () => c.t, sleep: async (ms) => { c.t += ms; } }; return c; };
 
-test('P2: woken, never waiting: the steps reach the orchestrator in a digest written after the wake, once', async () => {
+test('woken, never waiting: the steps reach the orchestrator in a digest written after the wake, once', async () => {
   const steps = [stepRow(1, 'fix', 'W', 'task:f1'), stepRow(2, 're_review', 'W', 'task:r2'), stepRow(3, 'integrate', 'W', 'integration:i1')];
   const { root, sb, core } = setup([W], steps);
   try {
     const out = await withFake(() => runWith(core, sb));
     assert.strictEqual(out.wakes.filter((w) => w.exception === 'E5').length, 1, JSON.stringify(out.wakes));
     assert.strictEqual(digestWakes(out).length, 1, `one digest wake: ${JSON.stringify(out.wakes)}`);
+    assert.deepStrictEqual([digestWakes(out)[0].established_by, digestWakes(out)[0].digest_n], ['policy.list; digest d1', 1], 'the receipt names what established it, joined to digests[]');
     const ds = D.readDigests(sb.dataDir, RUN);
     assert.deepStrictEqual(ds.map((d) => d.via), ['wake']);
     assert.deepStrictEqual(shownSeqs(sb.dataDir), [1, 2, 3], 'every step shown, each once');
@@ -143,4 +144,26 @@ test('the idle close writes one digest per batch, then closes; a digest it canno
     assert.ok(await closePass(() => DW.flush(broken), state), 'a failed digest write does not hold the close');
     assert.deepStrictEqual(D.readDigests(dataDir, RUN).map((d) => d.lines.map((l) => l.step_seq)), [[1]], 'the unwritten claim was released');
   } finally { cleanup(root); }
+});
+
+test('a claim that fails on a file error (EPERM) claims nothing and does not throw: the run goes on, and the steps are claimed later', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-dw-eperm-'));
+  const nodeFs = require('node:fs');
+  const realLink = nodeFs.linkSync;
+  try {
+    const dataDir = fwd(root);
+    const steps = [stepRow(1, 'fix', 'W', 'task:f1')];
+    const core = { policy: { list: async () => ({ rows: steps.slice(), last_seq: 1 }) } };
+    const written = [];
+    const state = { pendingWrites: [], wakesSuppressed: [], finishing: false };
+    const ctx = { core, dataDir, runId: RUN, state, writeWake: (e) => written.push(e), armed: () => true };
+    nodeFs.linkSync = () => { throw Object.assign(new Error('operation not permitted, link'), { code: 'EPERM' }); };
+    assert.strictEqual(await DW.claim(ctx), null);
+    await DW.writeAll([{ event: 'evaluated', worker_id: 'w1', text: 'a wake' }], ctx); // must not throw
+    assert.strictEqual(await DW.flush(ctx), false);
+    assert.deepStrictEqual(written.map((e) => e.event), ['evaluated'], 'the wake went out; no digest was claimed');
+    nodeFs.linkSync = realLink;
+    assert.strictEqual(await DW.flush(ctx), true, 'once the file call works again, the steps are claimed and written');
+    assert.deepStrictEqual(D.readDigests(dataDir, RUN).map((d) => d.lines.map((l) => l.step_seq)), [[1]]);
+  } finally { nodeFs.linkSync = realLink; cleanup(root); }
 });
