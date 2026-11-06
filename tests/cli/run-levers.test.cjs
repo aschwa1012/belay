@@ -18,6 +18,7 @@ const FAKE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
 const FAKE_TASKS = `${ROOT}/tests/cli/fakes/core-fake-tasks.cjs`;
 const fwd = (p) => String(p).split(path.sep).join('/');
 const { parseLevers, substituteLevers } = require('../../src/cli/run-levers.cjs');
+const { SHIPPED_PLAN } = require('../../src/cli/run-policy-levers.cjs'); // a run that states no plan takes belay's (ADR 0071 plan-first amendment)
 
 function cleanup(dir) {
   for (let i = 0; i < 5; i += 1) {
@@ -42,9 +43,9 @@ function go(prompt, specExtra, envExtra = {}) {
 }
 
 test('levers: parseLevers defaults and validation', () => {
-  assert.deepStrictEqual(parseLevers({}), { max_fix_rounds: 2, max_follow_ups: 1, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', on_embedder_failure: 'required' });
-  assert.deepStrictEqual(parseLevers({ max_fix_rounds: 0, fix_cutoff: 'cap-only' }), { max_fix_rounds: 0, max_follow_ups: 1, fix_cutoff: 'cap-only', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', on_embedder_failure: 'required' });
-  assert.deepStrictEqual(parseLevers({ max_fix_rounds: 5 }), { max_fix_rounds: 5, max_follow_ups: 1, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', on_embedder_failure: 'required' });
+  assert.deepStrictEqual(parseLevers({}), { max_fix_rounds: 2, max_follow_ups: 1, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', policy_default: SHIPPED_PLAN, policy_source: 'belay default', on_embedder_failure: 'required' });
+  assert.deepStrictEqual(parseLevers({ max_fix_rounds: 0, fix_cutoff: 'cap-only' }), { max_fix_rounds: 0, max_follow_ups: 1, fix_cutoff: 'cap-only', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', policy_default: SHIPPED_PLAN, policy_source: 'belay default', on_embedder_failure: 'required' });
+  assert.deepStrictEqual(parseLevers({ max_fix_rounds: 5 }), { max_fix_rounds: 5, max_follow_ups: 1, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', policy_default: SHIPPED_PLAN, policy_source: 'belay default', on_embedder_failure: 'required' });
   for (const bad of [-1, 1.5, '2', null, NaN, Infinity, 2 ** 60, true, [], {}]) {
     assert.match(parseLevers({ max_fix_rounds: bad }).error, /max_fix_rounds must be a non-negative integer/, String(bad));
   }
@@ -96,7 +97,7 @@ test('run: bad max_fix_rounds and fix_cutoff exit 2 before anything is created; 
   const ok = go('hi\n', { max_fix_rounds: 0, fix_cutoff: 'cap-only' });
   try {
     assert.strictEqual(ok.status, 0, ok.stderr.slice(-600));
-    assert.deepStrictEqual(JSON.parse(ok.stdout).levers, { max_fix_rounds: 0, max_follow_ups: 1, fix_cutoff: 'cap-only', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 0, fix_cutoff_rule: 0 } });
+    assert.deepStrictEqual(JSON.parse(ok.stdout).levers, { max_fix_rounds: 0, max_follow_ups: 1, fix_cutoff: 'cap-only', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', policy_default: SHIPPED_PLAN, policy_source: 'belay default', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 0, fix_cutoff_rule: 0 } });
   } finally { cleanup(ok.dir); }
 });
 
@@ -114,7 +115,7 @@ test('run: the orchestrator receives the prompt with both placeholders substitut
     const text = fs.readFileSync(`${b.orchDir}/prompt.txt`, 'utf8');
     assert.ok(text.startsWith('cap 2 rounds. You may stop fix rounds before the fix-round limit'), text);
     assert.ok(!text.includes('{{'), 'no placeholder is left');
-    assert.deepStrictEqual(JSON.parse(b.stdout).levers, { max_fix_rounds: 2, max_follow_ups: 1, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 2, fix_cutoff_rule: 1 } });
+    assert.deepStrictEqual(JSON.parse(b.stdout).levers, { max_fix_rounds: 2, max_follow_ups: 1, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', policy_default: SHIPPED_PLAN, policy_source: 'belay default', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 2, fix_cutoff_rule: 1 } });
     assert.match(text, /The run has no time bound\./, 'timeout_ms defaults to 0');
   } finally { cleanup(b.dir); }
 
@@ -131,7 +132,7 @@ test('run: the receipt carries levers and review_rounds (this run\'s verdict tas
   try {
     assert.strictEqual(a.status, 0, a.stderr.slice(-600));
     const rc = JSON.parse(a.stdout);
-    assert.deepStrictEqual(rc.levers, { max_fix_rounds: 1, max_follow_ups: 1, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 0, fix_cutoff_rule: 0 } });
+    assert.deepStrictEqual(rc.levers, { max_fix_rounds: 1, max_follow_ups: 1, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', policy_default: SHIPPED_PLAN, policy_source: 'belay default', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 0, fix_cutoff_rule: 0 } });
     assert.strictEqual(rc.review_rounds, 2, 'two review tasks of this run; the work task and the other run\'s review are not counted');
     assert.strictEqual(rc.review_rounds_reason, null);
     assert.strictEqual(JSON.parse(fs.readFileSync(`${a.orchDir}/run.json`, 'utf8')).review_rounds, 2, 'run.json agrees');
