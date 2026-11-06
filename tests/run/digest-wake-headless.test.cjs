@@ -112,3 +112,35 @@ test('a digest wake the run could not write gives its claim back, so the steps s
     assert.ok(again && again.lines[0].step_seq === 1, 'released: the wait is offered the step');
   } finally { cleanup(root); }
 });
+
+// The idle close's digest (amendment 2, decision 2): one write per batch of steps, and a write that fails does not hold the close.
+async function closePass(flushDigest, state) {
+  let closed = null;
+  await require('../../src/run/orchestrator-idle-close.cjs').idleClose({
+    state, rows: [], runId: RUN, pending_deaths: [], turnAtCall: 1, hold: { isPaused: () => false }, awaitingWakeIds: () => [],
+    callWatcher: { holds: () => [] }, preClose: { check: async () => ({ ran: false }) }, recordHold() {}, writeWake() {},
+    closeThenKillOnDeadline: (why) => { closed = why; }, flushDigest,
+  });
+  return closed;
+}
+
+test('the idle close writes one digest per batch, then closes; a digest it cannot write does not hold the close', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-dw-close-'));
+  try {
+    const dataDir = fwd(root);
+    const steps = [stepRow(1, 'integrate', 'X', 'integration:i1')];
+    const core = { policy: { list: async () => ({ rows: steps.slice(), last_seq: steps.length }) } };
+    const written = [];
+    const state = { pendingWrites: [], evalSeen: new Map(), finishing: false, idle: true, wakesSuppressed: [] };
+    const ctx = { core, dataDir, runId: RUN, state, writeWake: (e) => written.push(e), armed: () => true };
+    assert.strictEqual(await closePass(() => DW.flush(ctx), state), null, 'the digest is written instead of closing');
+    assert.deepStrictEqual(written.map((e) => e.event), ['policy_digest']);
+    assert.ok(await closePass(() => DW.flush(ctx), state), 'nothing new: the next idle pass closes, with no second digest');
+    assert.strictEqual(written.length, 1);
+    // A new step, and stdin is broken: the write is suppressed, the claim given back, and the close goes ahead.
+    steps.push(stepRow(2, 'fix', 'X', 'task:f2'));
+    const broken = { ...ctx, writeWake: (e) => state.wakesSuppressed.push({ ...e, reason: 'stdin was broken when this event was found' }) };
+    assert.ok(await closePass(() => DW.flush(broken), state), 'a failed digest write does not hold the close');
+    assert.deepStrictEqual(D.readDigests(dataDir, RUN).map((d) => d.lines.map((l) => l.step_seq)), [[1]], 'the unwritten claim was released');
+  } finally { cleanup(root); }
+});

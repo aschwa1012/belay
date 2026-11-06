@@ -39,7 +39,9 @@ async function writeAll(evs, ctx) {
   if (d) deliver(d, ctx);
 }
 
-// At the idle close: -> true when a digest was written (the close waits for the orchestrator to read it).
+// At the idle close: -> true when a digest was written (the close waits for the orchestrator to read it). It cannot loop: a claim takes its
+// steps for good, so the next idle pass finds nothing new and closes; one digest per batch of steps. A write the run suppressed returns
+// false and the close goes ahead (its claim given back). A written one is a pending write, bounded by the same expiry as every wake.
 async function flush(ctx) {
   const d = await claim(ctx);
   return d ? deliver(d, ctx) : false;

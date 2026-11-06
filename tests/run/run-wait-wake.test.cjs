@@ -33,9 +33,9 @@ function coreOf(steps) {
   };
 }
 
-async function publisher(core, dataDir) {
+async function publisher(core, dataDir, opts = {}) {
   const pipe = process.platform === 'win32' ? `\\\\.\\pipe\\belay-test-rw-${crypto.randomBytes(5).toString('hex')}` : path.join(os.tmpdir(), `belay-test-rw-${crypto.randomBytes(5).toString('hex')}.sock`);
-  const pub = startWakePublisher({ core, runId: RUN, dataDir, pipeName: pipe, pollMs: 20 });
+  const pub = startWakePublisher({ core, runId: RUN, dataDir, pipeName: pipe, pollMs: 20, ...opts });
   await pub.listening;
   const lines = [];
   const sock = net.connect(pipe);
@@ -102,6 +102,28 @@ test('a step after the last wake is published on its own at a quiet moment, once
   const clock = { t: 0, now: () => clock.t, sleep: async (ms) => { clock.t += ms; } };
   const r = await createRunWait({ core, runId: RUN, dataDir, pollMs: 50, clock }).wait({ ms: 100, t0: 0, workers: [] });
   assert.strictEqual(r.digest, undefined, 'the wait shows neither again');
+});
+
+test('while the wakes are held (the window unmounted) the quiet digest is held too, not lost: it is published once the hold ends', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-rw-wake-')).replace(/\\/g, '/');
+  const steps = [step({ task_id: 'first' })];
+  const core = coreOf(steps);
+  let held = false;
+  const p = await publisher(core, dataDir, { isHeld: () => held });
+  const digests = () => p.lines.filter((l) => l.text && /^belay: policy steps since the last wake: /.test(l.text));
+  try {
+    core.rows[0] = { ...core.rows[0], turns: 1, seq: 2 };
+    assert.ok(await p.until(() => digests().length === 1));
+    held = true;
+    steps.push(step({ task_id: 'while-held' }));
+    const polls = p.pub.stats().polls;
+    assert.ok(await p.until(() => p.pub.stats().polls >= polls + 6));
+    assert.strictEqual(digests().length, 1, 'nothing published while held');
+    assert.strictEqual(D.readDigests(dataDir, RUN).length, 1, 'and nothing claimed: the step is still owed');
+    held = false;
+    assert.ok(await p.until(() => digests().length === 2), JSON.stringify(p.lines));
+    assert.match(digests()[1].text, /while-held done/);
+  } finally { await p.done(); }
 });
 
 test('while a worker is mid-turn the trailing step waits: it is published once the run is quiet', async () => {
