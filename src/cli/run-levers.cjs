@@ -186,6 +186,11 @@ function parseLevers(spec, opts = {}) {
   // Merging another run's tasks, or into another run's integrate branch: off unless the spec says true. Fixed for the run.
   if (spec.cross_run_merge !== undefined && typeof spec.cross_run_merge !== 'boolean') return { error: 'cross_run_merge must be true or false' };
   if (spec.cross_run_merge === true) out.cross_run_merge = true;
+  if (spec.max_parallel_builds !== undefined) { // ADR 0074 amendment 4: the cap on a plan's builds in flight; unset, the executor's default (4)
+    const v = spec.max_parallel_builds;
+    if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 1) return { error: 'max_parallel_builds must be a positive integer' };
+    out.max_parallel_builds = v;
+  }
   // ADR 0054 amendment 1: the run close deletes the reviewers' scratch folders; this opt-in keeps them. Absent unless on.
   if (spec.keep_review_scratch !== undefined && typeof spec.keep_review_scratch !== 'boolean') return { error: 'keep_review_scratch must be true or false' };
   if (spec.keep_review_scratch === true) out.keep_review_scratch = true;
@@ -271,10 +276,13 @@ function stripMarkers(text) {
 }
 
 // ADR 0037 amendment 8: the orchestrator is told the run's plan, the one every work task takes at create unless it states its own (run-policy-levers.cjs).
+// With a plan it carries the plan-first directive (plan the work, then go hands off); without one, the flow where the orchestrator takes each step.
+const PLAN_FIRST = 'Plan the work first: create every work task with `task_create`, an independent one with `worktree: true`, and a dependent one with its `depends_on` and no tree (belay cuts its tree from `belay/integrate/<run>` once its dependencies are merged, so they are in it). Then end your turn and rely on the wakes: act on an exception or an escalation, and on the done wake decide whether you are done. Do not spawn or assign a task whose plan builds it; handle a step yourself only when you have a specific reason, and say why in your reply to the user. If a builder dies, belay does not start another: restart it or assign the task yourself.';
+const NO_PLAN = 'This run has no run plan: a task has a plan only if you give it a `policy`; otherwise you assign, review, fix and merge it yourself.';
 function runPlanLine(levers) {
   const p = levers && levers.policy_default;
-  if (!p || typeof p !== 'object' || !Object.keys(p).length) return 'This run has no run plan: a task has a plan only if you give it a `policy`.';
-  return `This run's plan, which every work task you create takes unless you give it a \`policy\` of its own or \`policy: null\`, is \`${JSON.stringify(p)}\`.`;
+  if (!p || typeof p !== 'object' || !Object.keys(p).length) return NO_PLAN;
+  return `This run's plan, which every work task you create takes unless you give it a \`policy\` of its own or \`policy: null\`, is \`${JSON.stringify(p)}\`. ${PLAN_FIRST}`;
 }
 
 function substituteLevers(text, levers, timeoutMs = 0, opts = {}) {
@@ -341,4 +349,4 @@ async function countReviewRounds(core, runId) {
   }
 }
 
-module.exports = { runPlanLine, stripMarkers, MEMORY_REPORT_LINE, MEMORY_QUERIES_LINE, MEMORY_USE_NOTES, MEMORY_OUTCOME_NOTES, MEMORY_VERIFY_RULE, mergeMemory, parseLevers, attachMemory, memoryText, substituteLevers, countReviewRounds, cutoffRule, FIX_CUTOFFS };
+module.exports = { runPlanLine, PLAN_FIRST, NO_PLAN, stripMarkers, MEMORY_REPORT_LINE, MEMORY_QUERIES_LINE, MEMORY_USE_NOTES, MEMORY_OUTCOME_NOTES, MEMORY_VERIFY_RULE, mergeMemory, parseLevers, attachMemory, memoryText, substituteLevers, countReviewRounds, cutoffRule, FIX_CUTOFFS };

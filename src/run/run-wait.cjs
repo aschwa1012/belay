@@ -136,13 +136,16 @@ function createRunWait({ core, runId, dataDir, armed = () => true, settled = nul
         confirm: () => D.confirm(claimed),
       };
     }
+    // The done wake (ADR 0074 amendment 4) ends the run wait too, and is answered as `done`, not as an exception.
+    const doneWake = wakes.find((w) => w.event === 'policy_done');
     const list = [
-      ...wakes.map((w) => ({ exception: w.exception, task_id: w.task_id, trigger: w.trigger, field: w.field, text: w.text, ref: shortRef(uidOf(w)) })),
+      ...wakes.filter((w) => w.event !== 'policy_done').map((w) => ({ exception: w.exception, task_id: w.task_id, trigger: w.trigger, field: w.field, text: w.text, ref: shortRef(uidOf(w)) })),
       ...deaths.map(({ key, uid, ...d }) => ({ ...d, ref: shortRef(uid) })), // ref: the short delivery key, the same one a wake line carries as `(ref ...)`
     ];
     return {
-      worker_id: null, event: list.length ? 'exception' : null, timed_out: !list.length, waited_ms: clock.now() - t0, watched: [],
-      ...(list.length ? { exceptions: list } : { busy: busyOf(workers) }),
+      worker_id: null, event: list.length ? 'exception' : doneWake ? 'done' : null, timed_out: !list.length && !doneWake, waited_ms: clock.now() - t0, watched: [],
+      ...(list.length ? { exceptions: list } : doneWake ? {} : { busy: busyOf(workers) }),
+      ...(doneWake ? { done: { text: doneWake.text, ref: shortRef(uidOf(doneWake)) } } : {}),
       ...(digest ? { digest: { n: digest.n, text: digest.text, steps: digest.lines.length, dropped: digest.dropped.count } } : {}),
       ...(digestError ? { digest_error: digestError } : {}),
       ...(capNote || {}), ...idle,

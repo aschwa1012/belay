@@ -20,9 +20,10 @@
 const reviewWake = require('./review-wake.cjs');
 
 const WAKE_TEXT_MAX = 221; // release-eval.cjs WAKE_TEXT_MAX; the mod's text budget less the plugin name
+const ESC_KINDS = new Set(['question', 'blocked', 'scope', 'conflict', 'spec']);
 const REVISION_IDS = 200; // task ids per policy.revisions call (its cap is 500)
-const AMEND_LIFTS = new Set(['E1', 'E2', 'E5', 'E6', 'E7']); // a plan amend after the exception lifts these halts (E8's own lift reads its step's policy_rev)
-const HALTING = new Set(['E1', 'E2', 'E3', 'E5', 'E6', 'E7', 'E8']); // E4 is the worker's, E9 pauses the run, E10 is not a task's
+const AMEND_LIFTS = new Set(['E1', 'E2', 'E5', 'E6', 'E7', 'escalation']); // a plan amend after the exception lifts these halts (E8's own lift reads its step's policy_rev)
+const HALTING = new Set(['E1', 'E2', 'E3', 'E5', 'E6', 'E7', 'E8', 'escalation']); // E4 is the worker's, E9 pauses the run, E10 is not a task's
 // ADR 0073 Q1 (open): 'task' halts the task and its fixes (the recommendation); 'chain' also halts what depends on them.
 const HALT_SCOPE = 'task';
 
@@ -142,6 +143,15 @@ function derive(snap) {
       if (ran.length) add('E6', root, tref(x), null, { concurrent: ran.map((c) => ({ name: checkName(c), n: beside(c) })), task: x.id }, evOf(x));
       else add('E5', root, tref(x), null, { executable: r.executable !== false, failing: failing(r).map(checkName), task: x.id }, evOf(x));
     } else if (own && x.state === 'done' && r.flaky) add('E6', root, tref(x), null, { flaky: true, task: x.id }, evOf(x));
+    // escalation (ADR 0074 amendment 4, not an E-code): a worker's hand-back asks for the orchestrator (`result.escalate: { kind, reason }`).
+    // It always wakes, planned task or not, and halts the task's planned steps until the orchestrator acts on the task after the hand-back
+    // (re-assigns or cancels it) or amends its plan. The reason is the worker's words: quoted, cut, never an instruction.
+    const esc = x.handoff && x.handoff.result && x.handoff.result.escalate;
+    if (esc && typeof esc === 'object' && typeof esc.reason === 'string' && esc.reason.trim()) {
+      const at = Number(x.handoff.at) || 0;
+      const acted = x.written_by === 'orchestrator' && x.acted_by !== 'policy' && Number(x.written_at) > at && (x.state === 'assigned' || x.state === 'cancelled');
+      add('escalation', root, tref(x), 'none', { task: x.id, by: x.handoff.by || null, kind: ESC_KINDS.has(esc.kind) ? esc.kind : 'other', reason: esc.reason }, { key: `${x.id}@${at}`, seq: at, at }, acted ? { lifted: true } : {});
+    }
     // E5: a release evaluation that ended without a result (a queue refusal, an error): the ledger's release_failed events.
     if (x.state === 'released' && x.handoff) {
       for (const f of fails) if (f.task_id === x.id && f.code !== 'E_CANCELLED' && Number(f.written_at) >= Number(x.handoff.at)) add('E5', root, tref(x), null, { executable: true, failing: [], error: f.code, task: x.id }, { key: `${x.id}!${f.id}`, seq: Number(f.seq) || 0, at: Number(f.written_at) || 0, rowSeq: rowSeqOf(f) });
@@ -229,6 +239,7 @@ const list = (a) => a.map((t) => `"${t}"`).join('; ');
 // The wake text. Head first (kind, task, trigger, field), then the facts; only the facts give way to the cap.
 function textOf(e) {
   const d = e.detail;
+  if (e.exception === 'escalation') return cut(`belay: escalation (${d.kind}) from ${d.by || 'a worker'} on task ${d.task}${d.task !== e.task_id ? ` (work ${e.task_id})` : ''}, its words: "${cut(clean(d.reason).replace(/"/g, "'"), 100)}". Its planned steps wait until you act on it or amend its plan.`, WAKE_TEXT_MAX);
   const head = `belay: exception ${e.exception}, task ${e.task_id}, trigger ${e.trigger.table}:${e.trigger.id}:${e.trigger.seq}, field ${e.field}.`;
   const halt = HALTING.has(e.exception) ? ' Halted.' : '';
   const titles = Array.isArray(d.titles) && d.titles.length ? ` ${list(d.titles)}.` : '';

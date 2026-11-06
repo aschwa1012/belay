@@ -126,6 +126,10 @@ async function build(c, env) {
   if (spawn) {
     if (!env.spawn) return exception('the plan spawns its builder and this run has no spawn path');
     tree = await reviewTree(env, c);
+    // A task with no tree gets one now: cut from the run's branch when it depends on merged work (so the dependencies are in it), else from HEAD.
+    if (!tree && env.core.task.worktreeCreate) {
+      try { const made = await env.core.task.worktreeCreate({ task_id: c.task_id, ...(c.from_run && env.runId ? { base: `belay/integrate/${env.runId}` } : {}) }); tree = made && made.worktree && made.worktree.path; } catch (e) { return exception(`task ${c.task_id} has no belay worktree and one could not be made: ${errText(e)}`); }
+    }
     if (!tree) return exception(`task ${c.task_id} has no belay worktree to start a builder in, so nothing was spawned: create it with worktree: true, or assign it yourself`);
   } else {
     const why = await unavailable(env, c.worker, 'builder');
