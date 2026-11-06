@@ -14,7 +14,7 @@ const read = (f) => fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8
 const flat = (s) => s.replace(/\s+/g, ' ');
 const HEADING = "## Plans: belay's policy manager";
 const DIRECTIVE = 'When you create work tasks with `mcp__belay__task_create`, write your plan as `policy` fields on each (its review, fix, re_review and integrate steps) so belay carries them out; handle a step yourself only when you have a specific reason, and say why in your reply to the user. A spawned reviewer needs the work in its own belay worktree, and a builder or refuter busy with another task makes its step an exception, so plan steps for workers that are free.';
-const REVIEW_CLAUSE = 'When a work task carries a plan, belay runs the steps it names in this cycle for you (see Plans below); take a step by hand only for a task or step without one.';
+const REVIEW_CLAUSE = 'When a work task carries a plan, belay runs the steps it names in this cycle for you (see Plans below); take a step by hand for a task or step without one, when belay wakes you with an exception on it, or for a stated reason.';
 const sectionOf = (text) => { const i = text.indexOf(`${HEADING}\n`); if (i < 0) return null; const j = text.indexOf('\n## ', i + 1); return text.slice(i, j < 0 ? text.length : j); };
 
 test('both prompts carry the policy manager section: what it does, what wakes the orchestrator, and why it helps', () => {

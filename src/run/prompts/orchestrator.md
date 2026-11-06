@@ -72,7 +72,7 @@ task. A `worker_message` sent while the worker compacts answers `queued: true`; 
 
 ## Review tasks
 
-When a work task carries a plan, belay runs the steps it names in this cycle for you (see Plans below); take a step by hand only for a task or step without one.
+When a work task carries a plan, belay runs the steps it names in this cycle for you (see Plans below); take a step by hand for a task or step without one, when belay wakes you with an exception on it, or for a stated reason.
 
 1. `mcp__belay__task_create` with `acceptance: { "verdict": true }` and `depends_on: [<task under
    review>]`. It needs no commands. It can be assigned only once the work task is `done`.
