@@ -38,7 +38,8 @@ function untaken(snap) {
   const tasks = snap.tasks || [];
   const byId = new Map(tasks.map((t) => [t.id, t]));
   const named = new Set(PW.haltedIds(PW.derive({ ...snap, failures: snap.failures || [] }), tasks)); // a halted task's exception wake has gone: it is not "no policy step due"
-  for (const c of due({ runId, tasks, integrations: snap.integrations || [] })) { named.add(c.task_id); for (const id of c.task_ids || []) named.add(id); }
+  // The steps go to due() so a task a step already took (a build whose builder then died) is not counted as carried: it is the orchestrator's.
+  for (const c of due({ runId, tasks, integrations: snap.integrations || [], steps: snap.steps || [] })) { named.add(c.task_id); for (const id of c.task_ids || []) named.add(id); }
   for (const s of snap.steps || []) if (s.run_id === runId && s.outcome === 'started' && s.task_id) named.add(s.task_id);
   return openOf(tasks, runId).filter((t) => ready(t, byId) && !named.has(t.id)).map((t) => t.id).sort();
 }
