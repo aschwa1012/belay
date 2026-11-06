@@ -1,12 +1,12 @@
 'use strict';
 // orchestrator-idle-close.cjs — the headless orchestrator's idle-close decision, moved out of orchestrator.cjs (its line budget). Once
 // the orchestrator is idle: hold the close for a mid-turn worker, an unanswered write, a pending death, a parked or stopping worker,
-// a release evaluation or a plan's step due or in flight; otherwise tell it once about the trees the close would keep (ADR 0065 amendment 1), then close its stdin.
+// a release evaluation or a plan's step due or in flight; then write the steps no digest has shown (digest-wake.cjs); otherwise tell it once about the trees the close would keep (ADR 0065 amendment 1), then close its stdin.
 // -> true when this pass closed the run (the caller returns without scheduling another poll).
 const { isMidTurn } = require('./wake.cjs');
 
 async function idleClose(c) {
-  const { state, rows, runId, pending_deaths, turnAtCall, hold, awaitingWakeIds, callWatcher, recordHold, preClose, writeWake, closeThenKillOnDeadline, policyWatcher = null } = c;
+  const { state, rows, runId, pending_deaths, turnAtCall, hold, awaitingWakeIds, callWatcher, recordHold, preClose, writeWake, closeThenKillOnDeadline, policyWatcher = null, flushDigest = null } = c;
   // A plan's step due or in flight holds the close too (policy-close-hold.cjs): belay's own next step is not left to a closing run.
   const planHolds = policyWatcher ? (state.policyHold || (state.policyHold = require('./policy-close-hold.cjs').createPolicyCloseHold())).holds(policyWatcher.snapshot(), { exceptions: policyWatcher.active() }) : [];
   const busy = rows.filter((w) => w.run_id === runId && isMidTurn(w)).map((w) => w.id);
@@ -26,6 +26,8 @@ async function idleClose(c) {
   if (hold.isPaused()) { // 6f design item 2: never closed by the idle rule while paused
     recordHold(turnAtCall, busy, awaiting, 'run paused', pendingIds, parked, live);
   } else if (busy.length === 0 && state.pendingWrites.length === 0 && pendingIds.length === 0 && parked.length === 0 && live.length === 0) {
+    if (flushDigest && await flushDigest()) return false; // ADR 0074 amendment 2: steps no digest has shown are written first; that write holds the close until it is read
+    if (state.finishing) return true;
     const pre = await preClose.check({ isPaused: hold.isPaused }); if (state.finishing) return true; // once; never closes in the pass that read
     if (pre.wake) writeWake(pre.wake); else if (!pre.ran && state.idle && !hold.isPaused()) { closeThenKillOnDeadline('orchestrator ended a turn with no worker mid-turn; stdin closed'); return true; }
   } else if (pendingIds.length) {

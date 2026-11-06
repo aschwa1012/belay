@@ -202,8 +202,7 @@ const WAKE_HEAD = 'belay: policy steps since the last wake: ';
 
 // ADR 0074 decision 4: the interactive path. The digest of the steps no digest has taken yet, as one wake line (short lines), or null.
 async function wakeDigest({ core, dataDir, runId, now = Date.now, claimant = null, hooks = {} }) {
-  let rows;
-  try { rows = await listSteps(core, runId); } catch { return null; }
+  const rows = await listSteps(core, runId); // a failed read throws: the caller tells it from nothing new, and asks again
   const rec = claimDigest({ dataDir, runId, rows, cap: WAKE_CAP, form: { head: WAKE_HEAD, sep: '; ', short: true }, via: 'wake', now, claimant, hooks });
   return rec ? { id: `${runId}:digest:${rec.n}`, text: rec.text, n: rec.n } : null;
 }
@@ -216,4 +215,4 @@ async function receiptField(core, dataDir, runId) {
   return digests.length || steps ? { digests } : {};
 }
 
-module.exports = { wakeUid, deathUid, lifeOf, release, confirm, releaseUnconfirmed, readDeliveries, isClaimed, listSteps, wakeDigest, receiptField, claimDigest, claimException, readDigests, build, lineOf, CAP_BYTES };
+module.exports = { finished, wakeUid, deathUid, lifeOf, release, confirm, releaseUnconfirmed, readDeliveries, isClaimed, listSteps, wakeDigest, receiptField, claimDigest, claimException, readDigests, build, lineOf, CAP_BYTES };

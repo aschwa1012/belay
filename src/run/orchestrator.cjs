@@ -301,11 +301,11 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     state.baseline = next;
     const evs = (await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), state.evalSeen || (state.evalSeen = new Map()), { holdMs: require('./release-eval.cjs').holdMs(), workers: rows })).concat(await noteWatcher.poll(), await callWatcher.poll(), await policyWatcher.poll(state.evalSeen), spec.budgetWake ? spec.budgetWake.takeWakes() : []);
     if (evs.some((e) => e.event === 'death')) await planned.check(); // a death has a second delivery path once the store shows a plan (planned.cjs)
-    for (const ev of evs) writeWake(ev); // ADR 0058 amendment 4: a turn_end carries its release evaluation
+    await require('./digest-wake.cjs').writeAll(evs, { core, dataDir, runId, state, writeWake, armed: () => !!policyWatcher.snapshot() || planned.value() }); // ADR 0058 amendment 4: a turn_end carries its release evaluation; ADR 0074 amendment 2: the steps belay took follow the wakes
     if (state.finishing) return; // a wake's own write may have found the child already gone
 
     if (pollAgain) { pollHandle = setTimeout(pollOnce, pollMs); return; } // a turn ended after the read: decide on the re-poll's rows
-    if (state.idle && await require('./orchestrator-idle-close.cjs').idleClose({ state, rows, runId, pending_deaths, turnAtCall, hold, awaitingWakeIds, callWatcher, recordHold, preClose, writeWake, closeThenKillOnDeadline, policyWatcher })) return;
+    if (state.idle && await require('./orchestrator-idle-close.cjs').idleClose({ state, rows, runId, pending_deaths, turnAtCall, hold, awaitingWakeIds, callWatcher, recordHold, preClose, writeWake, closeThenKillOnDeadline, policyWatcher, flushDigest: () => require('./digest-wake.cjs').flush({ core, dataDir, runId, state, writeWake, armed: () => !!policyWatcher.snapshot() || planned.value() }) })) return;
     pollHandle = setTimeout(pollOnce, pollMs);
   }
 
