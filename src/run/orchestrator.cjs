@@ -238,7 +238,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     // cannot be made delivers the wake: an exception is never lost for want of a file.
     // A worker death or stale record has the same second path and the same key, and is claimed only once a plan is in force.
     const uid = require('./run-digest.cjs').wakeUid(ev);
-    if (uid && (ev.exception || planned.value())) {
+    if (uid && (ev.exception || ev.event === 'policy_done' || planned.value())) {
       let won = true;
       try { won = require('./run-digest.cjs').claimException({ dataDir, runId, uid }); } catch { won = true; }
       if (!won) { state.wakesSuppressed.push({ ...ev, reason: 'delivered by worker_wait' }); (state.lostClaims || (state.lostClaims = new Map())).set(uid, ev); return; } // kept: a wait's claim given back is offered again (digest-wake.cjs writeAll)

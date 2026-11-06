@@ -77,7 +77,7 @@ test('build by spawn: the manager launches a coder in the task\'s belay worktree
   } finally { await e.close(); }
 });
 
-test('a spawn with no belay worktree to start in writes nothing and is an exception that halts the task (E8), loudly', async () => {
+test('a task whose tree cannot be made (the run records no project directory) writes nothing and is an exception that halts it (E8), loudly', async () => {
   const e = await env('build-no-tree');
   try {
     const t = await e.orch.task.create({ spec: 'no tree', acceptance: PASS, policy: { build: { spawn: { agent_type: 'coder' } } } });
@@ -182,5 +182,25 @@ test('a coder belay spawned is stopped (the manager\'s graceful stop) once its w
     assert.deepStrictEqual(stopped, [coder], 'the plan merges nothing and the review holds: the coder is stopped, once; rv was named, so it stays');
     await x.tick();
     assert.deepStrictEqual(stopped, [coder]);
+  } finally { await e.close(); }
+});
+
+test('a task with no tree gets one at its build, made by the real core in the run\'s repository, and the coder is spawned in it', async () => {
+  const e = await env('build-auto-tree');
+  try {
+    const repo = makeRepo(e.dir);
+    await e.orch.run.attach({ adapter_pid: process.pid, project_dir: repo }); // the run's repository, as belay run records it
+    const t = await e.orch.task.create({ spec: 'write t.txt', acceptance: PASS, policy: { build: { spawn: { agent_type: 'coder' } } } });
+    assert.ok(!(await e.h.task.get({ task_id: t.id })).worktree, 'created with no tree');
+    const spawned = [];
+    const spawnFor = (stepCore) => async (args) => { spawned.push(args); await e.worker(args.worker_id, args.worktree); await stepCore.task.assign({ task_id: args.task_id, worker_id: args.worker_id }); return { id: args.worker_id }; };
+    await e.exec({ spawnFor }).tick();
+    const [step] = stepRows(e);
+    assert.deepStrictEqual([step.step, step.outcome], ['build', 'done'], step.error || '');
+    const row = await e.h.task.get({ task_id: t.id });
+    assert.ok(row.worktree && row.worktree.path, 'the build made the task its tree');
+    assert.strictEqual(row.worktree.branch, `belay/${t.id}`);
+    assert.strictEqual(spawned[0].worktree, row.worktree.path, 'and spawned the coder in it');
+    assert.ok(require('node:fs').existsSync(row.worktree.path), 'a real tree on disk');
   } finally { await e.close(); }
 });

@@ -93,3 +93,13 @@ test('a refuted review a later review settled does not hold done back; an undeci
   const open = { ...review('R-new', 'A'), state: 'assigned', results: null };
   assert.strictEqual(doneOf(snap({ tasks: [work('A'), review('R-A', 'A'), open] })), null, 'a review with no verdict yet holds it back');
 });
+
+test('should-fix findings left on a follow-up\'s own review are named in the done wake, as the work\'s are', () => {
+  const sf = (id, of) => ({ ...review(id, of), results: { trigger: 'release', evaluated_at: 9, executable: true, passed: true, checks: [{ kind: 'verdict', executable: true, passed: true, detail: { verdict: 'holds', summary: 's', findings: [{ severity: 'should-fix', title: 'tidy it' }] } }] } });
+  const F = work('F', { follows_up: { review_id: 'R-A', review_ids: ['R-A'], task_id: 'A', root: 'A' }, depends_on: ['A'], review: { review_id: 'R-F', state: 'holds' } });
+  const tasks = [work('A'), sf('R-A', 'A'), F, sf('R-F', 'F')];
+  const d = doneOf(snap({ tasks }));
+  assert.ok(d, 'done');
+  assert.deepStrictEqual(d.should_fix_left, ['F'], 'A\'s findings were followed up by F; F\'s own were left');
+  assert.match(d.text, /Should-fix findings left on 1 task \(see its review\)\./);
+});
