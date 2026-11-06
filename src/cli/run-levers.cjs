@@ -270,9 +270,16 @@ function stripMarkers(text) {
     .replace(/^[ \t]*<!--\s*belay-mode:[^>]*-->[ \t]*\r?\n(\r?\n)?/m, '');
 }
 
+// ADR 0037 amendment 8: the orchestrator is told the run's plan, the one every work task takes at create unless it states its own (run-policy-levers.cjs).
+function runPlanLine(levers) {
+  const p = levers && levers.policy_default;
+  if (!p || typeof p !== 'object' || !Object.keys(p).length) return 'This run has no run plan: a task has a plan only if you give it a `policy`.';
+  return `This run's plan, which every work task you create takes unless you give it a \`policy\` of its own or \`policy: null\`, is \`${JSON.stringify(p)}\`.`;
+}
+
 function substituteLevers(text, levers, timeoutMs = 0, opts = {}) {
   const rule = cutoffRule(levers.fix_cutoff, timeoutMs, (opts && opts.mode) || 'headless', opts && Number.isFinite(opts.startedAt) ? opts.startedAt : null);
-  const a = String(text).split('{{max_fix_rounds}}');
+  const a = String(text).split('{{run_plan}}').join(runPlanLine(levers)).split('{{max_fix_rounds}}');
   const b = a.join(String(levers.max_fix_rounds)).split('{{fix_cutoff_rule}}');
   const withRule = b.join(rule);
   // ADR 0040 decision 6: the rules text goes in only when memory.rules is on, trailing newline trimmed and
@@ -334,4 +341,4 @@ async function countReviewRounds(core, runId) {
   }
 }
 
-module.exports = { stripMarkers, MEMORY_REPORT_LINE, MEMORY_QUERIES_LINE, MEMORY_USE_NOTES, MEMORY_OUTCOME_NOTES, MEMORY_VERIFY_RULE, mergeMemory, parseLevers, attachMemory, memoryText, substituteLevers, countReviewRounds, cutoffRule, FIX_CUTOFFS };
+module.exports = { runPlanLine, stripMarkers, MEMORY_REPORT_LINE, MEMORY_QUERIES_LINE, MEMORY_USE_NOTES, MEMORY_OUTCOME_NOTES, MEMORY_VERIFY_RULE, mergeMemory, parseLevers, attachMemory, memoryText, substituteLevers, countReviewRounds, cutoffRule, FIX_CUTOFFS };

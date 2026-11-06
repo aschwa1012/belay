@@ -51,7 +51,7 @@ function exceptionOf(ev) {
   if (ev.exception) return ev.exception;
   switch (ev.event) {
     case 'death': case 'stale': case 'restart_failed': return 'E4';
-    case 'budget_pause': return 'E9';
+    case 'budget_pause': case 'time_bound': return 'E9'; // a cap: the budget, or the run's time bound (time-wake.cjs)
     case 'paused': case 'pre_close': case 'note_refuted': case 'scrub_alarm': return 'E10';
     default: return null;
   }
@@ -301,6 +301,8 @@ function createPolicyWatcher({ core, runId, enabled = false }) {
     last = derive(snap);
     const out = [];
     for (const e of last) if (!sent.has(e.uid)) { sent.add(e.uid); out.push(wakeOf(e)); }
+    const done = require('./done-wake.cjs').doneOf(snap, last); // ADR 0074 amendment 4: the one routine wake, when every planned task has gone the whole way
+    if (done && !sent.has(`done:${done.key}`)) { sent.add(`done:${done.key}`); out.push(require('./done-wake.cjs').wakeOf(runId, done)); }
     return out;
   }
   return { poll, active: () => last.slice(), snapshot: () => lastSnap };
