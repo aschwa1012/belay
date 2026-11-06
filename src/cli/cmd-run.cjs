@@ -84,7 +84,7 @@ async function run(ctx) {
   parsed.promptWarnings = parsed.briefText !== null ? [] : require('./run-prompt-check.cjs').checkPrompt({ promptText: parsed.promptText, promptFile: parsed.promptFile, mode, levers: parsed.levers, timeoutMs: parsed.timeout_ms }); // a stale copy of the template: a warning, never a refusal
   const sub = mode === 'interactive'
     ? substituteLevers(parsed.promptText, parsed.levers, 0, { mode: 'interactive' })
-    : substituteLevers(parsed.promptText, parsed.levers, parsed.timeout_ms);
+    : substituteLevers(parsed.promptText, parsed.levers, parsed.timeout_ms, { startedAt: Date.now() }); // the rule's start and deadline (ADR 0037 amendment 7); rendered at launch, so a little before the run's own clock starts
   parsed.promptMarker = require('./run-prompt-check.cjs').markerVersion(parsed.promptText); // ADR 0082: the copy's version, read before the markers are stripped
   parsed.promptText = parsed.briefText !== null ? BR.appendBrief(stripMarkers(sub.text), parsed.briefText) : stripMarkers(sub.text); // the header markers were read above; the orchestrator is not shown them
   parsed.levers.substituted = sub.substituted;

@@ -40,15 +40,17 @@ const MEMORY_OUTCOME_NOTES = 'record the outcome with `namespace: "summary"`';
 const MEMORY_VERIFY_RULE = ' Use `mcp__belay__memory_verify` only with a receipt.'; // a notes run's orchestrator has no memory_verify
 const MEMORY_QUERIES_LINE = ' Also give 1 to 3 `memory_queries`: task lines (each under 160 bytes) naming the situations the worker will be in, such as "add a migration" or "dedupe email addresses", not the finding you expect it to make.';
 
-// The time-bound condition is observable only if the orchestrator is told the bound and can read elapsed time. It reads the clock in a
-// shell (`date -u`), noted when it begins: an orchestrator that waits by the wake has no worker_wait answer to read waited_ms from (ADR 0037
-// amendment 7). Written in from timeout_ms and dropped when that is 0.
+// The time-bound condition is observable only if the orchestrator is told the bound and can read elapsed time. `belay run` renders the run's
+// start and deadline into it as absolute UTC times (`opts.startedAt`), so the rule carries them through a compaction and needs no call the
+// model must remember; it reads the time now from a shell (`date -u`). An orchestrator that waits by the wake has no worker_wait answer to
+// read waited_ms from (ADR 0037 amendment 7). A pause stops the run's clock (ADR 0023 amendment 3), so the deadline moves later by it.
+// Without a start (a prompt check, not a launch) the times are left out. Written in from timeout_ms and dropped when that is 0.
 // `mode` is 'headless' (the default, byte-identical to before) or 'interactive' (ADR 0037 decision 4: the run
 // does not end, so stop-and-surface is stop, store, tell the operator, then wait).
-function cutoffRule(fixCutoff, timeoutMs, mode = 'headless') {
+function cutoffRule(fixCutoff, timeoutMs, mode = 'headless', startedAt = null) {
   if (fixCutoff === 'cap-only') return 'Do not stop fix rounds before the fix-round limit.';
   const timeCond = timeoutMs > 0
-    ? `; the run's time bound (${timeoutMs} ms from its start) is near, judged by the clock (note \`date -u\` in a shell when you begin, and compare)`
+    ? `; the run's time bound (${timeoutMs} ms from its start${Number.isFinite(startedAt) ? `, ${new Date(startedAt).toISOString()}, so ${new Date(startedAt + timeoutMs).toISOString()}, later by any time the run is paused` : ''}) is near, judged by the time now (\`date -u\` in a shell)`
     : '';
   const interactive = mode === 'interactive';
   const surface = interactive
@@ -269,7 +271,7 @@ function stripMarkers(text) {
 }
 
 function substituteLevers(text, levers, timeoutMs = 0, opts = {}) {
-  const rule = cutoffRule(levers.fix_cutoff, timeoutMs, (opts && opts.mode) || 'headless');
+  const rule = cutoffRule(levers.fix_cutoff, timeoutMs, (opts && opts.mode) || 'headless', opts && Number.isFinite(opts.startedAt) ? opts.startedAt : null);
   const a = String(text).split('{{max_fix_rounds}}');
   const b = a.join(String(levers.max_fix_rounds)).split('{{fix_cutoff_rule}}');
   const withRule = b.join(rule);

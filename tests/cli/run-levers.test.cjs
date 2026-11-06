@@ -70,12 +70,16 @@ test('levers: substituteLevers replaces every placeholder, counts them, and pass
   assert.deepStrictEqual(plain.substituted, { max_fix_rounds: 0, fix_cutoff_rule: 0 });
   const orch = substituteLevers('{{fix_cutoff_rule}}', { max_fix_rounds: 2, fix_cutoff: 'orchestrator' }, 600000).text;
   for (const part of ['survived a fix round', 'new regression', 'outside the task', 'stop-and-surface', 'report a refuted step as passing',
-    'the run\'s time bound (600000 ms from its start) is near, judged by the clock (note `date -u` in a shell when you begin, and compare)']) {
+    'the run\'s time bound (600000 ms from its start) is near, judged by the time now (`date -u` in a shell)']) {
     assert.ok(orch.includes(part), `the orchestrator rule names "${part}"`);
   }
   const none = substituteLevers('{{fix_cutoff_rule}}', { max_fix_rounds: 2, fix_cutoff: 'orchestrator' }, 0).text;
   assert.ok(!none.includes('time bound (') && !none.includes('date -u'), 'timeout_ms 0: the time condition is dropped');
   assert.ok(!orch.includes('worker_wait') && !orch.includes('waited_ms'), 'the time source is the clock: a run that never waits can still judge it');
+  // At launch the start and the deadline are written in as absolute times, so the rule carries them (pinned with a fixed start: the instance varies per run).
+  const at = substituteLevers('{{fix_cutoff_rule}}', { max_fix_rounds: 2, fix_cutoff: 'orchestrator' }, 600000, { startedAt: Date.UTC(2026, 10, 6, 12, 0, 0) }).text;
+  assert.ok(at.includes('the run\'s time bound (600000 ms from its start, 2026-11-06T12:00:00.000Z, so 2026-11-06T12:10:00.000Z, later by any time the run is paused) is near, judged by the time now (`date -u` in a shell)'), at);
+  assert.ok(!substituteLevers('{{fix_cutoff_rule}}', { max_fix_rounds: 2, fix_cutoff: 'orchestrator' }, 0, { startedAt: Date.UTC(2026, 10, 6) }).text.includes('2026-'), 'no bound: no times');
   assert.match(none, /The run has no time bound\./);
   assert.match(none, /owned set\. Name the condition/);
 });
