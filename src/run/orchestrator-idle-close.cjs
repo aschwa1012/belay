@@ -6,7 +6,7 @@
 const { isMidTurn } = require('./wake.cjs');
 
 async function idleClose(c) {
-  const { state, rows, runId, pending_deaths, turnAtCall, hold, awaitingWakeIds, callWatcher, recordHold, preClose, writeWake, closeThenKillOnDeadline, policyWatcher = null, flushDigest = null } = c;
+  const { state, rows, runId, pending_deaths, turnAtCall, hold, awaitingWakeIds, callWatcher, recordHold, preClose, writeWake, closeThenKillOnDeadline, policyWatcher = null, flushDigest = null, stall = null } = c;
   // A plan's step due or in flight holds the close too (policy-close-hold.cjs): belay's own next step is not left to a closing run.
   const planHolds = policyWatcher ? (state.policyHold || (state.policyHold = require('./policy-close-hold.cjs').createPolicyCloseHold())).holds(policyWatcher.snapshot(), { exceptions: policyWatcher.active() }) : [];
   const busy = rows.filter((w) => w.run_id === runId && isMidTurn(w)).map((w) => w.id);
@@ -28,6 +28,8 @@ async function idleClose(c) {
   } else if (busy.length === 0 && state.pendingWrites.length === 0 && pendingIds.length === 0 && parked.length === 0 && live.length === 0) {
     if (flushDigest && await flushDigest()) return false; // ADR 0074 amendment 2: steps no digest has shown are written first; that write holds the close until it is read
     if (state.finishing) return true;
+    const st = stall ? await stall.atClose(policyWatcher && policyWatcher.snapshot()) : null; if (state.finishing) return true; // ADR 0074 amendment 3: open tasks nobody is assigned are named once before the close; that write holds it until read
+    if (st) { writeWake(st); return false; }
     const pre = await preClose.check({ isPaused: hold.isPaused }); if (state.finishing) return true; // once; never closes in the pass that read
     if (pre.wake) writeWake(pre.wake); else if (!pre.ran && state.idle && !hold.isPaused()) { closeThenKillOnDeadline('orchestrator ended a turn with no worker mid-turn; stdin closed'); return true; }
   } else if (pendingIds.length) {
