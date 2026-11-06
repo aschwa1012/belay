@@ -15,7 +15,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { runOrchestrator } = require('../../src/run/orchestrator.cjs');
-const { createStallWatcher, untaken } = require('../../src/run/stall-wake.cjs');
+const SW = () => require('../../src/run/stall-wake.cjs'); // loaded by the unit cases only, so the run cases load (and fail) on code without it
 const { createFakeCore } = require('./fake-core.cjs');
 const { cleanup } = require('../core/helpers.cjs');
 
@@ -60,10 +60,14 @@ const runWith = (core, sb) => runOrchestrator({ core, runId: RUN, dataDir: sb.da
   worktree: sb.worktree, promptText: 'hello', orchestratorDir: sb.orchestratorDir, model: 'claude-sonnet-5', allowedTools: null, policy: true,
   startupTimeoutMs: 8000, timeoutMs: 60000, mcpToolTimeoutMs: 60000, pollMs: 50, closeGraceMs: 3000,
 } });
-async function withFake(fn) {
-  const saved = process.env.BELAY_CLAUDE_EXE;
+async function withFake(fn, recv = null) {
+  const saved = process.env.BELAY_CLAUDE_EXE, savedRecv = process.env.FAKE_RECV_FILE;
   process.env.BELAY_CLAUDE_EXE = fwd(path.join(__dirname, 'fakes', 'fake-claude.cjs'));
-  try { return await fn(); } finally { if (saved === undefined) delete process.env.BELAY_CLAUDE_EXE; else process.env.BELAY_CLAUDE_EXE = saved; }
+  if (recv) process.env.FAKE_RECV_FILE = recv;
+  try { return await fn(); } finally {
+    if (saved === undefined) delete process.env.BELAY_CLAUDE_EXE; else process.env.BELAY_CLAUDE_EXE = saved;
+    if (savedRecv === undefined) delete process.env.FAKE_RECV_FILE; else process.env.FAKE_RECV_FILE = savedRecv;
+  }
 }
 const stalled = (out) => out.wakes.filter((w) => w.event === 'stalled');
 
@@ -94,23 +98,71 @@ test('run B: a review\'s holds the plan took, with three reviews and two planned
   } finally { cleanup(root); }
 });
 
-test('the close wake names each open task once: told, and still open, the next idle pass closes', async () => {
+// Four ready planned tasks and one worker, reused: the orchestrator assigns the next open task each time it is told one is waiting
+// (the fake core does it for the fake orchestrator, on the stall wake it received), and the worker hands each back. Every hand-back
+// that leaves work nobody has taken must say so, or the run closes with the queue half drained.
+test('a queue of four ready tasks drained by one worker: a stalled wake after each hand-back, and the run ends with all four done', async () => {
+  const root = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-stall-drain-'));
+  const recv = fwd(path.join(root, 'recv.jsonl'));
+  let seq = 10;
+  const tasks = ['a', 'b', 'c', 'd'].map((id) => task({ id, seq: ++seq, policy: PLAN, state: id === 'a' ? 'assigned' : 'open' }));
+  const w1 = { ...worker('w1'), turns: 0, mid_turn: 1 };
+  const S = { working: 'a', polls: 0, handled: 0 };
+  const told = () => { try { return fs.readFileSync(recv, 'utf8').split('\n').filter((l) => /nobody (is )?assigned/.test(l)).length; } catch { return 0; } };
+  const core = setup([], []).core; // its sandbox is unused: the run below uses this test's own
+  const sbRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-stall-drain-sb-'));
+  const sb = { worktree: fwd(path.join(sbRoot, 'wt')), dataDir: fwd(path.join(sbRoot, '.belay')), orchestratorDir: fwd(path.join(sbRoot, 'orch')) };
+  fs.mkdirSync(sb.worktree, { recursive: true }); fs.mkdirSync(sb.dataDir, { recursive: true });
+  core.task = { ...(core.task || {}), list: async () => ({ tasks: tasks.map((t) => ({ ...t })) }) };
+  core.worker = { ...(core.worker || {}), list: async () => {
+    if (S.working) {
+      if (++S.polls >= 2) { // the worker's turn ends with its hand-back evaluated done
+        const t = tasks.find((x) => x.id === S.working);
+        Object.assign(t, { state: 'done', seq: ++seq, handoff: { by: 'w1', at: seq }, results: { trigger: 'release', evaluated_at: seq, executable: true, passed: true, checks: [{ kind: 'command', argv: ['npm', 'test'], passed: true, exit_code: 0 }] } });
+        w1.turns += 1; w1.mid_turn = 0; w1.seq += 1; S.working = null;
+      }
+    } else if (told() > S.handled) { // the orchestrator, told, assigns the next open task to the free worker
+      const t = tasks.find((x) => x.state === 'open');
+      if (t) { S.handled = told(); Object.assign(t, { state: 'assigned', seq: ++seq }); w1.mid_turn = 1; w1.seq += 1; S.working = t.id; S.polls = 0; }
+    }
+    return { workers: [{ ...w1 }] };
+  } };
+  try {
+    const out = await withFake(() => runWith(core, sb), recv);
+    assert.deepStrictEqual(tasks.map((t) => [t.id, t.state]), [['a', 'done'], ['b', 'done'], ['c', 'done'], ['d', 'done']], `every task done: ${JSON.stringify(out.wakes.map((w) => [w.event, w.task_ids]))}`);
+    assert.deepStrictEqual(stalled(out).map((w) => w.task_ids), [['b', 'c', 'd'], ['c', 'd'], ['d']], 'one wake per hand-back that left work, each naming what was left');
+    assert.strictEqual(out.stall.closed_open, null, 'nothing open at the close');
+  } finally { cleanup(root); cleanup(sbRoot); }
+});
+
+test('the close wake: named again only when a task row moved, and only for a planned run', async () => {
+  const { createStallWatcher } = SW();
   const tasks = tasksA();
-  const w = createStallWatcher({ core: { task: { list: async () => ({ tasks }) } }, runId: RUN });
+  const w = createStallWatcher({ core: { task: { list: async () => ({ tasks }) } }, runId: RUN, planned: () => true });
   const first = await w.atClose(null);
   assert.match(first.text, /^belay: stalled: 1 open task, nobody assigned: t-perf\. The run closes when you next end a turn/);
-  assert.strictEqual(await w.atClose(null), null, 'already told: the close goes ahead');
+  assert.strictEqual(first.seq, 1, 'its seq is the highest task row seq of the run');
+  assert.strictEqual(await w.atClose(null), null, 'nothing moved since: the close goes ahead');
   assert.deepStrictEqual(w.record().closed_open, ['t-perf']);
-  tasks.push(task({ id: 't-new' }));
-  assert.deepStrictEqual((await w.atClose(null)).task_ids, ['t-new', 't-perf'], 'a task not yet named is named, with the rest');
+  tasks.push(task({ id: 't-new', seq: 9, depends_on: ['t-perf'] }));
+  const again = await w.atClose(null);
+  assert.deepStrictEqual([again.task_ids, again.seq], [['t-new', 't-perf'], 9], 'a row moved: every open task is named again');
+  assert.match(again.text, /nobody assigned \(1 waiting on dependencies\): t-new, t-perf\./);
   tasks.length = 0;
   assert.strictEqual(await w.atClose(null), null);
   assert.strictEqual(w.record().closed_open, null, 'nothing open: nothing to record');
-  const failing = createStallWatcher({ core: { task: { list: async () => { throw new Error('E_TIMEOUT'); } } }, runId: RUN });
+  const failing = createStallWatcher({ core: { task: { list: async () => { throw new Error('E_TIMEOUT'); } } }, runId: RUN, planned: () => true });
   assert.strictEqual(await failing.atClose(null), null, 'an unread close says nothing and closes, as the pre-close notice does');
+  assert.deepStrictEqual(failing.record(), { raised: [], closed_open: null, close_read_failed: true });
+  // No plan anywhere: the close is not checked (the eval's arms without a plan are unchanged).
+  const plain = [task({ id: 'x' })];
+  const unplanned = createStallWatcher({ core: { task: { list: async () => ({ tasks: plain }) } }, runId: RUN });
+  assert.strictEqual(await unplanned.atClose(null), null, 'no snapshot and no plan in the store: not read');
+  assert.strictEqual(await unplanned.atClose({ runId: RUN, tasks: plain }), null, 'a snapshot with no planned task: not named');
 });
 
-test('after a planned hand-back: waits for its evaluation, skips what a policy step names, and fits the wake cap', () => {
+test('after a planned hand-back: waits for its evaluation, wakes on every one that leaves work, leaves out halted work, fits the cap', () => {
+  const { createStallWatcher, untaken } = SW();
   const w = createStallWatcher({ core: null, runId: RUN });
   const seen = new Map(); seen.pending = new Map([['t-users', {}]]); seen.absorbed = [{ worker_id: 'coder-users', task_ids: ['t-users'] }];
   const snap = { runId: RUN, tasks: tasksA(), integrations: [], steps: [] };
@@ -119,15 +171,18 @@ test('after a planned hand-back: waits for its evaluation, skips what a policy s
   assert.deepStrictEqual(w.poll(seen, { failed: true }), [], 'an unread snapshot decides nothing');
   const [ev] = w.poll(seen, snap);
   assert.deepStrictEqual(ev.task_ids, ['t-perf']);
+  assert.match(ev.text, /^belay: worker coder-users handed back t-users and the plan took the hand-back; 1 open task nobody is assigned, no policy step due: t-perf\.$/);
   seen.absorbed = [{ worker_id: 'coder-users', task_ids: ['t-users'] }];
-  assert.deepStrictEqual(w.poll(seen, snap), [], 'each task is named by this wake once');
+  assert.deepStrictEqual(w.poll(seen, snap).map((e) => e.task_ids), [['t-perf']], 'a second hand-back that leaves it: told again');
+  assert.deepStrictEqual(w.poll(seen, snap), [], 'no hand-back: no wake');
   // A step in flight on an open task (belay dispatching it) takes it out.
-  const inFlight = { ...snap, steps: [{ run_id: RUN, step: 'dispatch', task_id: 't-perf', outcome: 'started' }] };
-  assert.deepStrictEqual(untaken(inFlight), []);
+  assert.deepStrictEqual(untaken({ ...snap, steps: [{ run_id: RUN, step: 'build', task_id: 't-perf', outcome: 'started' }] }), []);
+  // A halted task (its exception wake has gone) is not called "no policy step due": an E5 on t-bad halts its open fix.
+  const bad = task({ id: 't-bad', state: 'released', policy: PLAN, handoff: { by: 'w9', at: 10 }, results: { trigger: 'release', evaluated_at: 20, executable: true, passed: false, checks: [{ kind: 'command', argv: ['npm', 'test'], passed: false, exit_code: 1 }] } });
+  assert.deepStrictEqual(untaken({ runId: RUN, tasks: [bad, task({ id: 't-fix', repairs: 't-bad' }), task({ id: 't-free' })], integrations: [], steps: [] }), ['t-free']);
   // Many long ids: fewer are named and the rest counted, within the cap.
   const many = Array.from({ length: 20 }, (_, i) => task({ id: `task-with-a-long-name-${String(i).padStart(2, '0')}` }));
-  const w2 = createStallWatcher({ core: null, runId: RUN });
-  const big = w2.poll({ absorbed: [{ worker_id: 'w', task_ids: ['x'] }], pending: new Map() }, { runId: RUN, tasks: many, integrations: [], steps: [] })[0];
+  const big = createStallWatcher({ core: null, runId: RUN }).poll({ absorbed: [{ worker_id: 'w', task_ids: ['x'] }], pending: new Map() }, { runId: RUN, tasks: many, integrations: [], steps: [] })[0];
   assert.ok(Buffer.byteLength(big.text) <= 221, big.text);
   assert.match(big.text, /and \d+ more\.$/);
   assert.strictEqual(big.task_ids.length, 20, 'the event keeps every id for the receipt');
