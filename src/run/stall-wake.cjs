@@ -39,7 +39,7 @@ const isPlanned = (tasks, runId) => { const byId = new Map(tasks.map((t) => [t.i
 
 // The open, ready tasks of the run that no policy step names: neither due nor claimed and still in flight, and not halted.
 // `carried`: the tasks a due or in-flight step names (they are not named) and, for the ready check only, the work a review or fix not yet
-// terminal is rooted at (PW.rootOf; a review by the work it depends on): the review step ends when it hands the review over, and a fix
+// terminal (done, cancelled or released) is rooted at (PW.rootOf; a review by the work it depends on): the review step ends when it hands the review over, and a fix
 // round has no step in flight between its steps, yet the plan is still carrying the work to its merge.
 function untaken(snap) {
   const { runId } = snap;
@@ -53,7 +53,7 @@ function untaken(snap) {
   for (const id of carried) named.add(id);
   const atWork = new Set(carried);
   for (const t of mine(tasks, runId)) {
-    if (t.state === 'done' || t.state === 'cancelled') continue;
+    if (t.state === 'done' || t.state === 'cancelled' || t.state === 'released') continue; // released: a refuted review ends so, and one still owed its fix is carried through due()
     atWork.add(PW.rootOf(t, byId).id);
     if (t.acceptance && t.acceptance.verdict === true) for (const d of Array.isArray(t.depends_on) ? t.depends_on : []) if (byId.get(d)) atWork.add(PW.rootOf(byId.get(d), byId).id);
   }

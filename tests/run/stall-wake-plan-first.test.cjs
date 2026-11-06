@@ -88,7 +88,7 @@ test('plan-first: a dependency under review is carried by the plan: its dependen
 test('plan-first: a dependency in a fix round is carried by the plan: its dependent is not named until nothing is left on it', () => {
   const fixing = [
     task({ id: 't-a', state: 'done', seq: 5, ...evaluated('coder-a'), review: { state: 'refuted', review_id: 'r-a', fix_rounds_used: 1, max_fix_rounds: 1 } }),
-    task({ id: 'r-a', state: 'done', seq: 6, depends_on: ['t-a'], ...verdict('rv'), results: { trigger: 'release', evaluated_at: 40, executable: true, passed: false, checks: [{ kind: 'verdict', executable: true, passed: false }] } }),
+    task({ id: 'r-a', state: 'released', seq: 6, depends_on: ['t-a'], ...verdict('rv'), results: { trigger: 'release', evaluated_at: 40, executable: true, passed: false, checks: [{ kind: 'verdict', executable: true, passed: false }] } }), // a refuted review ends released
     task({ id: 'f-a', state: 'assigned', seq: 8, repairs: 't-a', policy: null, lease: { id: 'l2', holder: 'coder-a' } }),
     task({ id: 't-b', seq: 7, depends_on: ['t-a'] }),
   ];
@@ -98,5 +98,5 @@ test('plan-first: a dependency in a fix round is carried by the plan: its depend
   // The fix lands and nothing of the plan is left on t-a (its integrate is on_hold for a review that is not coming): t-b is the orchestrator's.
   fixing[2].state = 'done'; fixing[0].review = { state: 'refuted', review_id: 'r-a', fix_rounds_used: 1, max_fix_rounds: 1 };
   const after = { runId: RUN, tasks: fixing.map((t) => ({ ...t, policy: t.id === 't-a' || t.id === 't-b' ? { fix: 'builder', integrate: 'on_hold' } : t.policy })), integrations: [], steps: [] };
-  assert.deepStrictEqual(untaken(after), ['t-b'], 'nothing rooted at t-a is still open, and no step is due: only the orchestrator can move t-b');
+  assert.deepStrictEqual(untaken(after), ['t-b'], 'the fix done and the refuted review released, no step due: only the orchestrator can move t-b');
 });
