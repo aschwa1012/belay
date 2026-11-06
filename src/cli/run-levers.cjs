@@ -40,14 +40,15 @@ const MEMORY_OUTCOME_NOTES = 'record the outcome with `namespace: "summary"`';
 const MEMORY_VERIFY_RULE = ' Use `mcp__belay__memory_verify` only with a receipt.'; // a notes run's orchestrator has no memory_verify
 const MEMORY_QUERIES_LINE = ' Also give 1 to 3 `memory_queries`: task lines (each under 160 bytes) naming the situations the worker will be in, such as "add a migration" or "dedupe email addresses", not the finding you expect it to make.';
 
-// The time-bound condition is observable only if the orchestrator is told the bound and can read elapsed time
-// (the waited_ms of its worker_wait answers), so it is written in from timeout_ms and dropped when that is 0.
+// The time-bound condition is observable only if the orchestrator is told the bound and can read elapsed time. It reads the clock in a
+// shell (`date -u`), noted when it begins: an orchestrator that waits by the wake has no worker_wait answer to read waited_ms from (ADR 0037
+// amendment 7). Written in from timeout_ms and dropped when that is 0.
 // `mode` is 'headless' (the default, byte-identical to before) or 'interactive' (ADR 0037 decision 4: the run
 // does not end, so stop-and-surface is stop, store, tell the operator, then wait).
 function cutoffRule(fixCutoff, timeoutMs, mode = 'headless') {
   if (fixCutoff === 'cap-only') return 'Do not stop fix rounds before the fix-round limit.';
   const timeCond = timeoutMs > 0
-    ? `; the run's time bound (${timeoutMs} ms from its start) is near, judged from the waited_ms your worker_wait answers report`
+    ? `; the run's time bound (${timeoutMs} ms from its start) is near, judged by the clock (note \`date -u\` in a shell when you begin, and compare)`
     : '';
   const interactive = mode === 'interactive';
   const surface = interactive

@@ -70,11 +70,12 @@ test('levers: substituteLevers replaces every placeholder, counts them, and pass
   assert.deepStrictEqual(plain.substituted, { max_fix_rounds: 0, fix_cutoff_rule: 0 });
   const orch = substituteLevers('{{fix_cutoff_rule}}', { max_fix_rounds: 2, fix_cutoff: 'orchestrator' }, 600000).text;
   for (const part of ['survived a fix round', 'new regression', 'outside the task', 'stop-and-surface', 'report a refuted step as passing',
-    'the run\'s time bound (600000 ms from its start) is near, judged from the waited_ms your worker_wait answers report']) {
+    'the run\'s time bound (600000 ms from its start) is near, judged by the clock (note `date -u` in a shell when you begin, and compare)']) {
     assert.ok(orch.includes(part), `the orchestrator rule names "${part}"`);
   }
   const none = substituteLevers('{{fix_cutoff_rule}}', { max_fix_rounds: 2, fix_cutoff: 'orchestrator' }, 0).text;
-  assert.ok(!none.includes('time bound (') && !none.includes('waited_ms'), 'timeout_ms 0: the time condition is dropped');
+  assert.ok(!none.includes('time bound (') && !none.includes('date -u'), 'timeout_ms 0: the time condition is dropped');
+  assert.ok(!orch.includes('worker_wait') && !orch.includes('waited_ms'), 'the time source is the clock: a run that never waits can still judge it');
   assert.match(none, /The run has no time bound\./);
   assert.match(none, /owned set\. Name the condition/);
 });

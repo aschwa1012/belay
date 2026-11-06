@@ -10,7 +10,7 @@ const P = require('./panel-common.cjs');
 const STALL_MS = 300000; // ADR 0036 decision 5: five minutes, the same threshold `belay notices` uses
 const LOW_CAP_MS = 600000; // amendment 1 section 5: under ten minutes, or under a fifth of the lifetime if that is less
 const FILE_MAX = 1024 * 1024;
-const WAIT_TOOL = /(^|__)worker_wait$/; // the one call an orchestrator waits in by design (ADR 0015)
+const WAIT_TOOL = /(^|__)worker_wait$/; // the call that holds an orchestrator's turn open while it waits (ADR 0015); the prompts now steer it to wait by the wake (ADR 0037 amendment 7)
 // A call that legitimately runs longer than the stall threshold: task.evaluate runs the acceptance
 // commands inside the owner for up to EVALUATE_TIMEOUT_MS (mirrors src/core/index.cjs:28, which does not
 // export it; this module imports nothing of the core).
@@ -153,7 +153,7 @@ function orchestratorDisplay(run, scan, now, stallMs = STALL_MS) {
   if (!ev) return ds('unknown', 'run alive (adapter pid); no stream event of the orchestrator\'s own to read, so running cannot be told apart from idle');
   if (ev.kind === 'result') return ds('idle', 'run alive (adapter pid); the last stream event is a result line');
   const names = ev.calls.map((c) => c.name).join(', ');
-  if (ev.calls.some((c) => WAIT_TOOL.test(c.name))) return ds('waiting', `run alive (adapter pid); unanswered call to ${names} (worker_wait is where an orchestrator waits by design)`);
+  if (ev.calls.some((c) => WAIT_TOOL.test(c.name))) return ds('waiting', `run alive (adapter pid); unanswered call to ${names} (a worker_wait call holds its turn open until a worker answers or its timeout passes)`);
   const bound = (c) => Math.max(stallMs, EVALUATE_TOOL.test(c.name) ? EVALUATE_TIMEOUT_MS : 0, c.input_timeout_ms || 0);
   // each call is aged against its own bound; the one furthest past its bound decides (all must be under theirs to run)
   const over = ev.calls.filter((c) => c.ts_ms != null).map((c) => ({ c, age: Math.max(0, Math.round(now - c.ts_ms)), bound: bound(c) })).sort((a, b) => (b.age - b.bound) - (a.age - a.bound));

@@ -30,5 +30,6 @@ test('the interactive prompt says the run wait returns nothing the wakes do not'
 
 test('the worker_wait description says wakes deliver what it returns, and to use it at most as a short check', () => {
   const d = require(path.join(ROOT, 'src/mcp/tools.cjs')).toolsFor('orchestrator').find((x) => x.name === 'worker_wait').description;
-  assert.match(d, /Wakes deliver all of this without a call: end your turn to wait, and use this at most as a short check\.$/);
+  assert.match(d, /^A short status check, not a way to wait: wakes deliver all of this without a call, so end your turn to wait\. /);
+  assert.ok(!/^Block until/.test(d), 'it no longer leads with blocking');
 });
