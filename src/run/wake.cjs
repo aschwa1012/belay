@@ -144,7 +144,7 @@ function deathText(event) {
 // Both shapes stay comfortably under 400 bytes for any id this codebase generates.
 // A wake never names idle workers: worker_wait's answer does (idle-remind.cjs).
 function wakeText(event) {
-  if (event.event === 'note_refuted' || event.event === 'scrub_alarm' || event.event === 'evaluated' || event.event === 'pre_close' || event.event === 'budget_pause' || event.event === 'policy_digest') return event.text; // evaluated: release-eval.cjs, facts, and for a review its quoted words (review-wake.cjs) // note-wake.cjs: belay's own record, built from the core's facts
+  if (event.event === 'note_refuted' || event.event === 'scrub_alarm' || event.event === 'evaluated' || event.event === 'pre_close' || event.event === 'budget_pause' || event.event === 'policy_digest' || event.event === 'stalled') return event.text; // evaluated: release-eval.cjs, facts, and for a review its quoted words (review-wake.cjs) // note-wake.cjs: belay's own record, built from the core's facts
   if (event.event === 'death') return deathText(event);
   // build step 6f, decision 3's own words, ids and facts only (ADR 0015 §2): no worker output.
   if (event.event === 'paused') {

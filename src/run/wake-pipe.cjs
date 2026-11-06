@@ -60,6 +60,7 @@ function startWakePublisher({
   const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId, enabled: !!notes }); // wave 4: a refuted note
   const callWatcher = require('./call-wake.cjs').createCallWatcher({ core, runId }); // a still_running integrate or task_evaluate
   const policyWatcher = require('./policy-wakes.cjs').createPolicyWatcher({ core, runId }); // ADR 0073: the exceptions of a run under a plan
+  let stallWatch = null; // stall-wake.cjs, made on the first poll
   const quiet = require('./digest-quiet.cjs').createQuiet(); // ADR 0074 amendment 2: when the steps no wake carried are published on their own
   let wasHeld = false;
   let stopped = false;
@@ -158,6 +159,7 @@ function startWakePublisher({
         if (dataDir && !planned.value() && stats.polls % PLAN_CHECK_POLLS === 1) await planned.check(); // amendment 2: the store's plan arms the watcher without waiting for a turn end; read-only, one check every PLAN_CHECK_POLLS polls until a yes
         if (planned.value()) evalSeen.policyArmed = true;
         for (const pw of await policyWatcher.poll(evalSeen)) queue.push({ id: wakeId(runId, pw), text: pw.text, worker_id: pw.worker_id, event: pw.event, paused_at: null, paused_by: null, ev: pw }); // after enrichWakes, which hands it this poll's task rows
+        for (const sw of (stallWatch || (stallWatch = require('./stall-wake.cjs').createStallWatcher({ core, runId }))).poll(evalSeen, policyWatcher.snapshot())) queue.push({ id: wakeId(runId, sw), text: sw.text, worker_id: sw.worker_id, event: sw.event, paused_at: null, paused_by: null, ev: sw }); // ADR 0074 amendment 3: open work after a hand-back the plan took
         for (const ev of enriched) {
           const r = byId.get(ev.worker_id) || {};
           // paused_at and paused_by are the row's own pair at derivation: what a resume matches a park against (equality, no clocks)
