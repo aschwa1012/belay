@@ -114,7 +114,7 @@ const lifeOf = (pid, created) => `${Number.isInteger(pid) ? pid : 0}:${created =
 const deathUid = (workerId, kind, life) => `${workerId}:${kind}:${life}`;
 function wakeUid(ev) {
   if (!ev || !ev.worker_id) return null;
-  if (ev.exception && ev.key) return `${ev.worker_id}:${ev.key}`;
+  if ((ev.exception || ev.event === 'policy_done') && ev.key) return `${ev.worker_id}:${ev.key}`; // the done wake too: the run wait or the wake, not both
   if (ev.event === 'death' || ev.event === 'stale') return deathUid(ev.worker_id, ev.event, ev.life || lifeOf(null, null));
   return null;
 }
