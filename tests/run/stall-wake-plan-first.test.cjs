@@ -100,3 +100,20 @@ test('plan-first: a dependency in a fix round is carried by the plan: its depend
   const after = { runId: RUN, tasks: fixing.map((t) => ({ ...t, policy: t.id === 't-a' || t.id === 't-b' ? { fix: 'builder', integrate: 'on_hold' } : t.policy })), integrations: [], steps: [] };
   assert.deepStrictEqual(untaken(after), ['t-b'], 'the fix done and the refuted review released, no step due: only the orchestrator can move t-b');
 });
+
+// An escalation halts a planned task and its fixes (HALTING); its wake has gone, so the stalled wake leaves them out. An unplanned escalation
+// halts nothing and wakes on its own (release-eval.cjs); its task is handed back, not open, so it is never named either.
+test('plan-first: an escalated planned task and its open fix are left out; an unplanned escalated task is not named', () => {
+  const esc = (by) => ({ handoff: { by, at: 10, result: { escalate: { kind: 'blocked', reason: 'the spec contradicts itself' } } } });
+  const tasks = [
+    task({ id: 't-esc', state: 'released', seq: 5, ...esc('coder-a') }),
+    task({ id: 'f-esc', seq: 6, repairs: 't-esc', policy: null }),
+    task({ id: 'u-esc', state: 'released', seq: 7, policy: null, ...esc('coder-u') }),
+    task({ id: 't-free', seq: 8, policy: null }),
+  ];
+  const snap = { runId: RUN, tasks, integrations: [], steps: [] };
+  const PW = require('../../src/run/policy-wakes.cjs');
+  assert.ok(PW.derive(snap).some((e) => e.exception === 'escalation' && e.task_id === 't-esc'), 'the planned escalation is derived, and halts');
+  assert.ok(PW.unplannedEscalation(tasks[2]), 'the unplanned one wakes on its own');
+  assert.deepStrictEqual(untaken(snap), ['t-free']);
+});
