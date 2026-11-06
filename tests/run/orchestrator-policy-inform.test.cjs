@@ -48,11 +48,10 @@ test('headless only: the prompt says which steps keep the run open, with the bou
   assert.ok(!flat(read('orchestrator-interactive.md')).includes('keeps the run open'), 'an interactive run does not close on an idle turn');
 });
 
-test('task_create\'s policy description says what a plan saves, and orders nothing', () => {
+test('task_create\'s policy description says what a plan saves, and directs a plan on a run of more than a few tasks', () => {
   const d = require(path.join(ROOT, 'src/mcp/tools-policy.cjs')).POLICY_PROPERTY.description;
   assert.match(d, /do not wake you/);
   assert.match(d, /exceptions do/);
   assert.match(d, /digest/);
-  assert.match(d, /it can mean fewer calls, a leaner context on big runs/);
-  assert.doesNotMatch(d, MANDATE);
+  assert.match(d, /On a run of more than a few tasks, set review, fix and integrate here for a leaner context; do a step yourself only for a stated reason/);
 });

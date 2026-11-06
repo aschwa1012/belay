@@ -61,7 +61,7 @@ test('the orchestrator listing stays inside its 20,480 B cap, and the field cost
   })), 'utf8');
   console.log(`orchestrator listing ${bytes} B (${bytes - without} B for policy), cap ${tools.BUDGET.orchestrator}`);
   assert.ok(bytes <= tools.BUDGET.orchestrator, `${bytes} B`);
-  assert.ok(bytes - without <= 570, `policy costs ${bytes - without} B`); // 421 B for the fields, 565 B with the clause on what the plan saves (wakes, context)
+  assert.ok(bytes - without <= 650, `policy costs ${bytes - without} B`); // 421 B for the fields, 565 B with the clause on what the plan saves, 647 B with the directive for runs of more than a few tasks
 });
 
 test('a listing row shows the plan as a tag; the task\'s own detail shows it whole; a plan-less task shows nothing', () => {
