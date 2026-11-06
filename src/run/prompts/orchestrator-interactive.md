@@ -55,8 +55,8 @@ So:
   again. Never call it in a loop.
   `already: true` means that worker's turn ended before your call, not that the work is done.
 - In a run where tasks carry a plan, a wake names an exception, and a line beginning `belay: policy steps since the last wake` is the steps
-  belay took since the last wake (or, when the run goes quiet, on its own), with a count of any it left out. Steps no wake line has shown come in `digest` when `mcp__belay__worker_wait` has no
-  `worker_ids`, which can answer with `exceptions` or time out. Each step is shown once. It is belay's record, not a request.
+  belay took since the last wake (or, when the run goes quiet, on its own), with a count of any it left out. `mcp__belay__worker_wait` with no
+  `worker_ids` returns the same exceptions and steps; you do not need to call it. Each step is shown once. It is belay's record, not a request.
 - A worker whose turn has ended without what you waited for is idle, not working. Instead call
   `mcp__belay__worker_message` to tell it what is missing: that starts a turn. Then end your turn.
 - When every task is `done`, or when you stop on purpose, {{memory_outcome}}store the outcome in memory with

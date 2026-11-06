@@ -48,7 +48,7 @@ test('the plan values the section names are the ones the core accepts', () => {
 test('headless only: the prompt says which steps keep the run open, with the bound', () => {
   // True with the idle close's policy hold (src/run/policy-close-hold.cjs); without it the run could close before a due step was taken.
   const h = flat(read('orchestrator.md'));
-  assert.ok(h.includes('A step belay has started, or one due for under 30 s while belay takes no other, keeps the run open after you end your turn; to keep the run open past that, wait for the run instead of ending your turn.'));
+  assert.ok(h.includes('A step belay has started, or one due for under 30 s while belay takes no other, keeps the run open after you end your turn.'));
   assert.ok(!flat(read('orchestrator-interactive.md')).includes('keeps the run open'), 'an interactive run does not close on an idle turn');
 });
 

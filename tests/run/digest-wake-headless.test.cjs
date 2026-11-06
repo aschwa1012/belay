@@ -167,3 +167,19 @@ test('a claim that fails on a file error (EPERM) claims nothing and does not thr
     assert.deepStrictEqual(D.readDigests(dataDir, RUN).map((d) => d.lines.map((l) => l.step_seq)), [[1]]);
   } finally { nodeFs.linkSync = realLink; cleanup(root); }
 });
+
+// The operator's rule for 0.4.0: the orchestrator does not use worker_wait. A run where it never calls it still gets every exception, every
+// death and every step, each exactly once, by the wake, and still closes. The fake orchestrator makes no tool call at all.
+test('an orchestrator that never calls worker_wait gets every exception, death and step once, by the wake, and the run closes', async () => {
+  const steps = [stepRow(1, 'fix', 'W', 'task:f1'), stepRow(2, 're_review', 'W', 'task:r2'), stepRow(3, 'integrate', 'W', 'integration:i1')];
+  const { root, sb, core } = setup([W], steps);
+  try {
+    core.worker = { ...(core.worker || {}), list: async () => ({ workers: [{ id: 'w2', run_id: RUN, state: 'dead', turns: 3, seq: 2, pid: 111, pid_created: 5, exit_code: 1, exit_signal: null, death_established_by: 'exit' }] }) };
+    const out = await withFake(() => runWith(core, sb)); // returns: the run closed
+    assert.strictEqual(out.wakes.filter((w) => w.exception === 'E5').length, 1, JSON.stringify(out.wakes));
+    assert.strictEqual(out.wakes.filter((w) => w.event === 'death' && w.worker_id === 'w2').length, 1, 'the death, once');
+    assert.deepStrictEqual(shownSeqs(sb.dataDir), [1, 2, 3], 'every step in a digest, once');
+    assert.ok(D.readDigests(sb.dataDir, RUN).every((d) => d.via === 'wake'), 'no wait was needed');
+    assert.deepStrictEqual(out.wakes_suppressed.filter((w) => w.reason === 'delivered by worker_wait'), [], 'nothing left to a wait');
+  } finally { cleanup(root); }
+});
