@@ -70,3 +70,33 @@ test('plan-first: once merged, the dependent is the build\'s; a done dependency 
   const tasks = [task({ id: 't-dep', state: 'done', policy: bare, ...evaluated('coder-a') }), task({ id: 't-next', policy: bare, depends_on: ['t-dep'] })];
   assert.deepStrictEqual(untaken({ runId: RUN, tasks, integrations: [], steps: [] }), ['t-next']);
 });
+
+// t-a is done and the plan is still carrying it to its merge, with no step due or in flight on it: its review was handed over (the review step
+// has ended) and is being done, or its last allowed fix round is in progress. t-b depends on it and must not be called free.
+test('plan-first: a dependency under review is carried by the plan: its dependent is not named', () => {
+  const reviewing = [
+    task({ id: 't-a', state: 'done', seq: 5, ...evaluated('coder-a'), review: { state: 'pending', review_id: 'r-a' } }),
+    task({ id: 'r-a', state: 'assigned', seq: 6, policy: null, depends_on: ['t-a'], acceptance: { verdict: true }, lease: { id: 'l1', holder: 'rv' } }),
+    task({ id: 't-b', seq: 7, depends_on: ['t-a'] }),
+  ];
+  const snap = { runId: RUN, tasks: reviewing, integrations: [], steps: [] };
+  assert.deepStrictEqual(due(snap), [], 'the real due(): no step is due or in flight while the review is done');
+  assert.deepStrictEqual(untaken(snap), [], 'under review: t-b waits on the plan');
+  assert.deepStrictEqual(createStallWatcher({ core: null, runId: RUN }).poll(handBack('coder-c', ['t-c']), snap), []);
+});
+
+test('plan-first: a dependency in a fix round is carried by the plan: its dependent is not named until nothing is left on it', () => {
+  const fixing = [
+    task({ id: 't-a', state: 'done', seq: 5, ...evaluated('coder-a'), review: { state: 'refuted', review_id: 'r-a', fix_rounds_used: 1, max_fix_rounds: 1 } }),
+    task({ id: 'r-a', state: 'done', seq: 6, depends_on: ['t-a'], ...verdict('rv'), results: { trigger: 'release', evaluated_at: 40, executable: true, passed: false, checks: [{ kind: 'verdict', executable: true, passed: false }] } }),
+    task({ id: 'f-a', state: 'assigned', seq: 8, repairs: 't-a', policy: null, lease: { id: 'l2', holder: 'coder-a' } }),
+    task({ id: 't-b', seq: 7, depends_on: ['t-a'] }),
+  ];
+  const fsnap = { runId: RUN, tasks: fixing, integrations: [], steps: [] };
+  assert.deepStrictEqual(due(fsnap), [], 'the real due(): the last fix round is being built, nothing due');
+  assert.deepStrictEqual(untaken(fsnap), [], 'in a fix round: t-b waits on the plan');
+  // The fix lands and nothing of the plan is left on t-a (its integrate is on_hold for a review that is not coming): t-b is the orchestrator's.
+  fixing[2].state = 'done'; fixing[0].review = { state: 'refuted', review_id: 'r-a', fix_rounds_used: 1, max_fix_rounds: 1 };
+  const after = { runId: RUN, tasks: fixing.map((t) => ({ ...t, policy: t.id === 't-a' || t.id === 't-b' ? { fix: 'builder', integrate: 'on_hold' } : t.policy })), integrations: [], steps: [] };
+  assert.deepStrictEqual(untaken(after), ['t-b'], 'nothing rooted at t-a is still open, and no step is due: only the orchestrator can move t-b');
+});
