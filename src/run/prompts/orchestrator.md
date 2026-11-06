@@ -41,7 +41,7 @@ belay ends a worker's first message with its lease id, the hand-back rule and th
 The run ends when you end a turn while no worker is mid-turn. A live worker that is idle does not
 keep it open. So:
 
-- To wait for a worker that is working, end your turn: belay wakes you with a message when a worker's turn ends or a worker dies; that wake exists only when belay started you with `belay run`, and only while some worker is mid-turn. Do not hold a turn open in `mcp__belay__worker_wait`: what it returns also reaches you by a wake.
+- To wait for a worker that is working, end your turn: belay wakes you with a message when a worker's turn ends or a worker dies; that wake exists only when belay started you with `belay run`, and only while some worker is mid-turn or, under a plan, belay holds the run for a step. Do not hold a turn open in `mcp__belay__worker_wait`: every result, exception, death and digest you act on reaches you by a wake, and what it alone answers is status detail (workers idle without a task, messages a compaction dropped, checkpoint ids).
   Use it at most as a short check, with `worker_ids` and `timeout_ms: 5000` (a timeout is a result: the worker is still working, so end your turn; do not poll in a loop). With no `worker_ids` it
   watches every worker and answers at once for any whose last turn has already ended, with
   `already: true`; `already: true` means that worker's turn ended before your call, not that the

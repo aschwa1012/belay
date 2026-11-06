@@ -168,7 +168,7 @@ test('headless substitution output is pinned byte for byte (the default mode is 
     + 'the fix needs files outside the task\'s owned set';
   const tail = '. Name the condition and its evidence when you close. Never report a refuted step as passing or mark it done.';
   const want0 = `${common}${tail} The run has no time bound.`;
-  const wantT = `${common}; the run's time bound (600000 ms from its start) is near, judged by the clock (note \`date -u\` in a shell when you begin, and compare)${tail}`;
+  const wantT = `${common}; the run's time bound (600000 ms from its start) is near, judged by the time now (\`date -u\` in a shell)${tail}`;
   assert.strictEqual(cutoffRule('orchestrator', 0), want0);
   assert.strictEqual(cutoffRule('orchestrator', 600000), wantT);
   assert.strictEqual(cutoffRule('cap-only', 0), 'Do not stop fix rounds before the fix-round limit.');
