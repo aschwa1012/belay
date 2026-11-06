@@ -25,7 +25,7 @@ const parse = (v) => { if (v && typeof v === 'object') return v; try { const p =
 const errText = (e) => `${(e && e.code) || 'E_INTERNAL'}: ${String((e && e.message) || e).replace(/[\x00-\x1f\x7f]+/g, ' ').slice(0, 800)}`;
 const keyOf = (step, t) => `${step}|${t.table}|${t.id}|${t.seq}`;
 const isRelease = (t) => !!(t && t.results && t.results.trigger === 'release');
-const SENDS = new Set(['review', 'fix', 're_review']); // the steps that send a worker work (the budget rule); integrate sends none
+const SENDS = new Set(['build', 'review', 'fix', 're_review']); // the steps that send a worker work (the budget rule); integrate sends none
 const leftOver = STEPS.leftOver; // a review a paused step made and did not hand over (never leased, never evaluated: policy-steps-run.cjs)
 const isReviewTask = (t) => !!(t.acceptance && t.acceptance.verdict === true);
 
@@ -59,6 +59,11 @@ function due(snap) {
     if (!p) continue;
     const { plan, rev } = p;
     const root = PW.rootOf(x, byId);
+    // build: an open work task nobody holds, whose dependencies are all done, and the plan names who builds it (a worker, or a spawn).
+    // A task the orchestrator assigned has a lease and is skipped; a fix or a follow-up is made and assigned by its own step.
+    if (!x.repairs && !x.follows_up && plan.build && x.state === 'open' && !x.lease && (Array.isArray(x.depends_on) ? x.depends_on : []).every((d) => byId.get(d) && byId.get(d).state === 'done')) {
+      out.push({ step: 'build', task_id: x.id, trigger: tref(x), policy_rev: rev, build: plan.build, worker: plan.build.worker || (plan.build.spawn && plan.build.spawn.worker_id) || null });
+    }
     // review: the work is done on a release evaluation, nothing reviews it, and the plan names who does (a worker, or a spawn).
     if (!x.repairs && plan.review && x.state === 'done' && isRelease(x) && !(reviewsOf.get(x.id) || []).filter((r) => !leftOver(r)).length && !(x.review && x.review.review_id && !leftOver(byId.get(x.review.review_id)))) { // a review a paused step made and did not hand over does not count: the retake hands it over
       out.push({ step: 'review', task_id: x.id, trigger: tref(x), policy_rev: rev, review: plan.review, worker: plan.review.worker || (plan.review.spawn && plan.review.spawn.worker_id) || null });
@@ -158,10 +163,10 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf 
   async function take(c0, taken) {
     // The worker and the turn the step starts, known before the claim: a spawned reviewer's id is made here and its first turn is 1; a named
     // worker's next turn is the one its manager says. A turn the manager cannot say is left off (the log then prints no turn).
-    const spawned = c0.step === 'review' && c0.review && c0.review.spawn;
+    const spawned = (c0.step === 'review' && c0.review && c0.review.spawn) || (c0.step === 'build' && c0.build && c0.build.spawn);
     // belay never substitutes an id the plan named: a retake after a pause spawns it in place (spawn-args.cjs checkIdFree allows this run's own dead row),
     // and an id a live worker holds is the spawn's refusal, an exception (E8).
-    const c = spawned && !c0.worker ? { ...c0, worker: `rev-${crypto.randomUUID().slice(0, 8)}` } : c0;
+    const c = spawned && !c0.worker ? { ...c0, worker: `${c0.step === 'build' ? 'bld' : 'rev'}-${crypto.randomUUID().slice(0, 8)}` } : c0;
     let turn = spawned ? 1 : null;
     if (turn == null && c.worker && turnOf) { try { const t = await turnOf(c.worker); if (Number.isInteger(t) && t > 0) turn = t; } catch { turn = null; } }
     const me = await ownId();

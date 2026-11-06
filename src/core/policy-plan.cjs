@@ -15,6 +15,7 @@ const AGENT_TYPES = ['coder', 'tester', 'reviewer', 'researcher'];
 
 // field -> the one value (or shape) v1 accepts. `review` is a shape; the rest are a single word.
 const V1_ACCEPTS = Object.freeze({
+  build: 'a worker id ({ worker }) or a spawn ({ spawn: { agent_type, worker_id? } }): who builds an open task once its dependencies are done',
   review: 'a worker id ({ worker }) or a spawn ({ spawn: { agent_type, worker_id? } })',
   fix: Object.freeze(['builder']),
   re_review: Object.freeze(['refuter']),
@@ -46,13 +47,13 @@ function checkReview(v, where) {
 // nothing. A null field is refused (`policy: null` is the whole-plan hand-back); an empty object is a valid plan that says nothing.
 // `where` names the source in the message (`policy`, `spec policy`, or the config path).
 function check(policy, where = 'policy') {
-  if (!policy || typeof policy !== 'object' || Array.isArray(policy)) throw err('E_ARGS', `${where} must be an object of what belay does for the task (review, fix, re_review, integrate)`, { field: where });
+  if (!policy || typeof policy !== 'object' || Array.isArray(policy)) throw err('E_ARGS', `${where} must be an object of what belay does for the task (build, review, fix, re_review, integrate)`, { field: where });
   const out = {};
   for (const k of Object.keys(policy)) {
     const v = policy[k];
     if (!Object.prototype.hasOwnProperty.call(V1_ACCEPTS, k)) throw notAccepted(`${where}.${k}`, undefined, Object.keys(V1_ACCEPTS).join(', '));
     if (v === null || v === undefined) throw err('E_ARGS', `${where}.${k} cannot be null: leave a field out to leave its step to the orchestrator, or pass policy: null on an amend to hand the whole task back`, { field: `${where}.${k}` });
-    if (k === 'review') { out.review = checkReview(v, `${where}.review`); continue; }
+    if (k === 'review' || k === 'build') { out[k] = checkReview(v, `${where}.${k}`); continue; } // the same shape: a named worker or a spawn
     if (!V1_ACCEPTS[k].includes(v)) throw notAccepted(`${where}.${k}`, JSON.stringify(v), V1_ACCEPTS[k].map((x) => JSON.stringify(x)).join(', '));
     out[k] = v;
   }
@@ -99,7 +100,9 @@ function forAmend(runRow, task, statedPolicy) {
 function tag(policy) {
   if (!policy || typeof policy !== 'object') return null;
   const parts = [];
-  if (policy.review) parts.push(`r:${policy.review.worker !== undefined ? policy.review.worker : `spawn(${policy.review.spawn.agent_type})`}`);
+  const who = (x) => (x.worker !== undefined ? x.worker : `spawn(${x.spawn.agent_type})`);
+  if (policy.build) parts.push(`b:${who(policy.build)}`);
+  if (policy.review) parts.push(`r:${who(policy.review)}`);
   if (policy.fix) parts.push(`f:${policy.fix}`);
   if (policy.re_review) parts.push(`rr:${policy.re_review}`);
   if (policy.integrate) parts.push(`i:${policy.integrate}`);
