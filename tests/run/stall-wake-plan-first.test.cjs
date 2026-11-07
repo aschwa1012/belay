@@ -117,3 +117,11 @@ test('plan-first: an escalated planned task and its open fix are left out; an un
   assert.ok(PW.unplannedEscalation(tasks[2]), 'the unplanned one wakes on its own');
   assert.deepStrictEqual(untaken(snap), ['t-free']);
 });
+
+test('plan-first: a done dependency whose integrate waits behind another integration merging is carried, so its dependent is not named', () => {
+  const tasks = mergeTasks();
+  const snap = { runId: RUN, tasks, integrations: [{ run_id: RUN, state: 'merging', task_id: 't-other' }], steps: [] };
+  assert.deepStrictEqual(due(snap).filter((c) => c.step === 'integrate'), [], 'due() withholds the integrate while another merges');
+  assert.deepStrictEqual(untaken(snap), [], 'the plan still carries t-dep to its merge: t-next is not free');
+  assert.deepStrictEqual(createStallWatcher({ core: null, runId: RUN }).poll(handBack('rv', ['r-dep']), snap), []);
+});
