@@ -172,7 +172,7 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
     const tasks = await read(g.task.list, 'tasks', []);
     seen.tasks = tasks;
     const integrations = c.step === 'integrate' ? await read(g.integration.list, 'integrations', []) : [];
-    const rl = c.step === 'relaunch' ? { steps: await read(g.policy.list, 'rows', []), workers: await read(g.worker.list, 'workers', []) } : {};
+    const rl = c.step === 'relaunch' ? { steps: (await read(g.policy.list, 'rows', [])).filter((r) => !(r.step === 'relaunch' && r.outcome === 'started' && r.trigger_table === c.trigger.table && r.trigger_id === c.trigger.id && Number(r.trigger_seq) === c.trigger.seq)), workers: await read(g.worker.list, 'workers', []) } : {}; // this claim is not a used relaunch
     const same = due({ runId, tasks, integrations, ...rl }).find((d) => keyOf(d.step, d.trigger) === keyOf(c.step, c.trigger));
     if (!same) return `E_NOT_NOW: the plan or the facts changed after the claim: ${c.step} on ${c.trigger.table}:${c.trigger.id} is no longer due; the claim is reopened and the step retaken if it is due again`;
     if ((same.policy_rev ?? null) !== (c.policy_rev ?? null)) return `E_NOT_NOW: the plan moved from rev ${c.policy_rev} to rev ${same.policy_rev} after the claim; the claim is reopened and the step retaken`;

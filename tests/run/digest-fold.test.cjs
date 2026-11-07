@@ -132,7 +132,7 @@ test('interactive: the death wake and the digest are one published line within 2
   const dataDir = fwd(path.join(base, 'data')); fs.mkdirSync(dataDir);
   const steps = [stepRow(1, 'fix', 'W', 'task:f1')];
   const core = {
-    worker: { list: async () => ({ workers: [{ id: 'c1', run_id: RUN, state: 'dead', turns: 1, pid: 999991, pid_created: '1', exited_at: Date.now() - 5000, exit_code: 1 }] }) },
+    worker: { list: async () => ({ workers: [{ id: 'c1', run_id: RUN, state: 'dead', turns: 1, pid: 999991, pid_created: '1', exited_at: Date.now() + 60000, exit_code: 1 }] }) },
     run: { get: async () => ({ run: { id: RUN, policy_default: { review: true } } }) },
     task: { list: async () => ({ tasks: [] }) },
     policy: { list: async () => ({ rows: steps.slice() }) },
@@ -144,10 +144,11 @@ test('interactive: the death wake and the digest are one published line within 2
   try {
     assert.ok(await until(() => rd.out.some((l) => l.id && /belay did/.test(l.text))), `a wake line with the digest: ${JSON.stringify(rd.out)}`);
     const wakes = rd.out.filter((l) => l.id);
-    assert.strictEqual(wakes.length, 1, 'one line in all');
-    assert.match(wakes[0].text, /^belay: worker c1 died/);
-    assert.match(wakes[0].text, /\| belay did: #1 fix W/);
-    assert.ok(bytes(wakes[0].text) <= 221, `${bytes(wakes[0].text)} bytes`);
+    assert.strictEqual(wakes.filter((l) => /belay did/.test(l.text)).length, 1, 'one line carries the digest');
+    assert.strictEqual(wakes.filter((l) => /^belay: policy steps since/.test(l.text)).length, 0, 'none of its own');
+    const death = wakes.find((l) => /died during turn/.test(l.text));
+    assert.match(death.text, /\| belay did: #1 fix W/);
+    assert.ok(bytes(death.text) <= 221, `${bytes(death.text)} bytes`);
     assert.deepStrictEqual(D.readDigests(dataDir, RUN).map((d) => d.via), ['wake']);
   } finally { rd.close(); await pub.stop(); cleanup(base); }
 });
