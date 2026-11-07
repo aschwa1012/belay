@@ -38,5 +38,5 @@ async function plannedBuild(t, { defaultPlan, taskPlan }) {
   assert.ok(steps.some((s) => s.step === 'build' && s.task_id === 'ps-1'), `the executor claimed the build: ${JSON.stringify(steps)}\n${orch.stderr.slice(-600)}`);
 }
 
-test('a task_create alone, under the plan in force plan, gets its build claimed by the executor with no worker tool call', { timeout: 90000 }, (t) => plannedBuild(t, { defaultPlan: true }));
+test('a task_create alone, under a run default plan, gets its build claimed by the executor with no worker tool call', { timeout: 90000 }, (t) => plannedBuild(t, { defaultPlan: true }));
 test('a task_create that states a plan opens the executor too, once the row is written', { timeout: 90000 }, (t) => plannedBuild(t, { taskPlan: true }));

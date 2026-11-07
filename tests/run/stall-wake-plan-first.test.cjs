@@ -182,3 +182,16 @@ test('plan-first: a review whose reviewer stood down never gets an evaluation, s
   delete tasks[1].handoff.stood_down;
   assert.deepStrictEqual(untaken({ runId: RUN, tasks, integrations: [], steps: [] }), [], 'a real hand-back awaiting its evaluation carries it');
 });
+
+test('plan-first: the orchestrator\'s own ready policy:null task is not named after an absorbed hand-back, and is named by the idle close', async () => {
+  const tasks = [
+    task({ id: 't-done', state: 'done', seq: 5, ...evaluated('coder-a'), review: { state: 'holds', review_id: 'r-done' }, integration: { state: 'merged' } }),
+    task({ id: 'r-done', state: 'done', seq: 6, depends_on: ['t-done'], ...verdict('rv') }),
+    task({ id: 't-mine', seq: 7, policy: null }),
+  ];
+  const snap = { runId: RUN, tasks, integrations: [], steps: [] };
+  const w = createStallWatcher({ core: { task: { list: async () => ({ tasks }) } }, runId: RUN, planned: () => true });
+  assert.deepStrictEqual(w.poll(handBack('rv', ['r-done']), snap), [], 'a hand-back wake leaves out a task under no plan');
+  const close = await w.atClose(snap);
+  assert.deepStrictEqual(close && close.task_ids, ['t-mine'], 'the idle close names every open task');
+});
