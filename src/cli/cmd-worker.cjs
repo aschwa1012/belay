@@ -60,7 +60,7 @@ async function waitForTerminalRow(core, workerId, boundMs) {
   return { row: last, ms: Date.now() - t0 };
 }
 
-async function runKill(core, workerId) {
+async function runKill(core, workerId, dataDir) {
   let w;
   try {
     w = await core.worker.get({ worker_id: workerId });
@@ -107,6 +107,7 @@ async function runKill(core, workerId) {
   // Exactly src/run/stop.cjs's killWorkerRow sequence, through src/core/process.cjs (build step 6b
   // design item 1) rather than src/run/process.cjs, so this file never imports src/run. build step 6c
   // item 8: t0 is before killTree, so a kill the tree kill itself ended reads its true time.
+  require('../core/kill-mark.cjs').mark(dataDir, workerId, w.pid); // a plan that sees this death does not take it for a crash and restart the worker
   const t0 = Date.now();
   const aliveBeforeSignal = pidAlive(w.pid); // before the kill: the identity check itself takes about a second
   // ADR 0039: the row's pid_created is the identity; a pid held by a different process is refused, not killed.
@@ -319,7 +320,7 @@ async function runKillOrRm(ctx, sub, workerId) {
 
   const core = await openCore({ dataDir, caller: { role: 'operator', run_id: 'cli', pid: process.pid } });
   try {
-    const receipt = sub === 'kill' ? await runKill(core, workerId) : await runRm(core, dataDir, workerId);
+    const receipt = sub === 'kill' ? await runKill(core, workerId, dataDir) : await runRm(core, dataDir, workerId);
     const ok = sub === 'kill' ? receipt.killed : receipt.forgotten;
     const text = sub === 'kill' ? renderKillText(receipt) : renderRmText(receipt);
     return { code: ok ? 0 : 1, text, json: receipt };

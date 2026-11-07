@@ -57,6 +57,7 @@ function createRunWait({ core, runId, dataDir, armed = () => true, settled = nul
   const isAlive = alive || (async (pid, created) => { if (created == null) return P.pidAlive(pid); const r = await P.createdOf(pid).catch(() => null); return !!r && String(r.created) === String(created); });
   const uidOf = (w) => `${w.worker_id}:${w.key}`;
 
+  const waiting = new Set(); // death uids a plan's relaunch is handling: not returned while it is (policy-relaunch.cjs verdict)
   const deathsOf = (workers) => {
     const out = [];
     for (const w of workers) {
@@ -64,6 +65,7 @@ function createRunWait({ core, runId, dataDir, armed = () => true, settled = nul
       const life = D.lifeOf(w.pid, w.pidCreated);
       const key = `${w.id}:${life}:${event}`;
       if (!event || reported.has(key)) continue;
+      if (waiting.has(D.deathUid(w.id, event === 'dead' ? 'death' : 'stale', life))) continue;
       out.push({ key, uid: D.deathUid(w.id, event === 'dead' ? 'death' : 'stale', life), exception: 'E4', worker_id: w.id, event, established_by: w.staleSince ? `row state ${w.staleSince.row_state}, held by adapter ${w.staleSince.adapter_pid}` : w.deathEstablishedBy, exit_code: w.exitCode == null ? null : w.exitCode, exit_signal: w.exitSignal == null ? null : w.exitSignal, turn: w.turns });
     }
     return out;
@@ -78,9 +80,28 @@ function createRunWait({ core, runId, dataDir, armed = () => true, settled = nul
     return out;
   };
 
+  // A death of a worker whose task the plan relaunches is not told while the relaunch is due or in flight, and not at all once it is done:
+  // the death is claimed, so no later wait returns it. Only an unclaimed death of a dead record is looked at, so a run with none reads nothing.
+  async function settleDeaths(workers) {
+    waiting.clear();
+    const ds = deathsOf(workers).filter((d) => !D.isClaimed({ dataDir, runId, uid: d.uid }));
+    if (!ds.length) return;
+    let tasks; let steps;
+    try { tasks = ((await core.task.list({})) || {}).tasks || []; steps = await D.listSteps(core, runId); } catch { return; } // unread: the death is told
+    const byId = new Map(tasks.map((t) => [t.id, t]));
+    const KM = require('../core/kill-mark.cjs');
+    const ctx = { runId, tasks, steps, polOf: (t) => PW.policyOf(t, byId), rootOf: (t) => PW.rootOf(t, byId), isKilled: (id) => { const w = workers.find((r) => r.id === id); return !!w && KM.isKilled(dataDir, id, w.pid); } };
+    for (const d of ds) {
+      const v = require('./policy-relaunch.cjs').verdict(d.worker_id, ctx);
+      if (v === 'wait') waiting.add(d.uid);
+      else if (v === 'ok') { try { D.claimException({ dataDir, runId, uid: d.uid }); } catch { /* told once more at worst */ } reported.add(d.key); }
+    }
+  }
+
   async function collect(workers) {
     const fresh = await exceptions.poll();
     for (const w of fresh) pending.push(w);
+    if (armed()) await settleDeaths(workers);
     return unclaimed(workers);
   }
 
