@@ -122,8 +122,8 @@ function createCompose({ callCore, manager, openManager, dataDir = null, runId =
   // task_create (B4): the row as written, with a warning when it declares no check, since such a task can never be done, and
   // (ADR 0059) when it owns paths a task in another tree owns too.
   async function create(args) {
-    if (onPolicy && args && (args.policy != null || (Array.isArray(args.tasks) && args.tasks.some((t) => t && t.policy != null)))) onPolicy(); // a plan was stated: the policy executor reads from now on
     const out = await callCore('task.create', args);
+    if (onPolicy && args && (args.policy != null || (Array.isArray(args.tasks) && args.tasks.some((t) => t && t.policy != null)))) onPolicy(); // a plan was written: the policy executor reads from now on
     const warn = (row) => withWarnings(row, row && !hasCheck(row.acceptance) && NO_CHECK, row && overlapWarning(row.overlaps));
     return out && Array.isArray(out.tasks) ? { tasks: out.tasks.map(warn) } : warn(out); // ADR 0062: a batch answers every row it wrote
   }
