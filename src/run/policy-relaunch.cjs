@@ -69,7 +69,8 @@ async function run(c, env) {
   const ws = ((await env.core.worker.list({})) || {}).workers || [];
   const w = ws.find((x) => x.id === c.worker);
   if (!w || w.state !== 'dead') return skipped(`builder ${c.worker} is ${w ? w.state : 'gone'}, not dead`);
-  if (KM.isKilled(env.dataDir, c.worker, w.pid)) return skipped(`builder ${c.worker} was killed by an operator's command; belay does not undo it`);
+  if (KM.isKilled(env.dataDir, c.worker, w.pid, w.pid_created)) return skipped(`builder ${c.worker} was killed by an operator's command; belay does not undo it`);
+  if (env.dataDir) { const D = require('./run-digest.cjs'); let told = false; try { told = D.isClaimed({ dataDir: env.dataDir, runId: env.runId, uid: D.deathUid(c.worker, 'death', D.lifeOf(w.pid, w.pid_created)) }); } catch { told = false; } if (told) return skipped(`the death of ${c.worker} was already reported to the orchestrator, which decides now`); }
   const runRow = env.core.run ? ((await env.core.run.get({})) || {}).run : null;
   if (runRow && runRow.paused_at != null) return paused('the run is paused');
   const holder = async () => ((await env.core.task.get({ task_id: c.task_id })) || {}).lease || null;
@@ -137,7 +138,7 @@ async function holdDeaths({ core, runId, events, seen, tasks, byId, polOf, rootO
   try { steps = await require('./run-digest.cjs').listSteps(core, runId); } catch { steps = null; }
   const out = events.filter((e) => !fresh.includes(e));
   if (!steps) { const all = out.concat(fresh, [...held.values()].map((h) => h.ev)); held.clear(); return all; } // unreadable: nothing is kept back
-  const ctx = { runId, tasks, steps, polOf, rootOf, isKilled: (id) => { const w = (workers || []).find((r) => r.id === id); return !!w && KM.isKilled(dataDir, id, w.pid); } };
+  const ctx = { runId, tasks, steps, polOf, rootOf, isKilled: (id) => { const w = (workers || []).find((r) => r.id === id); return !!w && KM.isKilled(dataDir, id, w.pid, w.pid_created); } };
   const drop = (ev) => {
     (seen.relaunched || (seen.relaunched = [])).push({ worker_id: ev.worker_id });
     if (dataDir) { const D = require('./run-digest.cjs'); try { D.claimException({ dataDir, runId, uid: D.wakeUid(ev) }); } catch { /* the wait may return it once more */ } }

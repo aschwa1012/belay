@@ -174,7 +174,7 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
     seen.tasks = tasks;
     const integrations = c.step === 'integrate' ? await read(g.integration.list, 'integrations', []) : [];
     const rl = c.step === 'relaunch' ? { steps: (await read(g.policy.list, 'rows', [])).filter((r) => !(r.step === 'relaunch' && r.outcome === 'started' && r.trigger_table === c.trigger.table && r.trigger_id === c.trigger.id && Number(r.trigger_seq) === c.trigger.seq)), workers: await read(g.worker.list, 'workers', []) } : {}; // this claim is not a used relaunch
-    const same = due({ runId, tasks, integrations, ...rl, ...(dataDir ? { isKilled: (w) => KM.isKilled(dataDir, w.id, w.pid) } : {}) }).find((d) => keyOf(d.step, d.trigger) === keyOf(c.step, c.trigger));
+    const same = due({ runId, tasks, integrations, ...rl, ...(dataDir ? { isKilled: (w) => KM.isKilled(dataDir, w.id, w.pid, w.pid_created) } : {}) }).find((d) => keyOf(d.step, d.trigger) === keyOf(c.step, c.trigger));
     if (!same) return `E_NOT_NOW: the plan or the facts changed after the claim: ${c.step} on ${c.trigger.table}:${c.trigger.id} is no longer due; the claim is reopened and the step retaken if it is due again`;
     if ((same.policy_rev ?? null) !== (c.policy_rev ?? null)) return `E_NOT_NOW: the plan moved from rev ${c.policy_rev} to rev ${same.policy_rev} after the claim; the claim is reopened and the step retaken`;
     return null;
@@ -235,7 +235,7 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
     const halted = PW.haltedIds(PW.derive({ runId, tasks, integrations, steps, failures: [], revisions }), tasks);
     const claimed = new Set(steps.filter((s) => !(s.outcome === 'skipped' && /^E_(PAUSED|NOT_NOW)/.test(s.error || ''))).map((s) => keyOf(s.step, { table: s.trigger_table, id: s.trigger_id, seq: Number(s.trigger_seq) || 0 })));
     const workers = require('./policy-relaunch.cjs').mayNeed(tasks.filter((t) => t.run_id === runId), steps, runId, (t) => PW.rootOf(t, new Map(tasks.map((r) => [r.id, r])))) && g.worker && g.worker.list ? await read(g.worker.list, 'workers', []) : undefined; // worker rows only while a task a builder may have left open exists
-    for (const c of due({ runId, tasks, integrations, steps, workers, ...(dataDir ? { isKilled: (w) => KM.isKilled(dataDir, w.id, w.pid) } : {}), maxBuilds: Number.isInteger(run.max_parallel_builds) && run.max_parallel_builds > 0 ? run.max_parallel_builds : MAX_PARALLEL_BUILDS })) {
+    for (const c of due({ runId, tasks, integrations, steps, workers, ...(dataDir ? { isKilled: (w) => KM.isKilled(dataDir, w.id, w.pid, w.pid_created) } : {}), maxBuilds: Number.isInteger(run.max_parallel_builds) && run.max_parallel_builds > 0 ? run.max_parallel_builds : MAX_PARALLEL_BUILDS })) {
       if (stopped()) break;
       if (c.capped) continue; // max_parallel_builds: the task waits for a slot, no exception (ADR 0074 amendment 4)
       if (halted.has(c.task_id) || claimed.has(keyOf(c.step, c.trigger))) continue;

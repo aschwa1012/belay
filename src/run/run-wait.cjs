@@ -57,6 +57,7 @@ function createRunWait({ core, runId, dataDir, armed = () => true, settled = nul
   const isAlive = alive || (async (pid, created) => { if (created == null) return P.pidAlive(pid); const r = await P.createdOf(pid).catch(() => null); return !!r && String(r.created) === String(created); });
   const uidOf = (w) => `${w.worker_id}:${w.key}`;
 
+  const waitingSince = new Map(); // death uid -> when this wait first held it, so a hold ends after the wake path's bound
   const waiting = new Set(); // death uids a plan's relaunch is handling: not returned while it is (policy-relaunch.cjs verdict)
   const deathsOf = (workers) => {
     const out = [];
@@ -87,13 +88,15 @@ function createRunWait({ core, runId, dataDir, armed = () => true, settled = nul
     const ds = deathsOf(workers).filter((d) => !D.isClaimed({ dataDir, runId, uid: d.uid }));
     if (!ds.length) return;
     let tasks; let steps;
-    try { tasks = ((await core.task.list({})) || {}).tasks || []; steps = await D.listSteps(core, runId); } catch { return; } // unread: the death is told
+    const snap = exceptions.snapshot ? exceptions.snapshot() : null; // this poll's rows, read by the watcher already
+    if (snap && Array.isArray(snap.tasks) && Array.isArray(snap.steps) && !snap.failed && !snap.readFailed) { tasks = snap.tasks; steps = snap.steps; }
+    else { try { tasks = ((await core.task.list({})) || {}).tasks || []; steps = await D.listSteps(core, runId); } catch { return; } } // unread: the death is told
     const byId = new Map(tasks.map((t) => [t.id, t]));
     const KM = require('../core/kill-mark.cjs');
-    const ctx = { runId, tasks, steps, polOf: (t) => PW.policyOf(t, byId), rootOf: (t) => PW.rootOf(t, byId), isKilled: (id) => { const w = workers.find((r) => r.id === id); return !!w && KM.isKilled(dataDir, id, w.pid); } };
+    const ctx = { runId, tasks, steps, polOf: (t) => PW.policyOf(t, byId), rootOf: (t) => PW.rootOf(t, byId), isKilled: (id) => { const w = workers.find((r) => r.id === id); return !!w && KM.isKilled(dataDir, id, w.pid, w.pidCreated); } };
     for (const d of ds) {
       const v = require('./policy-relaunch.cjs').verdict(d.worker_id, ctx);
-      if (v === 'wait') waiting.add(d.uid);
+      if (v === 'wait') { if (!waitingSince.has(d.uid)) waitingSince.set(d.uid, clock.now()); if (clock.now() - waitingSince.get(d.uid) < require('./policy-relaunch.cjs').HOLD_MAX_MS) waiting.add(d.uid); }
       else if (v === 'ok') { try { D.claimException({ dataDir, runId, uid: d.uid }); } catch { /* told once more at worst */ } reported.add(d.key); }
     }
   }

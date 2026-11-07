@@ -37,7 +37,7 @@ function usageError(message) {
 function renderKillText(receipt) {
   if (!receipt.killed) return `belay worker kill: ${receipt.reason}\n`;
   const ms = receipt.ms_to_dead == null ? receipt.row_after_waited_ms : receipt.ms_to_dead;
-  return `worker ${receipt.worker_id} pid ${receipt.pid}: killed, dead after ${ms} ms; row ${receipt.row_after.state} (${receipt.row_after_established_by})\n`;
+  return `worker ${receipt.worker_id} pid ${receipt.pid}: killed, dead after ${ms} ms; row ${receipt.row_after.state} (${receipt.row_after_established_by})${receipt.mark_written === false ? '; the kill mark could not be written, so a plan may relaunch this worker' : ''}\n`;
 }
 
 function renderRmText(receipt) {
@@ -107,7 +107,7 @@ async function runKill(core, workerId, dataDir) {
   // Exactly src/run/stop.cjs's killWorkerRow sequence, through src/core/process.cjs (build step 6b
   // design item 1) rather than src/run/process.cjs, so this file never imports src/run. build step 6c
   // item 8: t0 is before killTree, so a kill the tree kill itself ended reads its true time.
-  require('../core/kill-mark.cjs').mark(dataDir, workerId, w.pid); // a plan that sees this death does not take it for a crash and restart the worker
+  const markWritten = require('../core/kill-mark.cjs').mark(dataDir, workerId, w.pid, w.pid_created); // a plan that sees this death does not take it for a crash and restart the worker
   const t0 = Date.now();
   const aliveBeforeSignal = pidAlive(w.pid); // before the kill: the identity check itself takes about a second
   // ADR 0039: the row's pid_created is the identity; a pid held by a different process is refused, not killed.
@@ -140,7 +140,7 @@ async function runKill(core, workerId, dataDir) {
     worker_id: workerId, run_id: w.run_id, pid: w.pid, pid_alive_before: true, killed: true,
     tree: { ok: tree.ok, terminated: tree.terminated, ms: tree.ms },
     pid_kill: { signalled: pidKill.signalled, error: pidKill.error },
-    ms_to_dead, pid_alive_after: pidAliveAfter,
+    ms_to_dead, pid_alive_after: pidAliveAfter, mark_written: markWritten,
     row_after: rowAfter, row_after_waited_ms: waited.ms, row_after_established_by: establishedBy,
   };
   receipt.identity = kp.identity;
@@ -200,6 +200,7 @@ async function runRm(core, dataDir, workerId) {
   } catch {
     onDisk = { path: workerDir, exists: false, bytes: null };
   }
+  require('../core/kill-mark.cjs').clear(dataDir, workerId); // the row is gone, and so is the mark of a kill of its process
   const establishedBy = core.isOwner()
     ? 'worker.forget in-process, having elected the store owner for this command'
     : 'worker.forget over the owner pipe';

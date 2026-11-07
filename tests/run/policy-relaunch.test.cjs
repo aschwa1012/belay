@@ -233,3 +233,78 @@ test('a worker an operator killed is not relaunched: the mark stops the step, an
     assert.deepStrictEqual(calls, []);
   } finally { await e.close(); }
 });
+
+test('a held death holds the headless idle close, and the stall notice, so a crashed builder is neither named as unassigned nor closed under a due relaunch', async () => {
+  const { idleClose } = require('../../src/run/orchestrator-idle-close.cjs');
+  const wrote = []; let stallAsked = 0; let closed = null; const holds = [];
+  const state = { pendingWrites: [], evalSeen: new Map(), finishing: false, idle: true, wakesSuppressed: [] };
+  state.evalSeen.deathHeld = new Map([['b1:4242:1', { ev: death(), since: 1 }]]);
+  const out = await idleClose({
+    state, rows: [], runId: 'r', pending_deaths: [], turnAtCall: 1, hold: { isPaused: () => false }, awaitingWakeIds: () => [],
+    callWatcher: { holds: () => [] }, preClose: { check: async () => ({ ran: false }) }, recordHold: (...a) => holds.push(a), writeWake: (e) => wrote.push(e),
+    closeThenKillOnDeadline: (why) => { closed = why; }, stall: { atClose: async () => { stallAsked += 1; return { event: 'stalled', worker_id: 'stall:r', turn: 0, text: 'belay: open tasks nobody is assigned: T.', task_ids: ['T'] }; } },
+  });
+  assert.strictEqual(out, false);
+  assert.strictEqual(stallAsked, 0, 'the stall notice is not asked for');
+  assert.deepStrictEqual([wrote.length, closed], [0, null], 'nothing written, nothing closed');
+  assert.ok(holds.length === 1 && JSON.stringify(holds[0]).includes('relaunch:b1:4242:1'), `the hold is named: ${JSON.stringify(holds)}`);
+});
+
+test('the kill mark matches the process by pid and creation time, reports a failed write, and goes with the row', () => {
+  const dir = tmpDir();
+  assert.strictEqual(KM.mark(dir, 'b1', 7, '100'), true);
+  assert.strictEqual(KM.isKilled(dir, 'b1', 7, '100'), true);
+  assert.strictEqual(KM.isKilled(dir, 'b1', 7, '101'), false, 'the same pid reused by a later process is not the killed one');
+  assert.strictEqual(KM.isKilled(dir, 'b1', 7), false);
+  assert.strictEqual(KM.clear(dir, 'b1'), true);
+  assert.strictEqual(KM.isKilled(dir, 'b1', 7, '100'), false);
+  const blocker = `${dir}/file`; require('node:fs').writeFileSync(blocker, 'x');
+  assert.strictEqual(KM.mark(blocker, 'b1', 7, '100'), false, 'a write that cannot be made says so (the kill receipt carries mark_written: false)');
+});
+
+test('the run wait ends its hold after the same bound as the wake, and a death already reported to the orchestrator is not relaunched', async () => {
+  const { createRunWait } = require('../../src/run/run-wait.cjs');
+  const dataDir = tmpDir();
+  const core = { task: { list: async () => ({ tasks: [task('T')] }) }, policy: { list: async () => ({ rows: [built('T')] }) }, integration: { list: async () => ({ integrations: [] }) } };
+  const clock = { t: 0, now: () => clock.t, sleep: async (ms) => { clock.t += ms; } };
+  const rw = createRunWait({ core, runId: 'r', dataDir, claimant: { pid: process.pid, created: 'x' }, watcher: { poll: async () => [] }, pollMs: 10, clock });
+  const dead1 = [{ id: 'b1', settled: true, state: 'dead', pid: 4242, pidCreated: '1', exitCode: 1, turns: 1, deathEstablishedBy: 'exit' }];
+  assert.strictEqual((await rw.wait({ ms: 50, t0: 0, workers: dead1 })).event, null, 'held');
+  clock.t += RL.HOLD_MAX_MS;
+  const later = await rw.wait({ ms: 50, t0: clock.t, workers: dead1 });
+  assert.strictEqual(later.event, 'exception', 'past the bound the death is told');
+  // The step: its death was told, so the plan does not restart the worker under the orchestrator.
+  const uid = D.deathUid('b1', 'death', D.lifeOf(4242, '1'));
+  assert.ok(D.isClaimed({ dataDir, runId: 'r', uid }));
+  let restarted = 0;
+  const env = { runId: 'r', dataDir, restart: async () => { restarted += 1; }, core: { task: { get: async () => ({ id: 'T', state: 'open', lease: null }) }, worker: { list: async () => ({ workers: [{ id: 'b1', state: 'dead', pid: 4242, pid_created: '1' }] }) } } };
+  const out = await RL.run({ task_id: 'T', worker: 'b1', build: { worker: 'b1' } }, env);
+  assert.strictEqual(out.outcome, 'skipped');
+  assert.match(out.error, /already reported/);
+  assert.strictEqual(restarted, 0);
+});
+
+test('a coder the relaunch spawned in the dead builder\'s place is stopped once its work is cancelled or merged', async () => {
+  const { makeRepo } = require('../core/worktree-helpers.cjs');
+  const e = await env('relaunch-retire');
+  try {
+    const repo = makeRepo(e.dir);
+    const t = await e.orch.task.create({ spec: 'write c.txt', acceptance: PASS, policy: { build: { spawn: { agent_type: 'coder' } } } });
+    await e.op.task.worktreeCreate({ task_id: t.id, repo });
+    const spawned = []; const stopped = [];
+    const spawnFor = () => async (a) => { spawned.push(a.worker_id); await e.worker(a.worker_id, a.worktree); await e.orch.task.assign({ task_id: a.task_id, worker_id: a.worker_id }); return { id: a.worker_id }; };
+    const x = e.exec({ spawnFor, stopWorker: async (id) => { stopped.push(id); } });
+    const b = await x.tick();
+    assert.deepStrictEqual(b.steps.map((s) => [s.step, s.outcome]), [['build', 'done']], JSON.stringify(stepRows(e).map((r) => r.error)));
+    const first = spawned[0];
+    await die(e, first);
+    const out = await x.tick();
+    assert.deepStrictEqual(out.steps.map((s) => [s.step, s.outcome]), [['relaunch', 'done']], 'no restart path in this run: a fresh coder in the same tree');
+    assert.strictEqual(spawned.length, 2);
+    const fresh = spawned[1];
+    assert.deepStrictEqual(stopped.filter((id) => id === fresh), [], 'not while its work stands');
+    await e.orch.task.cancel({ task_id: t.id });
+    await x.tick();
+    assert.ok(stopped.includes(fresh), `retired: ${JSON.stringify(stopped)}`);
+  } finally { await e.close(); }
+});
