@@ -59,3 +59,12 @@ test('a work held for its commit fix whose fix was cancelled carries nothing: it
   assert.ok(held.commitHeld(W, rf), 'W is held for its commit fix');
   assert.ok(untaken(snap).includes('D'), 'nothing is at work on the commit hold: D is named');
 });
+
+test('an open fix on an unrelated task does not silence a red X at the cap: C is still named', () => {
+  const snap = rows();
+  snap.tasks = snap.tasks.filter((t) => t.id !== 'F1'); snap.steps = []; snap.roundSteps = [];
+  snap.rounds = { caps: { max: 0, hard: null } };
+  const U = T('U', { seq: 60, state: 'done', policy: PLAN, policy_rev: 1, handoff: { by: 'bu', at: 1 }, results: rel(2), review: { state: 'refuted', review_id: 'RU' } });
+  snap.tasks.push(U, T('FU', { seq: 61, state: 'assigned', repairs: 'U', depends_on: ['U'] }));
+  assert.deepStrictEqual(untaken(snap), ['C'], 'the fix of U carries U, not the hold on X');
+});

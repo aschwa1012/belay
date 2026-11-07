@@ -6,7 +6,9 @@
 // use it: it names every open task, because it is the net under this predicate and under the executor.
 
 const { due } = require('./policy-exec.cjs');
+const RF = require('./policy-rounds.cjs');
 const PW = require('./policy-wakes.cjs');
+const ROUNDS = new Set([...RF.ROUND_STEPS, ...RF.MERGE_FIX_STEPS, ...RF.RERUN_STEPS, 'reask']); // the steps of a fix round
 
 // A released review whose evaluation has not landed (its hand-back is newer than its evaluation) is not yet settled: the plan is still about to act on it.
 const evalPending = (t) => !!(t.handoff && !t.handoff.stood_down && t.handoff.at != null && !(t.results && Number(t.results.evaluated_at) >= Number(t.handoff.at)));
@@ -31,16 +33,29 @@ function untaken(snap) {
   // The steps go to due() so a task a step already took (a build whose builder then died) is not counted as carried: it is the orchestrator's.
   const carried = new Set();
   // An integration merging holds every other integrate back in due(); the plan still carries those, so they are listed with the gate off. A stale one (its owner is gone) is no merge in flight: it keeps the gate, so the safety net still names what waits behind it.
-  for (const c of due({ runId, tasks, integrations: (snap.integrations || []).filter((i) => i.state !== 'merging' || i.stale), steps: snap.steps || [], rounds: snap.rounds, failures: snap.failures, roundSteps: snap.roundSteps, workers: snap.workers, isKilled: snap.isKilled })) { carried.add(c.task_id); for (const id of c.task_ids || []) carried.add(id); }
-  // A red branch (policy-rounds.cjs redOf) and a work awaiting its commit fix withhold every other integrate in due() too. While a round is at work
-  // (a round step due or in flight, or a fix task of the run not yet terminal) those integrates are the plan's, waiting on it: asked again with no
-  // rounds, due() lists what it withholds, and what depends on them is not free. At the fix cap, or once the fix is cancelled, no round is at work:
-  // nothing carries the hold, and what waits behind it is named.
-  const ROUNDS = new Set(['fix_eval', 'fix_run', 'fix_conflict', 'fix_checks', 'fix_commit', 'rerun_alone', 'rerun_eval', 'reask']);
-  const roundAtWork = (snap.steps || []).some((s) => s.run_id === runId && s.outcome === 'started' && ROUNDS.has(s.step))
-    || mine(tasks, runId).some((t) => t.repairs && !['done', 'cancelled', 'released'].includes(t.state))
-    || due({ runId, tasks, integrations: (snap.integrations || []).filter((i) => i.state !== 'merging' || i.stale), steps: snap.steps || [], rounds: snap.rounds, failures: snap.failures, roundSteps: snap.roundSteps }).some((c) => ROUNDS.has(c.step));
-  if (snap.rounds && roundAtWork) for (const c of due({ runId, tasks, integrations: (snap.integrations || []).filter((i) => i.state !== 'merging' || i.stale), steps: snap.steps || [] })) if (c.step === 'integrate') { carried.add(c.task_id); for (const id of c.task_ids || []) carried.add(id); }
+  const firstDue = due({ runId, tasks, integrations: (snap.integrations || []).filter((i) => i.state !== 'merging' || i.stale), steps: snap.steps || [], rounds: snap.rounds, failures: snap.failures, roundSteps: snap.roundSteps, workers: snap.workers, isKilled: snap.isKilled });
+  for (const c of firstDue) { carried.add(c.task_id); for (const id of c.task_ids || []) carried.add(id); }
+  // A red branch (policy-rounds.cjs redOf) withholds every other integrate in due(), and a work awaiting its commit fix withholds its own. While a round is
+  // at work on the holding root (a round step due or in flight on it, or a fix task of its tree not yet terminal) the plan carries those integrates, so
+  // what depends on them is not free: asked again with no rounds, due() lists what it withholds. At the fix cap, or once the fix is cancelled, no round
+  // is at work on the root, the hold carries nothing, and what waits behind it is named. A round at work on another task's tree silences nothing here.
+  if (snap.rounds) {
+    const rf = RF.ctxOf({ runId, now: snap.now, tasks, steps: snap.roundSteps || snap.steps, failures: snap.failures, caps: snap.rounds.caps, integrations: snap.integrations });
+    const planFor = (t) => { const plan = PW.policyOf(t, byId); return plan ? { plan, rev: null } : null; };
+    const red = RF.redOf(rf, planFor);
+    const held = [];
+    if (red) held.push({ root: red.root, all: true });
+    for (const x of mine(tasks, runId)) if (RF.commitHeld(x, rf)) held.push({ root: x.id, all: false });
+    if (held.length) {
+      const rootId = (id) => (byId.get(id) ? PW.rootOf(byId.get(id), byId).id : id);
+      const live = [...(snap.steps || []).filter((st) => st.run_id === runId && st.outcome === 'started' && ROUNDS.has(st.step)).map((st) => rootId(st.task_id)),
+        ...firstDue.filter((c) => ROUNDS.has(c.step)).map((c) => rootId(c.task_id)),
+        ...mine(tasks, runId).filter((t) => t.repairs && !['done', 'cancelled', 'released'].includes(t.state)).map((t) => PW.rootOf(t, byId).id)];
+      const atWork = new Set(live);
+      const ints = due({ runId, tasks, integrations: (snap.integrations || []).filter((i) => i.state !== 'merging' || i.stale), steps: snap.steps || [] }).filter((c) => c.step === 'integrate');
+      for (const h of held) if (atWork.has(h.root)) for (const c of ints) if (h.all || c.task_id === h.root) { carried.add(c.task_id); for (const id of c.task_ids || []) carried.add(id); }
+    }
+  }
   for (const s of snap.steps || []) if (s.run_id === runId && s.outcome === 'started' && s.task_id) carried.add(s.task_id);
   for (const id of carried) named.add(id);
   const stepRoots = new Set(); // a step in flight owns every row of its work's tree, such as the review it has just written and not yet assigned
