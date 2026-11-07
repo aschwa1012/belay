@@ -308,3 +308,94 @@ test('a coder the relaunch spawned in the dead builder\'s place is stopped once 
     assert.ok(stopped.includes(fresh), `retired: ${JSON.stringify(stopped)}`);
   } finally { await e.close(); }
 });
+
+// R4: the fix tasks the round steps make are the plan's builders' work too.
+const fixTask = (id, extra = {}) => task(id, { repairs: 'T', depends_on: ['T'], policy: null, policy_made: true, ...extra });
+const fixStep = (step, id, worker = 'b1', seq = 3) => ({ seq, run_id: 'r', step, task_id: 'T', outcome: 'done', worker_id: worker, row_ref: `task:${id}`, trigger_table: 'integration', trigger_id: 'i1', trigger_seq: 1 });
+for (const name of ['fix', 'fix_conflict', 'fix_checks', 'fix_commit']) {
+  test(`due: a fix task the ${name} step made is relaunched when its builder dies, and the bound still holds`, () => {
+    const tasks = [task('T', { state: 'done' }), fixTask('F')];
+    const base = { runId: 'r', tasks, steps: [built('T'), fixStep(name, 'F')], workers: [dead()] };
+    assert.deepStrictEqual(due(base).filter((c) => c.step === 'relaunch').map((c) => [c.task_id, c.worker, c.role]), [['F', 'b1', 'build']]);
+    assert.deepStrictEqual(due({ ...base, steps: [...base.steps, { ...built('F'), seq: 9, step: 'relaunch', task_id: 'F', outcome: 'done', trigger_seq: 5 }] }).filter((c) => c.step === 'relaunch'), [], 'one relaunch a task');
+    assert.deepStrictEqual(due({ ...base, steps: [fixStep(name, 'F')] }).filter((c) => c.step === 'relaunch'), [], 'the work the plan did not build');
+  });
+}
+
+// R3: the reviewer a review step gave a review task.
+const reviewTask = (extra = {}) => ({ id: 'R', run_id: 'r', state: 'open', lease: null, seq: 7, depends_on: ['T'], repairs: null, policy: null, policy_made: true, acceptance: { verdict: true }, ...extra });
+const reviewStep = (step = 'review', worker = 'rv1') => ({ seq: 4, run_id: 'r', step, task_id: 'T', outcome: 'done', worker_id: worker, row_ref: 'task:R', trigger_table: 'task', trigger_id: 'T', trigger_seq: 5 });
+const workDoneTask = () => task('T', { state: 'done', policy: { build: { worker: 'b1' }, review: { spawn: { agent_type: 'reviewer' } } } });
+
+test('due: a dead reviewer of a plan-made review is relaunched once; a live one, a used bound, an unplanned review and an operator kill are not', () => {
+  for (const step of ['review', 're_review']) {
+    const base = { runId: 'r', tasks: [workDoneTask(), reviewTask()], steps: [built('T'), reviewStep(step)], workers: [dead('rv1')] };
+    assert.deepStrictEqual(due(base).filter((c) => c.step === 'relaunch').map((c) => [c.task_id, c.worker, c.role, c.tree_task]), [['R', 'rv1', 'review', 'T']], step);
+    assert.deepStrictEqual(due({ ...base, workers: [{ id: 'rv1', state: 'running' }] }).filter((c) => c.step === 'relaunch'), []);
+    assert.deepStrictEqual(due({ ...base, steps: [built('T'), reviewStep(step), { ...built('R'), seq: 9, step: 'relaunch', task_id: 'R', outcome: 'skipped', error: 'relaunch refused: x', trigger_seq: 7 }] }).filter((c) => c.step === 'relaunch'), [], 'the bound');
+    assert.deepStrictEqual(due({ ...base, steps: [built('T')] }).filter((c) => c.step === 'relaunch'), [], 'a review the orchestrator made and assigned');
+    assert.deepStrictEqual(due({ ...base, isKilled: () => true }).filter((c) => c.step === 'relaunch'), [], 'an operator killed it');
+  }
+});
+
+test('a dead reviewer\'s death waits for its relaunch, like a builder\'s; the step falls back to a fresh reviewer in the work\'s tree', async () => {
+  const w = wakeSide([built('T'), reviewStep()]);
+  w.byId.set('T', workDoneTask()); w.byId.set('R', reviewTask());
+  assert.deepStrictEqual(await w.call([death({ worker_id: 'rv1' })]), [], 'held');
+  const spawned = []; const asked = [];
+  let n = 0;
+  const get = async ({ task_id }) => (task_id === 'T' ? { id: 'T', worktree: { path: 'C:/trees/T' } } : (n++ < 1 ? { id: 'R', state: 'open', lease: null } : { id: 'R', state: 'assigned', lease: { id: 'l2', holder: spawned[0] } }));
+  const env = {
+    runId: 'r', core: { task: { get }, worker: { list: async () => ({ workers: [{ id: 'rv1', state: 'dead', pid: 1 }] }) } },
+    spawn: async (a) => { spawned.push(a.worker_id); asked.push(a); return { id: a.worker_id }; },
+  };
+  const out = await RL.run({ task_id: 'R', worker: 'rv1', role: 'review', tree_task: 'T', cfg: { spawn: { agent_type: 'reviewer' } } }, env);
+  assert.strictEqual(out.outcome, 'done');
+  assert.match(asked[0].worker_id, /^rev-/);
+  assert.deepStrictEqual([asked[0].worktree, asked[0].task_id, asked[0].agent_type], ['C:/trees/T', 'R', 'reviewer']);
+  assert.strictEqual(out.spawned, spawned[0]);
+});
+
+// A round step records the worker it was claimed for; the worker rows say who held the task last.
+test('due and verdict: the builder is the task\'s last lease holder, so a fresh coder a round step handed the fix to is the one relaunched when it dies', () => {
+  const tasks = [task('T', { state: 'done' }), fixTask('F')];
+  const steps = [built('T'), fixStep('fix_conflict', 'F', 'b1')]; // the step's row still names the first builder
+  const workers = [{ id: 'b1', state: 'dead', task_id: null, seq: 3 }, { id: 'bld-x', state: 'dead', task_id: 'F', seq: 9 }];
+  assert.deepStrictEqual(due({ runId: 'r', tasks, steps, workers }).filter((c) => c.step === 'relaunch').map((c) => [c.task_id, c.worker]), [['F', 'bld-x']]);
+  const ctx = { runId: 'r', tasks, steps, workers, polOf: (t) => PW.policyOf(t, new Map(tasks.map((r) => [r.id, r]))), rootOf: (t) => PW.rootOf(t, new Map(tasks.map((r) => [r.id, r]))) };
+  assert.strictEqual(RL.verdict('bld-x', ctx), 'wait');
+  assert.strictEqual(RL.verdict('b1', ctx), null, 'the old builder\'s death is not this task\'s');
+  assert.deepStrictEqual(due({ runId: 'r', tasks, steps, workers: [{ id: 'b1', state: 'dead', task_id: 'F', seq: 3 }] }).map((c) => c.worker), ['b1'], 'when the first builder still holds it, it is the one');
+});
+
+test('a review the review step already handed to a reviewer is not a left-over the review step takes again when the work row moves', () => {
+  const work = workDoneTask(); work.results = { trigger: 'release', evaluated_at: 20, executable: true, passed: true, checks: [] };
+  const rv = reviewTask();
+  const common = { runId: 'r', tasks: [work, rv], steps: [built('T')], workers: [] };
+  assert.ok(due(common).some((c) => c.step === 'review'), 'never handed over (a paused first try): the retake is due');
+  assert.ok(!due({ ...common, steps: [built('T'), reviewStep()] }).some((c) => c.step === 'review'), 'handed over and its reviewer died: the relaunch owns it');
+});
+
+test('a fresh re-reviewer is told the findings it is to judge, and a plain review needs no addition; a named spawn id is used in place', async () => {
+  const FR = require('../../src/run/fresh-reviewer.cjs');
+  const refuted = { id: 'RR', results: { checks: [{ kind: 'verdict', executable: true, detail: { verdict: 'refuted', summary: 'the retry loop drops errors', findings: [{ severity: 'blocking', title: 'errors swallowed' }, { severity: 'should-fix', title: 'no test' }] } }] } };
+  const core = { task: { get: async ({ task_id }) => (task_id === 'RR' ? refuted : null) } };
+  const prompt = await FR.promptFor(core, { spec: 'Re-review T after fix F. You refuted it in RR; judge whether the fix answers your findings.' });
+  assert.match(prompt, /fresh reviewer.*review RR.*did not write/);
+  assert.match(prompt, /errors swallowed/);
+  assert.match(prompt, /no test/);
+  assert.match(prompt, /retry loop/);
+  assert.strictEqual(await FR.promptFor(core, { spec: 'Review T: judge whether its work meets its acceptance.' }), null);
+  const asked = [];
+  const env = {
+    runId: 'r', core: { task: { get: async ({ task_id }) => (task_id === 'R' ? { id: 'R', state: 'assigned', lease: { id: 'l', holder: 'rv-named' }, spec: 'Re-review T after fix F. You refuted it in RR; judge it.', worktree: null } : task_id === 'RR' ? refuted : { id: 'T', worktree: { path: 'C:/trees/T' } }) }, worker: { list: async () => ({ workers: [{ id: 'rv1', state: 'dead', pid: 1 }] }) } },
+    spawn: async (a) => { asked.push(a); return { id: a.worker_id }; },
+  };
+  let first = true;
+  const realGet = env.core.task.get;
+  env.core.task.get = async (a) => { if (a.task_id === 'R' && first) { first = false; return { id: 'R', state: 'open', lease: null, spec: 'Re-review T after fix F. You refuted it in RR; judge it.' }; } return realGet(a); };
+  const out = await RL.run({ task_id: 'R', worker: 'rv1', role: 'review', tree_task: 'T', cfg: { spawn: { agent_type: 'reviewer', worker_id: 'rv-named' } } }, env);
+  assert.strictEqual(out.outcome, 'done');
+  assert.strictEqual(asked[0].worker_id, 'rv-named');
+  assert.match(asked[0].prompt, /errors swallowed/);
+});
