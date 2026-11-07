@@ -106,7 +106,7 @@ test('C1: an evaluation that could not run is run again once, bounded; a hand-ba
 // The rows a hand-back with an evaluation that never ran leaves, without a store: due() is a pure function of them.
 const T = (id, over = {}) => ({ id, seq: 100, run_id: 'r1', state: 'open', policy: null, policy_rev: null, depends_on: [], repairs: null, results: null, handoff: null, lease: null, review: null, integration: null, written_at: 50, ...over });
 const PLAN = { review: { worker: 'rv' }, fix: 'builder', re_review: 'refuter', integrate: 'on_hold' };
-const lost = { runId: 'r1', integrations: [], rounds: { caps: { max: 2, hard: null } } };
+const lost = { runId: 'r1', integrations: [], now: 100, rounds: { caps: { max: 2, hard: null } } };
 
 test('C1: a lost evaluation, run again and still lost, is a fix round naming the reason; the re-run that did not finish is not an exception', async () => {
   const W = T('W', { state: 'released', policy: PLAN, policy_rev: 1, handoff: { by: 'b1', at: 10 } });
@@ -486,7 +486,10 @@ test('C3: the red hold is only for a red the plan carries: a merge the orchestra
 test('C2: after the bound a waiting failure still does not start a second re-run, and the idle close holds for it while it waits', () => {
   const A = T('A', { seq: 10, state: 'released', policy: PLAN, policy_rev: 1, handoff: { by: 'b1', at: 10 }, results: failBeside });
   const going = [{ seq: 3, run_id: 'r1', task_id: 'Z', step: 'rerun_alone', trigger_table: 'task', trigger_id: 'Z', trigger_seq: 1, outcome: 'started', at: 25 }];
-  assert.deepStrictEqual(due(beside({ tasks: [A], steps: going, now: 20 + 999999 })), [], 'a re-run is in flight: wait, past the bound too');
+  assert.deepStrictEqual(due(beside({ tasks: [A], steps: going, now: 20 + 130000 })), [], 'a re-run is in flight: wait, past the 120 s bound too');
+  assert.deepStrictEqual(due(beside({ tasks: [A], steps: going, now: 25 + 600001 })).map((c) => c.step), ['rerun_alone'], 'a claim a dead adapter left started, past the evaluation budget, is not in flight: the wait and the close hold end');
+  const stale = RF.ctxOf({ runId: 'r1', now: 25 + 600001, tasks: [A], steps: going, failures: [], caps: { max: 2, hard: null }, integrations: [] });
+  assert.deepStrictEqual(RF.waitingIds(stale, () => PLAN), [], 'and the idle close no longer holds for it');
   const pending = T('B', { seq: 11, state: 'released', policy: PLAN, policy_rev: 1, handoff: { by: 'b2', at: 12 } });
   const rf = RF.ctxOf({ runId: 'r1', now: 30, tasks: [A, pending], steps: [], failures: [], caps: { max: 2, hard: null }, integrations: [] });
   assert.deepStrictEqual(RF.waitingIds(rf, () => PLAN), ['A']);

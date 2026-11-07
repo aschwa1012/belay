@@ -4,7 +4,7 @@
 // trigger cannot write a second row whoever makes it and however the two interleave. The executor that acts on a claim lives in
 // src/run; this module only records.
 //   policy.claim   { task_id?, step, trigger: { table, id, seq (required for task, lease, integration) }, policy_rev?, worker_id?, turn? } -> { row, existing }
-//   policy.finish  { seq, outcome, row_ref? | error? }                                              -> { row }
+//   policy.finish  { seq, outcome, row_ref? | error?, worker_id? }                                              -> { row }
 //   policy.list    { run_id?, since_seq?, limit? }                                                  -> { rows, last_seq }
 // claim and finish are the harness channel's (the run manager's executor), never a tool call; list is a read. The run is the
 // caller's own, never an argument (invariant 3). A claim opens at outcome `started`; finish moves it once, to one of OUTCOMES, and
@@ -114,7 +114,8 @@ async function claim(E, caller, args) {
 async function finish(E, caller, args) {
   harnessOnly(caller, 'policy.finish');
   const a = args || {};
-  unknownFields(a, ['seq', 'outcome', 'row_ref', 'error', 'caller'], 'policy.finish');
+  unknownFields(a, ['seq', 'outcome', 'row_ref', 'error', 'worker_id', 'caller'], 'policy.finish');
+  if (a.worker_id !== undefined && a.worker_id !== null && !isStr(a.worker_id)) throw err('E_ARGS', 'policy.finish worker_id must be a non-empty string', { field: 'worker_id' }); // the worker that actually took the step, when it was not the one named at the claim (a dead builder replaced)
   if (!isInt(a.seq) || a.seq <= 0) throw err('E_ARGS', 'policy.finish needs the seq of the claim it finishes', { field: 'seq' });
   if (!OUTCOMES.includes(a.outcome)) throw err('E_ARGS', `policy.finish outcome must be one of ${OUTCOMES.join(', ')}`, { field: 'outcome' });
   if (NEEDS_REF.has(a.outcome) && !isStr(a.row_ref)) throw err('E_ARGS', `a step finished ${a.outcome} must name the row it wrote (row_ref)`, { field: 'row_ref' });
@@ -131,8 +132,8 @@ async function finish(E, caller, args) {
     const cur = E.store.p('SELECT * FROM policy_step WHERE seq = ?').get(a.seq);
     if (!cur || cur.run_id !== caller.run_id) throw err('E_NOT_FOUND', `no policy step ${a.seq} in this run`, { seq: a.seq });
     if (cur.outcome !== 'started') throw err('E_BUSY', `policy step ${a.seq} is already finished (${cur.outcome}); a step is finished once`, { seq: a.seq, outcome: cur.outcome, reason: 'already_finished' });
-    const info = E.store.p("UPDATE policy_step SET outcome = ?, row_ref = ?, error = ?, finished_at = ? WHERE seq = ? AND outcome = 'started'")
-      .run(a.outcome, a.row_ref || null, a.error || null, Date.now(), a.seq);
+    const info = E.store.p("UPDATE policy_step SET outcome = ?, row_ref = ?, error = ?, finished_at = ?, worker_id = COALESCE(?, worker_id) WHERE seq = ? AND outcome = 'started'")
+      .run(a.outcome, a.row_ref || null, a.error || null, Date.now(), a.worker_id || null, a.seq);
     if (Number(info.changes) !== 1) throw err('E_INTERNAL', `policy step ${a.seq} was not changed`, { seq: a.seq });
     E.noteWrite();
     return { row: E.store.p('SELECT * FROM policy_step WHERE seq = ?').get(a.seq) };
