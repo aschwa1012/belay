@@ -171,7 +171,8 @@ test('with a task id the lease is taken and the resume line leads the first mess
     const w = m._worker('w1');
     assert.ok(w.firstMessage.startsWith('RESUME-LINE task t9'));
     assert.ok(w.firstMessage.includes('\n\nthe task'), 'the prompt follows the resume line');
-    assert.ok(w.firstMessage.endsWith('call lease_release with lease_id lease-1 and a result object (branch, head, tests, findings).'), 'belay closes the message with the hand-back rule naming the lease');
+    // The hand-back rule ends with the escalation line every worker is sent (ADR 0074 amendment 4).
+    assert.ok(w.firstMessage.endsWith(`call lease_release with lease_id lease-1 and a result object (branch, head, tests, findings).${require('../../src/run/handback.cjs').ESCALATE_LINE}`), 'belay closes the message with the hand-back rule naming the lease');
   } finally { await teardown(m, sb); }
 });
 
