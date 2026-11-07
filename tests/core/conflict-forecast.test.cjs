@@ -108,3 +108,17 @@ test('forecastTask reads the task branch and the run\'s integration branch; no b
     assert.strictEqual((await forecastTask(task('c'), 'run1')).clean, true);
   } finally { cleanup(dir); }
 });
+
+test('forecastTask result: `exited` settles once the answer is in (it must not wait on itself)', { timeout: 20000 }, async () => {
+  const dir = sandbox();
+  try {
+    const repo = conflictRepo(dir);
+    git(repo, 'branch', 'belay/integrate/run1', 'b');
+    for (const branch of ['a', 'c']) {
+      const fc = await forecastTask({ id: 't1', worktree: { repo, branch } }, 'run1');
+      const winner = await Promise.race([fc.exited.then(() => 'exited'), new Promise((r) => setTimeout(() => r('pending'), 5000).unref())]);
+      assert.strictEqual(winner, 'exited', 'branch ' + branch);
+      assert.deepStrictEqual(fc.lingering(), []);
+    }
+  } finally { cleanup(dir); }
+});

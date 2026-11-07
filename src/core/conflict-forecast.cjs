@@ -112,7 +112,13 @@ async function forecastTask(task, runId, opts = {}) {
   const tr = makeTracker();
   const late = new Promise((res) => { timer = setTimeout(() => res({ unavailable: `deadline of ${deadline - t0} ms passed`, against: null, ms: Date.now() - t0 }), deadline - t0); });
   const inner = forecastWithin(wt, runId, opts, t0, deadline, tr);
-  try { const r = await Promise.race([inner, late]); return r && withLingering(withExited(r, inner.then((x) => x && x.exited, noop)), tr); } finally { clearTimeout(timer); }
+  try {
+    const r = await Promise.race([inner, late]);
+    if (!r) return r;
+    // When the inner forecast answered, r IS its result and already carries its own `exited`; redefining it from `inner.then(x => x.exited)` made
+    // `exited` wait on itself and never settle. Only the deadline's answer (a different object) takes its `exited` from the inner forecast.
+    return withLingering(Object.prototype.hasOwnProperty.call(r, 'exited') ? r : withExited(r, inner.then((x) => x && x.exited, noop)), tr);
+  } finally { clearTimeout(timer); }
 }
 
 async function forecastWithin(wt, runId, opts, t0, deadline, tr) {
