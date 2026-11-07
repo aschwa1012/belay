@@ -151,3 +151,16 @@ test('a worker is not shown the plan: task.list and task.get leave out policy an
   assert.ok(listed.length > 3 && listed.every((t) => !('policy' in t) && !('policy_rev' in t)));
   assert.ok((await orch.task.list({})).tasks.some((t) => t.policy));
 });
+
+test('a null field round-trips through the store, single and in a batch, beats the default, and an amend keeps it', async () => {
+  const one = await orch.task.create({ id: 'pt-null1', spec: 'a', acceptance: PASS, policy: { fix: null } });
+  assert.deepStrictEqual(one.policy, { integrate: 'on_hold', fix: null }, 'the default does not fill a null field');
+  assert.deepStrictEqual((await rowOf('pt-null1')).policy, { integrate: 'on_hold', fix: null }, 'stored and read back as null');
+  const out = await orch.task.create({ tasks: [{ id: 'pt-null2', spec: 'b', acceptance: PASS, policy: { integrate: null } }, { id: 'pt-null3', spec: 'c', acceptance: PASS }] });
+  const by = Object.fromEntries(out.tasks.map((t) => [t.id, t]));
+  assert.deepStrictEqual(by['pt-null2'].policy, { fix: 'builder', integrate: null });
+  assert.deepStrictEqual(by['pt-null3'].policy, DEFAULT, 'a left-out field takes the default');
+  const am = await orch.task.create({ id: 'pt-null1', amend: true, policy: { integrate: null } });
+  assert.deepStrictEqual(am.policy, { fix: 'builder', integrate: null }, 'an amend replaces the plan, resolved over the default again');
+  await rejectsCode(orch.task.create({ id: 'pt-null4', spec: 'x', acceptance: PASS, policy: { fix: 'someone_else', review: null } }), 'E_ARGS');
+});

@@ -57,22 +57,51 @@ test('a field left out gets the default', () => {
   assert.deepStrictEqual(stepsOf([work('A', plan)]), ['build:A']);
 });
 
-test('done does not wait on a null review or integrate', () => {
-  const plan = PP.resolve({ review: null, integrate: null }, SHIPPED_PLAN);
-  const d = doneOf({ runId: RUN, tasks: [doneWork('A', plan)], integrations: [], steps: [] });
-  assert.ok(d, 'done: nothing belay owes on the task');
+const plainReview = { id: 'R-A', seq: 11, run_id: RUN, state: 'done', policy: null, depends_on: ['A'], repairs: null, lease: null, acceptance: { verdict: true }, results: verdictResults, handoff: { by: 'rv', at: 10 }, review: null, integration: null };
+const snapOf = (tasks) => ({ runId: RUN, tasks, integrations: [], steps: [], failures: [], revisions: [] });
+
+test('a null integrate: done does not wait on a merge. A null review: E1 review halts, so done waits until the orchestrator reviews or amends', () => {
+  const noMerge = PP.resolve({ integrate: null }, SHIPPED_PLAN);
+  const s1 = snapOf([doneWork('A', noMerge, { review: { review_id: 'R-A', state: 'holds' } }), plainReview]);
+  const d = doneOf(s1, PW.derive(s1));
+  assert.ok(d, 'done: the plan merges nothing');
   assert.match(d.text, /the plan merges nothing/);
-  const withReview = doneOf({ runId: RUN, tasks: [doneWork('A', PP.resolve({ integrate: null }, SHIPPED_PLAN))], integrations: [], steps: [] });
-  assert.strictEqual(withReview, null, 'a shipped review is still owed');
+  const noReview = PP.resolve({ review: null, integrate: null }, SHIPPED_PLAN);
+  const s2 = snapOf([doneWork('A', noReview)]);
+  const ex = PW.derive(s2);
+  assert.deepStrictEqual(ex.map((e) => [e.exception, e.field, e.task_id]), [['E1', 'review', 'A']], 'the orchestrator is told its step is due');
+  assert.strictEqual(doneOf(s2, ex), null, 'and done waits for it');
+  assert.deepStrictEqual(PW.derive(snapOf([doneWork('A', noReview), { ...plainReview, id: 'R-A2' }])).filter((e) => e.exception === 'E1'), [], 'its own review lifts the E1');
 });
 
-test('a hand-back\'s stall wake does not name an open task whose build is null', () => {
-  const dep = doneWork('D', PP.resolve({ integrate: null }, SHIPPED_PLAN), { review: { review_id: 'x', state: 'holds' } });
+test('E1 build: a null-build task whose planned dependency merged is told to the orchestrator once; no dependencies, no merge yet, a lease or a shipped build raise nothing', () => {
+  const dep = doneWork('D', SHIPPED_PLAN, { review: { review_id: 'x', state: 'holds' }, integration: { state: 'merged' } });
   const mine = work('M', PP.resolve({ build: null }, SHIPPED_PLAN), { depends_on: ['D'] });
-  const other = work('O', { review: SHIPPED_PLAN.review }, { depends_on: ['D'] }); // a plan with no build: still named
-  const ids = untaken({ runId: RUN, tasks: [dep, mine, other], integrations: [], steps: [] });
-  assert.ok(!ids.includes('M'), 'null build: the orchestrator\'s own');
-  assert.ok(ids.includes('O'), 'a build left out of the plan is still named');
+  const ex = (tasks) => PW.derive(snapOf(tasks)).filter((e) => e.field === 'build');
+  const got = ex([dep, mine]);
+  assert.deepStrictEqual(got.map((e) => [e.exception, e.task_id, e.uid]), [['E1', 'M', 'E1:build:M!build']]);
+  assert.match(PW.textOf(got[0]), /field build\. The plan has no build step for this\. Halted\.$/);
+  assert.deepStrictEqual(ex([dep, { ...mine, depends_on: [] }]), [], 'no dependencies: the orchestrator made it knowing it is its own');
+  assert.deepStrictEqual(ex([{ ...dep, integration: null }, mine]), [], 'the dependency is not merged yet');
+  assert.deepStrictEqual(ex([dep, { ...mine, lease: { id: 'L', expired: false } }]), [], 'already leased');
+  assert.deepStrictEqual(ex([dep, work('P', SHIPPED_PLAN, { depends_on: ['D'] })]), [], 'a shipped build is belay\'s');
+});
+
+test('E1 build: a follow-up under a null-build plan is told too, and is not a stall-wake name once halted', () => {
+  const plan = PP.resolve({ build: null }, SHIPPED_PLAN);
+  const dep = doneWork('D', plan, { review: { review_id: 'x', state: 'holds' }, integration: { state: 'merged' } });
+  const fu = work('F', null, { depends_on: ['D'], follows_up: { review_id: 'x' }, acted_by: 'policy', policy_made: true });
+  const ex = PW.derive(snapOf([dep, fu])).filter((e) => e.field === 'build');
+  assert.deepStrictEqual(ex.map((e) => e.task_id), ['F']);
+  assert.ok(!untaken(snapOf([dep, fu])).includes('F'), 'its exception wake has gone: the stall wake does not repeat it');
+});
+
+test('partial null: a null build with the shipped fix sends the fix to the orchestrator\'s own coder', () => {
+  const plan = PP.resolve({ build: null }, SHIPPED_PLAN);
+  const A = doneWork('A', plan, { handoff: { by: 'orch-coder', at: 10 }, review: { state: 'refuted', review_id: 'R-A', rounds_left: 1 } });
+  const R = { ...plainReview, state: 'released' };
+  const c = due({ runId: RUN, tasks: [A, R], integrations: [], steps: [] }).filter((x) => x.step === 'fix');
+  assert.deepStrictEqual(c.map((x) => [x.task_id, x.worker]), [['A', 'orch-coder']]);
 });
 
 // A reviewer's escalation (result.escalate on its hand-back) is filed under the work it judged.
@@ -104,4 +133,18 @@ test('a reviewer\'s escalation is lifted by a re-assign of the review, as a work
   assert.strictEqual(es[0].task_id, 'A');
   assert.strictEqual(es[0].lifted, true);
   assert.strictEqual(PW.haltedIds(es, [A, re]).size, 0);
+});
+
+test('cancelling the judged work lifts a reviewer\'s escalation, so done is not blocked', () => {
+  const A = doneWork('A', SHIPPED_PLAN, { state: 'cancelled', review: null });
+  const live = doneWork('B', SHIPPED_PLAN, { review: { review_id: 'R-B', state: 'holds' }, integration: { state: 'merged' } });
+  const RB = { ...plainReview, id: 'R-B', depends_on: ['B'] };
+  const integrations = [{ id: 'i1', seq: 20, run_id: RUN, state: 'merged', passed: true, into_branch: `belay/integrate/${RUN}`, head_sha: 'abcdef0123456789' }];
+  // the judged work is cancelled; its reviewer's escalation (review still released, not yet cancelled) is on the record
+  const Rr = verdictRow({ state: 'released' });
+  const snap = { runId: RUN, tasks: [A, Rr, live, RB], integrations, steps: [], failures: [], revisions: [] };
+  const es = PW.derive(snap).filter((e) => e.exception === 'escalation');
+  assert.strictEqual(es.length, 1);
+  assert.strictEqual(PW.haltedIds(es, snap.tasks).has('A'), false, 'a cancelled task halts nothing');
+  assert.ok(doneOf({ ...snap, tasks: [A, { ...Rr, state: 'cancelled' }, live, RB] }, es), 'done can fire for the rest of the run');
 });
