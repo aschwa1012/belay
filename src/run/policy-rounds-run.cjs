@@ -56,6 +56,6 @@ async function noteFlaky(c, env) {
   return { outcome: 'done', row_ref: `task:${cur.id}` };
 }
 
-const RUNNERS = { fix_eval: reassign, fix_run: reassign, reask: reassign, rerun_alone: rerun, rerun_eval: rerun, fix_conflict: mergeFix, fix_checks: mergeFix, note_flaky: noteFlaky };
+const RUNNERS = { fix_eval: reassign, fix_run: reassign, reask: reassign, rerun_alone: rerun, rerun_eval: rerun, fix_conflict: mergeFix, fix_checks: mergeFix, fix_commit: mergeFix, note_flaky: noteFlaky };
 
 module.exports = { RUNNERS, STEP_NAMES: RF.STEP_NAMES };

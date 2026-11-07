@@ -49,14 +49,16 @@ test('C1: a red hand-back is a fix round for its builder; the fix goes green, th
 test('C1: red until the cap is an E2 wake, and the rounds taken are the cap', async () => {
   const e = await M.env({ label: 'round-cap', attach: { max_fix_rounds: 2 } });
   try {
-    const { task } = await M.workDone(e, 'r', { acceptance: M.FAIL });
+    const red = `${e.dir}/red.cjs`;
+    fs.writeFileSync(red, "console.error('AssertionError: expected 3 to equal 4'); process.exit(1);\n");
+    const { task } = await M.workDone(e, 'r', { acceptance: cmd(red) });
     for (let n = 1; n <= 2; n++) {
       assert.deepStrictEqual(await e.poll(), [], `round ${n} is not a wake`);
       assert.deepStrictEqual(names(await e.tick()), [['fix_eval', task.id, 'done']]);
       assert.strictEqual((await M.handBackLeased(e, task.id)).state, 'released', 'still red');
     }
     const w = M.expectOne(await e.poll(), { exception: 'E2', field: 'fix', task_id: task.id, trigger: await M.tref(e, task.id), key: `${task.id}@${await M.evaluatedAt(e, task.id)}` });
-    assert.match(w.text, /Fix cap reached \(2 used of 2\); evaluation failed: command /);
+    assert.match(w.text, /Fix cap 2\/2; tests red: AssertionError: expected 3/, w.text);
     assert.ok((await M.halted(e)).has(task.id));
     assert.deepStrictEqual(await e.tick().then(names), [], 'nothing more is taken');
     assert.deepStrictEqual(stepNames(e), [['fix_eval', 'done'], ['fix_eval', 'done']]);
@@ -239,7 +241,7 @@ test('C3: a conflict at the cap is an E2 wake naming the conflict, not an E3', a
   try {
     const { b } = await conflicting(e, { project: false });
     const w = M.expectOne((await e.poll()).filter((x) => x.exception !== 'E7'), { exception: 'E2', field: 'fix', task_id: b.id, trigger: { table: 'integration', id: e.raw("SELECT id FROM integration WHERE state = 'conflict'")[0].id }, key: e.raw("SELECT id FROM integration WHERE state = 'conflict'")[0].id });
-    assert.match(w.text, /Fix cap reached \(0 used of 0\); integrate conflict/);
+    assert.match(w.text, /Fix cap 0\/0; integrate conflict: a\.txt/, w.text);
     assert.deepStrictEqual(await e.tick().then(names), []);
   } finally { await e.close(); }
 });
@@ -276,6 +278,44 @@ test('C3: failed integration checks are a fix task for the builder; when it is d
     assert.deepStrictEqual(names(await e.tick()), [['integrate', b.t.id, 'done']], 'tried again with the fix');
     assert.deepStrictEqual([(await newest()).state, (await newest()).passed], ['evaluated', true]);
     assert.deepStrictEqual((await e.poll()).filter((w) => w.exception !== 'E7'), []);
+  } finally { await e.close(); }
+});
+
+test('C1: a done hand-back with no commit past its base is a fix task for the same builder; review waits for it, then goes on', async () => {
+  const e = await M.env({ label: 'round-nocommit' });
+  try {
+    const repo = makeRepo(e.dir);
+    await e.orch.run.attach({ adapter_pid: process.pid, project_dir: repo });
+    const t = await e.orch.task.create({ spec: 'write a.txt', acceptance: M.PASS, policy: M.PLAN });
+    const wt = (await e.op.task.worktreeCreate({ task_id: t.id, repo })).worktree;
+    const row = await M.handBack(e, 'build-nc', t, undefined, wt.path); // the worker could not commit: nothing new on the branch
+    assert.strictEqual(row.state, 'done');
+    assert.strictEqual(row.results.head_sha, wt.base_sha);
+    await e.worker('rv');
+    assert.deepStrictEqual(await e.poll(), [], 'no wake');
+    const out = await e.tick();
+    assert.deepStrictEqual(names(out), [['fix_commit', t.id, 'done']], 'a fix round, and no review of an empty branch');
+    const [fix] = M.fixesOf(e, t.id);
+    assert.strictEqual(M.leaseOf(e, fix.id).holder, 'build-nc');
+    assert.match((await M.rowOf(e, fix.id)).spec, /nothing new on your branch since [0-9a-f]{8}.*commit your work/);
+    assert.deepStrictEqual(await e.tick().then(names), [], 'the fix is not done: nothing is reviewed or merged yet');
+    write(wt.path, 'a.txt', 'a\n'); commit(wt.path, 'the work');
+    assert.strictEqual((await handBackFix(e, fix.id)).state, 'done');
+    assert.deepStrictEqual(names(await e.tick()), [['review', t.id, 'done']]);
+    assert.deepStrictEqual(await e.poll(), []);
+  } finally { await e.close(); }
+});
+
+test('C1: a builder that can never commit burns the cap, and the E2 wake says no commit since base', async () => {
+  const e = await M.env({ label: 'round-nocommit-cap', attach: { max_fix_rounds: 0 } });
+  try {
+    const repo = makeRepo(e.dir);
+    const t = await e.orch.task.create({ spec: 'write a.txt', acceptance: M.PASS, policy: M.PLAN });
+    const wt = (await e.op.task.worktreeCreate({ task_id: t.id, repo })).worktree;
+    assert.strictEqual((await M.handBack(e, 'build-nc', t, undefined, wt.path)).state, 'done');
+    const w = M.expectOne(await e.poll(), { exception: 'E2', field: 'fix', task_id: t.id, trigger: await M.tref(e, t.id), key: `${t.id}@${await M.evaluatedAt(e, t.id)}` });
+    assert.match(w.text, /Fix cap 0\/0; no commit since base: nothing new on your branch/, w.text);
+    assert.deepStrictEqual(await e.tick().then(names), []);
   } finally { await e.close(); }
 });
 

@@ -162,11 +162,13 @@ function derive(snap) {
     if (own && x.state === 'released' && !cleanRefutation(r) && !r.passed) {
       const a = rf ? RF.action(x, P, rf) : null;
       const ran = failing(r).filter((c) => beside(c) > 0);
-      if (a && a.cap) add('E2', root, tref(x), 'fix', { cause: a.cause, task: x.id, used: a.used, max: a.max, failing: failing(r).map(checkName) }, evOf(x));
+      if (a && a.cap) add('E2', root, tref(x), 'fix', { cause: a.cause, task: x.id, used: a.used, max: a.max, last: a.last }, evOf(x));
       else if (a) { /* the plan carries it: a step is due or in flight, or waits for the run's other evaluations */ }
       else if (ran.length) add('E6', root, tref(x), null, { concurrent: ran.map((c) => ({ name: checkName(c), n: beside(c) })), task: x.id }, evOf(x));
       else add('E5', root, tref(x), null, { executable: r.executable !== false, failing: failing(r).map(checkName), task: x.id }, evOf(x));
     } else if (own && x.state === 'done' && r.flaky && !rf) add('E6', root, tref(x), null, { flaky: true, task: x.id }, evOf(x));
+    // A done hand-back that committed nothing, with no round left (policy-rounds.cjs commitAction).
+    if (rf && own && x.state === 'done') { const ca = RF.commitAction(x, P, rf); if (ca && ca.cap) add('E2', root, tref(x), 'fix', { cause: ca.cause, task: x.id, used: ca.used, max: ca.max, last: ca.last }, evOf(x)); }
     // escalation (ADR 0074 amendment 4, not an E-code): a worker's hand-back asks for the orchestrator (`result.escalate: { kind, reason }`).
     // It always wakes, planned task or not, and halts the task's planned steps until the orchestrator acts on the task after the hand-back
     // (re-assigns or cancels it) or amends its plan. The reason is the worker's words: quoted, cut, never an instruction.
@@ -177,7 +179,7 @@ function derive(snap) {
       const a = rf ? RF.action(x, P, rf) : null;
       for (const f of fails) if (f.task_id === x.id && f.code !== 'E_CANCELLED' && Number(f.written_at) >= Number(x.handoff.at)) {
         const fact = { key: `${x.id}!${f.id}`, seq: Number(f.seq) || 0, at: Number(f.written_at) || 0, rowSeq: rowSeqOf(f) };
-        if (a && a.cap) add('E2', root, tref(x), 'fix', { cause: a.cause, task: x.id, used: a.used, max: a.max, failing: [f.code] }, fact);
+        if (a && a.cap) add('E2', root, tref(x), 'fix', { cause: a.cause, task: x.id, used: a.used, max: a.max, last: a.last }, fact);
         else if (!a) add('E5', root, tref(x), null, { executable: true, failing: [], error: f.code, task: x.id }, fact);
       }
     }
@@ -215,7 +217,7 @@ function derive(snap) {
     if (ints.some((o) => o.id !== i.id && Number(o.seq) > Number(i.seq) && (Array.isArray(o.task_ids) ? o.task_ids : []).some((t) => ids.includes(t)))) continue;
     const m = rf ? RF.mergeAction(i, rf, planFor) : null;
     if (m && m.step) continue; // the plan takes it: a fix task for the builder
-    if (m && m.cap) { add('E2', m.root, { table: 'integration', id: i.id, seq: Number(i.seq) || 0 }, 'fix', { cause: m.cause, task: m.task.id, used: m.used, max: m.max }, { key: i.id, seq: Number(i.seq) || 0 }); continue; }
+    if (m && m.cap) { add('E2', m.root, { table: 'integration', id: i.id, seq: Number(i.seq) || 0 }, 'fix', { cause: m.cause, task: m.task.id, used: m.used, max: m.max, last: m.last }, { key: i.id, seq: Number(i.seq) || 0 }); continue; }
     const tid = (i.conflict && i.conflict.task_id) || ids[0];
     const t = byId.get(tid) || { id: tid };
     add('E3', byId.get(tid) ? rootOf(t, byId) : t, { table: 'integration', id: i.id, seq: Number(i.seq) || 0 }, 'integrate', { files: i.conflict && Array.isArray(i.conflict.files) ? i.conflict.files.length : null, task: tid }, { key: i.id, seq: Number(i.seq) || 0 });
@@ -224,7 +226,7 @@ function derive(snap) {
   // Integration checks that failed, with no round left: the cap (the plan takes them while a round is left, as a fix_checks step).
   if (rf) for (const i of ints) {
     const m = i.run_id === runId && i.state === 'evaluated' ? RF.mergeAction(i, rf, planFor) : null;
-    if (m && m.cap) add('E2', m.root, { table: 'integration', id: i.id, seq: Number(i.seq) || 0 }, 'fix', { cause: m.cause, task: m.task.id, used: m.used, max: m.max }, { key: i.id, seq: Number(i.seq) || 0 });
+    if (m && m.cap) add('E2', m.root, { table: 'integration', id: i.id, seq: Number(i.seq) || 0 }, 'fix', { cause: m.cause, task: m.task.id, used: m.used, max: m.max, last: m.last }, { key: i.id, seq: Number(i.seq) || 0 });
   }
 
   // E8 (and E2 when the fix was refused for the cap): a policy step finished `exception`. Sent once, whenever it is read; it halts the task until a
@@ -285,7 +287,7 @@ function textOf(e) {
   let body;
   switch (e.exception) {
     case 'E1': body = ` The plan has no ${e.field} step for this.`; break;
-    case 'E2': body = ` Fix cap reached${d.used != null ? ` (${d.used} used${d.max != null ? ` of ${d.max}` : ''})` : ''}; ${d.cause ? `${d.cause}${d.failing && d.failing.length ? `: ${d.failing.join(', ')}` : ''}` : `review ${d.review || 'refuted'}`}.${d.error ? ` ${d.error}` : ''}${titles}`; break;
+    case 'E2': body = d.cause ? ` Fix cap ${d.used}/${d.max}; ${d.cause}${d.last ? `: ${d.last}` : ''}.` : ` Fix cap reached${d.used != null ? ` (${d.used} used${d.max != null ? ` of ${d.max}` : ''})` : ''}; ${d.cause ? `${d.cause}${d.last ? `: ${d.last}` : ''}` : `review ${d.review || 'refuted'}`}.${d.error ? ` ${d.error}` : ''}${titles}`; break;
     case 'E3': body = ` Integrate conflict on task ${d.task}${d.files != null ? ` (${d.files} file${d.files === 1 ? '' : 's'})` : ''}.`; break;
     case 'E5': body = d.executable === false ? ` Task ${d.task} evaluation could not judge.` : ` Task ${d.task} evaluation failed${d.error ? ` (${d.error})` : ''}${d.failing && d.failing.length ? `: ${d.failing.join(', ')}` : ''}.`; break;
     case 'E6': body = d.flaky ? ` Task ${d.task} passed on a retry (flaky).` : ` Task ${d.task} failed beside other evaluations: ${d.concurrent.map((c) => `${c.name} (with ${c.n})`).join(', ')}.`; break;

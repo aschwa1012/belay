@@ -80,6 +80,8 @@ function due(snap) {
       const a = RF.action(x, plan, rf);
       if (a && a.step) out.push({ step: a.step, task_id: x.id, trigger: tref(x), policy_rev: rev, worker: a.worker, ...(a.prompt ? { prompt: a.prompt } : {}) });
       else if (RF.flakyDue(x, rf)) out.push({ step: 'note_flaky', task_id: x.id, trigger: tref(x), policy_rev: rev });
+      const ca = RF.commitAction(x, plan, rf); // a done hand-back with no commit past its base goes back to its builder as a fix task
+      if (ca && ca.step) out.push({ step: 'fix_commit', task_id: x.id, trigger: tref(x), policy_rev: rev, worker: ca.worker, conflict_task: x.id, spec: ca.spec });
     }
     // build: an open work task nobody holds, whose dependencies are all done, and the plan names who builds it (a worker, or a spawn).
     // A task the orchestrator assigned has a lease and is skipped; a fix is made and assigned by its own step. A follow-up the follow_up step
@@ -89,7 +91,7 @@ function due(snap) {
       out.push({ step: 'build', task_id: x.id, trigger: tref(x), policy_rev: rev, build: plan.build, worker: plan.build.worker || (plan.build.spawn && plan.build.spawn.worker_id) || null, from_run: (Array.isArray(x.depends_on) ? x.depends_on : []).some((d) => merged(byId.get(d) || {})), ...(capped ? { capped: true } : {}) });
     }
     // review: the work is done on a release evaluation, nothing reviews it, and the plan names who does (a worker, or a spawn).
-    if (!x.repairs && plan.review && x.state === 'done' && isRelease(x) && !(reviewsOf.get(x.id) || []).filter((r) => !leftOver(r)).length && !(x.review && x.review.review_id && !leftOver(byId.get(x.review.review_id)))) { // a review a paused step made and did not hand over does not count: the retake hands it over
+    if (!x.repairs && plan.review && x.state === 'done' && isRelease(x) && !(rf && RF.commitHeld(x, rf)) && !(reviewsOf.get(x.id) || []).filter((r) => !leftOver(r)).length && !(x.review && x.review.review_id && !leftOver(byId.get(x.review.review_id)))) { // a review a paused step made and did not hand over does not count: the retake hands it over
       out.push({ step: 'review', task_id: x.id, trigger: tref(x), policy_rev: rev, review: plan.review, worker: plan.review.worker || (plan.review.spawn && plan.review.spawn.worker_id) || null });
     }
     // fix: the work's review is refuted (belay's own evaluation) and a round is left; the fix goes to the one who built what was judged.
@@ -118,7 +120,7 @@ function due(snap) {
     // integrate: the work's review holds, the work is done and not on the branch, and every task it depends on has landed.
     // After a merge-side fix (fix_conflict, fix_checks) is done, the merge is tried again with that fix in the unit; its trigger is the fix.
     const mf = rf ? RF.mergeFixOf(rf, x.id) : null;
-    if (!x.repairs && plan.integrate === 'on_hold' && x.state === 'done' && x.review && x.review.state === 'holds' && (!merged(x) || (mf && !merged(mf))) && !merging) {
+    if (!x.repairs && plan.integrate === 'on_hold' && x.state === 'done' && !(rf && RF.commitHeld(x, rf)) && x.review && x.review.state === 'holds' && (!merged(x) || (mf && !merged(mf))) && !merging) {
       const R = byId.get(x.review.review_id);
       const deps = (Array.isArray(x.depends_on) ? x.depends_on : []).map((d) => byId.get(d));
       const landed = deps.every((d) => d && d.state === 'done' && (d.integration == null || merged(d)));

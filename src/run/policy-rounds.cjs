@@ -10,14 +10,15 @@
 //   reask        a reviewer that released with no verdict is asked again, once per review (no round, a bound of its own)
 //   fix_conflict an integrate conflict goes to the builder of the conflicting task as a fix task (a round: a `repairs` row)
 //   fix_checks   integration checks that failed go to the builder as a fix task (a round)
+//   fix_commit   a done hand-back with no commit past its base (or work left uncommitted) goes to the builder as a fix task (a round)
 //   note_flaky   a pass on a retry is recorded as a fact (no round, no wake)
 // A round is counted on the work the chain began from, against the run's max_fix_rounds (and fix_hard_cap): the fix tasks (`repairs`) and
 // the round steps above, so every kind spends the one cap. At the cap nothing is due and E2 wakes (policy-wakes.cjs).
 
 const ROUND_STEPS = new Set(['fix_eval', 'fix_run']); // steps that spend a round without making a fix task
-const MERGE_FIX_STEPS = new Set(['fix_conflict', 'fix_checks']); // steps that make a fix task (a `repairs` row spends the round)
+const MERGE_FIX_STEPS = new Set(['fix_conflict', 'fix_checks', 'fix_commit']); // steps that make a fix task (a `repairs` row spends the round)
 const RERUN_STEPS = new Set(['rerun_alone', 'rerun_eval']);
-const SENDING = new Set(['fix_eval', 'fix_run', 'reask', 'fix_conflict', 'fix_checks']); // the steps that send a worker work (the budget rule)
+const SENDING = new Set(['fix_eval', 'fix_run', 'reask', 'fix_conflict', 'fix_checks', 'fix_commit']); // the steps that send a worker work (the budget rule)
 const STEP_NAMES = new Set([...ROUND_STEPS, ...MERGE_FIX_STEPS, ...RERUN_STEPS, 'reask', 'note_flaky']);
 const REASK_MAX = 1; // a reviewer is asked again once; past it the evaluation that could not judge wakes (E5)
 const COUNTED = new Set(['done', 'started', 'superseded']);
@@ -52,7 +53,9 @@ const stepRounds = (rf, rootId) => rf.steps.filter((s) => ROUND_STEPS.has(s.step
 const fixTasks = (rf, rootId) => rf.tasks.filter((t) => t.repairs && !(t.follows_up && t.follows_up.root) && rootOf(t, rf.byId).id === rootId).length;
 const used = (rf, rootId) => fixTasks(rf, rootId) + stepRounds(rf, rootId);
 const left = (rf, rootId) => { const u = used(rf, rootId); const { max, hard } = rf.caps; return (max == null || u < max) && (hard == null || u < hard); };
-const capFact = (rf, rootId) => ({ cap: true, used: used(rf, rootId), max: rf.caps.max != null ? rf.caps.max : rf.caps.hard });
+// `cause` is the kind of the round that was wanted and `last` a short cut of why (the last error text), both for the E2 wake: the orchestrator reads why before it retries.
+const capFact = (rf, rootId, cause, last) => ({ cap: true, used: used(rf, rootId), max: rf.caps.max != null ? rf.caps.max : rf.caps.hard, cause, last: clean(last, 80) });
+const lastLine = (r) => { const c = failing(r).find((k) => k.detail && (k.detail.stderr_tail || k.detail.stdout_tail)); const t = c ? String(c.detail.stderr_tail || c.detail.stdout_tail).split('\n').map((l) => l.trim()).filter(Boolean).pop() : ''; return t || names(r); };
 
 // Whether another evaluation of the run is running or queued: a hand-back not yet evaluated (and not known lost), or a re-run in flight.
 function othersEvaluating(x, rf) {
@@ -62,10 +65,10 @@ function othersEvaluating(x, rf) {
     || rf.tasks.some((t) => t.id !== x.id && t.state === 'released' && t.handoff && !ev(t) && !lost(t));
 }
 
-const names = (r) => {
+function names(r) {
   const f = failing(r).map(checkName);
   return f.length ? f.join(', ') : 'no executable check ran';
-};
+}
 
 // -> what the plan does for a hand-back that did not pass, or null when the plan does not carry it (the exception stands):
 //   { step, worker, prompt }   the step due now        { wait: true }   a step is in flight or the run's other evaluations finish first
@@ -80,9 +83,9 @@ function action(x, P, rf) {
   const since = (name) => mine(name).filter((s) => Number(s.at) >= hand);
   if (rf.steps.some((s) => s.task_id === x.id && (ROUND_STEPS.has(s.step) || RERUN_STEPS.has(s.step) || s.step === 'reask') && s.outcome === 'started')) return { wait: true };
   const root = rootOf(x, rf.byId);
-  const round = (step, cause, prompt) => (left(rf, root.id)
+  const round = (step, cause, prompt, last) => (left(rf, root.id)
     ? { step, worker: handBy(x), prompt: `${prompt} Fix round ${used(rf, root.id) + 1}${rf.caps.max != null ? ` of ${rf.caps.max}` : ''}.` }
-    : { ...capFact(rf, root.id), cause });
+    : capFact(rf, root.id, cause, last));
   if (own && !r.passed) {
     if (cleanRefutation(r)) return null; // the review's refutation: the fix step answers it
     if (isReviewTask(x)) {
@@ -91,13 +94,13 @@ function action(x, P, rf) {
     }
     if (P.fix !== 'builder') return null;
     if (failing(r).some((c) => beside(c) > 0) && !since('rerun_alone').length) return othersEvaluating(x, rf) ? { wait: true } : { step: 'rerun_alone', worker: handBy(x) };
-    return round('fix_eval', 'evaluation failed', `belay: your hand-back of task ${x.id} failed belay's own evaluation (${clean(names(r), 160)}). Fix it in your worktree, commit, and release the task again.`);
+    return round('fix_eval', 'tests red', `belay: your hand-back of task ${x.id} failed belay's own evaluation (${clean(`${names(r)}: ${lastLine(r)}`, 220)}). Fix it in your worktree, commit, and release the task again.`, lastLine(r));
   }
   if (!own && !isReviewTask(x) && P.fix === 'builder') {
     const f = rf.failures.filter((e) => e.task_id === x.id && e.code !== 'E_CANCELLED' && Number(e.written_at) >= hand).sort((a, b) => Number(a.seq) - Number(b.seq)).pop();
     if (!f) return null;
     if (!since('rerun_eval').length) return othersEvaluating(x, rf) ? { wait: true } : { step: 'rerun_eval', worker: handBy(x) };
-    return round('fix_run', 'evaluation could not run', `belay: belay could not evaluate your hand-back of task ${x.id} (${clean(f.code, 40)}), here or on a second try. Make sure your work is committed, and release the task again.`);
+    return round('fix_run', 'eval could not run', `belay: belay could not evaluate your hand-back of task ${x.id} (${clean(f.code, 40)}), here or on a second try. Make sure your work is committed, and release the task again.`, f.code);
   }
   return null;
 }
@@ -124,7 +127,7 @@ function mergeAction(i, rf, planFor) {
   if (!P || P.plan.fix !== 'builder') return null;
   const root = rootOf(w, rf.byId);
   const base = { kind: conflict ? 'conflict' : 'checks', integration: i, task: w, root, rev: P.rev, cause: conflict ? 'integrate conflict' : 'integration checks failed' };
-  if (!left(rf, root.id)) return { ...base, ...capFact(rf, root.id) };
+  if (!left(rf, root.id)) return { ...base, ...capFact(rf, root.id, base.cause, conflict ? ((i.conflict && i.conflict.files) || []).slice(0, 3).join(', ') : (Array.isArray(i.checks) ? i.checks.filter((c) => c && c.passed === false).map((c) => `${(Array.isArray(c.argv) ? c.argv.slice(0, 3).join(' ') : '?')}${c.exit_code != null ? ` exit ${c.exit_code}` : ''}`).join('; ') : '')) };
   return { ...base, step: conflict ? 'fix_conflict' : 'fix_checks', worker: handBy(w) };
 }
 
@@ -134,6 +137,24 @@ function mergeFixOf(rf, rootId) {
   const s = rf.steps.filter((k) => MERGE_FIX_STEPS.has(k.step) && k.outcome === 'done' && /^task:/.test(k.row_ref || '') && k.task_id && rootIdOf(rf, k.task_id) === rootId).pop();
   const f = s ? rf.byId.get(s.row_ref.slice(5)) : null;
   return f && f.state === 'done' ? f : null;
+}
+// A done work whose judged head is its base (it committed nothing), or whose judged content is not all committed: integrate merges only a commit.
+function noCommit(x) {
+  const r = x && x.results; const base = x && x.worktree && x.worktree.base_sha;
+  if (!x || x.state !== 'done' || x.repairs || isReviewTask(x) || !r || r.trigger !== 'release' || !x.handoff || !(Number(r.evaluated_at) >= Number(x.handoff.at))) return null;
+  if (base && r.head_sha === base) return `nothing new on your branch since ${String(base).slice(0, 8)}`;
+  if (r.uncommitted === true) return `uncommitted changes (${(r.uncommitted_paths || []).slice(0, 3).join(', ')})`;
+  return null;
+}
+const commitFixOf = (rf, x) => { const s = rf.steps.filter((k) => k.step === 'fix_commit' && k.task_id === x.id && k.outcome === 'done' && /^task:/.test(k.row_ref || '')).pop(); return s ? rf.byId.get(s.row_ref.slice(5)) : null; };
+// Review and merge of such a work wait until its commit fix is done.
+const commitHeld = (x, rf) => !!noCommit(x) && !(commitFixOf(rf, x) && commitFixOf(rf, x).state === 'done');
+// -> { step: 'fix_commit', worker, spec } | { cap: true, ... } | null; taken once per work (the fix task is the round, a `repairs` row).
+function commitAction(x, P, rf) {
+  const why = noCommit(x);
+  if (!why || P.fix !== 'builder' || rf.steps.some((s) => s.step === 'fix_commit' && s.task_id === x.id && !reopened(s))) return null;
+  if (!left(rf, x.id)) return capFact(rf, x.id, 'no commit since base', why);
+  return { step: 'fix_commit', worker: handBy(x), spec: `Task ${x.id} was handed back done, but ${why}: commit your work in your worktree (git add, git commit), run your checks, and release the task again.` };
 }
 const isMergeFix = (rf, t) => rf.steps.some((s) => MERGE_FIX_STEPS.has(s.step) && s.row_ref === `task:${t.id}`);
 
@@ -154,4 +175,4 @@ async function readFailures(core, runId) {
   try { return (((await core.memory.events({ run_id: runId, kinds: ['release_failed'] })) || {}).events || []).map((e) => ({ ...e, task_id: e.task_id || (Array.isArray(e.row_ids) ? e.row_ids[0] : null) })); } catch { return []; }
 }
 
-module.exports = { readFailures, ctxOf, capsOf, action, flakyDue, mergeAction, mergeFixOf, isMergeFix, mergeSpec, stepRounds, used, left, failing, checkName, ROUND_STEPS, MERGE_FIX_STEPS, SENDING, STEP_NAMES, REASK_MAX };
+module.exports = { commitAction, commitHeld, noCommit, readFailures, ctxOf, capsOf, action, flakyDue, mergeAction, mergeFixOf, isMergeFix, mergeSpec, stepRounds, used, left, failing, checkName, ROUND_STEPS, MERGE_FIX_STEPS, SENDING, STEP_NAMES, REASK_MAX };
