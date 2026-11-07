@@ -60,7 +60,7 @@ function startWakePublisher({
   const planned = require('./planned.cjs').createPlanned({ core, runId }); // whether the run has a plan, from the store: the same rule as the headless run and the adapter
   const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId, enabled: !!notes }); // wave 4: a refuted note
   const callWatcher = require('./call-wake.cjs').createCallWatcher({ core, runId }); // a still_running integrate or task_evaluate
-  const policyWatcher = require('./policy-wakes.cjs').createPolicyWatcher({ core, runId }); // ADR 0073: the exceptions of a run under a plan
+  const policyWatcher = require('./policy-wakes.cjs').createPolicyWatcher({ core, runId, dataDir }); // ADR 0073: the exceptions of a run under a plan
   let stallWatch = null; // stall-wake.cjs, made on the first poll
   const quiet = require('./digest-quiet.cjs').createQuiet(); // ADR 0074 amendment 2: when the steps no wake carried are published on their own
   let wasHeld = false;

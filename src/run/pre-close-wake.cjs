@@ -37,13 +37,16 @@ function createPreCloseNotice({ core, runId }) {
   // Once per run. { ran: false } when the read was already made; otherwise { ran: true, wake } with the wake event or null.
   // The caller never closes in the pass that made the read: a pause or a new turn may have arrived during the await, and the next
   // poll tests the run again with fresh facts. If isPaused() is true after the read, nothing is said and the read is kept for later.
-  async function check({ isPaused } = {}) {
+  // `afterDone`: the done wake went and the rows still read done. The orchestrator then gets no extra turn for trees that are only off their branch;
+  // a tree with uncommitted work is still told, because the close would keep work that is not on any branch.
+  async function check({ isPaused, afterDone = false } = {}) {
     if (spent) return { ran: false, wake: null };
     spent = true;
     let plan;
     try { plan = await core.task.worktreeSweep({ run_id: runId, dry_run: true, close_pending: true }); } catch { return { ran: true, wake: null }; }
     if (isPaused && isPaused()) { spent = false; return { ran: true, wake: null }; }
-    const text = textOf(plan);
+    const kept = ((plan && plan.kept) || []).filter((k) => REASONS.has(k.reason));
+    const text = afterDone && kept.every((k) => k.reason === 'head_off_branch') ? null : textOf(plan);
     return { ran: true, wake: text ? { event: 'pre_close', worker_id: `close:${runId}`, turn: 0, seq: null, text } : null };
   }
   return { check };

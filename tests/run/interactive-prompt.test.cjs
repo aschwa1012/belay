@@ -100,9 +100,9 @@ test('interactive prompt: both lever placeholders are present and substituteLeve
   assert.match(r.text, /after 3 fix rounds belay still creates the fix/);
 });
 
-test('interactive prompt: apart from three named ranges the twin equals orchestrator.md section for section', () => {
+test('interactive prompt: apart from four named ranges the twin equals orchestrator.md section for section', () => {
   // Allowed differences: (1) the blank line and marker after the title; (2) the "When the run ends" section; (3) the fix-round
-  // cutoff sentence, the last three lines of "Review tasks"; and (amendment 6) the two wake phrases below. The sections are matched by
+  // cutoff sentence, the last three lines of "Review tasks"; (4) the digest sentence of the plans section (the interactive wake line is 221 bytes); and (amendment 6) the wake phrases below (none now). The sections are matched by
   // heading, not by line number, so a line added to both prompts needs no edit here.
   const sections = (L) => { const m = new Map(); let k = '(top)'; m.set(k, []); for (const l of L) { if (l.startsWith('## ')) { k = l; m.set(k, []); } m.get(k).push(l); } return m; };
   const hs = sections(H), ts = sections(T);
@@ -114,7 +114,14 @@ test('interactive prompt: apart from three named ranges the twin equals orchestr
   const role = hs.get('## Your role').map((l) => l.replace('and when you end the run (the outcome', 'and when you stop (the outcome'));
   assert.notDeepStrictEqual(role, hs.get('## Your role'), 'the substitution applied');
   assert.deepStrictEqual(ts.get('## Your role'), role);
-  for (const k of ['## Tasks', '## Handing a task to a worker', "## Plans: belay's policy manager", '## Rules of thumb']) assert.deepStrictEqual(ts.get(k), hs.get(k), k);
+  for (const k of ['## Tasks', '## Handing a task to a worker', '## Rules of thumb']) assert.deepStrictEqual(ts.get(k), hs.get(k), k);
+  // The fourth named difference: the digest sentence of the plans section. The interactive wake line is 221 bytes, so the digest rides it only when it fits;
+  // the headless wake carries it whole.
+  const HEADLESS_DIGEST = "Each of those wakes carries a digest of belay's steps.";
+  const INTERACTIVE_DIGEST = "A wake carries a digest of belay's steps when it fits in the wake line; when it does not, or the run goes quiet, the digest comes on its own line, headed `belay: policy steps since the last wake`.";
+  const plans = hs.get("## Plans: belay's policy manager").map((l) => l.replace(HEADLESS_DIGEST, INTERACTIVE_DIGEST));
+  assert.notDeepStrictEqual(plans, hs.get("## Plans: belay's policy manager"), 'the digest substitution applied');
+  assert.deepStrictEqual(ts.get("## Plans: belay's policy manager"), plans, "Plans: belay's policy manager");
   // ADR 0037 amendment 6, extended to headless by amendment 7: both prompts say "end your turn until its wake", so no phrase is swapped.
   const WAKE_PHRASES = []; // the headless prompt now waits by the wake too (ADR 0037 amendment 7): these sections are the same in both
   const swap = (L) => L.map((l) => WAKE_PHRASES.reduce((x, [p, q]) => x.replace(p, q), l));

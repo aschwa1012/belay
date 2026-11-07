@@ -45,7 +45,7 @@ const realClock = {
 
 // core: the harness core (task, integration, policy, memory reads). dataDir: where the claims live. armed(): whether the run has a plan.
 function createRunWait({ core, runId, dataDir, armed = () => true, settled = null, signal: lifeSignal = null, clock = realClock, pollMs = POLL_MS, watcher = null, claimant = undefined, alive = null, hooks = {} }) {
-  const exceptions = watcher || PW.createPolicyWatcher({ core, runId, enabled: true });
+  const exceptions = watcher || PW.createPolicyWatcher({ core, runId, enabled: true, dataDir });
   const pending = []; // exception wakes polled and not yet delivered, oldest first
   const held = []; // exception wakes another path has claimed: kept, and re-offered if that claim is given back (the wake pipe's, undelivered)
   const reported = new Set(); // worker lives already named in a return

@@ -29,7 +29,7 @@ async function idleClose(c) {
     if (state.finishing) return true;
     const st = stall ? await stall.atClose(policyWatcher && policyWatcher.snapshot()) : null; if (state.finishing) return true; // ADR 0074 amendment 3: open tasks nobody is assigned are named once before the close; that write holds it until read
     if (st) { if (flushDigest) await flushDigest.write(st); else writeWake(st); return false; } // the steps no digest has shown ride it (digest-wake.cjs carry)
-    const pre = await preClose.check({ isPaused: hold.isPaused }); if (state.finishing) return true; // once; never closes in the pass that read
+    const pre = await preClose.check({ isPaused: hold.isPaused, afterDone: !!(policyWatcher && policyWatcher.doneCurrent && policyWatcher.doneCurrent()) }); if (state.finishing) return true; // once; never closes in the pass that read
     if (pre.wake) { if (flushDigest) await flushDigest.write(pre.wake); else writeWake(pre.wake); } else if (!pre.ran && state.idle && !hold.isPaused()) {
       if (flushDigest && await flushDigest()) return false; // ADR 0074 amendment 2: steps no wake carried are written alone before the close; that write holds it until it is read
       if (state.finishing) return true;

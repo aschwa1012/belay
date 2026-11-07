@@ -127,7 +127,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   const leftovers = require('./orchestrator-leftovers.cjs').createLeftovers({ child, P, state, core, runId }); // ADR 0054 amendment 2
   const preClose = require('./pre-close-wake.cjs').createPreCloseNotice({ core, runId }); // ADR 0065 amendment 1
   const callWatcher = require('./call-wake.cjs').createCallWatcher({ core, runId });
-  const policyWatcher = require('./policy-wakes.cjs').createPolicyWatcher({ core, runId, enabled: !!spec.policy }); // ADR 0073: the exceptions of a run under a plan
+  const policyWatcher = require('./policy-wakes.cjs').createPolicyWatcher({ core, runId, enabled: !!spec.policy, dataDir }); // ADR 0073: the exceptions of a run under a plan
   const planned = require('./planned.cjs').createPlanned({ core, runId }); // whether the run has a plan, read from the store (the same rule on every delivery path)
   const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId, enabled: !!spec.notes }); // wave 4: a refuted note wakes the orchestrator (notes runs only)
   let readyTimer = null, sigintHandler = null;
