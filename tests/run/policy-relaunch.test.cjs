@@ -1,7 +1,7 @@
 'use strict';
 require('../helpers/tmp.cjs');
 // policy-relaunch.test.cjs — a dead builder is relaunched once by the plan, and the orchestrator is woken (E4) only if that did not work
-// (ADR 0074 amendment 5). The executor over the REAL core; the wake side over the rows a poll reads.
+// (ADR 0074 amendment 9). The executor over the REAL core; the wake side over the rows a poll reads.
 
 const { test } = require('node:test');
 const assert = require('node:assert');

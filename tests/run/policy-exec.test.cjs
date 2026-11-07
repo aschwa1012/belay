@@ -150,8 +150,8 @@ test('integrate: a held, done, unmerged work is merged with its done fixes and n
 });
 
 test('integrate: a conflict is a finished step naming its row; a failed merge and failed checks are exceptions that keep the row', async () => {
-  for (const [row, outcome] of [[{ id: 'I1', state: 'conflict', conflict: { files: ['a'] } }, 'done'], [{ id: 'I1', state: 'failed', error: { message: 'x' } }, 'exception'], [{ id: 'I1', state: 'merged', passed: false }, 'exception']]) {
-    const s = store({ tasks: [work('W', { state: 'holds', review_id: 'R2', rounds_left: 1 }), review('R2', 'W', 'rv', true)] });
+  for (const [row, outcome, plan = PLAN] of [[{ id: 'I1', state: 'conflict', conflict: { files: ['a'] } }, 'done'], [{ id: 'I1', state: 'failed', error: { message: 'x' } }, 'exception'], [{ id: 'I1', state: 'merged', passed: false }, 'exception', { ...PLAN, fix: undefined }], [{ id: 'I1', state: 'evaluated', passed: false }, 'done']]) { // failed checks are an exception only when the plan has no fix step to take them as a round
+    const s = store({ tasks: [work('W', { state: 'holds', review_id: 'R2', rounds_left: 1 }, { policy: plan }), review('R2', 'W', 'rv', true)] });
     s.script.merge = async () => row;
     const out = await s.exec().tick();
     assert.deepStrictEqual([out.steps[0].outcome, out.steps[0].row_ref], [outcome, 'integration:I1'], row.state);

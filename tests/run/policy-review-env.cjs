@@ -55,14 +55,14 @@ async function env(label, attach = {}) {
 }
 
 // A work task under `plan`, with a belay worktree (the tree a spawned reviewer starts in), handed back by `builder` and judged done by the release evaluation.
-async function workDone(e, plan, { builder = 'builder-1', label = 'w', create = {} } = {}) {
+async function workDone(e, plan, { builder = 'builder-1', label = 'w', create = {}, result = { branch: 'b', head: 'h' } } = {}) {
   const repo = makeRepo(e.dir);
   const t = await e.orch.task.create({ spec: `${label}: write a.txt`, acceptance: PASS, policy: plan, ...create });
   const wt = (await e.op.task.worktreeCreate({ task_id: t.id, repo })).worktree;
   write(wt.path, 'a.txt', 'a\n'); commit(wt.path, `task ${t.id}`);
   const w = await e.worker(builder, wt.path);
   const a = await e.orch.task.assign({ task_id: t.id, worker_id: builder });
-  await w.lease.release({ lease_id: a.new_lease.id, reason: 'done', result: { branch: 'b', head: 'h' } });
+  await w.lease.release({ lease_id: a.new_lease.id, reason: 'done', result });
   const done = await e.h.task.evaluate({ task_id: t.id, trigger: 'release' });
   assert.strictEqual(done.state, 'done');
   return { work: t, tree: wt.path, builder };

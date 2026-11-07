@@ -7,7 +7,7 @@ require('../helpers/tmp.cjs');
 
 const { test: nodeTest } = require('node:test');
 const assert = require('node:assert');
-const { guarded, makeRepo } = require('../core/worktree-helpers.cjs');
+const { guarded, makeRepo, write, commit } = require('../core/worktree-helpers.cjs');
 const PP = require('../../src/core/policy-plan.cjs');
 const PW = require('../../src/run/policy-wakes.cjs');
 const { taken, env, workDone, stepRows, latest, wired, RUN, REST, PASS } = require('./policy-review-env.cjs');
@@ -161,6 +161,7 @@ test('a coder belay spawned is stopped (the manager\'s graceful stop) once its w
     const repo = makeRepo(e.dir);
     const t = await e.orch.task.create({ spec: 'write r.txt', acceptance: PASS, policy: { build: { spawn: { agent_type: 'coder' } }, review: { worker: 'rv' } } });
     const wt = (await e.op.task.worktreeCreate({ task_id: t.id, repo })).worktree.path;
+    write(wt, 'r.txt', 'r\n'); commit(wt, 'the work'); // a hand-back with nothing committed is sent back to its builder (policy-rounds.cjs)
     await e.worker('rv', wt);
     const stopped = [];
     // The spawn path stands in for the run manager's: a worker row, then the assignment under the step's claim.

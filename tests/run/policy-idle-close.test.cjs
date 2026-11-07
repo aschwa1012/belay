@@ -8,7 +8,6 @@ require('../helpers/tmp.cjs');
 
 const { test: nodeTest } = require('node:test');
 const assert = require('node:assert');
-const fs = require('node:fs');
 const { guarded } = require('../core/worktree-helpers.cjs');
 const { env, workDone, RUN, REST } = require('./policy-review-env.cjs');
 const { due } = require('../../src/run/policy-exec.cjs');
@@ -80,10 +79,8 @@ test('rows read before a step assigns and finishes, the snapshot after: the clos
 test('a due step on a task an exception halts does not hold the close', async () => {
   const e = await env('idle-close-halted');
   try {
-    // A check that fails once and passes on its retry: the work is done, flaky, and E6 halts it, while its review is still due by the plan.
-    const script = `${e.dir}/flaky.cjs`.split('\\').join('/');
-    fs.writeFileSync(script, "const fs = require('fs'); const m = __filename + '.ran'; if (fs.existsSync(m)) process.exit(0); fs.writeFileSync(m, '1'); process.exit(1);\n");
-    const { work } = await workDone(e, { review: { worker: 'rv' }, ...REST }, { create: { acceptance: { commands: [{ argv: [process.execPath, script], timeout_ms: 20000, retries_on_fail: 1 }] } } });
+    // The work is done and hands back an escalation: the escalation halts it, while its review is still due by the plan.
+    const { work } = await workDone(e, { review: { worker: 'rv' }, ...REST }, { result: { branch: 'b', head: 'h', escalate: { kind: 'question', reason: 'which store should this use?' } } });
     await e.worker('rv');
     const tasks = (await e.orch.task.list({})).tasks;
     assert.deepStrictEqual(due({ runId: RUN, tasks, integrations: [] }).map((c) => c.step), ['review'], 'the review is due by the plan');

@@ -163,7 +163,7 @@ test('every text names kind, task, trigger and plan field, inside the wake cap, 
 });
 
 test('the watcher sends one wake per exception, never again for it, and a new trigger is a new wake', async () => {
-  const W = work('W', { state: 'released', results: release({ passed: false, checks: [{ kind: 'command', argv: ['x'], passed: false, exit_code: 1 }] }) });
+  const W = work('W', { policy: { ...PLAN, fix: undefined }, state: 'released', results: release({ passed: false, checks: [{ kind: 'command', argv: ['x'], passed: false, exit_code: 1 }] }) });
   const s = { tasks: [W] };
   const core = { task: { list: async () => ({ tasks: s.tasks }) } };
   const w = PW.createPolicyWatcher({ core, runId: RUN });
@@ -275,8 +275,8 @@ test('headless path: the run writes the exception wake to the orchestrator once,
   fs.mkdirSync(sb.worktree, { recursive: true });
   fs.mkdirSync(sb.dataDir, { recursive: true });
   const core = createFakeCore();
-  const W = work('W', { state: 'released', results: release({ passed: false, checks: [{ kind: 'command', argv: ['npm', 'test'], passed: false, exit_code: 1 }] }) });
-  core.task = { ...(core.task || {}), list: async () => ({ tasks: [W] }) };
+  const W = work('W', { policy: { ...PLAN, fix: undefined }, state: 'released', results: release({ passed: false, checks: [{ kind: 'command', argv: ['npm', 'test'], passed: false, exit_code: 1 }] }) });
+  core.task ={ ...(core.task || {}), list: async () => ({ tasks: [W] }) };
   const saved = process.env.BELAY_CLAUDE_EXE;
   process.env.BELAY_CLAUDE_EXE = fwd(path.join(__dirname, 'fakes', 'fake-claude.cjs'));
   try {
