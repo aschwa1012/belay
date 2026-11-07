@@ -146,7 +146,7 @@ function mergeAction(i, rf, planFor) {
 // work's fix lands (a merge stacked on it would inherit the blame). -> { integration, root } | null; `root` is the work whose merge is to be tried again.
 function redOf(rf) {
   const own = `belay/integrate/${rf.runId}`;
-  const newest = rf.integrations.filter((i) => i.into_branch === own).reduce((a, b) => (!a || Number(b.seq) > Number(a.seq) ? b : a), null);
+  const newest = rf.integrations.filter((i) => !i.into_branch || i.into_branch === own).reduce((a, b) => (!a || Number(b.seq) > Number(a.seq) ? b : a), null);
   if (!newest || newest.state !== 'evaluated' || newest.passed !== false) return null;
   const w = rf.byId.get(failedTask(newest, Array.isArray(newest.task_ids) ? newest.task_ids : []));
   return { integration: newest, root: w ? rootOf(w, rf.byId).id : null };
