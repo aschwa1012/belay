@@ -102,7 +102,7 @@ test('interactive prompt: both lever placeholders are present and substituteLeve
 
 test('interactive prompt: apart from four named ranges the twin equals orchestrator.md section for section', () => {
   // Allowed differences: (1) the blank line and marker after the title; (2) the "When the run ends" section; (3) the fix-round
-  // cutoff sentence, the last three lines of "Review tasks"; (4) the digest sentence of the plans section; and (amendment 6) the wake phrases below (none now). The sections are matched by
+  // cutoff sentence, the last three lines of "Review tasks"; (4) the digest sentence of the plans section (the interactive wake line is 221 bytes); and (amendment 6) the wake phrases below (none now). The sections are matched by
   // heading, not by line number, so a line added to both prompts needs no edit here.
   const sections = (L) => { const m = new Map(); let k = '(top)'; m.set(k, []); for (const l of L) { if (l.startsWith('## ')) { k = l; m.set(k, []); } m.get(k).push(l); } return m; };
   const hs = sections(H), ts = sections(T);
