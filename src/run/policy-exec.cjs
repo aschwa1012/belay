@@ -80,7 +80,7 @@ function due(snap) {
     // A hand-back that failed its own evaluation, or could not be evaluated, goes back to its builder as a round (fix_eval, fix_run), after the re-run that comes first (rerun_*); a pass on a retry is noted.
     if (rf) {
       const a = RF.action(x, plan, rf);
-      if (a && a.step) out.push({ step: a.step, task_id: x.id, trigger: tref(x), policy_rev: rev, worker: a.worker, ...(plan.build ? { build: plan.build } : {}), ...(a.prompt ? { prompt: a.prompt } : {}) });
+      if (a && a.step) out.push({ step: a.step, task_id: x.id, trigger: tref(x), policy_rev: rev, worker: a.worker, root_id: root.id, ...(plan.build ? { build: plan.build } : {}), ...(a.prompt ? { prompt: a.prompt } : {}) });
       else if (RF.flakyDue(x, rf)) out.push({ step: 'note_flaky', task_id: x.id, trigger: tref(x), policy_rev: rev });
       const ca = RF.commitAction(x, plan, rf); // a done hand-back with no commit past its base goes back to its builder as a fix task
       if (ca && ca.step) out.push({ step: 'fix_commit', task_id: x.id, trigger: tref(x), policy_rev: rev, worker: ca.worker, ...(plan.build ? { build: plan.build } : {}), conflict_task: x.id, spec: ca.spec });

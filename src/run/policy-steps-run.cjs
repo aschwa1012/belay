@@ -44,17 +44,7 @@ async function fix(c, env) {
   const ref = `task:${made.id}`;
   if (made.existing === true) return { outcome: made.superseded === true ? 'superseded' : 'done', row_ref: ref }; // a fix already answers the review: it stands, and is not assigned again
   if (made.fix_notice) return exception(`fix_notice: ${made.fix_notice}`, ref); // past max_fix_rounds: the fix stays unassigned, the orchestrator decides
-  const r = await handOver(env, { task_id: made.id, worker_id: b.worker }, ref);
-  return b.worker !== c.worker ? { ...r, worker_id: b.worker } : r; // the claim names the worker that took the fix
-}
-
-// The refuting review's summary and findings, one to a line, for a reviewer who was not the one that refuted it (the same lines a fix is made from).
-function findingsOf(review) {
-  const TF = require('../core/methods-task-fix.cjs');
-  const d = review ? TF.verdictDetail(review) : {};
-  const lines = (Array.isArray(d.findings) ? d.findings : []).slice(0, 12).map(TF.findingLine).filter(Boolean).map((l) => `- ${l}`).join('\n');
-  const text = `${d.summary ? `\nSummary: ${d.summary}` : ''}${lines ? `\nFindings:\n${lines}` : ''}`;
-  return text.length > 1800 ? `${text.slice(0, 1797)}...` : text;
+  return require('./policy-rounds-run.cjs').giveTask(c, env, b, { taskId: made.id, ref, written: true }); // the claim names the worker that took the fix
 }
 
 async function reReview(c, env) {
@@ -66,15 +56,14 @@ async function reReview(c, env) {
   const b = await require('./policy-rounds-run.cjs').readyWorker(c, env, c.task_id, 'refuter'); // a refuter already dead is brought back, or a fresh reviewer of review.spawn
   if (b.res) return b.res;
   const refuted = tasks.find((t) => t.id === c.review_id);
-  const fresh = b.worker !== c.worker; // a reviewer who did not refute it has not seen the findings: they are in the task
+  const prompt = b.fresh ? await require('./fresh-reviewer.cjs').promptFor(env.core, { spec: `You refuted it in ${c.review_id};` }) : null; // a reviewer who did not refute it is told who did, and what was found
   const made = await env.core.task.create({
-    spec: `Re-review ${c.task_id} after fix ${c.fix_id}. ${fresh ? `${c.review_id} refuted it (by ${c.worker}); judge whether the fix answers these findings.${findingsOf(refuted)}` : `You refuted it in ${c.review_id}; judge whether the fix answers your findings.`}${refuted && refuted.spec ? `\n\n${refuted.spec}` : ''}`,
+    spec: `Re-review ${c.task_id} after fix ${c.fix_id}. You refuted it in ${c.review_id}; judge whether the fix answers your findings.${refuted && refuted.spec ? `\n\n${refuted.spec}` : ''}`,
     acceptance: { verdict: true }, depends_on: [c.fix_id],
   });
   const ref = `task:${made.id}`;
   if (made.existing === true) return { outcome: made.superseded === true ? 'superseded' : 'done', row_ref: ref }; // a review of the fix stands: it is not assigned again
-  const r = await handOver(env, { task_id: made.id, worker_id: b.worker }, ref);
-  return fresh ? { ...r, worker_id: b.worker } : r;
+  return require('./policy-rounds-run.cjs').giveTask(c, env, b, { taskId: made.id, ref, prompt, written: true });
 }
 
 // review: a done work with nothing reviewing it gets the verdict task, handed to the plan's worker (`review.worker`, live and idle) or to a
