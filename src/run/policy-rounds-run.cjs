@@ -9,13 +9,14 @@ const KM = require('../core/kill-mark.cjs');
 const steps = () => require('./policy-steps-run.cjs'); // required when a step runs: policy-steps-run.cjs requires this file back
 const errText = (e) => `${(e && e.code) || 'E_INTERNAL'}: ${String((e && e.message) || e).replace(/[\x00-\x1f\x7f]+/g, ' ').slice(0, 200)}`;
 
-// The builder a round goes to, ready to take it. A builder that died after it handed back is not a worker belay can assign to; a round is its own bound
-// (one revival a step, and the cap bounds the steps), so it is brought back here, as policy-relaunch.cjs does for a death mid-task: the same worker
-// restarted on its session, else a fresh coder of the plan's `build.spawn` in the same tree. An operator's kill is the operator's and is not undone.
-// -> { worker } | { res } (the step's end when it cannot be done: the exception it always was). `treeTask`: the task whose tree a fresh coder starts in.
-async function readyBuilder(c, env, treeTask) {
+// The worker a step goes to, ready to take it: the builder of a round, or the refuter of a re_review. A worker that is already dead when its step comes due (it died
+// after it handed back, so no task of it is open for policy-relaunch.cjs) is not one belay can assign to; the step is its own bound (one revival a step, and the cap
+// or the review loop bounds the steps), so it is brought back here: the same worker restarted on its session, else a fresh one of the plan's spawn (`build.spawn`
+// for a builder, `review.spawn` for a refuter) in the same tree. An operator's kill is the operator's and is not undone.
+// -> { worker } | { res } (the step's end when it cannot be done: the exception it always was). `treeTask`: the task whose tree a fresh worker starts in.
+async function readyWorker(c, env, treeTask, role = 'builder') {
   const S = steps();
-  const why = await S.unavailable(env, c.worker, 'builder');
+  const why = await S.unavailable(env, c.worker, role);
   if (!why) return { worker: c.worker };
   const ws = ((await env.core.worker.list({})) || {}).workers || [];
   const w = ws.find((x) => x.id === c.worker);
@@ -25,16 +26,17 @@ async function readyBuilder(c, env, treeTask) {
   if (run && run.paused_at != null) return { res: { outcome: 'skipped', error: 'E_PAUSED: the run is paused; the claim is reopened and the step retaken after the resume' } };
   const tried = [why];
   if (env.restart) {
-    try { await env.restart(c.worker); const still = await S.unavailable(env, c.worker, 'builder'); if (!still) return { worker: c.worker }; tried.push(`restarted, but ${still}`); } catch (e) {
+    try { await env.restart(c.worker); const still = await S.unavailable(env, c.worker, role); if (!still) return { worker: c.worker }; tried.push(`restarted, but ${still}`); } catch (e) {
       if (e && e.code === 'E_PAUSED') return { res: { outcome: 'skipped', error: 'E_PAUSED: the run was paused as the builder was restarted; the claim is reopened and the step retaken after the resume' } };
       tried.push(`restart: ${errText(e)}`);
     }
   } else tried.push('this run has no restart path');
-  const spawn = c.build && c.build.spawn ? c.build.spawn : null;
+  const spec = role === 'refuter' ? c.review : c.build;
+  const spawn = spec && spec.spawn ? spec.spawn : null;
   const wt = spawn && env.spawn ? ((await env.core.task.get({ task_id: treeTask })) || {}).worktree : null;
-  if (!wt || !wt.path || wt.removed_at) return { res: S.exception(`${tried.join('; ')}; and ${!spawn ? 'the plan has no build spawn to start another' : !env.spawn ? 'this run has no spawn path' : `${treeTask} has no belay worktree to start a coder in`}`) };
+  if (!wt || !wt.path || wt.removed_at) return { res: S.exception(`${tried.join('; ')}; and ${!spawn ? `the plan has no ${role === 'refuter' ? 'review' : 'build'} spawn to start another` : !env.spawn ? 'this run has no spawn path' : `${treeTask} has no belay worktree to start a coder in`}`) };
   try {
-    const id = `bld-${require('node:crypto').randomUUID().slice(0, 8)}`;
+    const id = `${role === 'refuter' ? 'rev' : 'bld'}-${require('node:crypto').randomUUID().slice(0, 8)}`;
     const row = await env.spawn({ substrate: 'claude-code', worktree: wt.path, agent_type: spawn.agent_type, worker_id: id }); // no task: the step assigns it, with its reason
     return { worker: (row && row.id) || id };
   } catch (e) {
@@ -50,7 +52,7 @@ async function reassign(c, env) {
   if (!cur || cur.state !== 'released' || !cur.handoff) return { outcome: 'skipped', error: `${c.task_id} is no longer a released hand-back` };
   let worker = c.worker;
   if (c.step === 'reask') { const why = await S.unavailable(env, c.worker, 'reviewer'); if (why) return S.exception(why); } else {
-    const b = await readyBuilder(c, env, c.task_id);
+    const b = await readyWorker(c, env, c.task_id);
     if (b.res) return b.res;
     worker = b.worker;
   }
@@ -83,7 +85,7 @@ async function mergeFix(c, env) {
   const S = steps();
   const w = await env.core.task.get({ task_id: c.conflict_task });
   if (!w || w.state !== 'done') return { outcome: 'skipped', error: `${c.conflict_task} is no longer done` };
-  const b = await readyBuilder(c, env, w.id);
+  const b = await readyWorker(c, env, w.id);
   if (b.res) return b.res;
   const made = await env.core.task.create({
     spec: c.spec, acceptance: w.acceptance, files_owned: w.files_owned, depends_on: [w.id], repairs: c.task_id, tree_of: w.id, ...(w.base ? { base: w.base } : {}),
@@ -102,4 +104,4 @@ async function noteFlaky(c, env) {
 
 const RUNNERS = { fix_eval: reassign, fix_run: reassign, reask: reassign, rerun_alone: rerun, rerun_eval: rerun, fix_conflict: mergeFix, fix_checks: mergeFix, fix_commit: mergeFix, note_flaky: noteFlaky };
 
-module.exports = { RUNNERS, STEP_NAMES: RF.STEP_NAMES };
+module.exports = { readyWorker, RUNNERS, STEP_NAMES: RF.STEP_NAMES };

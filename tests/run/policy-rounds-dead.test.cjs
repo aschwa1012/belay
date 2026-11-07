@@ -9,7 +9,7 @@ const assert = require('node:assert');
 const { deadPid } = require('../core/helpers.cjs');
 const { makeRepo, write, commit, guarded } = require('../core/worktree-helpers.cjs');
 const KM = require('../../src/core/kill-mark.cjs');
-const { env, stepRows, wakesOf, REST } = require('./policy-review-env.cjs');
+const { env, stepRows, wakesOf, workDone, REST } = require('./policy-review-env.cjs');
 
 const test = guarded(nodeTest);
 const RED = { commands: [{ argv: [process.execPath, '-e', 'process.exit(1)'], timeout_ms: 20000 }] };
@@ -84,5 +84,95 @@ test('a run with neither a restart nor a spawn path keeps the exception, naming 
     const out = await e.exec().tick();
     assert.deepStrictEqual(fixSteps()(out), [['fix_eval', 'exception']]);
     assert.match(stepRows(e).find((s) => s.step === 'fix_eval').error, /builder b1 is dead.*no restart path/);
+  } finally { await e.close(); }
+});
+
+// A work judged done by builder-1, refuted by the reviewer rv-1 (a worker of its own, in the work's tree).
+const SPAWNING = { build: { spawn: { agent_type: 'coder' } }, review: { spawn: { agent_type: 'reviewer' } }, ...REST };
+async function refuted(e) {
+  const { work, tree, builder } = await workDone(e, SPAWNING);
+  const review = await e.orch.task.create({ spec: 'review', depends_on: [work.id], acceptance: { verdict: true } });
+  const w = await e.worker('rv-1', tree);
+  const a = await e.orch.task.assign({ task_id: review.id, worker_id: 'rv-1' });
+  await w.lease.release({ lease_id: a.new_lease.id, reason: 'done', result: { verdict: 'refuted', summary: 'bad', findings: [{ severity: 'blocking', clause: 'a', note: 'bad' }] } });
+  await e.h.task.evaluate({ task_id: review.id, worktree: tree, trigger: 'release' });
+  return { work, tree, builder, review };
+}
+const die = (e, id) => e.orch.worker.write({ id, state: 'dead', pid: deadPid(), exit_code: 1, death_established_by: 'exit-event' });
+const revive = (e) => async (id) => { await e.orch.worker.write({ id, substrate: 'claude-code', pid: process.pid, state: 'idle', session_id: `s-${id}`, last_event_at: Date.now() }); };
+const stepsOut = (out, name) => out.steps.filter((s) => s.step === name).map((s) => [s.step, s.outcome]);
+
+test('the fix for a refuted review goes to its builder even when it died: restarted, else a fresh coder in the work\'s tree', async () => {
+  const e = await env('dead-fix-restart');
+  try {
+    const { work, builder } = await refuted(e);
+    await die(e, builder);
+    const out = await e.exec({ restartWorker: revive(e) }).tick();
+    assert.deepStrictEqual(stepsOut(out, 'fix'), [['fix', 'done']]);
+    const fixId = e.raw('SELECT DISTINCT id FROM task WHERE repairs = ?', work.id)[0].id;
+    assert.strictEqual(holder(e, fixId), builder, 'the same builder, restarted');
+  } finally { await e.close(); }
+});
+
+test('a fix whose builder cannot be restarted goes to a fresh coder of build.spawn', async () => {
+  const e = await env('dead-fix-spawn');
+  try {
+    const { work, builder, tree } = await refuted(e);
+    await die(e, builder);
+    const spawned = [];
+    const spawnFor = () => async (a) => { spawned.push(a); await e.worker(a.worker_id, a.worktree); return { id: a.worker_id }; };
+    const out = await e.exec({ restartWorker: async () => { throw Object.assign(new Error('gone'), { code: 'E_NOT_FOUND' }); }, spawnFor }).tick();
+    assert.deepStrictEqual(stepsOut(out, 'fix'), [['fix', 'done']]);
+    const fixId = e.raw('SELECT DISTINCT id FROM task WHERE repairs = ?', work.id)[0].id;
+    assert.match(holder(e, fixId), /^bld-/);
+    assert.deepStrictEqual([spawned[0].agent_type, spawned[0].worktree], ['coder', tree]);
+  } finally { await e.close(); }
+});
+
+// The fix is done by the live builder, then the refuter dies before its re_review is due.
+async function fixedThenRefuterDead(e) {
+  const r = await refuted(e);
+  assert.deepStrictEqual(stepsOut(await e.exec().tick(), 'fix'), [['fix', 'done']]);
+  const fixId = e.raw('SELECT DISTINCT id FROM task WHERE repairs = ?', r.work.id)[0].id;
+  const l = e.raw('SELECT id FROM lease WHERE task_id = ? ORDER BY seq DESC LIMIT 1', fixId)[0];
+  await (await e.worker(r.builder)).lease.release({ lease_id: l.id, reason: 'done', result: { branch: 'b', head: 'h2' } });
+  assert.strictEqual((await e.h.task.evaluate({ task_id: fixId, trigger: 'release' })).state, 'done');
+  await die(e, 'rv-1');
+  return { ...r, fixId };
+}
+
+test('a re_review aimed at a refuter that died: the same reviewer restarted', async () => {
+  const e = await env('dead-rereview-restart');
+  try {
+    const { review, fixId } = await fixedThenRefuterDead(e);
+    const out = await e.exec({ restartWorker: revive(e) }).tick();
+    assert.deepStrictEqual(stepsOut(out, 're_review'), [['re_review', 'done']]);
+    const rr = e.raw("SELECT id FROM task WHERE depends_on LIKE ? AND acceptance LIKE '%verdict%'", `%${fixId}%`)[0].id;
+    assert.strictEqual(holder(e, rr), 'rv-1');
+    assert.ok(review.id);
+  } finally { await e.close(); }
+});
+
+test('a re_review whose refuter cannot be restarted goes to a fresh reviewer of review.spawn in the work\'s tree; a kill mark or no path is the exception it was', async () => {
+  const e = await env('dead-rereview-spawn');
+  try {
+    const { fixId, tree } = await fixedThenRefuterDead(e);
+    const spawned = [];
+    const spawnFor = () => async (a) => { spawned.push(a); await e.worker(a.worker_id, a.worktree); return { id: a.worker_id }; };
+    const out = await e.exec({ restartWorker: async () => { throw Object.assign(new Error('gone'), { code: 'E_NOT_FOUND' }); }, spawnFor }).tick();
+    assert.deepStrictEqual(stepsOut(out, 're_review'), [['re_review', 'done']]);
+    const rr = e.raw("SELECT id FROM task WHERE depends_on LIKE ? AND acceptance LIKE '%verdict%'", `%${fixId}%`)[0].id;
+    assert.match(holder(e, rr), /^rev-/);
+    assert.deepStrictEqual([spawned[0].agent_type, spawned[0].worktree], ['reviewer', tree]);
+  } finally { await e.close(); }
+});
+
+test('a re_review whose refuter is dead, with no path to a new one, is the exception it was', async () => {
+  const e = await env('dead-rereview-none');
+  try {
+    await fixedThenRefuterDead(e);
+    const out = await e.exec().tick();
+    assert.deepStrictEqual(stepsOut(out, 're_review'), [['re_review', 'exception']]);
+    assert.match(stepRows(e).find((x) => x.step === 're_review').error, /refuter rv-1 is dead.*no restart path/);
   } finally { await e.close(); }
 });

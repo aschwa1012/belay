@@ -104,14 +104,14 @@ function due(snap) {
       const R = byId.get(x.review.review_id);
       if (R && R.run_id === runId && isRelease(R)) {
         const judged = byId.get((Array.isArray(R.depends_on) ? R.depends_on : [])[0]);
-        out.push({ step: 'fix', task_id: x.id, trigger: tref(R), policy_rev: rev, worker: handBy(judged) || handBy(x), review_id: R.id });
+        out.push({ step: 'fix', task_id: x.id, trigger: tref(R), policy_rev: rev, worker: handBy(judged) || handBy(x), ...(plan.build ? { build: plan.build } : {}), review_id: R.id });
       }
     }
     // re_review: a fix task is done on belay's own evaluation and nothing reviews it yet; the review goes to the one who refuted.
     if (x.repairs && x.state === 'done' && plan.re_review === 'refuter' && isRelease(x) && !(reviewsOf.get(x.id) || []).length && !(rf && RF.isMergeFix(rf, x))) { // a fix that resolved a merge is checked by the retried merge, not re-reviewed
       const answered = (Array.isArray(x.answers) ? x.answers : []).slice().reverse().map((id) => byId.get(id)).find((r) => r && handBy(r));
       const R = answered || (root.review && byId.get(root.review.review_id)) || null;
-      out.push({ step: 're_review', task_id: root.id, trigger: tref(x), policy_rev: rev, worker: handBy(R), fix_id: x.id, review_id: R ? R.id : null });
+      out.push({ step: 're_review', task_id: root.id, trigger: tref(x), policy_rev: rev, worker: handBy(R), ...(plan.review ? { review: plan.review } : {}), fix_id: x.id, review_id: R ? R.id : null });
     }
     // follow_up (B1, ADR 0064): the work's review holds with should-fix findings, no follow-up answers that review yet and the run's
     // max_follow_ups leaves one; the step makes the follow-up and the build step dispatches it. Past the cap nothing is due: the work
