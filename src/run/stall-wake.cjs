@@ -25,6 +25,8 @@ function fit(build, ids) {
   return require('./review-wake.cjs').cut(text, PW.WAKE_TEXT_MAX);
 }
 
+// A released review whose evaluation has not landed (its hand-back is newer than its evaluation) is not yet settled: the plan is still about to act on it.
+const evalPending = (t) => !!(t.handoff && t.handoff.at != null && !(t.results && Number(t.results.evaluated_at) >= Number(t.handoff.at)));
 const mine = (tasks, runId) => tasks.filter((t) => t.run_id === runId);
 const openOf = (tasks, runId) => mine(tasks, runId).filter((t) => t.state === 'open');
 // A dependency is ready when it is done and, if its plan merges it and the plan is still at work on it (`carried`: a step due or in flight on
@@ -52,13 +54,16 @@ function untaken(snap) {
   for (const c of due({ runId, tasks, integrations: (snap.integrations || []).filter((i) => i.state !== 'merging'), steps: snap.steps || [] })) { carried.add(c.task_id); for (const id of c.task_ids || []) carried.add(id); }
   for (const s of snap.steps || []) if (s.run_id === runId && s.outcome === 'started' && s.task_id) carried.add(s.task_id);
   for (const id of carried) named.add(id);
+  const stepRoots = new Set(); // a step in flight owns every row of its work's tree, such as the review it has just written and not yet assigned
+  for (const s of snap.steps || []) if (s.run_id === runId && s.outcome === 'started' && byId.get(s.task_id)) stepRoots.add(PW.rootOf(byId.get(s.task_id), byId).id);
   const atWork = new Set(carried);
   for (const t of mine(tasks, runId)) {
-    if (t.state === 'done' || t.state === 'cancelled' || t.state === 'released') continue; // released: a refuted review ends so, and one still owed its fix is carried through due()
+    if (t.state === 'done' || t.state === 'cancelled' || (t.state === 'released' && !evalPending(t))) continue; // released: a refuted review ends so, and one still owed its fix is carried through due()
     atWork.add(PW.rootOf(t, byId).id);
     if (t.acceptance && t.acceptance.verdict === true) for (const d of Array.isArray(t.depends_on) ? t.depends_on : []) if (byId.get(d)) atWork.add(PW.rootOf(byId.get(d), byId).id);
   }
-  return openOf(tasks, runId).filter((t) => ready(t, byId, atWork) && !named.has(t.id)).map((t) => t.id).sort();
+  const inStep = (t) => stepRoots.has(PW.rootOf(t, byId).id) || (!!t.acceptance && t.acceptance.verdict === true && (Array.isArray(t.depends_on) ? t.depends_on : []).some((d) => byId.get(d) && stepRoots.has(PW.rootOf(byId.get(d), byId).id)));
+  return openOf(tasks, runId).filter((t) => PW.policyOf(t, byId) && !inStep(t) && ready(t, byId, atWork) && !named.has(t.id)).map((t) => t.id).sort();
 }
 
 // `planned()`: whether the store shows a plan for the run (planned.cjs), for an idle close with no policy snapshot.

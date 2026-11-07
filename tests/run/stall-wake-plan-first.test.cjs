@@ -109,7 +109,7 @@ test('plan-first: an escalated planned task and its open fix are left out; an un
     task({ id: 't-esc', state: 'released', seq: 5, ...esc('coder-a') }),
     task({ id: 'f-esc', seq: 6, repairs: 't-esc', policy: null }),
     task({ id: 'u-esc', state: 'released', seq: 7, policy: null, ...esc('coder-u') }),
-    task({ id: 't-free', seq: 8, policy: null }),
+    task({ id: 't-free', seq: 8, policy: { fix: 'builder' } }),
   ];
   const snap = { runId: RUN, tasks, integrations: [], steps: [] };
   const PW = require('../../src/run/policy-wakes.cjs');
@@ -124,4 +124,36 @@ test('plan-first: a done dependency whose integrate waits behind another integra
   assert.deepStrictEqual(due(snap).filter((c) => c.step === 'integrate'), [], 'due() withholds the integrate while another merges');
   assert.deepStrictEqual(untaken(snap), [], 'the plan still carries t-dep to its merge: t-next is not free');
   assert.deepStrictEqual(createStallWatcher({ core: null, runId: RUN }).poll(handBack('rv', ['r-dep']), snap), []);
+});
+
+// A released review the reviewer handed back, whose evaluation has not landed: the plan is still about to act on t-dep (fix or merge).
+test('plan-first: a released review whose evaluation has not landed carries its work, so its dependent is not named', () => {
+  const tasks = [
+    task({ id: 't-dep', state: 'done', seq: 5, ...evaluated('coder-a') }),
+    task({ id: 'r-dep', state: 'released', seq: 6, depends_on: ['t-dep'], policy: null, acceptance: { verdict: true }, handoff: { by: 'rv', at: 50 }, results: null }),
+    task({ id: 't-next', seq: 7, depends_on: ['t-dep'] }),
+  ];
+  assert.deepStrictEqual(untaken({ runId: RUN, tasks, integrations: [], steps: [] }), [], 'evaluation pending: carried');
+  tasks[1].results = { trigger: 'release', evaluated_at: 60, executable: true, passed: true, checks: [] };
+  assert.deepStrictEqual(untaken({ runId: RUN, tasks, integrations: [], steps: [] }), ['t-next'], 'evaluated: settled again (the old rule)');
+});
+
+test('plan-first: the review a started step has just written, and not yet assigned, is not named; only planned tasks are', () => {
+  const tasks = [
+    task({ id: 't-fix', state: 'done', seq: 5, ...evaluated('coder-a') }),
+    task({ id: 'r-new', seq: 8, depends_on: ['t-fix'], policy: null, acceptance: { verdict: true } }),
+    task({ id: 't-hand', seq: 9, policy: null }),
+  ];
+  const started = [{ seq: 4, run_id: RUN, step: 're_review', task_id: 't-fix', outcome: 'started', claimant_pid: 1 }];
+  assert.deepStrictEqual(untaken({ runId: RUN, tasks, integrations: [], steps: started }), [], 'the step owns r-new; t-hand is the orchestrator\'s own (policy null)');
+  assert.deepStrictEqual(untaken({ runId: RUN, tasks, integrations: [], steps: [] }), [], 'a policy-null review and a policy-null task are never named');
+});
+
+test('plan-first: a done dependency waiting behind a merge in flight is carried, as in the p1 pilot', () => {
+  const tasks = [
+    task({ id: 't-a', state: 'done', seq: 5, ...evaluated('coder-a'), review: { state: 'holds', review_id: 'r-a' } }),
+    task({ id: 'r-a', state: 'done', seq: 6, depends_on: ['t-a'], ...verdict('rv') }),
+    task({ id: 't-b', seq: 7, depends_on: ['t-a'] }),
+  ];
+  assert.deepStrictEqual(untaken({ runId: RUN, tasks, integrations: [{ run_id: RUN, state: 'merging' }], steps: [] }), []);
 });

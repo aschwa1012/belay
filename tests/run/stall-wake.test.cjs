@@ -89,7 +89,7 @@ test('run B: a review\'s holds the plan took, with three reviews and two planned
     const out = await withFake(() => runWith(core, sb));
     const s = stalled(out);
     assert.ok(s.length >= 1 && s[0].established_by.startsWith('task.list and policy.list'), JSON.stringify(out.wakes));
-    assert.deepStrictEqual(s[0].task_ids, ['r-billwise', 'r-budget', 'r-import-3', 't-users'], 'ready and open: t-perf waits on t-users');
+    assert.deepStrictEqual(s[0].task_ids, ['t-users'], 'ready, open and planned: t-perf waits on t-users, and the three reviews are of unplanned work');
     const close = s.find((w) => w.established_by === 'task.list at the idle close');
     assert.ok(close, `the close names them: ${JSON.stringify(out.wakes)}`);
     assert.deepStrictEqual(close.task_ids, ['r-billwise', 'r-budget', 'r-import-3', 't-perf', 't-users']);
@@ -179,9 +179,9 @@ test('after a planned hand-back: waits for its evaluation, wakes on every one th
   assert.deepStrictEqual(untaken({ ...snap, steps: [{ run_id: RUN, step: 'build', task_id: 't-perf', outcome: 'started' }] }), []);
   // A halted task (its exception wake has gone) is not called "no policy step due": an E5 on t-bad halts its open fix.
   const bad = task({ id: 't-bad', state: 'released', policy: PLAN, handoff: { by: 'w9', at: 10 }, results: { trigger: 'release', evaluated_at: 20, executable: true, passed: false, checks: [{ kind: 'command', argv: ['npm', 'test'], passed: false, exit_code: 1 }] } });
-  assert.deepStrictEqual(untaken({ runId: RUN, tasks: [bad, task({ id: 't-fix', repairs: 't-bad' }), task({ id: 't-free' })], integrations: [], steps: [] }), ['t-free']);
+  assert.deepStrictEqual(untaken({ runId: RUN, tasks: [bad, task({ id: 't-fix', repairs: 't-bad' }), task({ id: 't-free', policy: PLAN })], integrations: [], steps: [] }), ['t-free']);
   // Many long ids: fewer are named and the rest counted, within the cap.
-  const many = Array.from({ length: 20 }, (_, i) => task({ id: `task-with-a-long-name-${String(i).padStart(2, '0')}` }));
+  const many = Array.from({ length: 20 }, (_, i) => task({ id: `task-with-a-long-name-${String(i).padStart(2, '0')}`, policy: PLAN }));
   const big = createStallWatcher({ core: null, runId: RUN }).poll({ absorbed: [{ worker_id: 'w', task_ids: ['x'] }], pending: new Map() }, { runId: RUN, tasks: many, integrations: [], steps: [] })[0];
   assert.ok(Buffer.byteLength(big.text) <= 221, big.text);
   assert.match(big.text, /and \d+ more\.$/);
