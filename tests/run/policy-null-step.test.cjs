@@ -148,3 +148,12 @@ test('cancelling the judged work lifts a reviewer\'s escalation, so done is not 
   assert.strictEqual(PW.haltedIds(es, snap.tasks).has('A'), false, 'a cancelled task halts nothing');
   assert.ok(doneOf({ ...snap, tasks: [A, { ...Rr, state: 'cancelled' }, live, RB] }, es), 'done can fire for the rest of the run');
 });
+
+test('E1 build: raised only when a dependency landed after the task was made; if every one had landed at creation the orchestrator knew', () => {
+  const dep = doneWork('D', SHIPPED_PLAN, { review: { review_id: 'x', state: 'holds' }, integration: { state: 'merged' } });
+  const mine = work('M', PP.resolve({ build: null }, SHIPPED_PLAN), { depends_on: ['D'] });
+  const merge = (at) => ({ id: 'i1', seq: 20, run_id: RUN, state: 'merged', passed: true, task_ids: ['D'], into_branch: `belay/integrate/${RUN}`, written_at: at });
+  const ex = (at, madeAt) => PW.derive({ runId: RUN, tasks: [dep, mine], integrations: [merge(at)], steps: [], failures: [], revisions: [{ id: 'M', seq: 12, written_at: madeAt, policy_rev: 1, evaluated_at: null }] }).filter((e) => e.field === 'build');
+  assert.deepStrictEqual(ex(150, 100).map((e) => e.task_id), ['M'], 'the merge came after the task was made: told');
+  assert.deepStrictEqual(ex(50, 100), [], 'the dependency had landed when the task was made: nothing');
+});
