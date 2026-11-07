@@ -59,3 +59,14 @@ test('a forecast past its deadline answers unavailable and leaves its child alon
   await r.exited;
   assert.deepStrictEqual(r.lingering(), []);
 });
+
+test('a child whose spawn failed is not kept as a running git', { timeout: 20000 }, async () => {
+  const tr = makeTracker((args, _cwd, _ms, o) => new Promise((resolve) => {
+    const c = spawn(path.join(__dirname, 'fixtures', 'no-such-git.exe'), [], { stdio: 'ignore', windowsHide: true });
+    o.onChild(c);
+    c.once('close', () => resolve({ executable: false, exit_code: null, stdout: '', stderr: '' }));
+    c.once('error', () => {});
+  }));
+  await tr.run(['--version'], process.cwd(), 1000, {});
+  assert.deepStrictEqual(tr.lingering(), []);
+});

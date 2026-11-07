@@ -34,7 +34,7 @@ const withExited = (o, p) => Object.defineProperty(o, 'exited', { value: Promise
 function makeTracker(runner = safeGit, prep = prepare) {
   const live = new Map();
   const kills = [];
-  const watch = (argv) => (c) => { live.set(c, { argv: argv.join(' '), at: Date.now() }); c.once('exit', () => live.delete(c)); };
+  const watch = (argv) => (c) => { live.set(c, { argv: argv.join(' '), at: Date.now() }); for (const ev of ['exit', 'close', 'error']) c.once(ev, () => live.delete(c)); }; // a failed spawn emits error and close, never exit
   return {
     run(args, cwd, ms, o) {
       return runner(args, cwd, ms, { ...o, onChild: watch(args) }).then((r) => {
