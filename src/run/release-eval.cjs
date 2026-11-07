@@ -247,12 +247,19 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     // Running until its git calls have exited (`exited`, conflict-forecast.cjs), not just until it has an answer, so the cap stays honest.
     // The wait has a ceiling: a survivor holding the pipes after a timeout kill must not pin the slot for the life of the process.
     const free = () => { seen.forecastRunning -= 1; };
-    const ceiling = (exited) => {
+    const ceiling = (fc) => {
+      const exited = fc && fc.exited;
       if (!exited) return undefined;
-      let timer; const cut = new Promise((res) => { timer = setTimeout(() => { log(`belay: conflict forecast of task ${t.id} still had git running ${exitCeilingMs} ms after its answer; its slot is freed`); res(); }, exitCeilingMs); if (timer.unref) timer.unref(); });
+      let timer; const cut = new Promise((res) => { timer = setTimeout(() => {
+        let live = [], kills = ''; try { live = fc.lingering ? fc.lingering() : []; } catch { /* the line stays without them */ }
+        try { kills = (fc.killReports ? fc.killReports() : []).map((k) => ` [killTree of git ${String(k.argv).slice(0, 200)}: ${k.ms} ms, process snapshot ${k.snapshot_ms} ms]`).join(''); } catch { /* the line stays without them */ }
+        const named = live.map((c) => ` [git ${String(c.argv).slice(0, 200)}, running ${c.ms} ms]`).join('');
+        log(live.length ? `belay: conflict forecast of task ${t.id} still had git running ${exitCeilingMs} ms after its answer${named}${kills}; its slot is freed`
+          : `belay: conflict forecast of task ${t.id} had not finished ${exitCeilingMs} ms after its answer, and no git child of it was alive (a git call's result or kill report was still pending)${kills}; its slot is freed`); res();
+      }, exitCeilingMs); if (timer.unref) timer.unref(); });
       return Promise.race([exited, cut]).finally(() => clearTimeout(timer));
     };
-    p.then((fc) => { if (fc) { forecasts.set(key, fc); recordForecast(core, runId, t, fc); } return ceiling(fc && fc.exited); }, () => { /* a forecast is optional */ }).then(free, free);
+    p.then((fc) => { if (fc) { forecasts.set(key, fc); recordForecast(core, runId, t, fc); } return ceiling(fc); }, () => { /* a forecast is optional */ }).then(free, free);
   };
   // A hand-back that was over the cap when first watched is started on a later poll, as slots free (kick marks only what it starts).
   for (const id of pending.keys()) { const t = byId.get(id); if (t && t.state === 'released') kick(t); }
