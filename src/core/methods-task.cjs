@@ -61,6 +61,10 @@ function assertDependenciesDone(E, task) {
 
 const SPAWN_THERE = "a worker cannot change its directory once it runs, so spawn a worker in the task's worktree";
 
+// A Codex worker is one process per turn (ADR 0019): between turns its row is `idle` and the process of the last turn has exited by design. That is the resting state
+// while the run's adapter, which resumes it with a message, answers; with the adapter gone nothing will resume it, so the exemption ends with it.
+const codexResting = (E, worker) => worker.substrate === 'codex' && worker.state === 'idle' && (() => { const r = rows.current(E.store, 'run', worker.run_id); return !!r && Number.isInteger(Number(r.adapter_pid)) && require('./lock.cjs').pidAlive(Number(r.adapter_pid)); })();
+
 async function assign(E, caller, args) {
   if (args.check_only !== undefined && typeof args.check_only !== 'boolean') throw err('E_ARGS', 'task.assign check_only must be a boolean');
   const checkOnly = args.check_only === true;
@@ -145,7 +149,8 @@ async function assign(E, caller, args) {
     // different, legitimate fact, not a dead one: src/run/manager.cjs writes the `starting` row and
     // calls task.assign before the launch has a pid to report — only `worker.write`'s own `running`
     // check treats a pid as required, and this must not narrow that.
-    if (worker.pid != null && !identity.runsAs(worker.pid, worker.pid_created)) {
+    // A Codex worker between turns is not a dead pid (codexResting above).
+    if (worker.pid != null && !codexResting(E, worker) && !identity.runsAs(worker.pid, worker.pid_created)) {
       throw err('E_WORKER_NOT_LIVE', `worker ${args.worker_id} claims state ${worker.state} but its pid ${worker.pid} is dead`,
         { worker_id: args.worker_id, state: worker.state, pid: worker.pid, pid_alive: false });
     }

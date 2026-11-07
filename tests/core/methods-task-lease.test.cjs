@@ -81,6 +81,18 @@ test('task.assign refuses a worker that is not live', async () => {
   await rejects(orch.task.assign({ task_id: taskId, worker_id: 'never-existed' }), 'E_WORKER_NOT_LIVE');
 });
 
+test('task.assign takes a Codex worker between turns (idle, the last turn\'s process exited) and still refuses a Claude Code one with a dead pid', async () => {
+  const cx = await orch.task.create({ spec: 'for a codex worker between turns' });
+  await orch.worker.write({ id: 'w-codex-idle', substrate: 'codex', pid: deadPid(), state: 'idle', last_event_at: Date.now() });
+  const r = await orch.task.assign({ task_id: cx.id, worker_id: 'w-codex-idle' });
+  assert.strictEqual(r.new_lease.holder, 'w-codex-idle', 'one process per turn: the exited process is the resting state while the run\'s adapter answers');
+  const cl = await orch.task.create({ spec: 'for a claude code worker with a dead pid' });
+  await orch.worker.write({ id: 'w-claude-idle', substrate: 'claude-code', pid: deadPid(), state: 'idle', last_event_at: Date.now() });
+  await rejects(orch.task.assign({ task_id: cl.id, worker_id: 'w-claude-idle' }), 'E_WORKER_NOT_LIVE');
+  await orch.worker.write({ id: 'w-codex-dead', substrate: 'codex', pid: deadPid(), state: 'dead', exit_code: 1, death_established_by: 'exit-event' });
+  await rejects(orch.task.assign({ task_id: cl.id, worker_id: 'w-codex-dead' }), 'E_WORKER_NOT_LIVE');
+});
+
 // ---- dependency gating (ADR 0013 §1) ---------------------------------------
 test('task.create records its dependencies and refuses one that has no row', async () => {
   const dep = await orch.task.create({ spec: 'the dependency' });
