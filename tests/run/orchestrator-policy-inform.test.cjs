@@ -28,7 +28,7 @@ test('both prompts carry the policy manager section: what it does, what wakes th
     assert.match(s, /digest/, `${f}: the digest`);
     assert.match(s, /wakes you on an exception/, `${f}: exceptions wake it`);
     // E1 to E3 and E5 to E8 halt a task; a death (E4) halts nothing, a budget pause (E9) pauses the run.
-    assert.match(s, /An exception about a task halts belay's steps on it until you act on it or amend its plan; a death halts nothing, and a budget pause pauses the whole run\./, `${f}: the halt`);
+    assert.match(s, /An exception about a task halts belay's steps on it until you act on it or amend its plan; a death halts nothing: when a builder belay started dies unexpectedly, belay restarts it once, and you are woken \(E4\) only if that fails or it dies again; a worker you kill or stop is never restarted\. A budget pause pauses the whole run\./, `${f}: the halt`);
     assert.match(s, /so a plan keeps your context lean/, `${f}: the context benefit`);
     assert.ok(!s.includes('Plan the work first'), `${f}: the directive is not in the template: it is rendered with the run's plan`);
     assert.ok(flat(s).includes(DONE), `${f}: the done wake`);
