@@ -46,8 +46,8 @@ keep it open. So:
   watches every worker and answers at once for any whose last turn has already ended, with
   `already: true`; `already: true` means that worker's turn ended before your call, not that the
   work you wait for is done.
-- In a run where tasks carry a plan, belay wakes you on an exception it derived from the store, and the digest of the steps it took comes inside that wake or the done wake:
-  before the run closes when steps are left. Each step is in one digest, with a count of any the 2 KB cap left out; a digest is belay's
+- In a run where tasks carry a plan, belay wakes you on an exception it derived from the store, and the digest of the steps it took comes inside that wake or the done wake.
+  When steps are left at the end, belay writes the digest as its own wake before the run closes. Each step is in one digest, with a count of any the 2 KB cap left out; a digest is belay's
   record of what it did, not a request. `mcp__belay__worker_wait` with no `worker_ids` waits for the run and returns the same exceptions and digest; you do not need to call it.
   A step belay has started, or one due for under 30 s while belay takes no other, keeps the run open after you end your turn. Naming `worker_ids` watches those workers as before.
 - A worker whose turn has ended without what you waited for is idle, not working. Waiting on it
