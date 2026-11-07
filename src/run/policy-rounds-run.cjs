@@ -62,6 +62,7 @@ async function giveTask(c, env, b, { taskId, ref, prompt = null, pausedOk = fals
   if (!b.fresh) {
     const r = await S.handOver(env, { task_id: taskId, worker_id: b.worker, ...(prompt ? { prompt } : {}) }, ref, pausedOk);
     if (r.outcome === 'done' && !written) { const l = await lease(); if (l) r.row_ref = `lease:${l.id}`; } // the row the step wrote is the lease
+    if (r.outcome === 'superseded' && written) r.row_ref = ref; // a task the step made and the orchestrator assigned first: the claim names the task, which outlives the lease (policy-rounds.cjs mergeAction finds the fix by it)
     return b.worker !== c.worker ? { ...r, worker_id: b.worker } : r;
   }
   let row;
