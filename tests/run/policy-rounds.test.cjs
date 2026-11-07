@@ -391,7 +391,7 @@ test('C3: an E8 on failed integration checks lifts when a later merge of that wo
   try {
     const { a, b } = await redBranch(e, M.without(M.PLAN, 'fix'));
     await e.tick();
-    const w = (await e.poll()).filter((x) => x.exception === 'E8');
+    const w = (await e.poll()).filter((x) => x.exception === 'E8' && x.task_id === b.t.id); // c, merged after it under a plan with no fix step, has its own E8
     assert.strictEqual(w.length, 1, JSON.stringify(w));
     assert.ok((await M.halted(e)).has(b.t.id), 'halted');
     resolveB(b);
@@ -453,6 +453,57 @@ test('the done wake sees the rounds: it is not done while a retried merge is due
   const base = { ...rows(null, {}), tasks: [W, R], integrations: ints, steps: [] };
   assert.ok(doneOf(base), 'without the rounds the flaky note is invisible, as before');
   assert.strictEqual(doneOf({ ...base, rounds: { caps: { max: 2, hard: null } }, failures: [] }), null, 'with them, the note is still due: not done yet');
+});
+
+// The rows of a red branch: X merged and its checks failed; W2 is held, reviewed and not merged.
+function redRows(plan, redBy = 'policy', steps = []) {
+  const rel = (at) => ({ trigger: 'release', evaluated_at: at, executable: true, passed: true, checks: [] });
+  const i1 = { id: 'i1', run_id: 'r1', seq: 30, state: 'evaluated', into_branch: 'belay/integrate/r1', acted_by: redBy, passed: false, task_ids: ['X'], checks: [{ argv: ['npm', 'test'], task_ids: ['X'], passed: false, exit_code: 1 }] };
+  const X = T('X', { seq: 5, state: 'done', policy: plan, policy_rev: 1, handoff: { by: 'bx', at: 1 }, results: rel(2), review: { state: 'holds', review_id: 'RX' }, integration: { state: 'merged', id: 'i1', passed: false } });
+  const RX = T('RX', { seq: 6, state: 'done', acceptance: { verdict: true }, depends_on: ['X'], handoff: { by: 'rv', at: 3 }, results: rel(4) });
+  const W2 = T('W2', { seq: 7, state: 'done', policy: plan, policy_rev: 1, handoff: { by: 'bw', at: 1 }, results: rel(2), review: { state: 'holds', review_id: 'RW' }, integration: { state: 'not_merged', into: null } });
+  const RW = T('RW', { seq: 8, state: 'done', acceptance: { verdict: true }, depends_on: ['W2'], handoff: { by: 'rv', at: 3 }, results: rel(4) });
+  return { runId: 'r1', tasks: [X, RX, W2, RW], integrations: [i1], steps, roundSteps: steps, failures: [], rounds: { caps: { max: 2, hard: null } } };
+}
+
+test('C3: the red hold is only for a red the plan carries: a merge the orchestrator made, or a plan with no fix step, holds nothing', () => {
+  const steps = (cancelled) => [{ seq: 50, run_id: 'r1', step: 'fix_checks', task_id: 'X', outcome: 'done', row_ref: 'task:F1', trigger_table: 'integration', trigger_id: 'i1', trigger_seq: 30, at: 35 }].concat(cancelled ? [] : []);
+  const ids = (snap) => due(snap).filter((c) => c.step === 'integrate').map((c) => c.task_id);
+  const F1 = (state) => T('F1', { seq: 40, state, repairs: 'X', depends_on: ['X'] });
+  const carried = redRows(PLAN, 'policy', steps());
+  carried.tasks.push(F1('assigned'));
+  assert.deepStrictEqual(ids(carried), [], 'a policy merge with its fix open: W2 waits');
+  const noStep = redRows(PLAN, 'policy', []);
+  assert.deepStrictEqual(ids(noStep), [], 'the fix is about to be due: W2 waits');
+  const cancelled = redRows(PLAN, 'policy', steps()); cancelled.tasks.push(F1('cancelled'));
+  assert.deepStrictEqual(ids(cancelled), ['W2'], 'the fix was cancelled: nothing carries the red, the other merge goes on');
+  assert.deepStrictEqual(ids(redRows(PLAN, 'orchestrator')), ['W2'], 'the orchestrator\'s own merge: no fix step is due, so no hold');
+  assert.deepStrictEqual(ids(redRows({ ...PLAN, fix: undefined }, 'policy')), ['W2'], 'a plan with no fix step: the E8 wakes as before, and the other merges go on');
+  const spent = redRows(PLAN, 'policy', []); spent.rounds = { caps: { max: 0, hard: null } };
+  assert.deepStrictEqual(ids(spent), [], 'at the cap E2 is raised and the branch stays held for the orchestrator');
+});
+
+test('C2: after the bound a waiting failure still does not start a second re-run, and the idle close holds for it while it waits', () => {
+  const A = T('A', { seq: 10, state: 'released', policy: PLAN, policy_rev: 1, handoff: { by: 'b1', at: 10 }, results: failBeside });
+  const going = [{ seq: 3, run_id: 'r1', task_id: 'Z', step: 'rerun_alone', trigger_table: 'task', trigger_id: 'Z', trigger_seq: 1, outcome: 'started', at: 25 }];
+  assert.deepStrictEqual(due(beside({ tasks: [A], steps: going, now: 20 + 999999 })), [], 'a re-run is in flight: wait, past the bound too');
+  const pending = T('B', { seq: 11, state: 'released', policy: PLAN, policy_rev: 1, handoff: { by: 'b2', at: 12 } });
+  const rf = RF.ctxOf({ runId: 'r1', now: 30, tasks: [A, pending], steps: [], failures: [], caps: { max: 2, hard: null }, integrations: [] });
+  assert.deepStrictEqual(RF.waitingIds(rf, () => PLAN), ['A']);
+  const { createPolicyCloseHold } = require('../../src/run/policy-close-hold.cjs');
+  const h = createPolicyCloseHold({ now: () => 0, alive: () => true });
+  assert.ok(h.holds({ runId: 'r1', tasks: [A, pending], integrations: [], steps: [], failures: [], now: 30, rounds: { caps: { max: 2, hard: null } } }).includes('policy-wait:A'));
+});
+
+test('C3: an E8 lifts only on a merge-side step, and only by a merge that put the work on the branch (not by the cumulative task_ids)', () => {
+  const PW = require('../../src/run/policy-wakes.cjs');
+  const X = T('X', { seq: 5, state: 'done', policy: PLAN, policy_rev: 1, handoff: { by: 'bx', at: 1 }, results: { trigger: 'release', evaluated_at: 2, executable: true, passed: true, checks: [] } });
+  const e8 = (step) => ({ seq: 9, run_id: 'r1', task_id: 'X', step, trigger_table: 'task', trigger_id: 'X', trigger_seq: 5, outcome: 'exception', error: 'E_X: it failed', at: 40, finished_at: 41 });
+  const merge = (merged) => ({ id: 'I2', run_id: 'r1', seq: 60, written_at: 100, state: 'evaluated', passed: true, task_ids: ['X'], merged });
+  const lifted = (step, merged) => PW.derive({ runId: 'r1', tasks: [X], integrations: [merge(merged)], steps: [e8(step)], failures: [] }).filter((x) => x.exception === 'E8').map((x) => !!x.lifted);
+  assert.deepStrictEqual(lifted('integrate', [{ task_id: 'X', already: false }]), [true], 'merged by that call');
+  assert.deepStrictEqual(lifted('integrate', [{ task_id: 'X', already: true }]), [false], 'only carried: it says nothing about X');
+  assert.deepStrictEqual(lifted('review', [{ task_id: 'X', already: false }]), [false], 'a review that failed is not lifted by a merge');
 });
 
 test('the plan is what carries it: a plan with no fix step still wakes E5, and the integrate step still ends an exception on failed checks', async () => {

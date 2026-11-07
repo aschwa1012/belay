@@ -20,6 +20,7 @@
 
 const { due, keyOf } = require('./policy-exec.cjs');
 const PW = require('./policy-wakes.cjs');
+const RF = require('./policy-rounds.cjs');
 const P = require('./process.cjs');
 
 const DUE_HOLD_MS = 30000;
@@ -78,6 +79,11 @@ function createPolicyCloseHold({ alive = P.pidAlive, createdOf = P.createdOf, no
       if (t - since.get(key) < DUE_HOLD_MS) out.push(`policy:${c.step}:${c.task_id}`);
     }
     for (const k of [...since.keys()]) if (!seen.has(k)) since.delete(k);
+    if (snap.rounds) { // a failure waiting (bounded) for the run's other evaluations is a step about to be due: the close holds
+      const rf = RF.ctxOf({ runId, now: snap.now, tasks: snap.tasks, steps, failures: snap.failures, caps: snap.rounds.caps, integrations: snap.integrations });
+      const byId = new Map(snap.tasks.map((x) => [x.id, x]));
+      for (const id of RF.waitingIds(rf, (x) => PW.policyOf(x, byId))) if (!halted.has(id)) out.push(`policy-wait:${id}`);
+    }
     return out;
   }
 

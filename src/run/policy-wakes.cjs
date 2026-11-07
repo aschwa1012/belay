@@ -39,6 +39,7 @@ function unplannedEscalation(x) {
 }
 const REVISION_IDS = 200; // task ids per policy.revisions call (its cap is 500)
 const AMEND_LIFTS = new Set(['E1', 'E2', 'E5', 'E6', 'E7', 'escalation']); // a plan amend after the exception lifts these halts (E8's own lift reads its step's policy_rev)
+const MERGE_SIDE = new Set(['integrate', 'fix_conflict', 'fix_checks', 'fix_commit']); // the steps whose E8 a passing merge lifts
 const HALTING = new Set(['E1', 'E2', 'E3', 'E5', 'E6', 'E7', 'E8', 'escalation']); // E4 is the worker's, E9 pauses the run, E10 is not a task's
 // ADR 0073 Q1 (open): 'task' halts the task and its fixes (the recommendation); 'chain' also halts what depends on them.
 const HALT_SCOPE = 'task';
@@ -246,7 +247,7 @@ function derive(snap) {
     const byOrch = (o) => o && o.acted_by !== 'policy' && o.written_by === 'orchestrator' && Number(o.written_at) > end;
     const orchestratorRow = !!t && (t.policy_rev != null && s.policy_rev != null && Number(t.policy_rev) !== Number(s.policy_rev)
       || (byOrch(t) && (t.state === 'cancelled' || t.state === 'assigned'))
-      || (snap.integrations || []).some((o) => o.run_id === runId && o.passed === true && Number(o.written_at) > end && (Array.isArray(o.task_ids) ? o.task_ids : []).some((id) => id === root.id || (byId.get(id) && rootOf(byId.get(id), byId).id === root.id))) // a later merge of the work that passed its checks, the orchestrator's own included
+      || (MERGE_SIDE.has(s.step) && (snap.integrations || []).some((o) => o.run_id === runId && o.passed === true && Number(o.written_at) > end && (Array.isArray(o.merged) ? o.merged : []).some((m) => m && !m.already && (m.task_id === root.id || (byId.get(m.task_id) && rootOf(byId.get(m.task_id), byId).id === root.id))))) // a later merge that put the work (or a fix of it) on the branch and passed its checks, the orchestrator's own included; the cumulative task_ids say nothing
       || tasks.some((o) => byOrch(o) && o.id !== root.id && (o.repairs === root.id || (Array.isArray(o.depends_on) && o.depends_on.includes(root.id)))));
     if (cap && s.step === 'fix') add('E2', root, trigger, 'fix', { step: s.step, error: s.error }, R && R.results ? evOf(R) : { key: `step${s.seq}`, seq: Number(s.seq) }, { lifted: !!orchestratorRow });
     else if (/^E_BUDGET/.test(String(s.error || ''))) add('E9', root, trigger, s.step, { step: s.step, error: s.error }, { key: `step${s.seq}`, seq: Number(s.seq) }, { lifted: true }); // a step refused at the budget's soft threshold (policy-budget.cjs): the wake is the budget's, and it halts nothing

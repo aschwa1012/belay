@@ -60,7 +60,7 @@ function due(snap) {
   let slots = Number.isInteger(snap.maxBuilds) ? snap.maxBuilds - tasks.filter((t) => !isReviewTask(t) && t.lease && !t.lease.expired && t.state !== 'done').length : Infinity;
   const reviewsOf = new Map(); // task id -> the reviews (not cancelled) that depend on it
   for (const t of tasks) if (isReviewTask(t)) for (const d of Array.isArray(t.depends_on) ? t.depends_on : []) reviewsOf.set(d, (reviewsOf.get(d) || []).concat(t));
-  const red = rf ? RF.redOf(rf) : null; // a red branch takes no other merge until the failing work's fix lands (policy-rounds.cjs)
+  const red = rf ? RF.redOf(rf, (t) => planOf(t, byId)) : null; // a red branch takes no other merge until the failing work's fix lands (policy-rounds.cjs)
   const merging = (snap.integrations || []).some((i) => i.run_id === runId && i.state === 'merging');
   const out = [];
   const tref = (t) => ({ table: 'task', id: t.id, seq: Number(t.seq) || 0 });

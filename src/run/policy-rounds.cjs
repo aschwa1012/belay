@@ -67,11 +67,11 @@ const lastLine = (r) => { const c = failing(r).find((k) => k.detail && (k.detail
 // or a re-run in flight. Bounded: `since` is when the failure was evaluated, and past WAIT_MAX_MS it no longer waits (an evaluation lost with its adapter
 // would otherwise hold it for ever).
 function othersEvaluating(x, rf, since) {
+  if (rf.steps.some((s) => RERUN_STEPS.has(s.step) && s.outcome === 'started')) return true; // never two re-runs at once, whatever the bound
   if (rf.now - Number(since || 0) > WAIT_MAX_MS) return false;
   const ev = (t) => t.results && Number(t.results.evaluated_at) >= Number(t.handoff.at);
   const lost = (t) => rf.failures.some((f) => f.task_id === t.id && Number(f.written_at) >= Number(t.handoff.at));
-  return rf.steps.some((s) => RERUN_STEPS.has(s.step) && s.outcome === 'started')
-    || rf.tasks.some((t) => t.id !== x.id && t.state === 'released' && t.handoff && !t.handoff.stood_down && !ev(t) && !lost(t));
+  return rf.tasks.some((t) => t.id !== x.id && t.state === 'released' && t.handoff && !t.handoff.stood_down && !ev(t) && !lost(t));
 }
 
 function names(r) {
@@ -142,14 +142,25 @@ function mergeAction(i, rf, planFor) {
   return { ...base, step: conflict ? 'fix_conflict' : 'fix_checks', worker: handBy(w) };
 }
 
-// The branch is red when the newest integration into the run's own branch ran its checks and they failed: nothing else is merged onto it until the failing
-// work's fix lands (a merge stacked on it would inherit the blame). -> { integration, root } | null; `root` is the work whose merge is to be tried again.
-function redOf(rf) {
+// The branch is red when the newest integration into the run's own branch ran its checks and they failed. Nothing else is merged onto it only while the PLAN carries
+// the red: a policy integration the plan sends back to its builder (a fix_checks step is due or its fix is open) or that is at the cap (E2 is raised). A merge the
+// orchestrator made, a plan with no fix step, and a fix that was cancelled hold nothing: the E8 wakes as it always did and the other merges go on.
+// -> { integration, root } (`root`: the work whose retry is to be merged) | null. `planFor(task)`: { plan, rev } or null.
+function redOf(rf, planFor) {
   const own = `belay/integrate/${rf.runId}`;
   const newest = rf.integrations.filter((i) => !i.into_branch || i.into_branch === own).reduce((a, b) => (!a || Number(b.seq) > Number(a.seq) ? b : a), null);
   if (!newest || newest.state !== 'evaluated' || newest.passed !== false) return null;
-  const w = rf.byId.get(failedTask(newest, Array.isArray(newest.task_ids) ? newest.task_ids : []));
-  return { integration: newest, root: w ? rootOf(w, rf.byId).id : null };
+  const m = planFor ? mergeAction(newest, rf, planFor) : null;
+  if (!m) return null;
+  const claim = rf.steps.find((s) => MERGE_FIX_STEPS.has(s.step) && s.trigger_id === newest.id && !reopened(s));
+  const fix = claim && /^task:/.test(claim.row_ref || '') ? rf.byId.get(claim.row_ref.slice(5)) : null;
+  if (claim && claim.outcome === 'done' && (!fix || fix.state === 'cancelled')) return null;
+  return { integration: newest, root: m.root.id };
+}
+
+// The ids of the released hand-backs a failure is waiting on the run's other evaluations for (the idle close holds for them: the wait is bounded).
+function waitingIds(rf, policyFor) {
+  return rf.tasks.filter((x) => x.state === 'released' && x.handoff).filter((x) => { const P = policyFor(x); const a = P ? action(x, P, rf) : null; return !!(a && a.wait); }).map((x) => x.id);
 }
 
 // The newest fix task a merge-side step (fix_conflict, fix_checks) made for the work, once it is done: the work is merged again after it. null while it is
@@ -196,4 +207,4 @@ async function readFailures(core, runId) {
   try { return (((await core.memory.events({ run_id: runId, kinds: ['release_failed'] })) || {}).events || []).map((e) => ({ ...e, task_id: e.task_id || (Array.isArray(e.row_ids) ? e.row_ids[0] : null) })); } catch { return []; }
 }
 
-module.exports = { redOf, RERUN_STEPS, commitAction, commitHeld, noCommit, readFailures, ctxOf, capsOf, action, flakyDue, mergeAction, mergeFixOf, isMergeFix, mergeSpec, stepRounds, used, left, failing, checkName, ROUND_STEPS, MERGE_FIX_STEPS, SENDING, STEP_NAMES, REASK_MAX };
+module.exports = { waitingIds, redOf, RERUN_STEPS, commitAction, commitHeld, noCommit, readFailures, ctxOf, capsOf, action, flakyDue, mergeAction, mergeFixOf, isMergeFix, mergeSpec, stepRounds, used, left, failing, checkName, ROUND_STEPS, MERGE_FIX_STEPS, SENDING, STEP_NAMES, REASK_MAX };
