@@ -28,14 +28,33 @@ const noop = () => {};
 // the deadline returned the result. A caller capping how many forecasts run counts one as running until then.
 const withExited = (o, p) => Object.defineProperty(o, 'exited', { value: Promise.resolve(p).then(noop, noop), enumerable: false, configurable: true });
 
+// The git children a forecast started and has not seen exit, with the argv (git's own arguments) and age of each. `run` is safeGit; once the
+// deadline has passed or `release` was called it starts nothing (a call after the answer would be a child nobody waits for). `release`
+// ends every live child through its own handle, the backstop beside runCommand's tree kill, which can be slow or refused.
+function makeTracker(deadline, runner = safeGit) {
+  const live = new Map();
+  const t = {
+    deadline, stopped: false,
+    run(args, cwd, ms, o) {
+      if (t.stopped || Date.now() >= t.deadline) return Promise.resolve({ executable: false, exit_code: null, stdout: '', stderr: '', timed_out: true, spawn_error: 'the forecast deadline had passed' });
+      return runner(args, cwd, ms, { ...o, onChild: (c) => { live.set(c, { argv: args.join(' '), at: Date.now() }); c.once('exit', () => live.delete(c)); } });
+    },
+    lingering: () => [...live.values()].map((r) => ({ argv: r.argv, ms: Date.now() - r.at })),
+    release() { t.stopped = true; for (const c of live.keys()) { try { c.kill(); } catch { /* already gone */ } } },
+  };
+  return t;
+}
+const withLingering = (o, tr) => Object.defineProperty(o, 'lingering', { value: tr.lingering, enumerable: false, configurable: true });
+
 const sha = (s) => { const l = String(s || '').trim().split('\n')[0]; return /^[0-9a-f]{40,64}$/.test(l) ? l : null; };
 
 // The forecast of merging `head` into `against` (both commits of the repository at `repo`; `against` null when the integration
 // branch does not exist yet). `scratchRoot` is where the throwaway object directory goes (a test points it elsewhere). `prepared`
 // (git-safe prepare's result) and `deadline` (epoch ms) are shared by a caller that already spent some of the forecast's budget.
-async function forecast({ repo, head, against, totalMs = TOTAL_MS, scratchRoot = os.tmpdir(), prepared = null, deadline = null }) {
+async function forecast({ repo, head, against, totalMs = TOTAL_MS, scratchRoot = os.tmpdir(), prepared = null, deadline = null, tracker = null }) {
   const t0 = Date.now();
   const end = deadline || t0 + totalMs;
+  const tr = tracker || makeTracker(end);
   const left = () => Math.max(1, end - Date.now());
   const done = (o) => ({ ...o, against: against || null, ms: Date.now() - t0 });
   if (!against) return done({});
@@ -45,15 +64,15 @@ async function forecast({ repo, head, against, totalMs = TOTAL_MS, scratchRoot =
   const work = (async () => {
     const p = prepared || await prepare(repo, left());
     if (p.error) return done({ unavailable: p.error });
-    const v = await safeGit(['--version'], repo, left(), { prepared: p });
+    const v = await tr.run(['--version'], repo, left(), { prepared: p });
     const m = /(\d+)\.(\d+)/.exec(v.stdout || '');
     if (!m || Number(m[1]) < MIN_GIT[0] || (Number(m[1]) === MIN_GIT[0] && Number(m[2]) < MIN_GIT[1])) return done({ unavailable: `git ${m ? `${m[1]}.${m[2]}` : 'of unknown version'} is older than 2.38` });
-    const c = await safeGit(['rev-parse', '--path-format=absolute', '--git-common-dir'], repo, left(), { prepared: p });
+    const c = await tr.run(['rev-parse', '--path-format=absolute', '--git-common-dir'], repo, left(), { prepared: p });
     const common = c.executable && c.exit_code === 0 ? String(c.stdout).trim().split('\n')[0] : '';
     if (!common) return done({ unavailable: 'the repository\'s object directory was not found' });
     scratch = fs.mkdtempSync(path.join(scratchRoot, 'belay-forecast-'));
     const scratched = { ...p, env: { ...p.env, GIT_OBJECT_DIRECTORY: scratch, GIT_ALTERNATE_OBJECT_DIRECTORIES: path.join(common, 'objects') } };
-    const r = await safeGit(['merge-tree', '--write-tree', '--name-only', '--no-messages', '-z', against, head], repo, left(), { prepared: scratched });
+    const r = await tr.run(['merge-tree', '--write-tree', '--name-only', '--no-messages', '-z', against, head], repo, left(), { prepared: scratched });
     if (r.timed_out) return done({ unavailable: `timed out after ${Date.now() - t0} ms` });
     if (!r.executable) return done({ unavailable: r.spawn_error || 'git did not run' });
     if (r.exit_code === 0) return done({ clean: true });
@@ -65,8 +84,8 @@ async function forecast({ repo, head, against, totalMs = TOTAL_MS, scratchRoot =
     }
     return done({ unavailable: `git merge-tree exited ${r.exit_code}: ${String(r.stderr).trim().split('\n').pop() || 'no stderr'}`.slice(0, 200) });
   })().catch((e) => done({ unavailable: String((e && e.message) || e).slice(0, 200) })).finally(() => { settled = true; });
-  const late = new Promise((res) => { timer = setTimeout(() => res(done({ unavailable: `deadline of ${end - t0} ms passed` })), left()); });
-  try { return withExited(await Promise.race([work, late]), work); } finally {
+  const late = new Promise((res) => { timer = setTimeout(() => { tr.release(); res(done({ unavailable: `deadline of ${end - t0} ms passed` })); }, left()); });
+  try { return withLingering(withExited(await Promise.race([work, late]), work), tr); } finally {
     clearTimeout(timer);
     // A git call still running past the deadline holds the scratch directory on Windows; its own timeout kills it, so retry once it has.
     const rm = () => { try { fs.rmSync(scratch, { recursive: true, force: true }); } catch { /* a leftover scratch directory is harmless */ } };
@@ -84,24 +103,25 @@ async function forecastTask(task, runId, opts = {}) {
   const deadline = t0 + (opts.totalMs || TOTAL_MS);
   let timer = null;
   // The whole call ends at the deadline even while a git call is still being killed (a kill can take longer than the call's timeout).
-  const late = new Promise((res) => { timer = setTimeout(() => res({ unavailable: `deadline of ${deadline - t0} ms passed`, against: null, ms: Date.now() - t0 }), deadline - t0); });
-  const inner = forecastWithin(wt, runId, opts, t0, deadline);
-  try { const r = await Promise.race([inner, late]); return r && withExited(r, inner.then((x) => x && x.exited, noop)); } finally { clearTimeout(timer); }
+  const tr = makeTracker(deadline);
+  const late = new Promise((res) => { timer = setTimeout(() => { tr.release(); res({ unavailable: `deadline of ${deadline - t0} ms passed`, against: null, ms: Date.now() - t0 }); }, deadline - t0); });
+  const inner = forecastWithin(wt, runId, opts, t0, deadline, tr);
+  try { const r = await Promise.race([inner, late]); return r && withLingering(withExited(r, inner.then((x) => x && x.exited, noop)), tr); } finally { clearTimeout(timer); }
 }
 
-async function forecastWithin(wt, runId, opts, t0, deadline) {
+async function forecastWithin(wt, runId, opts, t0, deadline, tr) {
   const left = () => Math.max(1, deadline - Date.now());
   let prepared;
   try { prepared = await prepare(wt.repo, left()); } catch (e) { prepared = { error: String((e && e.message) || e).slice(0, 200) }; }
   if (prepared.error) return { unavailable: prepared.error, against: null, ms: Date.now() - t0 };
   const ref = async (name) => {
-    const r = await safeGit(['rev-parse', '--verify', '--quiet', `refs/heads/${name}^{commit}`], wt.repo, left(), { prepared });
+    const r = await tr.run(['rev-parse', '--verify', '--quiet', `refs/heads/${name}^{commit}`], wt.repo, left(), { prepared });
     return r.executable && r.exit_code === 0 ? sha(r.stdout) : null;
   };
   const head = await ref(wt.branch);
   if (!head) return null;
   const against = await ref(`belay/integrate/${runId}`);
-  return forecast({ repo: wt.repo, head, against, prepared, deadline, scratchRoot: opts.scratchRoot });
+  return forecast({ repo: wt.repo, head, against, prepared, deadline, scratchRoot: opts.scratchRoot, tracker: tr });
 }
 
-module.exports = { forecast, forecastTask, TOTAL_MS };
+module.exports = { forecast, forecastTask, makeTracker, TOTAL_MS };

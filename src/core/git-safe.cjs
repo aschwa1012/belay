@@ -123,11 +123,11 @@ async function prepare(cwd, timeoutMs, env = process.env, { lineEndings = false,
 
 // One hardened git read for the core, through evaluate.cjs's runCommand: `args` follow belay's PRE and filter overrides.
 // Resolves runCommand's shape; a missing git or a failed filter check is `executable: false` with `spawn_error` naming it.
-async function safeGit(args, cwd, timeoutMs, { tail, env = process.env, prepared = null, lineEndings = false, register = 'check' } = {}) {
+async function safeGit(args, cwd, timeoutMs, { tail, env = process.env, prepared = null, lineEndings = false, register = 'check', onChild } = {}) {
   const { runCommand } = require('./evaluate.cjs');
   const p = prepared || await prepare(cwd, timeoutMs, env, { lineEndings, register });
   if (p.error) return { executable: false, exit_code: null, stdout: '', stderr: '', spawn_error: p.error };
-  return runCommand([p.git, ...PRE, ...p.filters, ...args], cwd, timeoutMs, { env: p.env, ...(tail ? { tail } : {}), register });
+  return runCommand([p.git, ...PRE, ...p.filters, ...args], cwd, timeoutMs, { env: p.env, ...(tail ? { tail } : {}), register, ...(onChild ? { onChild } : {}) });
 }
 
 // The absolute git every belay spawn uses, found once per PATH value: a bare 'git' is searched in the child's cwd first on Windows, so a

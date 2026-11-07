@@ -200,3 +200,18 @@ test('a capped hand-back that lands before it was ever started is forecast on la
     assert.strictEqual(calls.filter((c) => c === 'l4').length, 1);
   }
 });
+
+test('the line logged when a forecast git call outlives its answer names the command and how long it has run', async () => {
+  const s = { tasks: [released('g0')] }; const seen = new Map();
+  const core = { task: { list: async () => ({ tasks: s.tasks }) } };
+  const lines = []; let logged; const loggedP = new Promise((r) => { logged = r; });
+  const forecaster = async () => {
+    const fc = { clean: true, against: 'a', ms: 1 };
+    Object.defineProperty(fc, 'exited', { value: new Promise(() => {}), enumerable: false });
+    Object.defineProperty(fc, 'lingering', { value: () => [{ argv: 'merge-tree --write-tree a b', ms: 31234 }], enumerable: false });
+    return fc;
+  };
+  await RE.enrichWakes(core, 'r', [turnEnd('w1')], seen, { holdMs: 0, forecaster, exitCeilingMs: 20, log: (m) => { lines.push(m); logged(); } });
+  await loggedP;
+  assert.match(lines[0], /still had git running 20 ms after its answer \[git merge-tree --write-tree a b, running 31234 ms\]; its slot is freed/);
+});
