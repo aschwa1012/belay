@@ -19,7 +19,7 @@ async function idleClose(c) {
   // not a pending death (the pid is alive) — the one gap review 2 found. An ordinary idle `running`
   // or `starting` worker (pid alive, no turn owed) is deliberately NOT held here: the idle-close rule
   // ends the run regardless of a live, merely-idle worker process, by design.
-  const live = rows.filter((w) => w.run_id === runId && w.state === 'stopping' && w.pid_alive === true).map((w) => w.id).concat(require('./release-eval.cjs').evaluatingHolds(state.evalSeen, rows, runId)).concat(callWatcher.holds()).concat(planHolds); // ADR 0058: a release evaluation holds the close, and so does a detached integrate or task_evaluate
+  const live = rows.filter((w) => w.run_id === runId && w.state === 'stopping' && w.pid_alive === true).map((w) => w.id).concat(require('./release-eval.cjs').evaluatingHolds(state.evalSeen, rows, runId)).concat(callWatcher.holds()).concat(planHolds).concat([...((state.evalSeen && state.evalSeen.deathHeld) || new Map()).keys()].map((k) => `relaunch:${k}`)); // a builder's death a plan is relaunching (policy-relaunch.cjs) holds the close and the stall notice // ADR 0058: a release evaluation holds the close, and so does a detached integrate or task_evaluate
   // 6f design item 5: the resume line carries no worker id, so awaitingWakeIds() alone never named
   // it; an idle orchestrator right after resume could otherwise close under that very write before
   // the resumed turn starts. Any write still unanswered, worker-tagged or not, holds the close.
