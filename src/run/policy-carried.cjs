@@ -1,14 +1,15 @@
 'use strict';
-// policy-carried.cjs — the one reading of "the plan is carrying this task", shared by both stalled wakes (stall-wake.cjs: after a hand-back,
-// and at the idle close). A planned open task is stalled only when due() lists nothing for it, no step is in flight on it or on its tree, it is
-// not blocked by a dependency still on its way (a done dependency its plan has to merge, a merge in flight, a review whose evaluation has not
-// landed), and it is not halted. due() is the executor's own gate, called here as it is, so the wake and the executor cannot disagree.
+// policy-carried.cjs — the one reading of "the plan is carrying this task", used by the hand-back stalled wake (stall-wake.cjs untaken). A
+// planned open task is stalled only when due() lists nothing for it, no step is in flight on it or on its tree, it is not blocked by a
+// dependency still on its way (a done dependency its plan has to merge, a merge in flight, a review whose evaluation has not landed), and it
+// is not halted. due() is the executor's own gate, called here as it is, so the wake and the executor cannot disagree. The idle close does not
+// use it: it names every open task, because it is the net under this predicate and under the executor.
 
 const { due } = require('./policy-exec.cjs');
 const PW = require('./policy-wakes.cjs');
 
 // A released review whose evaluation has not landed (its hand-back is newer than its evaluation) is not yet settled: the plan is still about to act on it.
-const evalPending = (t) => !!(t.handoff && t.handoff.at != null && !(t.results && Number(t.results.evaluated_at) >= Number(t.handoff.at)));
+const evalPending = (t) => !!(t.handoff && !t.handoff.stood_down && t.handoff.at != null && !(t.results && Number(t.results.evaluated_at) >= Number(t.handoff.at)));
 const mine = (tasks, runId) => tasks.filter((t) => t.run_id === runId);
 const openOf = (tasks, runId) => mine(tasks, runId).filter((t) => t.state === 'open');
 // A dependency is ready when it is done and, if its plan merges it and the plan is still at work on it (`carried`: a step due or in flight on
