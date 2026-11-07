@@ -110,14 +110,17 @@ async function forecastTask(task, runId, opts = {}) {
   let timer = null;
   // The whole call ends at the deadline even while a git call is still being killed (a kill can take longer than the call's timeout).
   const tr = makeTracker();
-  const late = new Promise((res) => { timer = setTimeout(() => res({ unavailable: `deadline of ${deadline - t0} ms passed`, against: null, ms: Date.now() - t0 }), deadline - t0); });
+  let lateAns = null;
+  const late = new Promise((res) => { timer = setTimeout(() => res(lateAns = { unavailable: `deadline of ${deadline - t0} ms passed`, against: null, ms: Date.now() - t0 }), deadline - t0); });
   const inner = forecastWithin(wt, runId, opts, t0, deadline, tr);
   try {
     const r = await Promise.race([inner, late]);
     if (!r) return r;
-    // When the inner forecast answered, r IS its result and already carries its own `exited`; redefining it from `inner.then(x => x.exited)` made
-    // `exited` wait on itself and never settle. Only the deadline's answer (a different object) takes its `exited` from the inner forecast.
-    return withLingering(Object.prototype.hasOwnProperty.call(r, 'exited') ? r : withExited(r, inner.then((x) => x && x.exited, noop)), tr);
+    // Decided by identity. Only the deadline's answer (lateAns, not the inner forecast's object) takes its `exited` from the inner forecast;
+    // for the inner forecast's own result, redefining it from `inner.then(x => x.exited)` would make `exited` wait on itself and never settle.
+    // That result keeps the `exited` it has, or has none to wait for (no integration branch, a preparation error: no git call is pending).
+    if (r === lateAns) return withLingering(withExited(r, inner.then((x) => x && x.exited, noop)), tr);
+    return withLingering(Object.prototype.hasOwnProperty.call(r, 'exited') ? r : withExited(r, undefined), tr);
   } finally { clearTimeout(timer); }
 }
 

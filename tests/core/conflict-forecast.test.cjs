@@ -122,3 +122,28 @@ test('forecastTask result: `exited` settles once the answer is in (it must not w
     }
   } finally { cleanup(dir); }
 });
+
+const settles = async (p) => Promise.race([p.then(() => 'exited'), new Promise((r) => setTimeout(() => r('pending'), 3000).unref())]);
+
+test('forecastTask result: `exited` settles with no integration branch yet', { timeout: 20000 }, async () => {
+  const dir = sandbox();
+  try {
+    const repo = conflictRepo(dir);
+    const none = await forecastTask({ id: 't1', worktree: { repo, branch: 'a' } }, 'run-none');
+    assert.strictEqual(none.against, null);
+    assert.strictEqual(await settles(none.exited), 'exited');
+  } finally { cleanup(dir); }
+});
+
+test('forecastTask result: `exited` settles with a preparation error', { timeout: 20000 }, async () => {
+  const dir = sandbox();
+  const savedPath = process.env.PATH, savedPath2 = process.env.Path;
+  try {
+    const repo = conflictRepo(dir);
+    process.env.PATH = dir; if (savedPath2 !== undefined) process.env.Path = dir; // no git on PATH: prepare answers with an error
+    const bad = await forecastTask({ id: 't1', worktree: { repo, branch: 'a' } }, 'run-none');
+    process.env.PATH = savedPath; if (savedPath2 !== undefined) process.env.Path = savedPath2;
+    assert.match(bad.unavailable, /git was not found/);
+    assert.strictEqual(await settles(bad.exited), 'exited');
+  } finally { process.env.PATH = savedPath; if (savedPath2 !== undefined) process.env.Path = savedPath2; cleanup(dir); }
+});
