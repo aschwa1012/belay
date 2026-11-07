@@ -78,7 +78,7 @@ function createOnce(file, content) {
 
 // Claim the digest of `rows` (policy.list rows): the finished ones no digest has taken. -> the claim record, or null when there is nothing new.
 // `hooks.beforeCreate(rec)` is a test seam: it runs between building the claim and creating its file, where a second asker can take the number.
-function claimDigest({ dataDir, runId, rows, cap = CAP_BYTES, form = {}, via = 'wait', now = Date.now, claimant = null, hooks = {} }) {
+function claimDigest({ dataDir, runId, rows, cap = CAP_BYTES, form = {}, via = 'wait', now = Date.now, claimant = null, hooks = {}, minShown = 0 }) {
   const dir = dirOf(dataDir, runId);
   fs.mkdirSync(dir, { recursive: true });
   for (let attempt = 0; attempt < 100; attempt += 1) {
@@ -86,6 +86,7 @@ function claimDigest({ dataDir, runId, rows, cap = CAP_BYTES, form = {}, via = '
     const fresh = (rows || []).filter((r) => finished(r) && !covered.has(Number(r.seq))).sort((a, b) => a.seq - b.seq);
     if (!fresh.length) return null;
     const b = build(fresh, cap, form);
+    if (b.shown.length < minShown) return null; // the room shows too little: nothing is claimed, and the steps wait for the next asker
     const rec = {
       n: top + 1, via, at: now(), claimant, bytes: bytes(b.text), text: b.text,
       lines: b.shown.map((r) => ({ step_seq: Number(r.seq), text: lineOf(r, !!form.short) })),
@@ -214,7 +215,7 @@ const FOLD_MIN_CAP = bytes(FOLD_HEAD) + 40; // the head and one short step line
 async function foldDigest({ core, dataDir, runId, cap, now = Date.now, claimant = null, hooks = {} }) {
   if (!(cap >= FOLD_MIN_CAP)) return null;
   const rows = await listSteps(core, runId);
-  const rec = claimDigest({ dataDir, runId, rows, cap, form: { head: FOLD_HEAD, sep: '; ', short: true }, via: 'wake', now, claimant, hooks });
+  const rec = claimDigest({ dataDir, runId, rows, cap, form: { head: FOLD_HEAD, sep: '; ', short: true }, via: 'wake', now, claimant, hooks, minShown: 1 });
   return rec ? { text: rec.text, n: rec.n } : null;
 }
 

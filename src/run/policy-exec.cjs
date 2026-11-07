@@ -26,7 +26,7 @@ const errText = (e) => `${(e && e.code) || 'E_INTERNAL'}: ${String((e && e.messa
 const keyOf = (step, t) => `${step}|${t.table}|${t.id}|${t.seq}`;
 const isRelease = (t) => !!(t && t.results && t.results.trigger === 'release');
 const MAX_PARALLEL_BUILDS = 4; // the default cap on builds in flight when the run states none (the standing four-writers rule)
-const SENDS = new Set(['build', 'review', 'fix', 're_review', 'relaunch']); // the steps that send a worker work (the budget rule); integrate and follow_up send none
+const SENDS = new Set(['build', 'review', 'fix', 're_review']); // the steps that send a worker work (the budget rule); integrate and follow_up send none
 const leftOver = STEPS.leftOver; // a review a paused step made and did not hand over (never leased, never evaluated: policy-steps-run.cjs)
 const isReviewTask = (t) => !!(t.acceptance && t.acceptance.verdict === true);
 
@@ -74,9 +74,6 @@ function due(snap) {
       const capped = slots <= 0; if (!capped) slots -= 1;
       out.push({ step: 'build', task_id: x.id, trigger: tref(x), policy_rev: rev, build: plan.build, worker: plan.build.worker || (plan.build.spawn && plan.build.spawn.worker_id) || null, from_run: (Array.isArray(x.depends_on) ? x.depends_on : []).some((d) => merged(byId.get(d) || {})), ...(capped ? { capped: true } : {}) });
     }
-    // relaunch (E4): a builder the plan gave this task died and its row is dead; the plan restarts it once (policy-relaunch.cjs), under the build cap.
-    const rl = !x.repairs || plan.fix === 'builder' ? require('./policy-relaunch.cjs').due(x, plan, rev, snap, root.id) : null;
-    if (rl) { const capped = slots <= 0; if (!capped) slots -= 1; out.push(capped ? { ...rl, capped: true } : rl); }
     // review: the work is done on a release evaluation, nothing reviews it, and the plan names who does (a worker, or a spawn).
     if (!x.repairs && plan.review && x.state === 'done' && isRelease(x) && !(reviewsOf.get(x.id) || []).filter((r) => !leftOver(r)).length && !(x.review && x.review.review_id && !leftOver(byId.get(x.review.review_id)))) { // a review a paused step made and did not hand over does not count: the retake hands it over
       out.push({ step: 'review', task_id: x.id, trigger: tref(x), policy_rev: rev, review: plan.review, worker: plan.review.worker || (plan.review.spawn && plan.review.spawn.worker_id) || null });
@@ -124,7 +121,7 @@ function due(snap) {
 // `spawnFor(stepCore)`: the run manager's spawn made over a step's view (policy-steps-run.cjs spawnFor); null when the run has none. `turnOf(id)`:
 // the turn a message to that live worker starts (the claim records it, so the step log can join the turn's cost); null when unknown.
 // `stopWorker(id)`: the run manager's graceful stop, for a worker a step spawned once its work needs it no more (null: never stopped).
-function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restartWorker = null, turnOf = null, closing = () => false, closeWaitMs = 2000, log = () => {}, identity = null, aliveBy = null, stopWorker = null }) {
+function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf = null, closing = () => false, closeWaitMs = 2000, log = () => {}, identity = null, aliveBy = null, stopWorker = null }) {
   const spawnedFor = new Map(); // worker id -> the work task a build or review step spawned it for (this adapter's life)
   const retired = new Set();
   const gate = { aborted: false };
@@ -172,8 +169,7 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
     const tasks = await read(g.task.list, 'tasks', []);
     seen.tasks = tasks;
     const integrations = c.step === 'integrate' ? await read(g.integration.list, 'integrations', []) : [];
-    const rl = c.step === 'relaunch' ? { steps: (await read(g.policy.list, 'rows', [])).filter((r) => !(r.step === 'relaunch' && r.outcome === 'started' && r.trigger_table === c.trigger.table && r.trigger_id === c.trigger.id && Number(r.trigger_seq) === c.trigger.seq)), workers: await read(g.worker.list, 'workers', []) } : {}; // this claim is not a used relaunch
-    const same = due({ runId, tasks, integrations, ...rl }).find((d) => keyOf(d.step, d.trigger) === keyOf(c.step, c.trigger));
+    const same = due({ runId, tasks, integrations }).find((d) => keyOf(d.step, d.trigger) === keyOf(c.step, c.trigger));
     if (!same) return `E_NOT_NOW: the plan or the facts changed after the claim: ${c.step} on ${c.trigger.table}:${c.trigger.id} is no longer due; the claim is reopened and the step retaken if it is due again`;
     if ((same.policy_rev ?? null) !== (c.policy_rev ?? null)) return `E_NOT_NOW: the plan moved from rev ${c.policy_rev} to rev ${same.policy_rev} after the claim; the claim is reopened and the step retaken`;
     return null;
@@ -203,7 +199,7 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
     try {
       const why = await stillDue(c);
       const over = why ? null : await budgetRefusal(c);
-      res = why ? { outcome: 'skipped', error: why } : over ? { outcome: 'exception', error: over } : await STEPS.run(c, { core: stepCore, runId, assign: assignFor(stepCore), spawn: spawnFor ? spawnFor(stepCore) : null, restart: restartWorker });
+      res = why ? { outcome: 'skipped', error: why } : over ? { outcome: 'exception', error: over } : await STEPS.run(c, { core: stepCore, runId, assign: assignFor(stepCore), spawn: spawnFor ? spawnFor(stepCore) : null });
     } catch (e) { res = { outcome: 'exception', error: errText(e) }; }
     if (res && res.outcome === 'exception' && !res.row_ref && /^E_PAUSED/.test(res.error || '')) res = { outcome: 'skipped', error: res.error }; // the core refused it for the pause: nothing was written
     if (!res || !res.outcome) res = { outcome: 'exception', error: 'the step returned no outcome' };
@@ -231,8 +227,7 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
     const revisions = await PW.readRevisions(g.policy, runId, tasks); // an amend lifts a halt, and the fixes' creation order (policy-wakes derive)
     const halted = PW.haltedIds(PW.derive({ runId, tasks, integrations, steps, failures: [], revisions }), tasks);
     const claimed = new Set(steps.filter((s) => !(s.outcome === 'skipped' && /^E_(PAUSED|NOT_NOW)/.test(s.error || ''))).map((s) => keyOf(s.step, { table: s.trigger_table, id: s.trigger_id, seq: Number(s.trigger_seq) || 0 })));
-    const workers = require('./policy-relaunch.cjs').mayNeed(tasks.filter((t) => t.run_id === runId), steps, runId, (t) => PW.rootOf(t, new Map(tasks.map((r) => [r.id, r])))) && g.worker && g.worker.list ? await read(g.worker.list, 'workers', []) : undefined; // worker rows only while a task a builder may have left open exists
-    for (const c of due({ runId, tasks, integrations, steps, workers, maxBuilds: Number.isInteger(run.max_parallel_builds) && run.max_parallel_builds > 0 ? run.max_parallel_builds : MAX_PARALLEL_BUILDS })) {
+    for (const c of due({ runId, tasks, integrations, steps, maxBuilds: Number.isInteger(run.max_parallel_builds) && run.max_parallel_builds > 0 ? run.max_parallel_builds : MAX_PARALLEL_BUILDS })) {
       if (stopped()) break;
       if (c.capped) continue; // max_parallel_builds: the task waits for a slot, no exception (ADR 0074 amendment 4)
       if (halted.has(c.task_id) || claimed.has(keyOf(c.step, c.trigger))) continue;

@@ -164,3 +164,16 @@ test('interactive: a digest whose room is under FOLD_MIN_CAP claims nothing', as
     assert.ok(fit && /^ \| belay did: #1 fix W/.test(fit.text) && bytes(fit.text) <= D.FOLD_MIN_CAP + 30);
   } finally { cleanup(base); }
 });
+
+test('interactive: a room that would show no step line claims nothing, so the steps are not lost to a count', async () => {
+  const base = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-fold-n-'));
+  try {
+    const dataDir = fwd(base);
+    const rows = [1, 2, 3, 4, 5].map((i) => stepRow(i, 'integrate', `task-with-a-longish-id-${i}`, `integration:i${i}`));
+    const core = { policy: { list: async () => ({ rows }) } };
+    assert.strictEqual(await D.foldDigest({ core, dataDir, runId: RUN, cap: D.FOLD_MIN_CAP + 10 }), null);
+    assert.deepStrictEqual(D.readDigests(dataDir, RUN), [], 'nothing claimed: every step is still there for the next asker');
+    const later = D.claimDigest({ dataDir, runId: RUN, rows, via: 'wake' });
+    assert.strictEqual(later.lines.length, 5);
+  } finally { cleanup(base); }
+});

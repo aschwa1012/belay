@@ -226,16 +226,14 @@ function turnEndText(head, tail, evs, evaluating) {
 async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.now, workers = null, forecaster = forecastTask, exitCeilingMs = FORECAST_EXIT_CEILING_MS, log = (m) => process.stderr.write(`${m}\n`) } = {}) {
   const pending = seen.pending || (seen.pending = new Map());
   const held = seen.held || (seen.held = new Map());
-  if (!events.some((e) => e.event === 'turn_end' || e.event === 'death') && !pending.size && !held.size && !(seen.deathHeld && seen.deathHeld.size)) return events;
+  if (!events.some((e) => e.event === 'turn_end') && !pending.size && !held.size) return events;
   let tasks = null;
   try { tasks = ((await core.task.list({})) || {}).tasks || []; } catch { /* nothing is attached and nothing lands this poll */ }
-  if (!tasks) { const flushed = [...held.values()].map((h) => h.ev).concat([...(seen.deathHeld || new Map()).values()].map((h) => h.ev)); held.clear(); if (seen.deathHeld) seen.deathHeld.clear(); return flushed.concat(events); }
+  if (!tasks) { const flushed = [...held.values()].map((h) => h.ev); held.clear(); return flushed.concat(events); }
   const byId = new Map(tasks.map((t) => [t.id, t]));
-  const PR = require('./policy-relaunch.cjs');
   const PW = require('./policy-wakes.cjs'); // ADR 0073: a task under a plan wakes on exceptions only, so its routine events are consumed here and not sent
   const polOf = (t) => PW.policyOf(t, byId);
   if (tasks.some((t) => t.run_id === runId && polOf(t))) { seen.policyArmed = true; seen.policyTasks = tasks; } // the policy watcher reads these rows this poll
-  if (seen.policyArmed || (seen.deathHeld && seen.deathHeld.size)) events = await PR.holdDeaths({ core, runId, events, seen, tasks, byId, polOf, rootOf: (t) => PW.rootOf(t, byId), now }); // a dead builder the plan relaunches is not a wake unless the relaunch did not work (policy-relaunch.cjs)
   const landed = (t) => t.results && t.results.trigger === 'release' && seen.get(t.id) !== t.results.evaluated_at && (!t.handoff || Number(t.results.evaluated_at) >= Number(t.handoff.at));
   // The conflict forecast (a warning on the wake; it never gates anything) is started, never awaited, when a hand-back is first watched, so
   // it has usually settled when the evaluation lands; a wake carries it only if it has. One per hand-back, at most FORECASTS_MAX at once.

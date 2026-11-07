@@ -74,7 +74,7 @@ test('the run plan line names the run\'s plan, or says there is none', () => {
   assert.ok(runPlanLine(on).endsWith(PLAN_FIRST), 'a run with a plan is told to plan first and go hands off');
   assert.ok(!runPlanLine(parseLevers({ policy: null })).includes('Plan the work first'), 'a run with no plan keeps the flow where the orchestrator takes each step');
   assert.match(PLAN_FIRST, /a dependent one with its `depends_on` and no tree \(belay cuts its tree from `belay\/integrate\/<run>` once its dependencies are merged/);
-  assert.match(PLAN_FIRST, /If a builder dies, belay restarts it once/);
+  assert.match(PLAN_FIRST, /If a builder dies, belay does not start another/);
   assert.match(PLAN_FIRST, /act on an exception or an escalation/);
   for (const f of ['orchestrator.md', 'orchestrator-interactive.md']) {
     const text = substituteLevers(read(f), on, 0, { mode: f === 'orchestrator.md' ? 'headless' : 'interactive' }).text;
