@@ -175,7 +175,7 @@ test('a forecast whose git calls never exit frees its slot at the ceiling, with 
   await poll([]);
   assert.strictEqual(calls.length, 4);
   await loggedP; await settle();
-  assert.ok(lines.length >= 1 && /still had git running 20 ms/.test(lines[0]), lines[0]);
+  assert.ok(lines.length >= 1 && /had not finished 20 ms after its answer, and no git child of it was alive/.test(lines[0]), lines[0]);
   await poll([]);
   assert.deepStrictEqual(calls, ['c0', 'c1', 'c2', 'c3', 'c4'], 'the fifth starts once the ceiling freed a slot');
 });
@@ -209,9 +209,38 @@ test('the line logged when a forecast git call outlives its answer names the com
     const fc = { clean: true, against: 'a', ms: 1 };
     Object.defineProperty(fc, 'exited', { value: new Promise(() => {}), enumerable: false });
     Object.defineProperty(fc, 'lingering', { value: () => [{ argv: 'merge-tree --write-tree a b', ms: 31234 }], enumerable: false });
+    Object.defineProperty(fc, 'killReports', { value: () => [{ argv: '--version', ms: 900, snapshot_ms: 850 }], enumerable: false });
     return fc;
   };
   await RE.enrichWakes(core, 'r', [turnEnd('w1')], seen, { holdMs: 0, forecaster, exitCeilingMs: 20, log: (m) => { lines.push(m); logged(); } });
   await loggedP;
-  assert.match(lines[0], /still had git running 20 ms after its answer \[git merge-tree --write-tree a b, running 31234 ms\]; its slot is freed/);
+  assert.match(lines[0], /still had git running 20 ms after its answer \[git merge-tree --write-tree a b, running 31234 ms\] \[killTree of git --version: 900 ms, process snapshot 850 ms\]; its slot is freed/);
+});
+
+// Through the real runCommand: git for Windows starts through a launcher, so the child belay holds is a launcher (cmd /c node <hang>).
+test('a launcher-style git child that outlives the answer is named in the log, through the real runCommand', { timeout: 30000 }, async () => {
+  const { runCommand } = require('../../src/core/evaluate.cjs');
+  const { makeTracker } = require('../../src/core/conflict-forecast.cjs');
+  const HANG = require('node:path').join(__dirname, '..', 'core', 'fixtures', 'git-hang.cjs');
+  const tr = makeTracker((args, cwd, ms, o) => runCommand(['cmd', '/c', process.execPath, HANG, ...args], undefined, 1500, { onChild: o.onChild }));
+  const s = { tasks: [released('g1')] }; const seen = new Map();
+  const core = { task: { list: async () => ({ tasks: s.tasks }) } };
+  const lines = []; let logged; const loggedP = new Promise((r) => { logged = r; });
+  let running;
+  const forecaster = async () => {
+    running = tr.run(['merge-tree', 'launcher-stand-in'], process.cwd(), 1500, {});
+    await new Promise((r) => setTimeout(r, 150));
+    const fc = { clean: true, against: 'a', ms: 1 };
+    Object.defineProperty(fc, 'exited', { value: new Promise(() => {}), enumerable: false });
+    Object.defineProperty(fc, 'lingering', { value: tr.lingering, enumerable: false });
+    Object.defineProperty(fc, 'killReports', { value: tr.killReports, enumerable: false });
+    return fc;
+  };
+  await RE.enrichWakes(core, 'r', [turnEnd('w1')], seen, { holdMs: 0, forecaster, exitCeilingMs: 20, log: (m) => { lines.push(m); logged(); } });
+  await loggedP;
+  assert.match(lines[0], /still had git running 20 ms after its answer \[git merge-tree launcher-stand-in, running \d+ ms\]/);
+  const r = await running; // runCommand's own timeout ends the stand-in
+  assert.strictEqual(r.timed_out, true);
+  assert.deepStrictEqual(tr.lingering(), []);
+  assert.strictEqual(tr.killReports().length, 1);
 });

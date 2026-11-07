@@ -251,8 +251,11 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
       const exited = fc && fc.exited;
       if (!exited) return undefined;
       let timer; const cut = new Promise((res) => { timer = setTimeout(() => {
-        let live = ''; try { live = (fc.lingering ? fc.lingering() : []).map((c) => ` [git ${c.argv}, running ${c.ms} ms]`).join(''); } catch { /* the line stays without them */ }
-        log(`belay: conflict forecast of task ${t.id} still had git running ${exitCeilingMs} ms after its answer${live}; its slot is freed`); res();
+        let live = [], kills = ''; try { live = fc.lingering ? fc.lingering() : []; } catch { /* the line stays without them */ }
+        try { kills = (fc.killReports ? fc.killReports() : []).map((k) => ` [killTree of git ${k.argv}: ${k.ms} ms, process snapshot ${k.snapshot_ms} ms]`).join(''); } catch { /* the line stays without them */ }
+        const named = live.map((c) => ` [git ${c.argv}, running ${c.ms} ms]`).join('');
+        log(live.length ? `belay: conflict forecast of task ${t.id} still had git running ${exitCeilingMs} ms after its answer${named}${kills}; its slot is freed`
+          : `belay: conflict forecast of task ${t.id} had not finished ${exitCeilingMs} ms after its answer, and no git child of it was alive (a git call's result or kill report was still pending)${kills}; its slot is freed`); res();
       }, exitCeilingMs); if (timer.unref) timer.unref(); });
       return Promise.race([exited, cut]).finally(() => clearTimeout(timer));
     };

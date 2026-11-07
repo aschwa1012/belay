@@ -28,23 +28,29 @@ const noop = () => {};
 // the deadline returned the result. A caller capping how many forecasts run counts one as running until then.
 const withExited = (o, p) => Object.defineProperty(o, 'exited', { value: Promise.resolve(p).then(noop, noop), enumerable: false, configurable: true });
 
-// The git children a forecast started and has not seen exit, with the argv (git's own arguments) and age of each. `run` is safeGit; once the
-// deadline has passed or `release` was called it starts nothing (a call after the answer would be a child nobody waits for). `release`
-// ends every live child through its own handle, the backstop beside runCommand's tree kill, which can be slow or refused.
-function makeTracker(deadline, runner = safeGit) {
+// The git children a forecast started and has not seen exit, with git's own arguments and the age of each, and what runCommand's tree kill
+// reported for the calls that timed out. Instrument only: it names what is still running and changes nothing about it. `run` is safeGit and
+// `prep` is prepare, both through their onChild hook, so the preparation's config reads are named too.
+function makeTracker(runner = safeGit, prep = prepare) {
   const live = new Map();
-  const t = {
-    deadline, stopped: false,
+  const kills = [];
+  const watch = (argv) => (c) => { live.set(c, { argv: argv.join(' '), at: Date.now() }); c.once('exit', () => live.delete(c)); };
+  return {
     run(args, cwd, ms, o) {
-      if (t.stopped || Date.now() >= t.deadline) return Promise.resolve({ executable: false, exit_code: null, stdout: '', stderr: '', timed_out: true, spawn_error: 'the forecast deadline had passed' });
-      return runner(args, cwd, ms, { ...o, onChild: (c) => { live.set(c, { argv: args.join(' '), at: Date.now() }); c.once('exit', () => live.delete(c)); } });
+      return runner(args, cwd, ms, { ...o, onChild: watch(args) }).then((r) => {
+        if (r && r.tree_kill && r.tree_kill.ms != null) kills.push({ argv: args.join(' '), ms: r.tree_kill.ms, snapshot_ms: r.tree_kill.snapshot_ms == null ? null : r.tree_kill.snapshot_ms });
+        return r;
+      });
     },
+    prepare: (cwd, ms) => prep(cwd, ms, process.env, { onChild: (c, argv) => watch(argv)(c) }),
     lingering: () => [...live.values()].map((r) => ({ argv: r.argv, ms: Date.now() - r.at })),
-    release() { t.stopped = true; for (const c of live.keys()) { try { c.kill(); } catch { /* already gone */ } } },
+    killReports: () => kills.slice(),
   };
-  return t;
 }
-const withLingering = (o, tr) => Object.defineProperty(o, 'lingering', { value: tr.lingering, enumerable: false, configurable: true });
+const withLingering = (o, tr) => {
+  Object.defineProperty(o, 'lingering', { value: tr.lingering, enumerable: false, configurable: true });
+  return Object.defineProperty(o, 'killReports', { value: tr.killReports, enumerable: false, configurable: true });
+};
 
 const sha = (s) => { const l = String(s || '').trim().split('\n')[0]; return /^[0-9a-f]{40,64}$/.test(l) ? l : null; };
 
@@ -54,7 +60,7 @@ const sha = (s) => { const l = String(s || '').trim().split('\n')[0]; return /^[
 async function forecast({ repo, head, against, totalMs = TOTAL_MS, scratchRoot = os.tmpdir(), prepared = null, deadline = null, tracker = null }) {
   const t0 = Date.now();
   const end = deadline || t0 + totalMs;
-  const tr = tracker || makeTracker(end);
+  const tr = tracker || makeTracker();
   const left = () => Math.max(1, end - Date.now());
   const done = (o) => ({ ...o, against: against || null, ms: Date.now() - t0 });
   if (!against) return done({});
@@ -62,7 +68,7 @@ async function forecast({ repo, head, against, totalMs = TOTAL_MS, scratchRoot =
   let timer = null;
   let settled = false;
   const work = (async () => {
-    const p = prepared || await prepare(repo, left());
+    const p = prepared || await tr.prepare(repo, left());
     if (p.error) return done({ unavailable: p.error });
     const v = await tr.run(['--version'], repo, left(), { prepared: p });
     const m = /(\d+)\.(\d+)/.exec(v.stdout || '');
@@ -84,7 +90,7 @@ async function forecast({ repo, head, against, totalMs = TOTAL_MS, scratchRoot =
     }
     return done({ unavailable: `git merge-tree exited ${r.exit_code}: ${String(r.stderr).trim().split('\n').pop() || 'no stderr'}`.slice(0, 200) });
   })().catch((e) => done({ unavailable: String((e && e.message) || e).slice(0, 200) })).finally(() => { settled = true; });
-  const late = new Promise((res) => { timer = setTimeout(() => { tr.release(); res(done({ unavailable: `deadline of ${end - t0} ms passed` })); }, left()); });
+  const late = new Promise((res) => { timer = setTimeout(() => res(done({ unavailable: `deadline of ${end - t0} ms passed` })), left()); });
   try { return withLingering(withExited(await Promise.race([work, late]), work), tr); } finally {
     clearTimeout(timer);
     // A git call still running past the deadline holds the scratch directory on Windows; its own timeout kills it, so retry once it has.
@@ -103,8 +109,8 @@ async function forecastTask(task, runId, opts = {}) {
   const deadline = t0 + (opts.totalMs || TOTAL_MS);
   let timer = null;
   // The whole call ends at the deadline even while a git call is still being killed (a kill can take longer than the call's timeout).
-  const tr = makeTracker(deadline);
-  const late = new Promise((res) => { timer = setTimeout(() => { tr.release(); res({ unavailable: `deadline of ${deadline - t0} ms passed`, against: null, ms: Date.now() - t0 }); }, deadline - t0); });
+  const tr = makeTracker();
+  const late = new Promise((res) => { timer = setTimeout(() => res({ unavailable: `deadline of ${deadline - t0} ms passed`, against: null, ms: Date.now() - t0 }), deadline - t0); });
   const inner = forecastWithin(wt, runId, opts, t0, deadline, tr);
   try { const r = await Promise.race([inner, late]); return r && withLingering(withExited(r, inner.then((x) => x && x.exited, noop)), tr); } finally { clearTimeout(timer); }
 }
@@ -112,7 +118,7 @@ async function forecastTask(task, runId, opts = {}) {
 async function forecastWithin(wt, runId, opts, t0, deadline, tr) {
   const left = () => Math.max(1, deadline - Date.now());
   let prepared;
-  try { prepared = await prepare(wt.repo, left()); } catch (e) { prepared = { error: String((e && e.message) || e).slice(0, 200) }; }
+  try { prepared = await tr.prepare(wt.repo, left()); } catch (e) { prepared = { error: String((e && e.message) || e).slice(0, 200) }; }
   if (prepared.error) return { unavailable: prepared.error, against: null, ms: Date.now() - t0 };
   const ref = async (name) => {
     const r = await tr.run(['rev-parse', '--verify', '--quiet', `refs/heads/${name}^{commit}`], wt.repo, left(), { prepared });

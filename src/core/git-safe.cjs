@@ -104,7 +104,7 @@ async function filterOverrides(run, git, cwd, env, timeoutMs, { lineEndings = fa
 // `lineEndings` adds the system content keys (filterOverrides), for a caller that hashes content.
 // `register` is the spawn-register kind of the config reads ('check' by default: every caller is the core reading a worker's or an
 // integration tree, whose config and hooks are a worker's code; null: none).
-async function prepare(cwd, timeoutMs, env = process.env, { lineEndings = false, register = 'check' } = {}) {
+async function prepare(cwd, timeoutMs, env = process.env, { lineEndings = false, register = 'check', onChild = null } = {}) {
   const { runCommand } = require('./evaluate.cjs'); // lazy: evaluate.cjs requires this module
   const git = findGit(env);
   if (!git) return { error: 'git was not found on PATH' };
@@ -112,7 +112,7 @@ async function prepare(cwd, timeoutMs, env = process.env, { lineEndings = false,
   const run = async (g, argv, { cwd: c, timeoutMs: t, maxOut, system }) => {
     const e = { ...base };
     if (system) delete e.GIT_CONFIG_NOSYSTEM;
-    const r = await runCommand([g, ...argv], c, t, { env: e, tail: maxOut, register });
+    const r = await runCommand([g, ...argv], c, t, { env: e, tail: maxOut, register, ...(onChild ? { onChild: (ch) => onChild(ch, argv) } : {}) });
     const out = Buffer.from(r.stdout || '', 'utf8');
     return { code: r.executable ? r.exit_code : -1, out, total: r.truncated ? out.length + 1 : out.length, kept: out.length, errTail: String(r.stderr || r.spawn_error || '') };
   };
@@ -125,7 +125,7 @@ async function prepare(cwd, timeoutMs, env = process.env, { lineEndings = false,
 // Resolves runCommand's shape; a missing git or a failed filter check is `executable: false` with `spawn_error` naming it.
 async function safeGit(args, cwd, timeoutMs, { tail, env = process.env, prepared = null, lineEndings = false, register = 'check', onChild } = {}) {
   const { runCommand } = require('./evaluate.cjs');
-  const p = prepared || await prepare(cwd, timeoutMs, env, { lineEndings, register });
+  const p = prepared || await prepare(cwd, timeoutMs, env, { lineEndings, register, onChild: onChild ? (ch, argv) => onChild(ch, argv) : null });
   if (p.error) return { executable: false, exit_code: null, stdout: '', stderr: '', spawn_error: p.error };
   return runCommand([p.git, ...PRE, ...p.filters, ...args], cwd, timeoutMs, { env: p.env, ...(tail ? { tail } : {}), register, ...(onChild ? { onChild } : {}) });
 }
