@@ -253,3 +253,34 @@ test('a fresh worker that took a step is retired with the work it was started fo
     assert.deepStrictEqual(stopped, [spawned[0].worker_id], 'retired once the work is over');
   } finally { await e.close(); }
 });
+
+test('a restart is made once per step across reopened claims: a slow launch reopens the step, and the next tick starts no second restart', async () => {
+  const e = await env('dead-restart-once');
+  try {
+    const { t } = await redThenDead(e);
+    const calls = []; const spawned = [];
+    const x = e.exec({ restartWorker: async (id) => { calls.push(id); return { status: 'not ready yet', relaunch_in_flight: true }; }, spawnFor: fakeSpawn(e, spawned) });
+    assert.deepStrictEqual((await x.tick()).steps.filter((s) => s.step === 'fix_eval').map((s) => s.outcome), ['skipped'], 'the first tick: the launch is in flight, the claim is reopened');
+    assert.deepStrictEqual(calls, ['b1']);
+    assert.deepStrictEqual(spawned, [], 'no second worker while it is in flight');
+    const second = await x.tick();
+    assert.deepStrictEqual(calls, ['b1'], 'the second tick starts no second restart');
+    assert.deepStrictEqual(fixSteps()(second), [['fix_eval', 'done']], 'it goes on to a fresh coder');
+    assert.match(holder(e, t.id), /^bld-/);
+    assert.strictEqual(stepRows(e).filter((s) => s.step === 'restart').length, 1, 'the one attempt is on record');
+  } finally { await e.close(); }
+});
+
+test('with no spawn path the second pass ends the step in the exception, still with one restart', async () => {
+  const e = await env('dead-restart-once-none');
+  try {
+    await redThenDead(e);
+    const calls = [];
+    const x = e.exec({ restartWorker: async (id) => { calls.push(id); return { relaunch_in_flight: true }; } });
+    await x.tick();
+    const second = await x.tick();
+    assert.deepStrictEqual(calls, ['b1']);
+    assert.deepStrictEqual(fixSteps()(second), [['fix_eval', 'exception']]);
+    assert.match(stepRows(e).find((s) => s.step === 'fix_eval').error, /already restarted once for this step/);
+  } finally { await e.close(); }
+});
