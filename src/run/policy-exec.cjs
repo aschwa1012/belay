@@ -222,6 +222,17 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
     return BUD.refusal(seen.run, { spend: (taskId) => g.usage.spend(taskId ? { task_id: taskId } : {}) }, c.task_id, row ? row.budget_usd : null);
   };
 
+  // The restart of a dead worker for a step, once: a claim of its own (step `restart`, the dead worker and the step's trigger as its key), finished at once. -> true for
+  // the first caller, false for every later one, across reopened claims and adapter lives.
+  async function restartOnce(step, seq) {
+    const me = await ownId();
+    const t = step.trigger;
+    const { row, existing } = await g.policy.claim({ claimant_pid: me.pid, ...(me.created != null ? { claimant_created: String(me.created) } : {}), step: 'restart', trigger: { table: 'worker', id: `${step.worker}|${step.step}|${t.table}:${t.id}:${t.seq}` }, task_id: step.task_id, worker_id: step.worker });
+    if (existing) return false;
+    try { await g.policy.finish({ seq: row.seq, outcome: 'done', row_ref: `worker:${step.worker}` }); } catch (e) { log(`policy restart ${row.seq}: ${errText(e)}`); }
+    return true;
+  }
+
   async function take(c0, taken) {
     // The worker and the turn the step starts, known before the claim: a spawned reviewer's id is made here and its first turn is 1; a named
     // worker's next turn is the one its manager says. A turn the manager cannot say is left off (the log then prints no turn).
@@ -240,7 +251,7 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
     try {
       const why = await stillDue(c, row.seq);
       const over = why ? null : await budgetRefusal(c);
-      res = why ? { outcome: 'skipped', error: why } : over ? { outcome: c.step === 'relaunch' ? 'skipped' : 'exception', error: over } : await STEPS.run(c, { core: stepCore, runId, assign: assignFor(stepCore), spawn: spawnFor ? spawnFor(stepCore) : null, restart: restartWorker, stop: stopWorker, dataDir });
+      res = why ? { outcome: 'skipped', error: why } : over ? { outcome: c.step === 'relaunch' ? 'skipped' : 'exception', error: over } : await STEPS.run(c, { core: stepCore, runId, assign: assignFor(stepCore), spawn: spawnFor ? spawnFor(stepCore) : null, restart: restartWorker, restartOnce: (step) => restartOnce(step, row.seq), stop: stopWorker, dataDir });
     } catch (e) { res = { outcome: 'exception', error: errText(e) }; }
     if (res && res.outcome === 'exception' && !res.row_ref && /^E_PAUSED/.test(res.error || '')) res = { outcome: 'skipped', error: res.error }; // the core refused it for the pause: nothing was written
     if (!res || !res.outcome) res = { outcome: 'exception', error: 'the step returned no outcome' };

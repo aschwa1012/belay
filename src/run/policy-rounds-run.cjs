@@ -29,7 +29,11 @@ async function readyWorker(c, env, treeTask, role = 'builder') {
   const run = env.core.run ? ((await env.core.run.get({})) || {}).run : null;
   if (run && run.paused_at != null) return { res: { outcome: 'skipped', error: 'E_PAUSED: the run is paused; the claim is reopened and the step retaken after the resume' } };
   const tried = [why];
-  if (env.restart) {
+  // One restart per step across reopened claims (a slow launch returns relaunch_in_flight and the step is taken again): the attempt is a claim of its own
+  // (policy-exec.cjs restartOnce), so a second pass does not start another while an outage keeps the first from coming up. After it: a fresh worker, or the exception.
+  const again = env.restart && env.restartOnce ? !(await env.restartOnce(c)) : false;
+  if (again) tried.push(`${c.worker} was already restarted once for this step`);
+  if (env.restart && !again) {
     try {
       const rec = await env.restart(c.worker);
       if (rec && rec.relaunch_in_flight === true) return { res: { outcome: 'skipped', error: `E_NOT_NOW: ${c.worker} is being restarted and is not up yet; the step is taken again once it is` } };
@@ -40,7 +44,7 @@ async function readyWorker(c, env, treeTask, role = 'builder') {
       if (e && e.code === 'E_PAUSED') return { res: { outcome: 'skipped', error: 'E_PAUSED: the run was paused as the builder was restarted; the claim is reopened and the step retaken after the resume' } };
       tried.push(`restart: ${errText(e)}`);
     }
-  } else tried.push('this run has no restart path');
+  } else if (!env.restart) tried.push('this run has no restart path');
   const spec = role === 'refuter' ? c.review : c.build;
   const spawn = spec && spec.spawn ? spec.spawn : null;
   const wt = spawn && env.spawn && w.substrate !== 'codex' ? ((await env.core.task.get({ task_id: treeTask })) || {}).worktree : null;
