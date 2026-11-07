@@ -382,7 +382,9 @@ function createPolicyWatcher({ core, runId, enabled = false }) {
     if (done && !sent.has(`done:${done.key}`)) { sent.add(`done:${done.key}`); out.push(require('./done-wake.cjs').wakeOf(runId, done)); }
     return out;
   }
-  return { poll, active: () => last.slice(), snapshot: () => lastSnap };
+  // The done wake went and the rows still read done: the orchestrator's last word from belay is that wake, and nothing has moved since.
+  const doneCurrent = () => { if (!lastSnap || lastSnap.failed) return false; const d = require('./done-wake.cjs').doneOf(lastSnap, last); return !!d && sent.has(`done:${d.key}`); };
+  return { poll, active: () => last.slice(), snapshot: () => lastSnap, doneCurrent };
 }
 
 module.exports = { unplannedEscalation, escalationFact, fixRoundsLeft, derive, readRevisions, familyIds, exceptionOf, policyOf, rootOf, haltScope, haltedIds, textOf, wakeOf, createPolicyWatcher, HALTING, HALT_SCOPE, WAKE_TEXT_MAX };
