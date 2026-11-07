@@ -145,7 +145,9 @@ async function assign(E, caller, args) {
     // different, legitimate fact, not a dead one: src/run/manager.cjs writes the `starting` row and
     // calls task.assign before the launch has a pid to report — only `worker.write`'s own `running`
     // check treats a pid as required, and this must not narrow that.
-    if (worker.pid != null && !identity.runsAs(worker.pid, worker.pid_created)) {
+    // A Codex worker is one process per turn (ADR 0019): between turns its row is `idle` and the process of the last turn has exited by design, so a dead pid
+    // there is the resting state, not a death (a death is a `dead` row). The adapter's message to it is a resume process.
+    if (worker.pid != null && !(worker.substrate === 'codex' && worker.state === 'idle') && !identity.runsAs(worker.pid, worker.pid_created)) {
       throw err('E_WORKER_NOT_LIVE', `worker ${args.worker_id} claims state ${worker.state} but its pid ${worker.pid} is dead`,
         { worker_id: args.worker_id, state: worker.state, pid: worker.pid, pid_alive: false });
     }

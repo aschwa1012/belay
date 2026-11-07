@@ -176,3 +176,15 @@ test('a re_review whose refuter is dead, with no path to a new one, is the excep
     assert.match(stepRows(e).find((x) => x.step === 're_review').error, /refuter rv-1 is dead.*no restart path/);
   } finally { await e.close(); }
 });
+
+test('a Codex builder between turns (row idle, the last turn\'s process exited) takes its fix round: a dead pid there is the resting state, not a death', async () => {
+  const e = await env('dead-codex');
+  try {
+    const { t } = await redThenDead(e);
+    // The row of a Codex worker after its turn: substrate codex, idle, a pid that has exited.
+    await e.orch.worker.write({ id: 'b1', substrate: 'codex', state: 'idle', pid: deadPid(), exit_code: null });
+    const out = await e.exec().tick();
+    assert.deepStrictEqual(fixSteps()(out), [['fix_eval', 'done']], JSON.stringify(stepRows(e).map((s) => s.error)));
+    assert.strictEqual(holder(e, t.id), 'b1');
+  } finally { await e.close(); }
+});
