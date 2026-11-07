@@ -1,6 +1,6 @@
 'use strict';
 require('../helpers/temp-root.cjs').enforceSafeTemp(process.env);
-// policy-null-step.test.cjs — ADR 0074 amendment 4 (rc.6): a field of a task's plan set to null means the step is the orchestrator's. The plan keeps
+// policy-null-step.test.cjs — ADR 0074 amendment 5: a field of a task's plan set to null means the step is the orchestrator's. The plan keeps
 // the null (the shipped default does not fill it), the executor never does that step for the task, the done wake does not wait on it and a
 // hand-back's stall wake does not name an open task whose build is null. A field left out still takes the run's plan. A reviewer's escalation is
 // filed under the work it judged, so an amend of the work's plan lifts it and the done wake can follow. Pure rows: no store, no process.

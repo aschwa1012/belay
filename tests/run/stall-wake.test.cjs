@@ -93,7 +93,8 @@ test('run B: a review\'s holds the plan took, with three reviews and two planned
     const close = s.find((w) => w.established_by === 'task.list at the idle close');
     assert.ok(close, `the close names them: ${JSON.stringify(out.wakes)}`);
     assert.deepStrictEqual(close.task_ids, ['r-billwise', 'r-budget', 'r-import-3', 't-perf', 't-users']);
-    assert.strictEqual(out.wakes.filter((w) => w.event === 'policy_digest').length, 1, 'the digest still reaches it');
+    assert.strictEqual(out.wakes.filter((w) => w.event === 'policy_digest').length, 0, 'no digest line of its own');
+    assert.strictEqual(close.digest_n, 1, 'the digest still reaches it: in the close notice line');
     assert.deepStrictEqual(out.stall.closed_open, ['r-billwise', 'r-budget', 'r-import-3', 't-perf', 't-users']);
   } finally { cleanup(root); }
 });
