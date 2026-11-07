@@ -238,7 +238,7 @@ function derive(snap) {
     const at = (i.conflict && i.conflict.task_id) || ids[0]; // a later merge of that task supersedes it; task_ids are cumulative, so a later row naming other tasks does not
     if (ints.some((o) => o.id !== i.id && Number(o.seq) > Number(i.seq) && (Array.isArray(o.task_ids) ? o.task_ids : []).includes(at))) continue;
     const m = rf ? RF.mergeAction(i, rf, planFor) : null;
-    if (m && m.step) continue; // the plan takes it: a fix task for the builder
+    if (m && (m.step || m.answered)) continue; // the plan takes it: a fix task for the builder, or one is already out for this conflict and the merge is retried after it
     if (m && m.cap) { add('E2', m.root, { table: 'integration', id: i.id, seq: Number(i.seq) || 0 }, 'fix', { cause: m.cause, task: m.task.id, used: m.used, max: m.max, last: m.last }, { key: i.id, seq: Number(i.seq) || 0 }); continue; }
     const tid = (i.conflict && i.conflict.task_id) || ids[0];
     const t = byId.get(tid) || { id: tid };

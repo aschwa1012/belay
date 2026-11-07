@@ -22,6 +22,7 @@ const SENDING = new Set(['fix_eval', 'fix_run', 'reask', 'fix_conflict', 'fix_ch
 const STEP_NAMES = new Set([...ROUND_STEPS, ...MERGE_FIX_STEPS, ...RERUN_STEPS, 'reask', 'note_flaky']);
 const REASK_MAX = 1; // a reviewer is asked again once; past it the evaluation that could not judge wakes (E5)
 const COUNTED = new Set(['done', 'started', 'superseded']);
+const ANSWER_MAX_MS = 2700000; // how long a merge fix may be out before the integration it answers reads as unanswered again (45 min); a fix that never returns must not defer the cap wake for ever
 
 const failing = (r) => ((r && r.checks) || []).filter((c) => c && c.passed === false);
 const beside = (c) => (Array.isArray(c.concurrent) ? c.concurrent.length : 0);
@@ -138,6 +139,15 @@ function mergeAction(i, rf, planFor) {
   if (!P || P.plan.fix !== 'builder') return null;
   const root = rootOf(w, rf.byId);
   const base = { kind: conflict ? 'conflict' : 'checks', integration: i, task: w, root, rev: P.rev, cause: conflict ? 'integrate conflict' : 'integration checks failed' };
+  // Already answered: a merge fix (fix_conflict, fix_checks) was claimed for THIS integration and its fix is out or done (and the retry follows it). Its round is the one
+  // that spent the cap, so the same conflict must not read as one the cap stops; the cap is for a NEW conflict or failure after the fix. Not answered once the fix is
+  // cancelled, or has been out longer than ANSWER_MAX_MS without finishing.
+  const claim = rf.steps.find((s) => MERGE_FIX_STEPS.has(s.step) && s.trigger_id === i.id && !reopened(s) && COUNTED.has(s.outcome));
+  if (claim) {
+    const fix = /^task:/.test(claim.row_ref || '') ? rf.byId.get(claim.row_ref.slice(5)) : null;
+    const out = claim.outcome === 'started' ? rf.now - Number(claim.at || 0) <= ANSWER_MAX_MS : !!fix && fix.state !== 'cancelled' && (fix.state === 'done' || rf.now - Number(claim.at || 0) <= ANSWER_MAX_MS);
+    if (out) return { ...base, answered: true };
+  }
   if (!left(rf, root.id)) return { ...base, ...capFact(rf, root.id, base.cause, conflict ? ((i.conflict && i.conflict.files) || []).slice(0, 3).join(', ') : (Array.isArray(i.checks) ? i.checks.filter((c) => c && c.passed === false).map((c) => `${(Array.isArray(c.argv) ? c.argv.slice(0, 3).join(' ') : '?')}${c.exit_code != null ? ` exit ${c.exit_code}` : ''}`).join('; ') : '')) };
   return { ...base, step: conflict ? 'fix_conflict' : 'fix_checks', worker: handBy(w) };
 }
