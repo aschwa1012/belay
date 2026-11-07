@@ -157,3 +157,13 @@ test('E1 build: raised only when a dependency landed after the task was made; if
   assert.deepStrictEqual(ex(150, 100).map((e) => e.task_id), ['M'], 'the merge came after the task was made: told');
   assert.deepStrictEqual(ex(50, 100), [], 'the dependency had landed when the task was made: nothing');
 });
+
+test('E1 build: a tie in time wakes, and a task belay made (a follow-up) always wakes whatever the order', () => {
+  const dep = doneWork('D', SHIPPED_PLAN, { review: { review_id: 'x', state: 'holds' }, integration: { state: 'merged' } });
+  const plan = PP.resolve({ build: null }, SHIPPED_PLAN);
+  const merge = (at) => ({ id: 'i1', seq: 20, run_id: RUN, state: 'merged', passed: true, task_ids: ['D'], into_branch: `belay/integrate/${RUN}`, written_at: at });
+  const ex = (task, at, madeAt) => PW.derive({ runId: RUN, tasks: [dep, task], integrations: [merge(at)], steps: [], failures: [], revisions: [{ id: task.id, seq: 12, written_at: madeAt, policy_rev: 1, evaluated_at: null }] }).filter((e) => e.field === 'build');
+  assert.strictEqual(ex(work('M', plan, { depends_on: ['D'] }), 100, 100).length, 1, 'a tie fails toward waking');
+  const fu = work('F', plan, { depends_on: ['D'], follows_up: { review_id: 'x' }, acted_by: 'policy', policy_made: true });
+  assert.strictEqual(ex(fu, 50, 100).length, 1, 'a follow-up belay made wakes even when its dependency landed before its row');
+});

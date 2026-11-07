@@ -144,9 +144,10 @@ function derive(snap) {
   };
   // A null-build task is raised only when a dependency landed after the task was made: if every one had landed at creation the orchestrator knew. Unknown times fail toward waking.
   const landedAfterCreate = (x) => {
+    if (x.policy_made === true || x.acted_by === 'policy') return true; // a task belay made (a follow-up) was not made by the orchestrator knowing its dependencies
     const made = (revOf.get(x.id) || [])[0];
     if (!made || !Number.isFinite(Number(made.written_at))) return true;
-    return x.depends_on.some((d) => { const t = landedAt(d); return t === null || t > Number(made.written_at); });
+    return x.depends_on.some((d) => { const t = landedAt(d); return t === null || t >= Number(made.written_at); }); // a tie fails toward waking
   };
   const add = (exception, task, trigger, field, detail, fact, extra = {}) => {
     const uid = `${exception}:${field || 'none'}:${fact.key}`;
