@@ -32,9 +32,15 @@ function untaken(snap) {
   const carried = new Set();
   // An integration merging holds every other integrate back in due(); the plan still carries those, so they are listed with the gate off. A stale one (its owner is gone) is no merge in flight: it keeps the gate, so the safety net still names what waits behind it.
   for (const c of due({ runId, tasks, integrations: (snap.integrations || []).filter((i) => i.state !== 'merging' || i.stale), steps: snap.steps || [], rounds: snap.rounds, failures: snap.failures, roundSteps: snap.roundSteps, workers: snap.workers, isKilled: snap.isKilled })) { carried.add(c.task_id); for (const id of c.task_ids || []) carried.add(id); }
-  // A red branch (policy-rounds.cjs redOf) and a work awaiting its commit fix withhold every other integrate in due() too. Asked again with no
-  // rounds, due() lists what it withholds; those integrates are the plan's, waiting on a round, so what depends on them is not free.
-  if (snap.rounds) for (const c of due({ runId, tasks, integrations: (snap.integrations || []).filter((i) => i.state !== 'merging' || i.stale), steps: snap.steps || [] })) if (c.step === 'integrate') { carried.add(c.task_id); for (const id of c.task_ids || []) carried.add(id); }
+  // A red branch (policy-rounds.cjs redOf) and a work awaiting its commit fix withhold every other integrate in due() too. While a round is at work
+  // (a round step due or in flight, or a fix task of the run not yet terminal) those integrates are the plan's, waiting on it: asked again with no
+  // rounds, due() lists what it withholds, and what depends on them is not free. At the fix cap, or once the fix is cancelled, no round is at work:
+  // nothing carries the hold, and what waits behind it is named.
+  const ROUNDS = new Set(['fix_eval', 'fix_run', 'fix_conflict', 'fix_checks', 'fix_commit', 'rerun_alone', 'rerun_eval', 'reask']);
+  const roundAtWork = (snap.steps || []).some((s) => s.run_id === runId && s.outcome === 'started' && ROUNDS.has(s.step))
+    || mine(tasks, runId).some((t) => t.repairs && !['done', 'cancelled', 'released'].includes(t.state))
+    || due({ runId, tasks, integrations: (snap.integrations || []).filter((i) => i.state !== 'merging' || i.stale), steps: snap.steps || [], rounds: snap.rounds, failures: snap.failures, roundSteps: snap.roundSteps }).some((c) => ROUNDS.has(c.step));
+  if (snap.rounds && roundAtWork) for (const c of due({ runId, tasks, integrations: (snap.integrations || []).filter((i) => i.state !== 'merging' || i.stale), steps: snap.steps || [] })) if (c.step === 'integrate') { carried.add(c.task_id); for (const id of c.task_ids || []) carried.add(id); }
   for (const s of snap.steps || []) if (s.run_id === runId && s.outcome === 'started' && s.task_id) carried.add(s.task_id);
   for (const id of carried) named.add(id);
   const stepRoots = new Set(); // a step in flight owns every row of its work's tree, such as the review it has just written and not yet assigned

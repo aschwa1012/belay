@@ -37,3 +37,25 @@ test('with the red gone (the fix cancelled) nothing carries B and C is named onl
   assert.deepStrictEqual(due(snap).filter((c) => c.step === 'integrate').map((c) => c.task_id), ['B'], 'the hold is released: B is due again');
   assert.deepStrictEqual(untaken(snap), [], 'B is due, so it is carried the ordinary way');
 });
+
+test('at the fix cap nothing is at work on the red: what waits behind the held work is named again', () => {
+  const snap = rows();
+  snap.tasks = snap.tasks.filter((t) => t.id !== 'F1'); snap.steps = []; snap.roundSteps = [];
+  snap.rounds = { caps: { max: 0, hard: null } };
+  assert.deepStrictEqual(due(snap), [], 'at the cap the plan takes no step (E2 is raised)');
+  assert.deepStrictEqual(untaken(snap), ['C'], 'the safety net names C: nobody is carrying B');
+});
+
+test('a work held for its commit fix whose fix was cancelled carries nothing: its dependent is named', () => {
+  const rel2 = rel(2);
+  const W = T('W', { seq: 5, state: 'done', policy: PLAN, policy_rev: 1, handoff: { by: 'bw', at: 1 }, results: { ...rel2, uncommitted: true, uncommitted_paths: ['a.txt'] }, review: { state: 'holds', review_id: 'RW' }, integration: { state: 'not_merged', into: null } });
+  const F = T('F', { seq: 9, state: 'cancelled', repairs: 'W', depends_on: ['W'] });
+  const RW = T('RW', { seq: 8, state: 'done', acceptance: { verdict: true }, depends_on: ['W'], handoff: { by: 'rv', at: 3 }, results: rel(4) });
+  const D = T('D', { seq: 50, policy: PLAN, policy_rev: 1, depends_on: ['W'] });
+  const steps = [{ seq: 1, run_id: 'r1', step: 'fix_commit', task_id: 'W', outcome: 'done', row_ref: 'task:F', trigger_table: 'task', trigger_id: 'W', trigger_seq: 5, at: 6 }];
+  const snap = { runId: 'r1', tasks: [W, RW, F, D], integrations: [], steps, roundSteps: steps, failures: [], rounds: { caps: { max: 2, hard: null } } };
+  const held = require('../../src/run/policy-rounds.cjs');
+  const rf = held.ctxOf({ runId: 'r1', tasks: snap.tasks, steps, failures: [], caps: snap.rounds.caps, integrations: [] });
+  assert.ok(held.commitHeld(W, rf), 'W is held for its commit fix');
+  assert.ok(untaken(snap).includes('D'), 'nothing is at work on the commit hold: D is named');
+});
