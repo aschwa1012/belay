@@ -33,7 +33,15 @@ const relaunchesOf = (taskId, steps, runId) => stepsOf(steps, runId).filter((s) 
 
 // The worker the plan gave this task: its latest done build step (a fix task: the done fix step that made it; a review: the review step that made
 // it). null when the plan gave it none.
-function builderOf(x, steps, runId, rootId) {
+function builderOf(x, steps, runId, rootId, workers = null) {
+  const given = stepWorkerOf(x, steps, runId, rootId);
+  if (!given || !Array.isArray(workers)) return given;
+  // The step's row names the worker it was claimed for, and a round step may hand the task to another (a fresh coder when that worker was dead):
+  // the worker rows say who held the task last (`task_id`: the task of a worker's newest lease), and that is the one whose death leaves it open.
+  const held = workers.filter((w) => w.task_id === x.id).sort((a, b) => (Number(b.seq) || 0) - (Number(a.seq) || 0) || (Number(b.last_event_at) || 0) - (Number(a.last_event_at) || 0));
+  return held.length ? held[0].id : given;
+}
+function stepWorkerOf(x, steps, runId, rootId) {
   const mine = stepsOf(steps, runId).filter((s) => s.outcome === 'done' && s.worker_id);
   if (isReview(x)) { const r = mine.filter((s) => REVIEW_STEPS.has(s.step) && s.row_ref === `task:${x.id}`).pop(); return r ? r.worker_id : null; }
   if (x.repairs) {
@@ -47,16 +55,16 @@ function builderOf(x, steps, runId, rootId) {
 const used = (taskId, steps, runId) => relaunchesOf(taskId, steps, runId).filter((s) => !reopened(s)).length;
 
 // -> the worker whose death left task `x` open, when the plan may relaunch it (before the worker's row is looked at), else null.
-function builderToRelaunch(x, plan, steps, runId, rootId) {
+function builderToRelaunch(x, plan, steps, runId, rootId, workers = null) {
   if (!plan || !(isReview(x) ? plan.review : plan.build) || x.state !== 'open' || x.lease) return null; // `plan`: the plan of the work the task is (a review: of the work it judges)
   if (used(x.id, steps, runId) >= MAX_RELAUNCHES) return null;
-  return builderOf(x, steps, runId, rootId);
+  return builderOf(x, steps, runId, rootId, workers);
 }
 
 // The candidate step for due() (policy-exec.cjs): the builder's row is `dead` and no operator killed it. `snap.workers` absent: nothing.
 function due(x, plan, rev, snap, rootId) {
   if (!Array.isArray(snap.workers)) return null;
-  const wid = builderToRelaunch(x, plan, snap.steps, snap.runId, rootId);
+  const wid = builderToRelaunch(x, plan, snap.steps, snap.runId, rootId, snap.workers);
   const w = wid && snap.workers.find((r) => r.id === wid);
   if (!w || w.state !== 'dead') return null;
   if (typeof snap.isKilled === 'function' && snap.isKilled(w)) return null;
@@ -101,7 +109,8 @@ async function run(c, env) {
     const wt = (await env.core.task.get({ task_id: c.tree_task || c.task_id })).worktree; // a reviewer starts in the tree of the work it judges
     if (!wt || !wt.path || wt.removed_at) return skipped(`relaunch refused: ${why.join('; ')}; and ${c.task_id} has no belay worktree to start a coder in`);
     try {
-      const row = await env.spawn({ substrate: 'claude-code', worktree: wt.path, task_id: c.task_id, agent_type: spawn.agent_type, worker_id: `${c.role === 'review' ? 'rev' : 'bld'}-${require('node:crypto').randomUUID().slice(0, 8)}` });
+      const prompt = c.role === 'review' ? await require('./fresh-reviewer.cjs').promptFor(env.core, t) : null; // a fresh re-reviewer is told the findings it is to judge
+      const row = await env.spawn({ substrate: 'claude-code', worktree: wt.path, task_id: c.task_id, agent_type: spawn.agent_type, ...(prompt ? { prompt } : {}), worker_id: spawn.worker_id || `${c.role === 'review' ? 'rev' : 'bld'}-${require('node:crypto').randomUUID().slice(0, 8)}` }); // a plan's named spawn id is used in place, as the build and review steps do
       const l = await holder();
       if (l && l.holder === (row && row.id)) return { outcome: 'done', row_ref: `lease:${l.id}`, spawned: row.id };
       why.push(`spawned ${row && row.id}, but it holds no lease on ${c.task_id}`);
@@ -125,7 +134,7 @@ function verdict(wid, ctx) {
     if (x.run_id !== runId) continue;
     const work = isReview(x) ? byId.get((Array.isArray(x.depends_on) ? x.depends_on : [])[0]) : x; // a review is relaunched under the plan of the work it judges
     const plan = work && ctx.polOf(work);
-    if (!plan || !(isReview(x) ? plan.review : plan.build) || builderOf(x, steps, runId, x.repairs ? ctx.rootOf(x).id : x.id) !== wid) continue;
+    if (!plan || !(isReview(x) ? plan.review : plan.build) || builderOf(x, steps, runId, x.repairs ? ctx.rootOf(x).id : x.id, ctx.workers) !== wid) continue;
     const last = relaunchesOf(x.id, steps, runId).pop() || null;
     if (x.state === 'open' && !x.lease) {
       if (ctx.isKilled && ctx.isKilled(wid)) no = true;
@@ -147,7 +156,7 @@ async function holdDeaths({ core, runId, events, seen, tasks, byId, polOf, rootO
   try { steps = await require('./run-digest.cjs').listSteps(core, runId); } catch { steps = null; }
   const out = events.filter((e) => !fresh.includes(e));
   if (!steps) { const all = out.concat(fresh, [...held.values()].map((h) => h.ev)); held.clear(); return all; } // unreadable: nothing is kept back
-  const ctx = { runId, tasks, steps, polOf, rootOf, isKilled: (id) => { const w = (workers || []).find((r) => r.id === id); return !!w && KM.isKilled(dataDir, id, w.pid, w.pid_created); } };
+  const ctx = { runId, tasks, steps, polOf, rootOf, workers, isKilled: (id) => { const w = (workers || []).find((r) => r.id === id); return !!w && KM.isKilled(dataDir, id, w.pid, w.pid_created); } };
   const drop = (ev) => {
     (seen.relaunched || (seen.relaunched = [])).push({ worker_id: ev.worker_id });
     if (dataDir) { const D = require('./run-digest.cjs'); try { D.claimException({ dataDir, runId, uid: D.wakeUid(ev) }); } catch { /* the wait may return it once more */ } }

@@ -93,7 +93,7 @@ function createRunWait({ core, runId, dataDir, armed = () => true, settled = nul
     else { try { tasks = ((await core.task.list({})) || {}).tasks || []; steps = await D.listSteps(core, runId); } catch { return; } } // unread: the death is told
     const byId = new Map(tasks.map((t) => [t.id, t]));
     const KM = require('../core/kill-mark.cjs');
-    const ctx = { runId, tasks, steps, polOf: (t) => PW.policyOf(t, byId), rootOf: (t) => PW.rootOf(t, byId), isKilled: (id) => { const w = workers.find((r) => r.id === id); return !!w && KM.isKilled(dataDir, id, w.pid, w.pidCreated); } };
+    const ctx = { runId, tasks, steps, workers: workers.map((w) => ({ id: w.id, task_id: w.taskId == null ? null : w.taskId, last_event_at: w.lastEventAt })), polOf: (t) => PW.policyOf(t, byId), rootOf: (t) => PW.rootOf(t, byId), isKilled: (id) => { const w = workers.find((r) => r.id === id); return !!w && KM.isKilled(dataDir, id, w.pid, w.pidCreated); } };
     for (const d of ds) {
       const v = require('./policy-relaunch.cjs').verdict(d.worker_id, ctx);
       if (v === 'wait') { if (!waitingSince.has(d.uid)) waitingSince.set(d.uid, clock.now()); if (clock.now() - waitingSince.get(d.uid) < require('./policy-relaunch.cjs').HOLD_MAX_MS) waiting.add(d.uid); }

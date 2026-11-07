@@ -29,7 +29,7 @@ const keyOf = (step, t) => `${step}|${t.table}|${t.id}|${t.seq}`;
 const isRelease = (t) => !!(t && t.results && t.results.trigger === 'release');
 const MAX_PARALLEL_BUILDS = 4; // the default cap on builds in flight when the run states none (the standing four-writers rule)
 const SENDS = new Set(['build', 'review', 'fix', 're_review', 'relaunch', ...RF.SENDING]); // the steps that send a worker work (the budget rule); integrate and follow_up send none
-const leftOver = STEPS.leftOver; // a review a paused step made and did not hand over (never leased, never evaluated: policy-steps-run.cjs)
+const leftOver0 = STEPS.leftOver; // a review a paused step made and did not hand over (never leased, never evaluated: policy-steps-run.cjs)
 const isReviewTask = (t) => !!(t.acceptance && t.acceptance.verdict === true);
 
 // The plan a task acts under and its revision. The plan is policy-wakes.cjs policyOf (one definition of who inherits); the revision is that of
@@ -46,6 +46,9 @@ const merged = (t) => !!(t.integration && t.integration.state === 'merged');
 // -> the steps due on these rows, in row order (the trigger's seq, then the step's name). `snap`: { runId, tasks (task.list rows),
 // integrations, steps, maxBuilds, rounds ({ caps }: the failures policy-rounds.cjs carries as rounds are read only when it is given), failures }. Pure: no store, no clock. A candidate: { step, task_id, trigger, policy_rev, worker (the named builder or refuter), ... }.
 function due(snap) {
+  // A review a done review or re_review step handed to a reviewer was leased once: if that reviewer died, the relaunch owns it, not the review step's retake.
+  const handed = new Set((snap.steps || []).filter((s) => (s.step === 'review' || s.step === 're_review') && s.outcome === 'done' && s.row_ref).map((s) => String(s.row_ref).replace(/^task:/, '')));
+  const leftOver = (r) => leftOver0(r) && !handed.has(r.id);
   const { runId } = snap;
   const all = snap.tasks || [];
   const byId = new Map(all.map((t) => [t.id, t]));
