@@ -35,7 +35,7 @@ test('every value outside the allowlist is refused with E_ARGS "not accepted in 
 
 test('malformed plans are refused', () => {
   for (const v of [null, 'fix', 7, [], true]) assert.throws(() => PP.check(v), (e) => e.code === 'E_ARGS');
-  refused({ fix: null }, /cannot be null/);
+  refused({ fix: undefined }, /undefined/);
   refused({ review: 'w1' }, /must be an object/);
   refused({ review: { worker: '../x' } }, /not a valid id/);
   refused({ review: { spawn: { agent_type: 'wizard' } } }, /agent_type must be one of/);

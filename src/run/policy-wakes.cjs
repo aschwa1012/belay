@@ -163,7 +163,9 @@ function derive(snap) {
     // It always wakes, planned task or not, and halts the task's planned steps until the orchestrator acts on the task after the hand-back
     // (re-assigns or cancels it) or amends its plan. The reason is the worker's words: quoted, cut, never an instruction.
     const es = escalationFact(x);
-    if (es) add('escalation', root, tref(x), 'none', { ...es.detail, planned: true }, es.fact, es.acted ? { lifted: true } : {});
+    // A reviewer's escalation is filed under the work it judged, as a fix's is under its work, so an amend of the work's plan lifts it and the done wake can follow.
+    const judgedWork = es && isReviewRow(x) && Array.isArray(x.depends_on) && x.depends_on.length === 1 ? byId.get(x.depends_on[0]) : null;
+    if (es) add('escalation', judgedWork ? rootOf(judgedWork, byId) : root, tref(x), 'none', { ...es.detail, planned: true }, es.fact, es.acted ? { lifted: true } : {});
     // E5: a release evaluation that ended without a result (a queue refusal, an error): the ledger's release_failed events.
     if (x.state === 'released' && x.handoff) {
       for (const f of fails) if (f.task_id === x.id && f.code !== 'E_CANCELLED' && Number(f.written_at) >= Number(x.handoff.at)) add('E5', root, tref(x), null, { executable: true, failing: [], error: f.code, task: x.id }, { key: `${x.id}!${f.id}`, seq: Number(f.seq) || 0, at: Number(f.written_at) || 0, rowSeq: rowSeqOf(f) });
