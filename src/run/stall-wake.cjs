@@ -102,8 +102,10 @@ function createStallWatcher({ core, runId, planned = () => false }) {
     if (now !== closeState) {
       closeState = now;
       const byId = new Map(tasks.map((t) => [t.id, t]));
-      const waiting = open.filter((t) => !ready(t, byId)).length;
-      return wake(ids, fit((l) => `belay: stalled: ${plural(ids.length)}, nobody assigned${waiting ? ` (${waiting} waiting on dependencies)` : ''}: ${l}. The run closes when you next end a turn with no worker mid-turn, and they stay open.`, ids), 'close', tasks);
+      const readyIds = ids.filter((id) => ready(byId.get(id), byId)), waiting = ids.length - readyIds.length;
+      const shown = waiting ? readyIds.concat(ids.filter((id) => !readyIds.includes(id))) : ids; // the ready ones first: those are the ones to start
+      const note = waiting ? ` (${readyIds.length ? `${readyIds.length} ready: ${names(readyIds, 4)}; ` : ''}${waiting} waiting on dependencies)` : '';
+      return wake(ids, fit((l) => `belay: stalled: ${plural(ids.length)}, nobody assigned${note}: ${l}. The run closes when you next end a turn with no worker mid-turn, and they stay open.`, shown), 'close', tasks);
     }
     rec.closed_open = ids; // told, and the orchestrator ended its turn with nothing changed: the close goes ahead, and the receipt says so
     return null;

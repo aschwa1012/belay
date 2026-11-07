@@ -147,7 +147,7 @@ test('the close wake: named again only when a task row moved, and only for a pla
   tasks.push(task({ id: 't-new', seq: 9, depends_on: ['t-perf'] }));
   const again = await w.atClose(null);
   assert.deepStrictEqual([again.task_ids, again.seq], [['t-new', 't-perf'], 9], 'a row moved: every open task is named again');
-  assert.match(again.text, /nobody assigned \(1 waiting on dependencies\): t-new, t-perf\./);
+  assert.match(again.text, /nobody assigned \(1 ready: t-perf; 1 waiting on dependencies\): t-perf, t-new\./);
   tasks.length = 0;
   assert.strictEqual(await w.atClose(null), null);
   assert.strictEqual(w.record().closed_open, null, 'nothing open: nothing to record');
@@ -186,4 +186,13 @@ test('after a planned hand-back: waits for its evaluation, wakes on every one th
   assert.ok(Buffer.byteLength(big.text) <= 221, big.text);
   assert.match(big.text, /and \d+ more\.$/);
   assert.strictEqual(big.task_ids.length, 20, 'the event keeps every id for the receipt');
+});
+
+test('the close wake names the ready tasks first, then counts those waiting on dependencies', async () => {
+  const { createStallWatcher } = SW();
+  const tasks = [task({ id: 't-a', seq: 1 }), task({ id: 't-b', seq: 2 }), ...['t-c', 't-d', 't-e'].map((id, i) => task({ id, seq: 3 + i, depends_on: ['t-a'] }))];
+  const w = createStallWatcher({ core: { task: { list: async () => ({ tasks }) } }, runId: RUN, planned: () => true });
+  const ev = await w.atClose(null);
+  assert.match(ev.text, /^belay: stalled: 5 open tasks, nobody assigned \(2 ready: t-a, t-b; 3 waiting on dependencies\): t-a, t-b, t-c, t-d, t-e\./);
+  assert.ok(Buffer.byteLength(ev.text) <= require('../../src/run/policy-wakes.cjs').WAKE_TEXT_MAX);
 });
