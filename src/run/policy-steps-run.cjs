@@ -115,6 +115,37 @@ ${work.spec}` : ''}`,
   return { outcome: 'done', row_ref: ref };
 }
 
+// build: an open work task, its dependencies done, is given to the plan's worker (live and idle) or to a coder belay spawns with the plan's
+// agent_type, through the same spawn path the review step uses. The spawn starts in the task's own belay worktree; a task without one writes
+// nothing and is an exception naming why (E8), so the orchestrator creates the tree or assigns the task itself. A pause is a retake.
+async function build(c, env) {
+  const t = await env.core.task.get({ task_id: c.task_id });
+  if (!t || t.state !== 'open' || t.lease) return { outcome: 'skipped', error: `${c.task_id} is no longer open and unassigned` };
+  const spawn = c.build && c.build.spawn ? c.build.spawn : null;
+  let tree = null;
+  if (spawn) {
+    if (!env.spawn) return exception('the plan spawns its builder and this run has no spawn path');
+    tree = await reviewTree(env, c);
+    // A task with no tree gets one now: cut from the run's branch when it depends on merged work (so the dependencies are in it), else from HEAD.
+    if (!tree && env.core.task.worktreeCreate) {
+      try { const made = await env.core.task.worktreeCreate({ task_id: c.task_id, ...(c.from_run && env.runId ? { base: `belay/integrate/${env.runId}` } : {}) }); tree = made && made.worktree && made.worktree.path; } catch (e) { return exception(`task ${c.task_id} has no belay worktree and one could not be made: ${errText(e)}`); }
+    }
+    if (!tree) return exception(`task ${c.task_id} has no belay worktree to start a builder in, so nothing was spawned: create it with worktree: true, or assign it yourself`);
+  } else {
+    const why = await unavailable(env, c.worker, 'builder');
+    if (why) return exception(why);
+  }
+  const run = env.core.run ? ((await env.core.run.get({})) || {}).run : null;
+  if (run && run.paused_at != null) return paused('the run is paused');
+  const leaseRef = async () => { const l = ((await env.core.task.get({ task_id: c.task_id })) || {}).lease; return l && l.id ? `lease:${l.id}` : `task:${c.task_id}`; }; // the row the step wrote is the lease
+  if (!spawn) { const r = await handOver(env, { task_id: c.task_id, worker_id: c.worker }, `task:${c.task_id}`, true); if (r.outcome === 'done') r.row_ref = await leaseRef(); return r; }
+  let row;
+  try { row = await env.spawn({ substrate: 'claude-code', worktree: tree, task_id: c.task_id, agent_type: spawn.agent_type, worker_id: c.worker }); } catch (e) { if (e && e.code === 'E_PAUSED') return paused(`the run was paused as the builder was spawned; task ${c.task_id} stands unassigned and the retake assigns it`); return exception(`the builder could not be spawned: ${errText(e)}`); }
+  const held = ((await env.core.task.get({ task_id: c.task_id })) || {}).lease;
+  if (!held || held.holder !== (row && row.id)) return exception(`spawned ${row && row.id}, but it holds no lease on ${c.task_id}`);
+  return { outcome: 'done', row_ref: `lease:${held.id}` };
+}
+
 // The run manager's spawn made over a step's stamped view: the task the spawn assigns is assigned under the claim.
 const spawnFor = (manager) => (stepCore) => (args) => manager.spawn({ ...args, assignCore: stepCore });
 
@@ -131,7 +162,20 @@ async function integrate(c, env) {
   return { outcome: 'done', row_ref: ref }; // a conflict is a finished step too: the integration row says so and the exception wake carries it
 }
 
-const RUNNERS = { review, fix, re_review: reReview, integrate };
+// follow_up: a held review's should-fix findings become a follow-up task (ADR 0064: its own tree from the judged head, counted against
+// max_follow_ups, never a fix round). The step makes it and assigns nothing: a worker's directory is fixed at spawn, so the builder of the
+// work cannot take a task in another tree. The follow-up is written by the step, so it takes the work's plan, and the plan's build step
+// dispatches it like any open task (a coder spawned in its tree). A refusal (the cap reached since the claim) is an exception that halts the work.
+async function followUp(c, env) {
+  const cur = await env.core.task.get({ task_id: c.task_id });
+  if (!cur.review || cur.review.state !== 'holds' || cur.review.review_id !== c.review_id) return { outcome: 'skipped', error: `the review of ${c.task_id} is no longer ${c.review_id} holding` };
+  const made = await env.core.task.fixFromReview({ review_id: c.review_id, follow_up: true });
+  const ref = `task:${made.id}`;
+  if (made.existing === true) return { outcome: made.superseded === true ? 'superseded' : 'done', row_ref: ref };
+  return { outcome: 'done', row_ref: ref };
+}
+
+const RUNNERS = { build, review, fix, re_review: reReview, integrate, follow_up: followUp };
 
 async function run(c, env) {
   const f = RUNNERS[c.step];

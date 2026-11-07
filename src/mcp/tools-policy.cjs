@@ -7,12 +7,14 @@ const STAMPS = ['acted_by', 'trigger', 'policy_rev'];
 
 const POLICY_PROPERTY = {
   type: ['object', 'null'],
-  description: 'What belay does for this task. A field left out takes the run default, else stays yours. On amend it replaces the plan. null: no plan, no default. Its steps and hand-backs do not wake you; exceptions do, and the steps come as a digest: it can mean fewer calls, a leaner context on big runs',
+  description: 'What belay does for this task. A field left out takes the run default, else stays yours. On amend it replaces the plan. null: no plan, no default. Its steps and hand-backs do not wake you; exceptions, escalations and the done wake do, with a digest. The run plan names build, review, fix, re_review and integrate; set a field here only to change it for this task',
   properties: {
+    build: { type: 'object', description: '{worker: id} or {spawn: {agent_type, worker_id?}}; when open and its deps are done' },
     review: { type: 'object', description: '{worker: id} or {spawn: {agent_type, worker_id?}}; when the task passes' },
     fix: { enum: ['builder'] },
     re_review: { enum: ['refuter'] },
     integrate: { enum: ['on_hold'] },
+    follow_up: { enum: ['plan'] },
   },
 };
 

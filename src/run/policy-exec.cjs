@@ -25,7 +25,8 @@ const parse = (v) => { if (v && typeof v === 'object') return v; try { const p =
 const errText = (e) => `${(e && e.code) || 'E_INTERNAL'}: ${String((e && e.message) || e).replace(/[\x00-\x1f\x7f]+/g, ' ').slice(0, 800)}`;
 const keyOf = (step, t) => `${step}|${t.table}|${t.id}|${t.seq}`;
 const isRelease = (t) => !!(t && t.results && t.results.trigger === 'release');
-const SENDS = new Set(['review', 'fix', 're_review']); // the steps that send a worker work (the budget rule); integrate sends none
+const MAX_PARALLEL_BUILDS = 4; // the default cap on builds in flight when the run states none (the standing four-writers rule)
+const SENDS = new Set(['build', 'review', 'fix', 're_review']); // the steps that send a worker work (the budget rule); integrate and follow_up send none
 const leftOver = STEPS.leftOver; // a review a paused step made and did not hand over (never leased, never evaluated: policy-steps-run.cjs)
 const isReviewTask = (t) => !!(t.acceptance && t.acceptance.verdict === true);
 
@@ -47,6 +48,13 @@ function due(snap) {
   const all = snap.tasks || [];
   const byId = new Map(all.map((t) => [t.id, t]));
   const tasks = all.filter((t) => t.run_id === runId && t.state !== 'cancelled');
+  // The build gate, read once. A dependency is ready when it is done and, if its plan merges it, merged: a dependent task's tree is then cut
+  // from the run's branch with the dependency in it. A task a build step already took is not built again (its builder died or let go: the
+  // orchestrator is woken for the death and decides). `snap.maxBuilds` caps the builds in flight: leased work tasks of the run; past it a
+  // build is still listed, `capped: true`, so a reader sees the task is carried by the plan and the executor takes it once a slot frees.
+  const built = new Set((snap.steps || []).filter((s) => s.run_id === runId && s.step === 'build' && (s.outcome === 'done' || s.outcome === 'started' || s.outcome === 'superseded')).map((s) => s.task_id));
+  const depReady = (d) => !!d && d.state === 'done' && (!(PW.policyOf(d, byId) || {}).integrate || merged(d));
+  let slots = Number.isInteger(snap.maxBuilds) ? snap.maxBuilds - tasks.filter((t) => !isReviewTask(t) && t.lease && !t.lease.expired && t.state !== 'done').length : Infinity;
   const reviewsOf = new Map(); // task id -> the reviews (not cancelled) that depend on it
   for (const t of tasks) if (isReviewTask(t)) for (const d of Array.isArray(t.depends_on) ? t.depends_on : []) reviewsOf.set(d, (reviewsOf.get(d) || []).concat(t));
   const merging = (snap.integrations || []).some((i) => i.run_id === runId && i.state === 'merging');
@@ -59,6 +67,13 @@ function due(snap) {
     if (!p) continue;
     const { plan, rev } = p;
     const root = PW.rootOf(x, byId);
+    // build: an open work task nobody holds, whose dependencies are all done, and the plan names who builds it (a worker, or a spawn).
+    // A task the orchestrator assigned has a lease and is skipped; a fix is made and assigned by its own step. A follow-up the follow_up step
+    // made is open in its own tree, and is built here like any other planned task.
+    if (!x.repairs && plan.build && x.state === 'open' && !x.lease && !built.has(x.id) && (Array.isArray(x.depends_on) ? x.depends_on : []).every((d) => depReady(byId.get(d)))) {
+      const capped = slots <= 0; if (!capped) slots -= 1;
+      out.push({ step: 'build', task_id: x.id, trigger: tref(x), policy_rev: rev, build: plan.build, worker: plan.build.worker || (plan.build.spawn && plan.build.spawn.worker_id) || null, from_run: (Array.isArray(x.depends_on) ? x.depends_on : []).some((d) => merged(byId.get(d) || {})), ...(capped ? { capped: true } : {}) });
+    }
     // review: the work is done on a release evaluation, nothing reviews it, and the plan names who does (a worker, or a spawn).
     if (!x.repairs && plan.review && x.state === 'done' && isRelease(x) && !(reviewsOf.get(x.id) || []).filter((r) => !leftOver(r)).length && !(x.review && x.review.review_id && !leftOver(byId.get(x.review.review_id)))) { // a review a paused step made and did not hand over does not count: the retake hands it over
       out.push({ step: 'review', task_id: x.id, trigger: tref(x), policy_rev: rev, review: plan.review, worker: plan.review.worker || (plan.review.spawn && plan.review.spawn.worker_id) || null });
@@ -76,6 +91,15 @@ function due(snap) {
       const answered = (Array.isArray(x.answers) ? x.answers : []).slice().reverse().map((id) => byId.get(id)).find((r) => r && handBy(r));
       const R = answered || (root.review && byId.get(root.review.review_id)) || null;
       out.push({ step: 're_review', task_id: root.id, trigger: tref(x), policy_rev: rev, worker: handBy(R), fix_id: x.id, review_id: R ? R.id : null });
+    }
+    // follow_up (B1, ADR 0064): the work's review holds with should-fix findings, no follow-up answers that review yet and the run's
+    // max_follow_ups leaves one; the step makes the follow-up and the build step dispatches it. Past the cap nothing is due: the work
+    // integrates on its hold, and the findings are named in the done wake. The judged task stays done and integrable either way.
+    if (!x.repairs && !x.follows_up && plan.follow_up === 'plan' && x.review && x.review.state === 'holds' && x.review.follow_ups_left !== 0) {
+      const R = byId.get(x.review.review_id);
+      const facts = R && R.run_id === runId && isRelease(R) ? require('./review-wake.cjs').reviewOf(R) : null;
+      const answered = all.some((t) => t.follows_up && (t.follows_up.review_id === (R && R.id) || (Array.isArray(t.follows_up.review_ids) && t.follows_up.review_ids.includes(R && R.id))));
+      if (facts && facts.should_fix.n > 0 && !answered) out.push({ step: 'follow_up', task_id: x.id, trigger: tref(R), policy_rev: rev, review_id: R.id });
     }
     // integrate: the work's review holds, the work is done and not on the branch, and every task it depends on has landed.
     if (!x.repairs && plan.integrate === 'on_hold' && x.state === 'done' && x.review && x.review.state === 'holds' && !merged(x) && !merging) {
@@ -96,7 +120,10 @@ function due(snap) {
 // flight finish before every further core call is refused.
 // `spawnFor(stepCore)`: the run manager's spawn made over a step's view (policy-steps-run.cjs spawnFor); null when the run has none. `turnOf(id)`:
 // the turn a message to that live worker starts (the claim records it, so the step log can join the turn's cost); null when unknown.
-function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf = null, closing = () => false, closeWaitMs = 2000, log = () => {}, identity = null, aliveBy = null }) {
+// `stopWorker(id)`: the run manager's graceful stop, for a worker a step spawned once its work needs it no more (null: never stopped).
+function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf = null, closing = () => false, closeWaitMs = 2000, log = () => {}, identity = null, aliveBy = null, stopWorker = null }) {
+  const spawnedFor = new Map(); // worker id -> the work task a build or review step spawned it for (this adapter's life)
+  const retired = new Set();
   const gate = { aborted: false };
   const g = gatedCore(core, gate, 'the policy executor'); // a call begun after the owner's shutdown would elect a stray owner (invariant 2)
   let armed = false; let closed = false; let running = null; let again = false; let swept = false;
@@ -158,10 +185,10 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf 
   async function take(c0, taken) {
     // The worker and the turn the step starts, known before the claim: a spawned reviewer's id is made here and its first turn is 1; a named
     // worker's next turn is the one its manager says. A turn the manager cannot say is left off (the log then prints no turn).
-    const spawned = c0.step === 'review' && c0.review && c0.review.spawn;
+    const spawned = (c0.step === 'review' && c0.review && c0.review.spawn) || (c0.step === 'build' && c0.build && c0.build.spawn);
     // belay never substitutes an id the plan named: a retake after a pause spawns it in place (spawn-args.cjs checkIdFree allows this run's own dead row),
     // and an id a live worker holds is the spawn's refusal, an exception (E8).
-    const c = spawned && !c0.worker ? { ...c0, worker: `rev-${crypto.randomUUID().slice(0, 8)}` } : c0;
+    const c = spawned && !c0.worker ? { ...c0, worker: `${c0.step === 'build' ? 'bld' : 'rev'}-${crypto.randomUUID().slice(0, 8)}` } : c0;
     let turn = spawned ? 1 : null;
     if (turn == null && c.worker && turnOf) { try { const t = await turnOf(c.worker); if (Number.isInteger(t) && t > 0) turn = t; } catch { turn = null; } }
     const me = await ownId();
@@ -172,7 +199,7 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf 
     try {
       const why = await stillDue(c);
       const over = why ? null : await budgetRefusal(c);
-      res = why ? { outcome: 'skipped', error: why } : over ? { outcome: 'exception', error: over } : await STEPS.run(c, { core: stepCore, assign: assignFor(stepCore), spawn: spawnFor ? spawnFor(stepCore) : null });
+      res = why ? { outcome: 'skipped', error: why } : over ? { outcome: 'exception', error: over } : await STEPS.run(c, { core: stepCore, runId, assign: assignFor(stepCore), spawn: spawnFor ? spawnFor(stepCore) : null });
     } catch (e) { res = { outcome: 'exception', error: errText(e) }; }
     if (res && res.outcome === 'exception' && !res.row_ref && /^E_PAUSED/.test(res.error || '')) res = { outcome: 'skipped', error: res.error }; // the core refused it for the pause: nothing was written
     if (!res || !res.outcome) res = { outcome: 'exception', error: 'the step returned no outcome' };
@@ -182,6 +209,7 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf 
       try { await g.policy.finish({ seq: row.seq, ...res }); } catch (e2) { log(`policy finish ${row.seq}: ${errText(e2)}`); return { seq: row.seq, step: c.step, outcome: 'started' }; }
     }
     taken.push({ seq: row.seq, step: c.step, task_id: c.task_id, outcome: res.outcome, row_ref: res.row_ref || null });
+    if (res.outcome === 'done' && c.worker && (c.step === 'build' || c.step === 'review') && c[c.step] && c[c.step].spawn) spawnedFor.set(c.worker, c.task_id);
     return res;
   }
 
@@ -199,8 +227,9 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf 
     const revisions = await PW.readRevisions(g.policy, runId, tasks); // an amend lifts a halt, and the fixes' creation order (policy-wakes derive)
     const halted = PW.haltedIds(PW.derive({ runId, tasks, integrations, steps, failures: [], revisions }), tasks);
     const claimed = new Set(steps.filter((s) => !(s.outcome === 'skipped' && /^E_(PAUSED|NOT_NOW)/.test(s.error || ''))).map((s) => keyOf(s.step, { table: s.trigger_table, id: s.trigger_id, seq: Number(s.trigger_seq) || 0 })));
-    for (const c of due({ runId, tasks, integrations })) {
+    for (const c of due({ runId, tasks, integrations, steps, maxBuilds: Number.isInteger(run.max_parallel_builds) && run.max_parallel_builds > 0 ? run.max_parallel_builds : MAX_PARALLEL_BUILDS })) {
       if (stopped()) break;
+      if (c.capped) continue; // max_parallel_builds: the task waits for a slot, no exception (ADR 0074 amendment 4)
       if (halted.has(c.task_id) || claimed.has(keyOf(c.step, c.trigger))) continue;
       const now = (await g.run.get({})).run; // a pause that began during this pass stops the next claim
       if (!now || now.ended_at != null || now.paused_at != null) { out.held = now && now.ended_at == null ? 'paused' : 'ended'; break; }
@@ -208,7 +237,26 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf 
       claimed.add(keyOf(c.step, c.trigger));
       if (res && res.outcome === 'exception' && !/^E_BUDGET/.test(res.error || '')) for (const id of PW.haltScope(c.task_id, tasks)) halted.add(id);
     }
+    if (stopWorker && !stopped()) await retire(tasks);
     return out;
+  }
+
+  // A worker a step spawned is stopped (the manager's graceful stop, never a kill) once the work it was spawned for needs it no more: the work
+  // is merged or cancelled, or its plan merges nothing and its review holds. Until then the builder takes the fixes and the reviewer the
+  // re-reviews. A worker holding a lease on any unfinished task is left alone. Once per worker.
+  async function retire(tasks) {
+    const byId = new Map(tasks.map((t) => [t.id, t]));
+    for (const [wid, taskId] of spawnedFor) {
+      if (retired.has(wid)) continue;
+      const w = byId.get(taskId);
+      if (!w) continue;
+      const plan = PW.policyOf(w, byId) || {};
+      const finished = w.state === 'cancelled' || merged(w) || (!plan.integrate && w.state === 'done' && w.review && w.review.state === 'holds');
+      if (!finished) continue;
+      if (tasks.some((t) => t.lease && t.lease.holder === wid && !t.lease.expired && t.state !== 'done' && t.state !== 'cancelled')) continue;
+      retired.add(wid);
+      try { await stopWorker(wid); } catch (e) { log(`policy retire ${wid}: ${errText(e)}`); }
+    }
   }
 
   // Run a pass, or ask the one in flight for another when it ends. Does nothing until armed (a run with no plan reads nothing).
@@ -233,4 +281,4 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf 
   return { tick, close, arm: () => { armed = true; }, isArmed: () => armed, pass, due };
 }
 
-module.exports = { createPolicyExecutor, due, planOf, keyOf };
+module.exports = { createPolicyExecutor, due, planOf, keyOf, MAX_PARALLEL_BUILDS };

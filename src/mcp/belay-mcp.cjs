@@ -28,7 +28,7 @@ const { withDataNotice } = require('./data-notice.cjs'); // invariant 8: a resul
 const { parseArgv, die } = require('./argv.cjs'); // identity from argv only; moved out to keep this file short
 
 const SERVER_NAME = 'belay';
-const SERVER_VERSION = '0.4.0-rc.3';
+const SERVER_VERSION = '0.4.0-rc.5';
 const DEFAULT_PROTOCOL = '2025-06-18';
 
 const opts = parseArgv(process.argv.slice(2));
@@ -312,7 +312,7 @@ async function callTool(name, args) {
     if (typeof r[route.method] !== 'function') throw fail('E_INTERNAL', `the run manager exposes no method ${route.method}`, { method: route.method });
     // ADR 0048: a restart must answer inside MCP_TOOL_TIMEOUT (120 s); it may spend 100 s, then returns early (manager.restart).
     if (name === 'worker_restart') return r[route.method]({ ...args, mcp_budget_ms: RESTART_MCP_BUDGET_MS });
-    return r[route.method](args);
+    return r[route.method](name === 'worker_wait' ? require('./tools-orchestrator.cjs').waitArgs(args) : args); // ADR 0037 amendment 7: a short check by default
   }
   throw fail('E_INTERNAL', `tool ${name} has no route`, { tool: name });
 }

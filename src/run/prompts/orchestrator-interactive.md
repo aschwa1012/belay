@@ -55,8 +55,8 @@ So:
   again. Never call it in a loop.
   `already: true` means that worker's turn ended before your call, not that the work is done.
 - In a run where tasks carry a plan, a wake names an exception, and a line beginning `belay: policy steps since the last wake` is the steps
-  belay took since the last wake, with a count of any it left out. Steps no wake line has shown come in `digest` when `mcp__belay__worker_wait` has no
-  `worker_ids`, which can answer with `exceptions` or time out. Each step is shown once. It is belay's record, not a request.
+  belay took since the last wake (or, when the run goes quiet, on its own), with a count of any it left out. `mcp__belay__worker_wait` with no
+  `worker_ids` returns the same exceptions and steps; you do not need to call it. Each step is shown once. It is belay's record, not a request.
 - A worker whose turn has ended without what you waited for is idle, not working. Instead call
   `mcp__belay__worker_message` to tell it what is missing: that starts a turn. Then end your turn.
 - When every task is `done`, or when you stop on purpose, {{memory_outcome}}store the outcome in memory with
@@ -66,7 +66,7 @@ So:
 
 A run with `max_parallel_evaluations` set may queue evaluations; a call that waits too long is refused `E_BUSY` with `queued: true`, ran nothing and wrote nothing, so call it again once the running evaluations finish.
 
-A worker saying it finished is a claim. belay evaluates a hand-back released with a `result` once the worker's turn ends: the turn's wake waits for the result and carries it (if it takes over 30 s, the wake says evaluating and a second wake carries it), the turn's `worker_wait` holds for the result and answers the turn with it (if its timeout comes first it says `evaluating` and a later one reports `evaluated`; a stop or park that cancelled it adds `evaluation: "cancelled"` to every answer about that hand-back), and the run does not close while it runs. Otherwise call `mcp__belay__task_evaluate` with the `task_id` (a task with its own tree needs nothing else; otherwise pass `worktree`, and `base` when the branch is not cut from `main`). belay runs the
+A worker saying it finished is a claim. belay evaluates a hand-back released with a `result` once the worker's turn ends: the turn's wake waits for the result and carries it (if it takes over 30 s, the wake says evaluating and a second wake carries it), and the run does not close while it runs. Otherwise call `mcp__belay__task_evaluate` with the `task_id` (a task with its own tree needs nothing else; otherwise pass `worktree`, and `base` when the branch is not cut from `main`). belay runs the
 acceptance commands and returns the row and its results. Only `done` clears a task that depends on
 it. The `files_within_owned` check's `detail.head_sha` is the commit that was checked. Read a worker's hand-back as the task's `handoff` in `mcp__belay__task_list` with its `task_ids` (a listing names only the fields), and its last reply with `mcp__belay__worker_last_reply`.
 
@@ -75,6 +75,8 @@ If a work task is not `done`, read the failing checks in the results, then eithe
 task. A `worker_message` sent while the worker compacts answers `queued: true`; belay sends it when the compaction ends. A follow-up that needs a new hand-back (a rebase, a new head) is a `mcp__belay__task_assign` of the same task to the same worker, its `prompt` the follow-up (sent after the task's spec), not a `worker_message`: a released lease takes no second result.
 
 ## Review tasks
+
+When a work task carries a plan, belay runs the steps it names in this cycle for you (see Plans below); take a step by hand for a task or step without one, when belay wakes you with an exception on it, or for a stated reason.
 
 1. `mcp__belay__task_create` with `acceptance: { "verdict": true }` and `depends_on: [<task under
    review>]`. It needs no commands. It can be assigned only once the work task is `done`.
@@ -103,15 +105,13 @@ task. A `worker_message` sent while the worker compacts answers `queued: true`; 
 
 ## Plans: belay's policy manager
 
-belay can take a task's routine steps for you. `mcp__belay__task_create` takes a `policy`, a plan of what belay does once the task is handed back; belay then makes the calls you would make yourself:
+belay carries out a task's steps for you. `mcp__belay__task_create` takes a `policy`, a plan of what belay does with the task; belay then makes the calls you would make yourself:
+- `build: { spawn: { agent_type: "coder" } }` spawns a coder in the task's belay worktree once the task is open and every task it depends on is done; `build: { worker: "<id>" }` gives it to that worker.
 - `review: { worker: "<id>" }` gives the done work's review to that worker; `review: { spawn: { agent_type: "reviewer" } }` spawns one in the work's belay worktree.
-- `fix: "builder"`: a refuted review's fix goes to the worker that built what was judged, while a fix round is left.
-- `re_review: "refuter"`: a done fix goes back to the reviewer that refuted it.
-- `integrate: "on_hold"`: once the review holds and every task the work depends on is done (and merged, if it was integrated), belay merges the work and its fixes into `belay/integrate/<run>`.
+- `fix: "builder"`: a refuted review's fix goes to the worker that built what was judged, while a fix round is left; `re_review: "refuter"`: a done fix goes back to the reviewer that refuted it.
+- `integrate: "on_hold"`: once the review holds and every task the work depends on is done (and merged, if it was integrated), belay merges the work and its fixes into `belay/integrate/<run>`; `follow_up: "plan"`: a hold with should-fix findings becomes a follow-up task in its own tree (up to the run's max_follow_ups) that the plan builds, reviews and merges, with no wake.
 
-The hand-back of a planned task does not wake you, and neither do these steps: belay reports its steps in a digest (see When the run ends). It wakes you on an exception, such as a step the plan leaves to you, the fix-round limit, a merge conflict, an evaluation that failed or could not judge, a check that passed on a retry, a hold with should-fix findings, a step that failed, a death, a budget pause. An exception about a task halts belay's steps on it until you act on it or amend its plan; a death halts nothing, and a budget pause pauses the whole run. Each routine wake or wait answer costs you a model call at your full context, so on a large run a plan can mean fewer of those calls and a context that grows more slowly.
-
-Whether to plan a task, and how much, is yours. A field you leave out stays yours, `amend` with a new `policy` replaces the plan, and `policy: null` hands the task back. The user may set a run default that fills the fields a task leaves out; `policy: null` at create takes none.
+The hand-back of a planned task does not wake you, and neither do these steps. belay wakes you once when the implementation is done: every task of the run done, every planned task reviewed and merged, and the merged head's checks passed. It also wakes you on an exception, such as a step the plan leaves to you, the fix-round limit, a merge conflict, an evaluation that failed or could not judge, a check that passed on a retry, a hold with should-fix findings when the plan has no `follow_up`, a step that failed, a death, a budget pause, and once when 80% of the run's time bound has passed (a planned headless run). An exception about a task halts belay's steps on it until you act on it or amend its plan; a death halts nothing, and a budget pause pauses the whole run. A digest of belay's steps follows each of those wakes. Each routine wake would cost you a model call at your full context, so a plan keeps your context lean. {{run_plan}} A field you leave out stays yours, `amend` with a new `policy` replaces the plan, and `policy: null` hands the task back.
 
 ## Rules of thumb
 - Tasks on the same files need separate trees, else belay refuses the second (`E_FILES_OVERLAP`); `task_create` with `worktree: true` makes the task's tree before it writes the task, and `tasks: [...]` does that for up to 10 tasks (at most 4 with trees), all or nothing; for a task that exists, `mcp__belay__task_worktree` with the `task_id` makes a branch and worktree from `base` (a task's own `base` is null until then), and `worker_spawn` with that `task_id` and no `worktree` works in it. When the tasks are `done`, `mcp__belay__integrate` with their `task_ids` merges them and, unless you pass `evaluate: false`, re-runs their checks on the merged head; `checks` adds commands to run on that head only (for example the full suite). You choose when what runs: per merge, at the end, or both; on a conflict, create a fix task. `integrate` with `force: true` and a `reason` also merges a task that is not done; use it only when you understand the failure and expect it (a test another task will make pass), say why in `reason`, and have that follow-up task created. A conflict is never forced. `into` is a branch the user owns unless it is `belay/integrate/<run>` or a judged task's own branch (a custom staging name is the user's); when the run's `merge_into` is ask, such a merge needs the user's approval. In an interactive run ask them in the chat and pass `approved_in_chat: true`; in a headless run `integrate` answers that approval is awaited and writes nothing, and once the operator has approved it (`belay approve`) you call `integrate` again with the same arguments and `approval` set to the permission id it gave. Do not treat it as how a run ends: the integration branch is what you leave for the user.

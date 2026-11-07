@@ -237,10 +237,10 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     // cannot be made delivers the wake: an exception is never lost for want of a file.
     // A worker death or stale record has the same second path and the same key, and is claimed only once a plan is in force.
     const uid = require('./run-digest.cjs').wakeUid(ev);
-    if (uid && (ev.exception || planned.value())) {
+    if (uid && (ev.exception || ev.event === 'policy_done' || planned.value())) {
       let won = true;
       try { won = require('./run-digest.cjs').claimException({ dataDir, runId, uid }); } catch { won = true; }
-      if (!won) { state.wakesSuppressed.push({ ...ev, reason: 'delivered by worker_wait' }); return; }
+      if (!won) { state.wakesSuppressed.push({ ...ev, reason: 'delivered by worker_wait' }); (state.lostClaims || (state.lostClaims = new Map())).set(uid, ev); return; } // kept: a wait's claim given back is offered again (digest-wake.cjs writeAll)
     }
     const text = wakeText(ev);
     const rec = require('./wake-record.cjs').wakeRecord(ev, text, Date.now() - t0, state.idle);
@@ -298,13 +298,13 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       orphanGraceMs: ORPHAN_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid), sinceAt: t0,
     });
     state.baseline = next;
-    const evs = (await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), state.evalSeen || (state.evalSeen = new Map()), { holdMs: require('./release-eval.cjs').holdMs(), workers: rows })).concat(await noteWatcher.poll(), await callWatcher.poll(), await policyWatcher.poll(state.evalSeen), spec.budgetWake ? spec.budgetWake.takeWakes() : []);
+    const evs = (await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), state.evalSeen || (state.evalSeen = new Map()), { holdMs: require('./release-eval.cjs').holdMs(), workers: rows })).concat(await noteWatcher.poll(), await callWatcher.poll(), await policyWatcher.poll(state.evalSeen), require('./stall-wake.cjs').of(state, { core, runId, planned: () => planned.value() }).poll(state.evalSeen, policyWatcher.snapshot()), spec.budgetWake ? spec.budgetWake.takeWakes() : [], (state.timeWake || (state.timeWake = require('./time-wake.cjs').createTimeWake({ totalMs: timeoutMs, remaining: () => hold.getTimeoutRemaining(), armed: () => !!policyWatcher.snapshot() || planned.value() }))).poll());
     if (evs.some((e) => e.event === 'death')) await planned.check(); // a death has a second delivery path once the store shows a plan (planned.cjs)
-    for (const ev of evs) writeWake(ev); // ADR 0058 amendment 4: a turn_end carries its release evaluation
+    await require('./digest-wake.cjs').writeAll(evs, { core, dataDir, runId, state, writeWake, armed: () => !!policyWatcher.snapshot() || planned.value() }); // ADR 0058 amendment 4: a turn_end carries its release evaluation; ADR 0074 amendment 2: the steps belay took follow the wakes
     if (state.finishing) return; // a wake's own write may have found the child already gone
 
     if (pollAgain) { pollHandle = setTimeout(pollOnce, pollMs); return; } // a turn ended after the read: decide on the re-poll's rows
-    if (state.idle && await require('./orchestrator-idle-close.cjs').idleClose({ state, rows, runId, pending_deaths, turnAtCall, hold, awaitingWakeIds, callWatcher, recordHold, preClose, writeWake, closeThenKillOnDeadline, policyWatcher })) return;
+    if (state.idle && await require('./orchestrator-idle-close.cjs').idleClose({ state, rows, runId, pending_deaths, turnAtCall, hold, awaitingWakeIds, callWatcher, recordHold, preClose, writeWake, closeThenKillOnDeadline, policyWatcher, stall: require('./stall-wake.cjs').of(state, { core, runId, planned: () => planned.value() }), flushDigest: () => require('./digest-wake.cjs').flush({ core, dataDir, runId, state, writeWake, armed: () => !!policyWatcher.snapshot() || planned.value() }) })) return;
     pollHandle = setTimeout(pollOnce, pollMs);
   }
 
@@ -409,7 +409,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       const out = {
         orchestrator: orchestratorBlock(), ended_by: state.endedBy, holds: state.holds, polls: state.polls,
         wakes: state.wakes, wakes_suppressed: state.wakesSuppressed, wakes_expired: state.wakesExpired,
-        wakes_held: hold.wakesHeld, pauses: hold.pauses, // 6f design item 2
+        wakes_held: hold.wakesHeld, pauses: hold.pauses, stall: state.stallWatch ? state.stallWatch.record() : null, // 6f design item 2; ADR 0074 amendment 3
       };
       // ADR 0054 amendment 2: the caller ends what the shell left running once the run's own close is done (not part of the receipt).
       Object.defineProperty(out, 'endLeftovers', { value: () => leftovers.end() });

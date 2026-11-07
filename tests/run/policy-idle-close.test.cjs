@@ -134,3 +134,13 @@ test('a claim in flight holds while its claimant is alive by pid and creation ti
   h.holds(snap);
   assert.deepStrictEqual(reads.sort(), [111, 222], 'one read per claimant; a dead pid and a claim without a creation time read none');
 });
+
+test('a failed policy read holds for DUE_HOLD_MS of unbroken failures, then no longer (a store that never answers cannot hold a run for ever)', () => {
+  let t = 0;
+  const h = createPolicyCloseHold({ now: () => t });
+  assert.deepStrictEqual(h.holds({ failed: true }), ['policy-read']);
+  t = DUE_HOLD_MS - 1; assert.deepStrictEqual(h.holds({ failed: true }), ['policy-read']);
+  t = DUE_HOLD_MS; assert.deepStrictEqual(h.holds({ failed: true }), [], 'past the bound');
+  assert.deepStrictEqual(h.holds({ runId: RUN, tasks: [], steps: [], integrations: [] }), [], 'a read that works resets it');
+  t = DUE_HOLD_MS + 5; assert.deepStrictEqual(h.holds({ failed: true }), ['policy-read'], 'a new run of failures holds again');
+});

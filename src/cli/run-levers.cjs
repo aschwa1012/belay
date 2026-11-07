@@ -40,14 +40,17 @@ const MEMORY_OUTCOME_NOTES = 'record the outcome with `namespace: "summary"`';
 const MEMORY_VERIFY_RULE = ' Use `mcp__belay__memory_verify` only with a receipt.'; // a notes run's orchestrator has no memory_verify
 const MEMORY_QUERIES_LINE = ' Also give 1 to 3 `memory_queries`: task lines (each under 160 bytes) naming the situations the worker will be in, such as "add a migration" or "dedupe email addresses", not the finding you expect it to make.';
 
-// The time-bound condition is observable only if the orchestrator is told the bound and can read elapsed time
-// (the waited_ms of its worker_wait answers), so it is written in from timeout_ms and dropped when that is 0.
+// The time-bound condition is observable only if the orchestrator is told the bound and can read elapsed time. `belay run` renders the run's
+// start and deadline into it as absolute UTC times (`opts.startedAt`), so the rule carries them through a compaction and needs no call the
+// model must remember; it reads the time now from a shell (`date -u`). An orchestrator that waits by the wake has no worker_wait answer to
+// read waited_ms from (ADR 0037 amendment 7). A pause stops the run's clock (ADR 0023 amendment 3), so the deadline moves later by it.
+// Without a start (a prompt check, not a launch) the times are left out. Written in from timeout_ms and dropped when that is 0.
 // `mode` is 'headless' (the default, byte-identical to before) or 'interactive' (ADR 0037 decision 4: the run
 // does not end, so stop-and-surface is stop, store, tell the operator, then wait).
-function cutoffRule(fixCutoff, timeoutMs, mode = 'headless') {
+function cutoffRule(fixCutoff, timeoutMs, mode = 'headless', startedAt = null) {
   if (fixCutoff === 'cap-only') return 'Do not stop fix rounds before the fix-round limit.';
   const timeCond = timeoutMs > 0
-    ? `; the run's time bound (${timeoutMs} ms from its start) is near, judged from the waited_ms your worker_wait answers report`
+    ? `; the run's time bound (${timeoutMs} ms from its start${Number.isFinite(startedAt) ? `, ${new Date(startedAt).toISOString()}, so ${new Date(startedAt + timeoutMs).toISOString()}, later by any time the run is paused` : ''}) is near, judged by the time now (\`date -u\` in a shell)`
     : '';
   const interactive = mode === 'interactive';
   const surface = interactive
@@ -183,6 +186,11 @@ function parseLevers(spec, opts = {}) {
   // Merging another run's tasks, or into another run's integrate branch: off unless the spec says true. Fixed for the run.
   if (spec.cross_run_merge !== undefined && typeof spec.cross_run_merge !== 'boolean') return { error: 'cross_run_merge must be true or false' };
   if (spec.cross_run_merge === true) out.cross_run_merge = true;
+  if (spec.max_parallel_builds !== undefined) { // ADR 0074 amendment 4: the cap on a plan's builds in flight; unset, the executor's default (4)
+    const v = spec.max_parallel_builds;
+    if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 1) return { error: 'max_parallel_builds must be a positive integer' };
+    out.max_parallel_builds = v;
+  }
   // ADR 0054 amendment 1: the run close deletes the reviewers' scratch folders; this opt-in keeps them. Absent unless on.
   if (spec.keep_review_scratch !== undefined && typeof spec.keep_review_scratch !== 'boolean') return { error: 'keep_review_scratch must be true or false' };
   if (spec.keep_review_scratch === true) out.keep_review_scratch = true;
@@ -267,9 +275,19 @@ function stripMarkers(text) {
     .replace(/^[ \t]*<!--\s*belay-mode:[^>]*-->[ \t]*\r?\n(\r?\n)?/m, '');
 }
 
+// ADR 0037 amendment 8: the orchestrator is told the run's plan, the one every work task takes at create unless it states its own (run-policy-levers.cjs).
+// With a plan it carries the plan-first directive (plan the work, then go hands off); without one, the flow where the orchestrator takes each step.
+const PLAN_FIRST = 'Plan the work first: create every work task with `task_create`, an independent one with `worktree: true`, and a dependent one with its `depends_on` and no tree (belay cuts its tree from `belay/integrate/<run>` once its dependencies are merged, so they are in it). Then end your turn and rely on the wakes: act on an exception or an escalation, and on the done wake decide whether you are done. Do not spawn or assign a task whose plan builds it; handle a step yourself only when you have a specific reason, and say why in your reply to the user. If a builder dies, belay does not start another: restart it or assign the task yourself.';
+const NO_PLAN = 'This run has no run plan: a task has a plan only if you give it a `policy`; otherwise you assign, review, fix and merge it yourself.';
+function runPlanLine(levers) {
+  const p = levers && levers.policy_default;
+  if (!p || typeof p !== 'object' || !Object.keys(p).length) return NO_PLAN;
+  return `This run's plan, which every work task you create takes unless you give it a \`policy\` of its own or \`policy: null\`, is \`${JSON.stringify(p)}\`. ${PLAN_FIRST}`;
+}
+
 function substituteLevers(text, levers, timeoutMs = 0, opts = {}) {
-  const rule = cutoffRule(levers.fix_cutoff, timeoutMs, (opts && opts.mode) || 'headless');
-  const a = String(text).split('{{max_fix_rounds}}');
+  const rule = cutoffRule(levers.fix_cutoff, timeoutMs, (opts && opts.mode) || 'headless', opts && Number.isFinite(opts.startedAt) ? opts.startedAt : null);
+  const a = String(text).split('{{run_plan}}').join(runPlanLine(levers)).split('{{max_fix_rounds}}');
   const b = a.join(String(levers.max_fix_rounds)).split('{{fix_cutoff_rule}}');
   const withRule = b.join(rule);
   // ADR 0040 decision 6: the rules text goes in only when memory.rules is on, trailing newline trimmed and
@@ -331,4 +349,4 @@ async function countReviewRounds(core, runId) {
   }
 }
 
-module.exports = { stripMarkers, MEMORY_REPORT_LINE, MEMORY_QUERIES_LINE, MEMORY_USE_NOTES, MEMORY_OUTCOME_NOTES, MEMORY_VERIFY_RULE, mergeMemory, parseLevers, attachMemory, memoryText, substituteLevers, countReviewRounds, cutoffRule, FIX_CUTOFFS };
+module.exports = { runPlanLine, PLAN_FIRST, NO_PLAN, stripMarkers, MEMORY_REPORT_LINE, MEMORY_QUERIES_LINE, MEMORY_USE_NOTES, MEMORY_OUTCOME_NOTES, MEMORY_VERIFY_RULE, mergeMemory, parseLevers, attachMemory, memoryText, substituteLevers, countReviewRounds, cutoffRule, FIX_CUTOFFS };

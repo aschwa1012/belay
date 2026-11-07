@@ -149,7 +149,7 @@ test('notes off: the render is the template with only its markers dropped, byte 
     for (const lv of [undefined, { notes: false }, { notes: false, project: 'acme' }]) {
       const off = LV.substituteLevers(raw, { max_fix_rounds: 2, fix_cutoff: 'cap-only', memory_levers: lv }, 0).text;
       assert.strictEqual(off.includes('{{'), false, f);
-      const expect = plain.split('{{memory_rules}}').join('').split('{{memory_queries_line}}').join('').split('{{memory_report_line}}').join('').split('{{permission_line}}').join('');
+      const expect = plain.split('{{memory_rules}}').join('').split('{{memory_queries_line}}').join('').split('{{memory_report_line}}').join('').split('{{permission_line}}').join('').split('{{run_plan}}').join(LV.runPlanLine({})); // the run's plan line (ADR 0037 amendment 8): none in these levers
       assert.strictEqual(off.replace(/\n/g, ''), expect.split('{{fix_cutoff_rule}}').join(LV.cutoffRule('cap-only', 0, f === 'orchestrator.md' ? 'headless' : 'interactive')).replace(/\n/g, ''), `${f} ${JSON.stringify(lv)}`);
     }
     const withRules = render(f, { notes: false, rules: true }).text;
