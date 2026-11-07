@@ -20,6 +20,7 @@ function wakeRecord(ev, text, atMs, idle) {
   if (ev.event === 'paused') rec.paused_by = ev.paused_by;
   if (ev.turns_skipped) rec.turns_skipped = ev.turns_skipped;
   if (ev.event === 'policy_digest') rec.digest_n = ev.digest_n; // joins wakes[] to digests[]
+  else if (ev.rider) rec.digest_n = ev.rider.n; // a digest folded into this wake joins the same way
   if (ev.event === 'stalled') rec.task_ids = ev.task_ids;
   return rec;
 }

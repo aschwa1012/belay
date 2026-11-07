@@ -26,6 +26,7 @@ const PLAN_CHECK_POLLS = 10; // ADR 0074 amendment 2: how often an unplanned run
 const { DEATH_GRACE_MS } = require('./exit-hold.cjs'); // the same value headless uses (orchestrator.cjs)
 const RETAIN_MAX = 200;
 const RECEIPT_MAX = 2000;
+const REF_TAIL_BYTES = 15; // ' (ref xxxxxxxx)': what wake-ref.cjs withRef adds to a claimed wake
 const DELIVERY_BOUND_MS = 30000; // how long a claimed policy wake may wait for the mod's delivered-wakes file to name it
 
 // The run's wake pipe: the store owner's pipe name for this data dir, plus a short hash of the run id and a
@@ -107,15 +108,18 @@ function startWakePublisher({
   }
   const lost = new Map(); // uid -> the wake another path's claim kept this one from publishing
 
-  function publish(w) {
-    if (!claimed(w)) return;
-    if (receipt.length < RECEIPT_MAX) receipt.push(require('./wake-record.cjs').wakeRecord({ ...(w.ev || {}), event: w.event || (w.ev && w.ev.event), worker_id: w.worker_id }, w.text, now() - t0, null)); // the run receipt's wakes[], as headless fills it
+  // `rider`: a digest folded into this wake's own line ({ text, n }), after the wake's text and its ref, which are never cut. -> true when published.
+  function publish(w, rider = null) {
+    if (!claimed(w)) return false;
     const ref = owedRef.get(w.id); // a claimed wake carries its delivery key, so a repeat after a release is recognisable (worker_wait names the same key)
-    const line = `${JSON.stringify({ id: w.id, text: ref ? WR.withRef(w.text, WR.shortRef(ref)) : w.text })}\n`;
+    const text = (ref ? WR.withRef(w.text, WR.shortRef(ref)) : w.text) + (rider ? rider.text : '');
+    if (receipt.length < RECEIPT_MAX) receipt.push(require('./wake-record.cjs').wakeRecord({ ...(w.ev || {}), event: w.event || (w.ev && w.ev.event), worker_id: w.worker_id, rider }, text, now() - t0, null)); // the run receipt's wakes[], as headless fills it
+    const line = `${JSON.stringify({ id: w.id, text })}\n`;
     retained.push(line);
     if (retained.length > RETAIN_MAX) retained.shift();
     stats.published += 1;
     for (const c of clients) send(c, line);
+    return true;
   }
 
   const server = net.createServer((sock) => {
@@ -138,6 +142,15 @@ function startWakePublisher({
       for (const c of clients) send(c, line);
       return true;
     } catch (e) { stats.errors += 1; stats.last_error = `digest: ${(e && (e.code || e.message)) || e}`; return false; }
+  }
+
+  // The digest as the tail of `carrier`'s line, in the room that wake leaves under the 221-byte cap (its text plus a ref, at most). null: no room
+  // (nothing is claimed), nothing new, or the read failed (asked again on a later pass).
+  async function foldDigest(carrier) {
+    try {
+      const room = WR.WAKE_TEXT_MAX - Math.min(WR.WAKE_TEXT_MAX, Buffer.byteLength(carrier.text, 'utf8') + REF_TAIL_BYTES);
+      return await require('./run-digest.cjs').foldDigest({ core, dataDir, runId, cap: room, now });
+    } catch (e) { stats.errors += 1; stats.last_error = `digest: ${(e && (e.code || e.message)) || e}`; return null; }
   }
 
   async function pollOnce() {
@@ -194,11 +207,15 @@ function startWakePublisher({
             publish({ id: info.id, text: info.text(queue.length) });
           }
         }
-        let out = 0;
-        while (queue.length) { const q = queue.shift(); publish(q); if (require('./digest-wake.cjs').ridesDigest(q.ev || q)) out += 1; } // out: the wakes a digest follows (ADR 0074 amendment 4)
         const armed = dataDir && (evalSeen.policyArmed || planned.value() || !!policyWatcher.snapshot()); // the store's plan, not only a poll that saw a turn end
-        if (out && armed) await rideDigest(); // ADR 0074 decision 4: the steps belay took since the last wake follow the wake
-        else if (armed && list) { const k = require('./digest-quiet.cjs').due(quiet, policyWatcher.snapshot(), list.workers || [], runId); if (k && await rideDigest()) require('./digest-quiet.cjs').mark(quiet, k); } // amendment 2: at a quiet moment the steps no wake carried come on their own; a failed read is asked again
+        const carrier = armed ? queue.filter((q) => require('./digest-wake.cjs').ridesDigest(q.ev || q)).pop() : null; // ADR 0074 amendment 4: the digest rides the last exception or done wake, in that wake's own line
+        const rider = carrier ? await foldDigest(carrier) : null;
+        while (queue.length) {
+          const q = queue.shift();
+          if (q !== carrier || !rider) { publish(q); continue; }
+          if (!publish(q, rider)) { try { require('./run-digest.cjs').release({ dataDir, runId, digestN: rider.n }); } catch { stats.errors += 1; stats.last_error = 'release'; } } // not published: the steps stay for the next asker
+        }
+        if (!rider && armed && list) { const k = require('./digest-quiet.cjs').due(quiet, policyWatcher.snapshot(), list.workers || [], runId); if (k && await rideDigest()) require('./digest-quiet.cjs').mark(quiet, k); } // amendment 2: at a quiet moment the steps no wake carried (or no wake had room for) come on their own; a failed read is asked again
       }
     } finally {
       inFlight = false;

@@ -57,8 +57,8 @@ test('woken, never waiting: the steps reach the orchestrator in a digest written
   try {
     const out = await withFake(() => runWith(core, sb));
     assert.strictEqual(out.wakes.filter((w) => w.exception === 'E5').length, 1, JSON.stringify(out.wakes));
-    assert.strictEqual(digestWakes(out).length, 1, `one digest wake: ${JSON.stringify(out.wakes)}`);
-    assert.deepStrictEqual([digestWakes(out)[0].established_by, digestWakes(out)[0].digest_n], ['policy.list; digest d1', 1], 'the receipt names what established it, joined to digests[]');
+    assert.strictEqual(digestWakes(out).length, 0, `no line of the digest's own: ${JSON.stringify(out.wakes)}`);
+    assert.strictEqual(out.wakes.find((w) => w.exception === 'E5').digest_n, 1, 'the wake entry is joined to digests[]');
     const ds = D.readDigests(sb.dataDir, RUN);
     assert.deepStrictEqual(ds.map((d) => d.via), ['wake']);
     assert.deepStrictEqual(shownSeqs(sb.dataDir), [1, 2, 3], 'every step shown, each once');
@@ -83,7 +83,8 @@ test('a mix: steps a wait already showed are not in the wake\'s digest, and the 
     const waited = D.claimDigest({ dataDir: sb.dataDir, runId: RUN, rows: steps.slice(0, 1), via: 'wait' }); // the orchestrator waited once, then only by the wake
     assert.deepStrictEqual(waited.lines.map((l) => l.step_seq), [1]);
     const out = await withFake(() => runWith(core, sb));
-    assert.strictEqual(digestWakes(out).length, 1);
+    assert.strictEqual(digestWakes(out).length, 0, 'the digest rode the wake');
+    assert.strictEqual(out.wakes.find((w) => w.exception === 'E5').digest_n, 2);
     const ds = D.readDigests(sb.dataDir, RUN);
     assert.deepStrictEqual(ds.map((d) => [d.via, d.lines.map((l) => l.step_seq)]), [['wait', [1]], ['wake', [2]]]);
   } finally { cleanup(root); }

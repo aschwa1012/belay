@@ -18,6 +18,7 @@ const D = require('../../src/run/run-digest.cjs');
 const RUN = 'r1';
 const B = (s) => Buffer.byteLength(s, 'utf8');
 const W = { id: 'W', seq: 5, run_id: RUN, state: 'done', policy: { fix: 'builder' }, depends_on: [], repairs: null, results: { trigger: 'release', evaluated_at: 20, executable: true, passed: true, checks: [{ kind: 'command', argv: ['npm', 'test'], passed: true }] }, handoff: { by: 'w1', at: 10 }, lease: null, review: null, integration: null, written_at: 50 };
+const DIGEST_LINE = /(^belay: policy steps since the last wake: | \| belay did: )/; // its own line, or the tail of a wake's line when the wake leaves room (amendment 5)
 let seqN = 100;
 const step = (over = {}) => ({ seq: ++seqN, run_id: RUN, step: 'fix', task_id: 'W', outcome: 'done', row_ref: `task:fix${seqN}`, error: null, worker_id: 'coder', ...over });
 
@@ -53,11 +54,11 @@ test('the digest rides the wake as one more wake line inside the wake cap, and w
   const p = await publisher(core, dataDir);
   try {
     core.rows[0] = { ...core.rows[0], turns: 1, seq: 2 }; // a turn end: the poll reads the tasks and arms the policy watcher
-    assert.ok(await p.until(() => p.lines.some((l) => l.text && /^belay: policy steps since the last wake: /.test(l.text))), JSON.stringify(p.lines));
-    const dig = p.lines.find((l) => l.text && /^belay: policy steps since the last wake: /.test(l.text));
+    assert.ok(await p.until(() => p.lines.some((l) => l.text && DIGEST_LINE.test(l.text))), JSON.stringify(p.lines));
+    const dig = p.lines.find((l) => l.text && DIGEST_LINE.test(l.text));
     assert.ok(B(dig.text) <= 221, `${B(dig.text)} B`);
     assert.match(dig.text, /\(\+\d+ earlier policy steps not shown\)/, 'twelve steps do not fit one wake line: the count says how many were left out');
-    assert.ok(p.lines.findIndex((l) => l === dig) > p.lines.findIndex((l) => l.text && /exception E1,/.test(l.text)), 'it follows the wake it rides');
+    assert.ok(p.lines.findIndex((l) => l === dig) >= p.lines.findIndex((l) => l.text && /exception E1,/.test(l.text)), 'it follows the wake it rides');
     const wakesBefore = p.lines.filter((l) => l.text).length;
     await new Promise((r) => setTimeout(r, 120));
     assert.strictEqual(p.lines.filter((l) => l.text).length, wakesBefore, 'nothing is published twice');
@@ -83,7 +84,7 @@ test('a step after the last wake is published on its own at a quiet moment, once
   const steps = [step({ task_id: 'first' })];
   const core = coreOf(steps);
   const p = await publisher(core, dataDir);
-  const digests = () => p.lines.filter((l) => l.text && /^belay: policy steps since the last wake: /.test(l.text));
+  const digests = () => p.lines.filter((l) => l.text && DIGEST_LINE.test(l.text));
   try {
     core.rows[0] = { ...core.rows[0], turns: 1, seq: 2 }; // a turn end: an exception wake, and the digest rides it
     assert.ok(await p.until(() => digests().length === 1), JSON.stringify(p.lines));
@@ -110,7 +111,7 @@ test('while the run is paused (the publisher\'s wake hold) the quiet digest is h
   const core = coreOf(steps);
   let held = false;
   const p = await publisher(core, dataDir, { isHeld: () => held });
-  const digests = () => p.lines.filter((l) => l.text && /^belay: policy steps since the last wake: /.test(l.text));
+  const digests = () => p.lines.filter((l) => l.text && DIGEST_LINE.test(l.text));
   try {
     core.rows[0] = { ...core.rows[0], turns: 1, seq: 2 };
     assert.ok(await p.until(() => digests().length === 1));
@@ -131,7 +132,7 @@ test('while a worker is mid-turn the trailing step waits: it is published once t
   const steps = [step({ task_id: 'first' })];
   const core = coreOf(steps);
   const p = await publisher(core, dataDir);
-  const digests = () => p.lines.filter((l) => l.text && /^belay: policy steps since the last wake: /.test(l.text));
+  const digests = () => p.lines.filter((l) => l.text && DIGEST_LINE.test(l.text));
   try {
     core.rows[0] = { ...core.rows[0], turns: 1, seq: 2 };
     assert.ok(await p.until(() => digests().length === 1));
@@ -273,7 +274,7 @@ test('a quiet digest whose step read fails is asked again on the next quiet pass
   const list = core.policy.list;
   core.policy.list = async (a = {}) => { if (a.run_id && failPaged > 0) { failPaged -= 1; throw Object.assign(new Error('owner busy'), { code: 'E_BUSY' }); } return list(a); }; // the digest's paged read, not the watcher's
   const p = await publisher(core, dataDir);
-  const digests = () => p.lines.filter((l) => l.text && /^belay: policy steps since the last wake: /.test(l.text));
+  const digests = () => p.lines.filter((l) => l.text && DIGEST_LINE.test(l.text));
   try {
     core.rows[0] = { ...core.rows[0], turns: 1, seq: 2 };
     assert.ok(await p.until(() => digests().length === 1));
@@ -293,6 +294,6 @@ test('a plan in the store arms the quiet digest without a turn end: a step is pu
   const p = await publisher(core, dataDir);
   try {
     assert.ok(await p.until(() => p.lines.some((l) => l.text && /only done/.test(l.text))), JSON.stringify(p.lines));
-    assert.strictEqual(p.lines.filter((l) => l.text && !/^belay: policy steps since the last wake: /.test(l.text)).length, 0, 'no other wake carried it');
+    assert.strictEqual(p.lines.filter((l) => l.text && !DIGEST_LINE.test(l.text)).length, 0, 'no other wake carried it');
   } finally { await p.done(); }
 });

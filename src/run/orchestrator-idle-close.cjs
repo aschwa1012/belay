@@ -26,12 +26,14 @@ async function idleClose(c) {
   if (hold.isPaused()) { // 6f design item 2: never closed by the idle rule while paused
     recordHold(turnAtCall, busy, awaiting, 'run paused', pendingIds, parked, live);
   } else if (busy.length === 0 && state.pendingWrites.length === 0 && pendingIds.length === 0 && parked.length === 0 && live.length === 0) {
-    if (flushDigest && await flushDigest()) return false; // ADR 0074 amendment 2: steps no digest has shown are written first; that write holds the close until it is read
     if (state.finishing) return true;
     const st = stall ? await stall.atClose(policyWatcher && policyWatcher.snapshot()) : null; if (state.finishing) return true; // ADR 0074 amendment 3: open tasks nobody is assigned are named once before the close; that write holds it until read
-    if (st) { writeWake(st); return false; }
+    if (st) { if (flushDigest) await flushDigest.write(st); else writeWake(st); return false; } // the steps no digest has shown ride it (digest-wake.cjs carry)
     const pre = await preClose.check({ isPaused: hold.isPaused }); if (state.finishing) return true; // once; never closes in the pass that read
-    if (pre.wake) writeWake(pre.wake); else if (!pre.ran && state.idle && !hold.isPaused()) { closeThenKillOnDeadline('orchestrator ended a turn with no worker mid-turn; stdin closed'); return true; }
+    if (pre.wake) { if (flushDigest) await flushDigest.write(pre.wake); else writeWake(pre.wake); } else if (!pre.ran && state.idle && !hold.isPaused()) {
+      if (flushDigest && await flushDigest()) return false; // ADR 0074 amendment 2: steps no wake carried are written alone before the close; that write holds it until it is read
+      if (state.finishing) return true;
+      closeThenKillOnDeadline('orchestrator ended a turn with no worker mid-turn; stdin closed'); return true; }
   } else if (pendingIds.length) {
     const kept = rows.filter((w) => pendingIds.includes(w.id) && w.pid_dead_seen_at != null); // rows the dead-pid memory is holding dead (dead-pids.cjs)
     const by = kept.length ? `worker.list; pid dead (seen dead at ${kept.map((w) => `${w.id} ${w.pid_dead_seen_at}`).join(', ')} by ${[...new Set(kept.map((w) => w.pid_dead_by))].join(', ')}, and the number reads alive since: another process may hold it), awaiting the detector's row` : "worker.list; pid dead, awaiting the detector's row";
