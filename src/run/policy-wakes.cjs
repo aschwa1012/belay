@@ -134,6 +134,21 @@ function derive(snap) {
     for (const v of vs) if (upTo(v)) rev = Number(v.policy_rev);
     return rev;
   };
+  // When a dependency landed (merged when its plan merges, else its hand-back's evaluation), or null when the rows do not say.
+  const landedAt = (d) => {
+    const u = byId.get(d);
+    if (!u) return null;
+    if ((policyOf(u, byId) || {}).integrate) { const m = (snap.integrations || []).filter((i) => i.run_id === runId && ['merged', 'evaluated'].includes(i.state) && Array.isArray(i.task_ids) && i.task_ids.includes(d)).map((i) => Number(i.written_at)).filter(Number.isFinite); return m.length ? Math.max(...m) : null; }
+    const t = Number(u.results && u.results.evaluated_at) || Number(u.handoff && u.handoff.at) || null;
+    return t;
+  };
+  // A null-build task is raised only when a dependency landed after the task was made: if every one had landed at creation the orchestrator knew. Unknown times fail toward waking.
+  const landedAfterCreate = (x) => {
+    if (x.policy_made === true || x.acted_by === 'policy') return true; // a task belay made (a follow-up) was not made by the orchestrator knowing its dependencies
+    const made = (revOf.get(x.id) || [])[0];
+    if (!made || !Number.isFinite(Number(made.written_at))) return true;
+    return x.depends_on.some((d) => { const t = landedAt(d); return t === null || t >= Number(made.written_at); }); // a tie fails toward waking
+  };
   const add = (exception, task, trigger, field, detail, fact, extra = {}) => {
     const uid = `${exception}:${field || 'none'}:${fact.key}`;
     let amended = false;
@@ -163,11 +178,16 @@ function derive(snap) {
     // It always wakes, planned task or not, and halts the task's planned steps until the orchestrator acts on the task after the hand-back
     // (re-assigns or cancels it) or amends its plan. The reason is the worker's words: quoted, cut, never an instruction.
     const es = escalationFact(x);
-    if (es) add('escalation', root, tref(x), 'none', { ...es.detail, planned: true }, es.fact, es.acted ? { lifted: true } : {});
+    // A reviewer's escalation is filed under the work it judged, as a fix's is under its work, so an amend of the work's plan lifts it and the done wake can follow.
+    const judgedWork = es && isReviewRow(x) && Array.isArray(x.depends_on) && x.depends_on.length === 1 ? byId.get(x.depends_on[0]) : null;
+    if (es) add('escalation', judgedWork ? rootOf(judgedWork, byId) : root, tref(x), 'none', { ...es.detail, planned: true }, es.fact, es.acted ? { lifted: true } : {});
     // E5: a release evaluation that ended without a result (a queue refusal, an error): the ledger's release_failed events.
     if (x.state === 'released' && x.handoff) {
       for (const f of fails) if (f.task_id === x.id && f.code !== 'E_CANCELLED' && Number(f.written_at) >= Number(x.handoff.at)) add('E5', root, tref(x), null, { executable: true, failing: [], error: f.code, task: x.id }, { key: `${x.id}!${f.id}`, seq: Number(f.seq) || 0, at: Number(f.written_at) || 0, rowSeq: rowSeqOf(f) });
     }
+    // E1 build (rc.6): the plan sets `build` to null, so building is the orchestrator's; once an open, unleased task's dependencies have landed (done, and
+    // merged when their plan merges) nothing else would tell it the task is ready. A task with no dependencies is not raised: the orchestrator made it knowing it is its own.
+    if (P.build === null && !x.repairs && !isReviewRow(x) && x.state === 'open' && !x.lease && Array.isArray(x.depends_on) && x.depends_on.length && x.depends_on.every((d) => { const u = byId.get(d); return !!u && u.state === 'done' && (!(policyOf(u, byId) || {}).integrate || !!(u.integration && u.integration.state === 'merged')); }) && landedAfterCreate(x)) add('E1', root, tref(x), 'build', { task: x.id }, { key: `${x.id}!build`, seq: Number(x.seq) || 0 });
     // E1, work done with no review step in the plan; a fix done with no re_review.
     if (own && x.state === 'done' && !isReviewRow(x) && !dependents.has(x.id)) {
       if (!x.repairs && !P.review) add('E1', root, tref(x), 'review', { task: x.id }, evOf(x));
@@ -242,7 +262,8 @@ function haltScope(taskId, tasks, mode = HALT_SCOPE) {
 // The task ids the executor takes no step on: the scope of every active E1 to E8.
 function haltedIds(exceptions, tasks, mode = HALT_SCOPE) {
   const out = new Set();
-  for (const e of exceptions) if (HALTING.has(e.exception) && !e.lifted) for (const id of haltScope(e.task_id, tasks, mode)) out.add(id);
+  const gone = (e) => { const t = tasks.find((o) => o.id === e.task_id); return !!t && t.state === 'cancelled'; }; // a cancelled task is dropped: nothing halts on it
+  for (const e of exceptions) if (HALTING.has(e.exception) && !e.lifted && !gone(e)) for (const id of haltScope(e.task_id, tasks, mode)) out.add(id);
   return out;
 }
 

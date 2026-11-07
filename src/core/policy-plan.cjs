@@ -45,7 +45,7 @@ function checkReview(v, where) {
 }
 
 // The plan as stated: an object whose fields are in V1_ACCEPTS with accepted values. Returns a fresh normalised object; throws E_ARGS and writes
-// nothing. A null field is refused (`policy: null` is the whole-plan hand-back); an empty object is a valid plan that says nothing.
+// nothing. A null field is valid and kept (the step is the orchestrator's; `policy: null` is the whole-plan hand-back); an empty object is a valid plan that says nothing.
 // `where` names the source in the message (`policy`, `spec policy`, or the config path).
 function check(policy, where = 'policy') {
   if (!policy || typeof policy !== 'object' || Array.isArray(policy)) throw err('E_ARGS', `${where} must be an object of what belay does for the task (build, review, fix, re_review, integrate, follow_up)`, { field: where });
@@ -53,7 +53,8 @@ function check(policy, where = 'policy') {
   for (const k of Object.keys(policy)) {
     const v = policy[k];
     if (!Object.prototype.hasOwnProperty.call(V1_ACCEPTS, k)) throw notAccepted(`${where}.${k}`, undefined, Object.keys(V1_ACCEPTS).join(', '));
-    if (v === null || v === undefined) throw err('E_ARGS', `${where}.${k} cannot be null: leave a field out to leave its step to the orchestrator, or pass policy: null on an amend to hand the whole task back`, { field: `${where}.${k}` });
+    if (v === null) { out[k] = null; continue; } // the step stays the orchestrator's: stored as null, so the default does not fill it and the executor skips it
+    if (v === undefined) throw err('E_ARGS', `${where}.${k} is undefined: leave a field out to take the run's plan, or set it to null to keep the step`, { field: `${where}.${k}` });
     if (k === 'review' || k === 'build') { out[k] = checkReview(v, `${where}.${k}`); continue; } // the same shape: a named worker or a spawn
     if (!V1_ACCEPTS[k].includes(v)) throw notAccepted(`${where}.${k}`, JSON.stringify(v), V1_ACCEPTS[k].map((x) => JSON.stringify(x)).join(', '));
     out[k] = v;
@@ -61,7 +62,7 @@ function check(policy, where = 'policy') {
   return out;
 }
 
-// A task's own plan over the user's default, field by field (ADR 0071 decision 3): the task's field wins, the default fills what the task's
+// A task's own plan over the user's default, field by field (ADR 0071 decision 3): the task's field wins (null too: the step stays the orchestrator's), the default fills what the task's
 // plan leaves unsaid. A field is a whole value (a stated review replaces the default review). null when nothing is left.
 function resolve(own, defaults) {
   const out = { ...(defaults || {}), ...(own || {}) };
