@@ -12,6 +12,7 @@ const RE = require('../../src/run/release-eval.cjs');
 const M = require('./policy-matrix-env.cjs');
 
 const test = guarded(nodeTest);
+const NOFIX = M.without(M.PLAN, 'fix'); // a plan with no fix step: the failures the fix step takes as rounds (policy-rounds.test.cjs) are exceptions
 
 test('E2: a refuted review with no fix rounds left (the run\'s hard cap is 0); one wake, halted, and no fix step is taken', async () => {
   const e = await M.env({ label: 'E2', attach: { fix_hard_cap: 0 } });
@@ -30,10 +31,10 @@ test('E2: a refuted review with no fix rounds left (the run\'s hard cap is 0); o
 });
 
 // Two works that edit one file differently, both held; the first merges, the second conflicts at the policy integrate.
-async function conflicting(e) {
+async function conflicting(e, plan = M.PLAN) {
   const repo = makeRepo(e.dir);
   const edit = async (label, text) => {
-    const t = await e.orch.task.create({ spec: `${label} edits a.txt`, acceptance: M.PASS, policy: M.PLAN });
+    const t = await e.orch.task.create({ spec: `${label} edits a.txt`, acceptance: M.PASS, policy: plan });
     const wt = (await e.op.task.worktreeCreate({ task_id: t.id, repo })).worktree.path;
     write(wt, 'a.txt', text); commit(wt, `task ${t.id}`);
     assert.strictEqual((await M.handBack(e, `build-${label}`, t, undefined, wt)).state, 'done');
@@ -48,7 +49,7 @@ async function conflicting(e) {
 test('E3: a conflict at a policy integrate; one E3 wake naming the integration row, the conflicting task halted', async () => {
   const e = await M.env({ label: 'E3' });
   try {
-    const { a, b, out } = await conflicting(e);
+    const { a, b, out } = await conflicting(e, NOFIX);
     assert.deepStrictEqual(out.steps.map((s) => [s.step, s.task_id]), [['integrate', a.id], ['integrate', b.id]]);
     assert.strictEqual(out.steps[0].outcome, 'done');
     const rows = e.raw('SELECT id, state, acted_by, seq FROM integration WHERE state = \'conflict\'');
@@ -68,7 +69,7 @@ test('E3: a conflict at a policy integrate; one E3 wake naming the integration r
 nodeTest('E3 is the only wake for a conflict: the integrate step ends done, and no E8 follows', { timeout: 240000 }, async () => {
   const e = await M.env({ label: 'E3-only' });
   try {
-    const { b, out } = await conflicting(e);
+    const { b, out } = await conflicting(e, NOFIX);
     const wakes = (await e.poll()).map((w) => [w.exception, w.task_id]); // polled first, so the kept store has its receipt whatever the assertions find
     assert.strictEqual(out.steps[1].outcome, 'done');
     assert.deepStrictEqual(wakes, [['E3', b.id]]);
@@ -78,7 +79,7 @@ nodeTest('E3 is the only wake for a conflict: the integrate step ends done, and 
 test('E5: a release evaluation that failed and is not a clean refutation; one wake, halted; not an E6', async () => {
   const e = await M.env({ label: 'E5' });
   try {
-    const { task, row } = await M.workDone(e, 'x', { acceptance: M.FAIL });
+    const { task, row } = await M.workDone(e, 'x', { acceptance: M.FAIL, plan: NOFIX });
     assert.strictEqual(row.state, 'released');
     const trig = await M.tref(e, task.id);
     const w = M.expectOne(await e.poll(), { exception: 'E5', field: 'none', task_id: task.id, trigger: trig, key: `${task.id}@${await M.evaluatedAt(e, task.id)}` });
@@ -89,7 +90,7 @@ test('E5: a release evaluation that failed and is not a clean refutation; one wa
   } finally { await e.close(); }
 });
 
-test('E6, a pass on a retry: the command failed once and passed on the retry; the task is done, one wake, halted', async () => {
+test('a pass on a retry is not an exception: the task is done, no wake and no halt, the note is a step for the digest, and the review goes on', async () => {
   const e = await M.env({ label: 'E6-flaky' });
   try {
     const marker = `${e.dir}/flaky-marker`;
@@ -99,10 +100,14 @@ test('E6, a pass on a retry: the command failed once and passed on the retry; th
     const { task, row } = await M.workDone(e, 'fl', { acceptance });
     assert.strictEqual(row.state, 'done');
     assert.strictEqual(row.results.flaky, true);
-    const trig = await M.tref(e, task.id);
-    const w = M.expectOne(await e.poll(), { exception: 'E6', field: 'none', task_id: task.id, trigger: trig, key: `${task.id}@${await M.evaluatedAt(e, task.id)}` });
-    assert.match(w.text, /passed on a retry \(flaky\)/);
-    await M.assertOnce(e);
+    await e.worker('rv');
+    assert.deepStrictEqual(await e.poll(), [], 'no wake');
+    assert.ok(!(await M.halted(e)).has(task.id), 'no halt');
+    const out = await e.tick();
+    assert.deepStrictEqual(out.steps.map((s) => [s.step, s.task_id, s.outcome]), [['note_flaky', task.id, 'done'], ['review', task.id, 'done']]);
+    assert.strictEqual(out.steps[0].row_ref, `task:${task.id}`);
+    assert.deepStrictEqual((await e.tick()).steps, [], 'the note is made once');
+    assert.deepStrictEqual(await e.poll(), []);
   } finally { await e.close(); }
 });
 
@@ -113,7 +118,7 @@ test('E6, beside other evaluations: a failing check that ran beside another eval
     const hold = `${e.dir}/hold.cjs`; const release = `${e.dir}/release.cjs`; const flag = `${e.dir}/other-ran`;
     fs.writeFileSync(hold, `const fs = require('node:fs'); const end = Date.now() + 25000; (function poll() { if (fs.existsSync(${JSON.stringify(flag)})) process.exit(1); if (Date.now() > end) process.exit(3); setTimeout(poll, 10); })();\n`);
     fs.writeFileSync(release, `require('node:fs').writeFileSync(${JSON.stringify(flag)}, '1');\n`);
-    const mk = async (label, script) => (await e.orch.task.create({ spec: label, acceptance: { commands: [{ argv: [process.execPath, script], timeout_ms: 30000 }] }, policy: M.PLAN }));
+    const mk = async (label, script) => (await e.orch.task.create({ spec: label, acceptance: { commands: [{ argv: [process.execPath, script], timeout_ms: 30000 }] }, policy: NOFIX }));
     const slow = await mk('slow', hold); const quick = await mk('quick', release);
     await e.worker('rv'); // the plan's reviewer is there, so the review step the quick task's pass triggers writes no exception
     const lease = async (t, w) => { const wc = await e.worker(w); const a = await e.orch.task.assign({ task_id: t.id, worker_id: w }); await wc.lease.release({ lease_id: a.new_lease.id, reason: 'done', result: { branch: 'b', head: 'h' } }); };

@@ -70,7 +70,7 @@ function createPolicyCloseHold({ alive = P.pidAlive, createdOf = P.createdOf, no
     const claimed = new Set(steps.filter((s) => !(s.outcome === 'skipped' && /^E_(PAUSED|NOT_NOW)/.test(s.error || ''))).map((s) => keyOf(s.step, { table: s.trigger_table, id: s.trigger_id, seq: Number(s.trigger_seq) || 0 })));
     const halted = PW.haltedIds(exceptions || PW.derive({ ...snap, failures: snap.failures || [] }), snap.tasks);
     const seen = new Set();
-    for (const c of due({ runId, tasks: snap.tasks, integrations: snap.integrations || [] })) {
+    for (const c of due({ runId, tasks: snap.tasks, integrations: snap.integrations || [], rounds: snap.rounds, failures: snap.failures, roundSteps: steps })) {
       const key = keyOf(c.step, c.trigger);
       if (halted.has(c.task_id) || claimed.has(key)) continue;
       seen.add(key);

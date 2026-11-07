@@ -19,6 +19,7 @@ const PROC = require('./process.cjs');
 const { gatedCore } = require('./gated-core.cjs');
 const STEPS = require('./policy-steps-run.cjs');
 const BUD = require('./policy-budget.cjs');
+const RF = require('./policy-rounds.cjs');
 const crypto = require('node:crypto');
 
 const parse = (v) => { if (v && typeof v === 'object') return v; try { const p = typeof v === 'string' ? JSON.parse(v) : null; return p && typeof p === 'object' ? p : null; } catch { return null; } };
@@ -26,7 +27,7 @@ const errText = (e) => `${(e && e.code) || 'E_INTERNAL'}: ${String((e && e.messa
 const keyOf = (step, t) => `${step}|${t.table}|${t.id}|${t.seq}`;
 const isRelease = (t) => !!(t && t.results && t.results.trigger === 'release');
 const MAX_PARALLEL_BUILDS = 4; // the default cap on builds in flight when the run states none (the standing four-writers rule)
-const SENDS = new Set(['build', 'review', 'fix', 're_review']); // the steps that send a worker work (the budget rule); integrate and follow_up send none
+const SENDS = new Set(['build', 'review', 'fix', 're_review', ...RF.SENDING]); // the steps that send a worker work (the budget rule); integrate and follow_up send none
 const leftOver = STEPS.leftOver; // a review a paused step made and did not hand over (never leased, never evaluated: policy-steps-run.cjs)
 const isReviewTask = (t) => !!(t.acceptance && t.acceptance.verdict === true);
 
@@ -42,7 +43,7 @@ const handBy = (t) => (t && t.handoff && typeof t.handoff.by === 'string' ? t.ha
 const merged = (t) => !!(t.integration && t.integration.state === 'merged');
 
 // -> the steps due on these rows, in row order (the trigger's seq, then the step's name). `snap`: { runId, tasks (task.list rows),
-// integrations }. Pure: no store, no clock. A candidate: { step, task_id, trigger, policy_rev, worker (the named builder or refuter), ... }.
+// integrations, steps, maxBuilds, rounds ({ caps }: the failures policy-rounds.cjs carries as rounds are read only when it is given), failures }. Pure: no store, no clock. A candidate: { step, task_id, trigger, policy_rev, worker (the named builder or refuter), ... }.
 function due(snap) {
   const { runId } = snap;
   const all = snap.tasks || [];
@@ -53,7 +54,9 @@ function due(snap) {
   // orchestrator is woken for the death and decides). `snap.maxBuilds` caps the builds in flight: leased work tasks of the run; past it a
   // build is still listed, `capped: true`, so a reader sees the task is carried by the plan and the executor takes it once a slot frees.
   const built = new Set((snap.steps || []).filter((s) => s.run_id === runId && s.step === 'build' && (s.outcome === 'done' || s.outcome === 'started' || s.outcome === 'superseded')).map((s) => s.task_id));
-  const depReady = (d) => !!d && d.state === 'done' && (!(PW.policyOf(d, byId) || {}).integrate || merged(d));
+  const mergedOk = (d) => merged(d) && d.integration.passed !== false && d.integration.checks_passed !== false; // landed, and its integration's checks did not fail
+  const depReady = (d) => !!d && d.state === 'done' && (!(PW.policyOf(d, byId) || {}).integrate || mergedOk(d));
+  const rf = snap.rounds ? RF.ctxOf({ runId, tasks: all, steps: snap.roundSteps || snap.steps, failures: snap.failures, caps: snap.rounds.caps, integrations: snap.integrations }) : null; // failures the plan carries as rounds (policy-rounds.cjs)
   let slots = Number.isInteger(snap.maxBuilds) ? snap.maxBuilds - tasks.filter((t) => !isReviewTask(t) && t.lease && !t.lease.expired && t.state !== 'done').length : Infinity;
   const reviewsOf = new Map(); // task id -> the reviews (not cancelled) that depend on it
   for (const t of tasks) if (isReviewTask(t)) for (const d of Array.isArray(t.depends_on) ? t.depends_on : []) reviewsOf.set(d, (reviewsOf.get(d) || []).concat(t));
@@ -62,11 +65,22 @@ function due(snap) {
   const tref = (t) => ({ table: 'task', id: t.id, seq: Number(t.seq) || 0 });
 
   for (const x of tasks) {
-    if (isReviewTask(x)) continue;
+    if (isReviewTask(x)) { // a reviewer that released with no verdict is asked again (once)
+      const pr = rf && x.state === 'released' ? planOf(x, byId) : null;
+      const a = pr ? RF.action(x, pr.plan, rf) : null;
+      if (a && a.step) out.push({ step: a.step, task_id: x.id, trigger: tref(x), policy_rev: pr.rev, worker: a.worker, prompt: a.prompt });
+      continue;
+    }
     const p = planOf(x, byId);
     if (!p) continue;
     const { plan, rev } = p;
     const root = PW.rootOf(x, byId);
+    // A hand-back that failed its own evaluation, or could not be evaluated, goes back to its builder as a round (fix_eval, fix_run), after the re-run that comes first (rerun_*); a pass on a retry is noted.
+    if (rf) {
+      const a = RF.action(x, plan, rf);
+      if (a && a.step) out.push({ step: a.step, task_id: x.id, trigger: tref(x), policy_rev: rev, worker: a.worker, ...(a.prompt ? { prompt: a.prompt } : {}) });
+      else if (RF.flakyDue(x, rf)) out.push({ step: 'note_flaky', task_id: x.id, trigger: tref(x), policy_rev: rev });
+    }
     // build: an open work task nobody holds, whose dependencies are all done, and the plan names who builds it (a worker, or a spawn).
     // A task the orchestrator assigned has a lease and is skipped; a fix is made and assigned by its own step. A follow-up the follow_up step
     // made is open in its own tree, and is built here like any other planned task.
@@ -79,7 +93,7 @@ function due(snap) {
       out.push({ step: 'review', task_id: x.id, trigger: tref(x), policy_rev: rev, review: plan.review, worker: plan.review.worker || (plan.review.spawn && plan.review.spawn.worker_id) || null });
     }
     // fix: the work's review is refuted (belay's own evaluation) and a round is left; the fix goes to the one who built what was judged.
-    if (!x.repairs && plan.fix === 'builder' && x.review && x.review.state === 'refuted' && PW.fixRoundsLeft(x.review)) {
+    if (!x.repairs && plan.fix === 'builder' && x.review && x.review.state === 'refuted' && PW.fixRoundsLeft(x.review, rf ? RF.stepRounds(rf, root.id) : 0)) {
       const R = byId.get(x.review.review_id);
       if (R && R.run_id === runId && isRelease(R)) {
         const judged = byId.get((Array.isArray(R.depends_on) ? R.depends_on : [])[0]);
@@ -87,7 +101,7 @@ function due(snap) {
       }
     }
     // re_review: a fix task is done on belay's own evaluation and nothing reviews it yet; the review goes to the one who refuted.
-    if (x.repairs && x.state === 'done' && plan.re_review === 'refuter' && isRelease(x) && !(reviewsOf.get(x.id) || []).length) {
+    if (x.repairs && x.state === 'done' && plan.re_review === 'refuter' && isRelease(x) && !(reviewsOf.get(x.id) || []).length && !(rf && RF.isMergeFix(rf, x))) { // a fix that resolved a merge is checked by the retried merge, not re-reviewed
       const answered = (Array.isArray(x.answers) ? x.answers : []).slice().reverse().map((id) => byId.get(id)).find((r) => r && handBy(r));
       const R = answered || (root.review && byId.get(root.review.review_id)) || null;
       out.push({ step: 're_review', task_id: root.id, trigger: tref(x), policy_rev: rev, worker: handBy(R), fix_id: x.id, review_id: R ? R.id : null });
@@ -102,15 +116,22 @@ function due(snap) {
       if (facts && facts.should_fix.n > 0 && !answered) out.push({ step: 'follow_up', task_id: x.id, trigger: tref(R), policy_rev: rev, review_id: R.id });
     }
     // integrate: the work's review holds, the work is done and not on the branch, and every task it depends on has landed.
-    if (!x.repairs && plan.integrate === 'on_hold' && x.state === 'done' && x.review && x.review.state === 'holds' && !merged(x) && !merging) {
+    // After a merge-side fix (fix_conflict, fix_checks) is done, the merge is tried again with that fix in the unit; its trigger is the fix.
+    const mf = rf ? RF.mergeFixOf(rf, x.id) : null;
+    if (!x.repairs && plan.integrate === 'on_hold' && x.state === 'done' && x.review && x.review.state === 'holds' && (!merged(x) || (mf && !merged(mf))) && !merging) {
       const R = byId.get(x.review.review_id);
       const deps = (Array.isArray(x.depends_on) ? x.depends_on : []).map((d) => byId.get(d));
       const landed = deps.every((d) => d && d.state === 'done' && (d.integration == null || merged(d)));
       if (R && R.run_id === runId && isRelease(R) && landed) {
         const unit = [x].concat(tasks.filter((t) => t.id !== x.id && t.repairs && PW.rootOf(t, byId).id === x.id && t.state === 'done'));
-        out.push({ step: 'integrate', task_id: x.id, trigger: tref(R), policy_rev: rev, task_ids: unit.map((t) => t.id), review_id: R.id });
+        out.push({ step: 'integrate', task_id: x.id, trigger: mf && !merged(mf) ? tref(mf) : tref(R), policy_rev: rev, task_ids: unit.map((t) => t.id), review_id: R.id, ...(rf && plan.fix === 'builder' ? { fixable: true } : {}), ...(merged(x) ? { retry: true } : {}) });
       }
     }
+  }
+  // An integration that stopped on a conflict, or whose checks failed, goes to the builder as a fix task (fix_conflict, fix_checks).
+  if (rf) for (const i of rf.integrations) {
+    const m = RF.mergeAction(i, rf, (t) => planOf(t, byId));
+    if (m && m.step) out.push({ step: m.step, task_id: m.root.id, trigger: { table: 'integration', id: i.id, seq: Number(i.seq) || 0 }, policy_rev: m.rev, worker: m.worker, conflict_task: m.task.id, spec: RF.mergeSpec(m, runId) });
   }
   return out.sort((a, b) => a.trigger.seq - b.trigger.seq || (a.step < b.step ? -1 : a.step > b.step ? 1 : 0));
 }
@@ -135,6 +156,8 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf 
   const stopped = () => closed || gate.aborted || closing();
 
   const read = async (fn, field, fallback) => { const r = await fn({}); return (r && r[field]) || fallback; };
+  // What policy-rounds.cjs needs beside the rows: the run's fix caps, and the evaluations that ended with no result (read only when a hand-back waits on one).
+  const extras = async (tasks, run) => ({ rounds: { caps: RF.capsOf(run) }, failures: tasks.some((t) => t.run_id === runId && t.state === 'released' && t.handoff) ? await RF.readFailures(g, runId) : [] });
 
   // Once per adapter life, at its first pass: a claim still `started` whose claimant is no longer alive (pid and creation time) belongs to a life that
   // ended mid-step; a live claimant's claim, ours or another adapter's on the same run, is left alone. A claim with no claimant is a dead one's. Its effect may have landed: the row stamped with the claim's trigger (policy.list's `effect`) is
@@ -161,15 +184,16 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf 
   // After the claim and just before the step's first write: the run is not paused or ended, and the step is still due on fresh rows at the plan
   // revision it was claimed at (the pass's snapshot can be minutes old after an integrate). -> a reason to skip, or null.
   const seen = { run: null, tasks: [] }; // the run row and the task rows stillDue read, for the budget rule
-  async function stillDue(c) {
+  async function stillDue(c, seq) {
     const run = (await g.run.get({})).run;
     seen.run = run;
     if (!run || run.ended_at != null) return 'the run has ended after the step was claimed';
     if (run.paused_at != null) return 'E_PAUSED: the run was paused after the step was claimed; the claim is reopened and the step retaken after the resume';
     const tasks = await read(g.task.list, 'tasks', []);
     seen.tasks = tasks;
-    const integrations = c.step === 'integrate' ? await read(g.integration.list, 'integrations', []) : [];
-    const same = due({ runId, tasks, integrations }).find((d) => keyOf(d.step, d.trigger) === keyOf(c.step, c.trigger));
+    const integrations = c.step === 'integrate' || c.trigger.table === 'integration' ? await read(g.integration.list, 'integrations', []) : [];
+    const roundSteps = (await read(g.policy.list, 'rows', [])).filter((r) => r.seq !== seq); // the rounds read the step log, without this step's own claim
+    const same = due({ runId, tasks, integrations, roundSteps, ...(await extras(tasks, run)) }).find((d) => keyOf(d.step, d.trigger) === keyOf(c.step, c.trigger));
     if (!same) return `E_NOT_NOW: the plan or the facts changed after the claim: ${c.step} on ${c.trigger.table}:${c.trigger.id} is no longer due; the claim is reopened and the step retaken if it is due again`;
     if ((same.policy_rev ?? null) !== (c.policy_rev ?? null)) return `E_NOT_NOW: the plan moved from rev ${c.policy_rev} to rev ${same.policy_rev} after the claim; the claim is reopened and the step retaken`;
     return null;
@@ -197,7 +221,7 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf 
     const stepCore = gatedCore(g.policyAs(row.seq), gate, 'the policy executor');
     let res;
     try {
-      const why = await stillDue(c);
+      const why = await stillDue(c, row.seq);
       const over = why ? null : await budgetRefusal(c);
       res = why ? { outcome: 'skipped', error: why } : over ? { outcome: 'exception', error: over } : await STEPS.run(c, { core: stepCore, runId, assign: assignFor(stepCore), spawn: spawnFor ? spawnFor(stepCore) : null });
     } catch (e) { res = { outcome: 'exception', error: errText(e) }; }
@@ -225,9 +249,10 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf 
     if (run.paused_at != null) { out.held = 'paused'; return out; }
     const integrations = await read(g.integration.list, 'integrations', []);
     const revisions = await PW.readRevisions(g.policy, runId, tasks); // an amend lifts a halt, and the fixes' creation order (policy-wakes derive)
-    const halted = PW.haltedIds(PW.derive({ runId, tasks, integrations, steps, failures: [], revisions }), tasks);
+    const ex = await extras(tasks, run);
+    const halted = PW.haltedIds(PW.derive({ runId, tasks, integrations, steps, revisions, ...ex }), tasks);
     const claimed = new Set(steps.filter((s) => !(s.outcome === 'skipped' && /^E_(PAUSED|NOT_NOW)/.test(s.error || ''))).map((s) => keyOf(s.step, { table: s.trigger_table, id: s.trigger_id, seq: Number(s.trigger_seq) || 0 })));
-    for (const c of due({ runId, tasks, integrations, steps, maxBuilds: Number.isInteger(run.max_parallel_builds) && run.max_parallel_builds > 0 ? run.max_parallel_builds : MAX_PARALLEL_BUILDS })) {
+    for (const c of due({ runId, tasks, integrations, steps, ...ex, maxBuilds: Number.isInteger(run.max_parallel_builds) && run.max_parallel_builds > 0 ? run.max_parallel_builds : MAX_PARALLEL_BUILDS })) {
       if (stopped()) break;
       if (c.capped) continue; // max_parallel_builds: the task waits for a slot, no exception (ADR 0074 amendment 4)
       if (halted.has(c.task_id) || claimed.has(keyOf(c.step, c.trigger))) continue;
@@ -251,7 +276,7 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf 
       const w = byId.get(taskId);
       if (!w) continue;
       const plan = PW.policyOf(w, byId) || {};
-      const finished = w.state === 'cancelled' || merged(w) || (!plan.integrate && w.state === 'done' && w.review && w.review.state === 'holds');
+      const finished = w.state === 'cancelled' || (merged(w) && w.integration.passed !== false && w.integration.checks_passed !== false) || (!plan.integrate && w.state === 'done' && w.review && w.review.state === 'holds');
       if (!finished) continue;
       if (tasks.some((t) => t.lease && t.lease.holder === wid && !t.lease.expired && t.state !== 'done' && t.state !== 'cancelled')) continue;
       retired.add(wid);
