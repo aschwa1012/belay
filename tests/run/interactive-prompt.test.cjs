@@ -118,7 +118,7 @@ test('interactive prompt: apart from four named ranges the twin equals orchestra
   // The fourth named difference: the digest sentence of the plans section. The interactive wake line is 221 bytes, so the digest rides it only when it fits;
   // the headless wake carries it whole.
   const HEADLESS_DIGEST = "Each of those wakes carries a digest of belay's steps.";
-  const INTERACTIVE_DIGEST = "A wake carries a digest of belay's steps when it fits in the wake line; when it does not, or the run goes quiet, the digest comes on its own line, headed "belay: policy steps since the last wake".";
+  const INTERACTIVE_DIGEST = "A wake carries a digest of belay's steps when it fits in the wake line; when it does not, or the run goes quiet, the digest comes on its own line, headed \"belay: policy steps since the last wake\".";
   const plans = hs.get("## Plans: belay's policy manager").map((l) => l.replace(HEADLESS_DIGEST, INTERACTIVE_DIGEST));
   assert.notDeepStrictEqual(plans, hs.get("## Plans: belay's policy manager"), 'the digest substitution applied');
   assert.deepStrictEqual(ts.get("## Plans: belay's policy manager"), plans, "Plans: belay's policy manager");
