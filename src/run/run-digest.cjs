@@ -207,6 +207,17 @@ async function wakeDigest({ core, dataDir, runId, now = Date.now, claimant = nul
   return rec ? { id: `${runId}:digest:${rec.n}`, text: rec.text, n: rec.n } : null;
 }
 
+// The interactive path when a wake is there to carry it: the digest as the tail of that wake's own line, in `cap` bytes (the room the wake
+// leaves in the 221-byte line). Null when the room is too small to show a step (nothing is claimed; the steps wait for the next asker).
+const FOLD_HEAD = ' | belay did: ';
+const FOLD_MIN_CAP = bytes(FOLD_HEAD) + 40; // the head and one short step line
+async function foldDigest({ core, dataDir, runId, cap, now = Date.now, claimant = null, hooks = {} }) {
+  if (!(cap >= FOLD_MIN_CAP)) return null;
+  const rows = await listSteps(core, runId);
+  const rec = claimDigest({ dataDir, runId, rows, cap, form: { head: FOLD_HEAD, sep: '; ', short: true }, via: 'wake', now, claimant, hooks });
+  return rec ? { text: rec.text, n: rec.n } : null;
+}
+
 // The receipt field: digests[] when the run took a policy step or returned a digest, nothing for a run with no plan (its receipt is as before).
 async function receiptField(core, dataDir, runId) {
   const digests = readDigests(dataDir, runId);
@@ -215,4 +226,4 @@ async function receiptField(core, dataDir, runId) {
   return digests.length || steps ? { digests } : {};
 }
 
-module.exports = { finished, wakeUid, deathUid, lifeOf, release, confirm, releaseUnconfirmed, readDeliveries, isClaimed, listSteps, wakeDigest, receiptField, claimDigest, claimException, readDigests, build, lineOf, CAP_BYTES };
+module.exports = { finished, wakeUid, deathUid, lifeOf, release, confirm, releaseUnconfirmed, readDeliveries, isClaimed, listSteps, wakeDigest, foldDigest, FOLD_MIN_CAP, receiptField, claimDigest, claimException, readDigests, build, lineOf, CAP_BYTES };
