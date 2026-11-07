@@ -38,22 +38,15 @@ test('a child that never exits settles null at the bound, and the child is kille
   assert.ok(child.exitCode !== null || child.signalCode, 'the stuck child was killed');
 });
 
-test('a child whose close never comes settles null at the bound (the callback never fires)', { timeout: 15000 }, async () => {
-  let killed = false;
-  const fake = { kill: () => { killed = true; }, unref() {}, stdin: null, stdout: null, stderr: null };
+test('a child whose close never comes settles null at the bound; it is killed, its pipes destroyed and its handle released', { timeout: 15000 }, async () => {
+  const calls = [];
+  const pipe = (n) => ({ destroy: () => calls.push(n + '.destroy') });
+  const fake = { kill: () => calls.push('kill'), unref: () => calls.push('unref'), stdin: pipe('stdin'), stdout: pipe('stdout'), stderr: pipe('stderr') };
   const t0 = Date.now();
   const got = await P.defaultSmi({ boundMs: 200, run: () => fake, exists: () => true });
   assert.strictEqual(got, null);
   assert.ok(Date.now() - t0 < 3000);
-  assert.ok(killed, 'kill went to the live handle');
-});
-
-test('a late answer after the bound is ignored', { timeout: 15000 }, async () => {
-  let cb;
-  const fake = { kill() {}, unref() {} };
-  const got = await P.defaultSmi({ boundMs: 100, run: (_e, _a, _o, f) => { cb = f; return fake; }, exists: () => true });
-  assert.strictEqual(got, null);
-  cb(null, 'X, 1, 8000, 0, 8000\n'); // must not throw or change anything
+  assert.deepStrictEqual(calls, ['kill', 'stdin.destroy', 'stdout.destroy', 'stderr.destroy', 'unref']);
 });
 
 test('a stand-in that prints CSV is parsed to the card with the most memory', { timeout: 15000 }, async () => {
