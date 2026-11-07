@@ -22,6 +22,10 @@ const SENDING = new Set(['fix_eval', 'fix_run', 'reask', 'fix_conflict', 'fix_ch
 const STEP_NAMES = new Set([...ROUND_STEPS, ...MERGE_FIX_STEPS, ...RERUN_STEPS, 'reask', 'note_flaky']);
 const REASK_MAX = 1; // a reviewer is asked again once; past it the evaluation that could not judge wakes (E5)
 const COUNTED = new Set(['done', 'started', 'superseded']);
+// A claim still `started` this long after it was made is not in flight: the evaluation budget (540 s) and slack. Its adapter is gone, or the step is stuck; the wait and the
+// idle-close hold on it end, and it is read as finished (the next life's sweep writes the claim itself).
+const STARTED_MAX_MS = 600000;
+const flying = (rf, s) => s.outcome === 'started' && rf.now - Number(s.at || 0) <= STARTED_MAX_MS;
 
 const failing = (r) => ((r && r.checks) || []).filter((c) => c && c.passed === false);
 const beside = (c) => (Array.isArray(c.concurrent) ? c.concurrent.length : 0);
@@ -67,7 +71,7 @@ const lastLine = (r) => { const c = failing(r).find((k) => k.detail && (k.detail
 // or a re-run in flight. Bounded: `since` is when the failure was evaluated, and past WAIT_MAX_MS it no longer waits (an evaluation lost with its adapter
 // would otherwise hold it for ever).
 function othersEvaluating(x, rf, since) {
-  if (rf.steps.some((s) => RERUN_STEPS.has(s.step) && s.outcome === 'started')) return true; // never two re-runs at once, whatever the bound
+  if (rf.steps.some((s) => RERUN_STEPS.has(s.step) && flying(rf, s))) return true; // never two re-runs at once, whatever the bound (but not for a claim a dead adapter left)
   if (rf.now - Number(since || 0) > WAIT_MAX_MS) return false;
   const ev = (t) => t.results && Number(t.results.evaluated_at) >= Number(t.handoff.at);
   const lost = (t) => rf.failures.some((f) => f.task_id === t.id && Number(f.written_at) >= Number(t.handoff.at));
@@ -90,7 +94,7 @@ function action(x, P, rf) {
   const own = r.trigger === 'release' && Number(r.evaluated_at) >= hand; // belay's own evaluation of this hand-back
   const mine = (name) => rf.steps.filter((s) => s.task_id === x.id && s.step === name && !reopened(s));
   const since = (name) => mine(name).filter((s) => Number(s.at) >= hand);
-  if (rf.steps.some((s) => s.task_id === x.id && (ROUND_STEPS.has(s.step) || RERUN_STEPS.has(s.step) || s.step === 'reask') && s.outcome === 'started')) return { wait: true };
+  if (rf.steps.some((s) => s.task_id === x.id && (ROUND_STEPS.has(s.step) || RERUN_STEPS.has(s.step) || s.step === 'reask') && flying(rf, s))) return { wait: true };
   const root = rootOf(x, rf.byId);
   const round = (step, cause, prompt, last) => (left(rf, root.id)
     ? { step, worker: handBy(x), prompt: `${prompt} Fix round ${used(rf, root.id) + 1}${rf.caps.max != null ? ` of ${rf.caps.max}` : ''}.` }

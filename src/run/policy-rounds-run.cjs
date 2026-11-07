@@ -58,7 +58,7 @@ async function reassign(c, env) {
   }
   const r = await S.handOver(env, { task_id: c.task_id, worker_id: worker, prompt: c.prompt }, `task:${c.task_id}`, true);
   if (r.outcome === 'done') { const l = ((await env.core.task.get({ task_id: c.task_id })) || {}).lease; if (l && l.id) r.row_ref = `lease:${l.id}`; } // the row the step wrote is the lease
-  return r;
+  return worker !== c.worker ? { ...r, worker_id: worker } : r; // the claim names the worker that took it, not the dead one it was made for
 }
 
 // The evaluation run again where the worker's own was run (its worktree). A re-run that did not finish writes nothing and ends skipped: the plan
@@ -92,7 +92,8 @@ async function mergeFix(c, env) {
   });
   const ref = `task:${made.id}`;
   if (made.fix_notice) return S.exception(`fix_notice: ${made.fix_notice}`, ref); // past max_fix_rounds since the pass read it: the fix stays unassigned
-  return S.handOver(env, { task_id: made.id, worker_id: b.worker }, ref, true);
+  const r = await S.handOver(env, { task_id: made.id, worker_id: b.worker }, ref, true);
+  return b.worker !== c.worker ? { ...r, worker_id: b.worker } : r;
 }
 
 // A pass on a retry, recorded: the row that carries the fact.

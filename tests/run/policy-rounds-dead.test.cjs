@@ -58,6 +58,7 @@ test('a builder that cannot be restarted is replaced by a fresh coder of the pla
     assert.deepStrictEqual([spawned[0].agent_type, spawned[0].worktree], ['coder', wt], 'a coder, in the task\'s tree');
     assert.match(holder(e, t.id), /^bld-/);
     assert.strictEqual(sent[0].worker_id, holder(e, t.id));
+    assert.strictEqual(stepRows(e).find((s) => s.step === 'fix_eval').worker_id, holder(e, t.id), 'the claim names the coder that took the round, not the dead one it was made for');
     assert.match(sent[0].prompt, /failed belay's own evaluation/, 'the fresh coder is told what failed');
     assert.deepStrictEqual((await wakesOf(e)).map((w) => w.exception), [], 'no exception');
   } finally { await e.close(); }
@@ -125,6 +126,7 @@ test('a fix whose builder cannot be restarted goes to a fresh coder of build.spa
     assert.deepStrictEqual(stepsOut(out, 'fix'), [['fix', 'done']]);
     const fixId = e.raw('SELECT DISTINCT id FROM task WHERE repairs = ?', work.id)[0].id;
     assert.match(holder(e, fixId), /^bld-/);
+    assert.strictEqual(stepRows(e).find((s) => s.step === 'fix').worker_id, holder(e, fixId), 'the claim names the worker that took the fix');
     assert.deepStrictEqual([spawned[0].agent_type, spawned[0].worktree], ['coder', tree]);
   } finally { await e.close(); }
 });
@@ -163,6 +165,10 @@ test('a re_review whose refuter cannot be restarted goes to a fresh reviewer of 
     assert.deepStrictEqual(stepsOut(out, 're_review'), [['re_review', 'done']]);
     const rr = e.raw("SELECT id FROM task WHERE depends_on LIKE ? AND acceptance LIKE '%verdict%'", `%${fixId}%`)[0].id;
     assert.match(holder(e, rr), /^rev-/);
+    assert.strictEqual(stepRows(e).find((s) => s.step === 're_review').worker_id, holder(e, rr), 'the claim names the reviewer that took the re_review');
+    const spec = e.raw('SELECT spec FROM task WHERE id = ? ORDER BY seq DESC LIMIT 1', rr)[0].spec;
+    assert.match(spec, /rv-1\)? ?;? ?judge whether the fix answers these findings/, spec);
+    assert.match(spec, /Findings:\n- .*bad/, 'the fresh reviewer is given the refuting review\'s findings');
     assert.deepStrictEqual([spawned[0].agent_type, spawned[0].worktree], ['reviewer', tree]);
   } finally { await e.close(); }
 });
