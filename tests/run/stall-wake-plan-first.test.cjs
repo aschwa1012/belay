@@ -166,3 +166,8 @@ test('the carried predicate is one module: the stall wake uses it, and a genuine
   assert.deepStrictEqual(due({ runId: RUN, tasks, integrations: [], steps }), []);
   assert.deepStrictEqual(untaken({ runId: RUN, tasks, integrations: [], steps }), ['t-stuck']);
 });
+
+test('plan-first: a stale merging row is no merge in flight, so the safety net still names what waits behind it', () => {
+  const snap = { runId: RUN, tasks: mergeTasks(), integrations: [{ run_id: RUN, state: 'merging', stale: true }], steps: [] };
+  assert.deepStrictEqual(untaken(snap), ['t-next'], 'a dead merge carries nothing');
+});

@@ -133,7 +133,7 @@ function attachOnce(c) {
         // channels, and kept for status to carry.
         ATTACH = att;
         // A plan-first orchestrator's first turn may call no worker tool, so nothing would open the run manager and its policy executor: open them now.
-        if (opts.role === 'orchestrator' && att && att.run && att.run.policy_default) setImmediate(() => openRunManagerOnce().catch((e) => wlog('!!', `policy executor start: ${e && e.message}`)));
+        if (opts.role === 'orchestrator' && att && att.run && att.run.policy_default) setImmediate(() => !closing && openRunManagerOnce().catch((e) => wlog('!!', `policy executor start: ${e && e.message}`)));
         const dead = (att && att.workers_marked_dead) || [];
         const line = `run.attach epoch=${att && att.epoch} reattached=${att && att.reattached} `
           + `workers_marked_dead=${dead.length}${dead.length ? ` [${dead.join(', ')}]` : ''}`;
@@ -228,7 +228,7 @@ async function callCore(dotted, args, channel = null) {
   return fn(args);
 }
 
-const COMPOSE = require('./compose.cjs').createCompose({ callCore, manager: () => runManager, openManager: () => openRunManagerOnce(), dataDir: opts.dataDir, runId: opts.runId, onPolicy: () => { require('./policy-wire.cjs').arm(); openRunManagerOnce().catch((e) => wlog('!!', `policy executor start: ${e && e.message}`)); } });
+const COMPOSE = require('./compose.cjs').createCompose({ callCore, manager: () => runManager, openManager: () => openRunManagerOnce(), dataDir: opts.dataDir, runId: opts.runId, onPolicy: () => { require('./policy-wire.cjs').arm(); if (!closing) openRunManagerOnce().catch((e) => wlog('!!', `policy executor start: ${e && e.message}`)); } });
 // ADR 0053 decision 6: worker_spawn's cwd defaults to the worktree belay made for task_id, and a different one is refused, so a
 // worker is never pointed past its task's own tree by a typo. Without a recorded worktree the call is as it was.
 async function reviewedWorktree(task) {
