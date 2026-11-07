@@ -175,7 +175,7 @@ async function followUp(c, env) {
   return { outcome: 'done', row_ref: ref };
 }
 
-const RUNNERS = { build, review, fix, re_review: reReview, integrate, follow_up: followUp };
+const RUNNERS = { build, review, fix, re_review: reReview, integrate, follow_up: followUp, relaunch: (c, env) => require('./policy-relaunch.cjs').run(c, env) };
 
 async function run(c, env) {
   const f = RUNNERS[c.step];

@@ -168,7 +168,7 @@ function startWakePublisher({
         const byId = new Map((list.workers || []).map((w) => [w.id, w]));
         for (const nw of await noteWatcher.poll()) queue.push({ id: nw.id, text: nw.text, worker_id: nw.worker_id, event: nw.event, paused_at: null, paused_by: null, ev: nw });
         for (const cw of await callWatcher.poll()) queue.push({ id: wakeId(runId, cw), text: cw.text, worker_id: cw.worker_id, event: cw.event, paused_at: null, paused_by: null, ev: cw });
-        const enriched = await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), evalSeen, { holdMs: require('./release-eval.cjs').holdMs(), now, workers: list.workers || [] }); // ADR 0058 amendment 4: held for its evaluation
+        const enriched = await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), evalSeen, { holdMs: require('./release-eval.cjs').holdMs(), now, workers: list.workers || [], dataDir }); // ADR 0058 amendment 4: held for its evaluation
         if (dataDir && !planned.value() && stats.polls % PLAN_CHECK_POLLS === 1) await planned.check(); // amendment 2: the store's plan arms the watcher without waiting for a turn end; read-only, one check every PLAN_CHECK_POLLS polls until a yes
         if (planned.value()) evalSeen.policyArmed = true;
         for (const pw of await policyWatcher.poll(evalSeen)) queue.push({ id: wakeId(runId, pw), text: pw.text, worker_id: pw.worker_id, event: pw.event, paused_at: null, paused_by: null, ev: pw }); // after enrichWakes, which hands it this poll's task rows
