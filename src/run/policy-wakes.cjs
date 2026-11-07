@@ -170,6 +170,9 @@ function derive(snap) {
     if (x.state === 'released' && x.handoff) {
       for (const f of fails) if (f.task_id === x.id && f.code !== 'E_CANCELLED' && Number(f.written_at) >= Number(x.handoff.at)) add('E5', root, tref(x), null, { executable: true, failing: [], error: f.code, task: x.id }, { key: `${x.id}!${f.id}`, seq: Number(f.seq) || 0, at: Number(f.written_at) || 0, rowSeq: rowSeqOf(f) });
     }
+    // E1 build (rc.6): the plan sets `build` to null, so building is the orchestrator's; once an open, unleased task's dependencies have landed (done, and
+    // merged when their plan merges) nothing else would tell it the task is ready. A task with no dependencies is not raised: the orchestrator made it knowing it is its own.
+    if (P.build === null && !x.repairs && !isReviewRow(x) && x.state === 'open' && !x.lease && Array.isArray(x.depends_on) && x.depends_on.length && x.depends_on.every((d) => { const u = byId.get(d); return !!u && u.state === 'done' && (!(policyOf(u, byId) || {}).integrate || !!(u.integration && u.integration.state === 'merged')); })) add('E1', root, tref(x), 'build', { task: x.id }, { key: `${x.id}!build`, seq: Number(x.seq) || 0 });
     // E1, work done with no review step in the plan; a fix done with no re_review.
     if (own && x.state === 'done' && !isReviewRow(x) && !dependents.has(x.id)) {
       if (!x.repairs && !P.review) add('E1', root, tref(x), 'review', { task: x.id }, evOf(x));
@@ -244,7 +247,8 @@ function haltScope(taskId, tasks, mode = HALT_SCOPE) {
 // The task ids the executor takes no step on: the scope of every active E1 to E8.
 function haltedIds(exceptions, tasks, mode = HALT_SCOPE) {
   const out = new Set();
-  for (const e of exceptions) if (HALTING.has(e.exception) && !e.lifted) for (const id of haltScope(e.task_id, tasks, mode)) out.add(id);
+  const gone = (e) => { const t = tasks.find((o) => o.id === e.task_id); return !!t && t.state === 'cancelled'; }; // a cancelled task is dropped: nothing halts on it
+  for (const e of exceptions) if (HALTING.has(e.exception) && !e.lifted && !gone(e)) for (const id of haltScope(e.task_id, tasks, mode)) out.add(id);
   return out;
 }
 

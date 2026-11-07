@@ -37,9 +37,6 @@ const maxSeq = (tasks, runId) => mine(tasks, runId).reduce((m, t) => Math.max(m,
 const stateOf = (tasks, runId) => mine(tasks, runId).map((t) => `${t.id}:${t.seq}`).sort().join(',');
 const isPlanned = (tasks, runId) => { const byId = new Map(tasks.map((t) => [t.id, t])); return mine(tasks, runId).some((t) => PW.policyOf(t, byId)); };
 
-// A task whose plan sets `build` to null: building it is the orchestrator's, so a hand-back's stall wake does not name it (the idle close still does).
-const ownBuild = (t, byId) => { const p = PW.policyOf(t, byId); return !!p && p.build === null; };
-
 // The open, ready tasks of the run that no policy step names: neither due nor claimed and still in flight, and not halted.
 // `carried`: the tasks a due or in-flight step names (they are not named) and, for the ready check only, the work a review or fix not yet
 // terminal (done, cancelled or released) is rooted at (PW.rootOf; a review by the work it depends on): the review step ends when it hands the review over, and a fix
@@ -60,7 +57,7 @@ function untaken(snap) {
     atWork.add(PW.rootOf(t, byId).id);
     if (t.acceptance && t.acceptance.verdict === true) for (const d of Array.isArray(t.depends_on) ? t.depends_on : []) if (byId.get(d)) atWork.add(PW.rootOf(byId.get(d), byId).id);
   }
-  return openOf(tasks, runId).filter((t) => ready(t, byId, atWork) && !named.has(t.id) && !ownBuild(t, byId)).map((t) => t.id).sort();
+  return openOf(tasks, runId).filter((t) => ready(t, byId, atWork) && !named.has(t.id)).map((t) => t.id).sort();
 }
 
 // `planned()`: whether the store shows a plan for the run (planned.cjs), for an idle close with no policy snapshot.
