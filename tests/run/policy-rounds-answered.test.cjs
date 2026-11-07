@@ -95,3 +95,16 @@ test('an integration a merge fix already answers is not at the cap; a fix cancel
   assert.strictEqual(m(rows('assigned', 1000 + 2700001)).cap, true, 'out longer than the bound without finishing: the cap wake is not deferred for ever');
   assert.strictEqual(m(rows('assigned', 1000 + 2700001)).used, 1);
 });
+
+test('a superseded merge-fix claim still answers its integration: the fix is found through the lease the claim names, or through its stamped trigger', () => {
+  const sup = (fix, ref) => {
+    const rf = rows(null, 2000);
+    rf.byId.set('F', fix); rf.tasks.push(fix);
+    rf.steps[0] = { ...rf.steps[0], outcome: 'superseded', row_ref: ref };
+    return m(rf);
+  };
+  const out = T('F', { repairs: 'W', depends_on: ['W'], state: 'assigned', lease: { id: 'L1', holder: 'bx' } });
+  assert.strictEqual(sup(out, 'lease:L1').answered, true, 'by the lease');
+  assert.strictEqual(sup({ ...out, lease: null, acted_by: 'policy', trigger: { table: 'integration', id: 'I', seq: 30 } }, 'lease:GONE').answered, true, 'by the stamped trigger');
+  assert.strictEqual(sup({ ...out, lease: { id: 'OTHER' } }, 'lease:L1').cap, true, 'a lease no fix of this work holds answers nothing');
+});

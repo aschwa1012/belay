@@ -144,7 +144,11 @@ function mergeAction(i, rf, planFor) {
   // cancelled, or has been out longer than ANSWER_MAX_MS without finishing.
   const claim = rf.steps.find((s) => MERGE_FIX_STEPS.has(s.step) && s.trigger_id === i.id && !reopened(s) && COUNTED.has(s.outcome));
   if (claim) {
-    const fix = /^task:/.test(claim.row_ref || '') ? rf.byId.get(claim.row_ref.slice(5)) : null;
+    // The fix the claim made: the task its row_ref names, or the task holding the lease it names (a step the orchestrator got to first ends superseded with the lease),
+    // else the fix task stamped with this integration as its trigger.
+    const ref = claim.row_ref || '';
+    const fix = (/^task:/.test(ref) ? rf.byId.get(ref.slice(5)) : /^lease:/.test(ref) ? rf.tasks.find((t) => t.lease && t.lease.id === ref.slice(6)) : null)
+      || rf.tasks.find((t) => t.repairs && t.acted_by === 'policy' && t.trigger && t.trigger.id === i.id && rootOf(t, rf.byId).id === root.id) || null;
     const out = claim.outcome === 'started' ? rf.now - Number(claim.at || 0) <= ANSWER_MAX_MS : !!fix && fix.state !== 'cancelled' && (fix.state === 'done' || rf.now - Number(claim.at || 0) <= ANSWER_MAX_MS);
     if (out) return { ...base, answered: true };
   }
