@@ -214,7 +214,8 @@ function derive(snap) {
   for (const i of ints) {
     if (i.run_id !== runId || i.state !== 'conflict' || i.acted_by !== 'policy') continue;
     const ids = Array.isArray(i.task_ids) ? i.task_ids : [];
-    if (ints.some((o) => o.id !== i.id && Number(o.seq) > Number(i.seq) && (Array.isArray(o.task_ids) ? o.task_ids : []).some((t) => ids.includes(t)))) continue;
+    const at = (i.conflict && i.conflict.task_id) || ids[0]; // a later merge of that task supersedes it; task_ids are cumulative, so a later row naming other tasks does not
+    if (ints.some((o) => o.id !== i.id && Number(o.seq) > Number(i.seq) && (Array.isArray(o.task_ids) ? o.task_ids : []).includes(at))) continue;
     const m = rf ? RF.mergeAction(i, rf, planFor) : null;
     if (m && m.step) continue; // the plan takes it: a fix task for the builder
     if (m && m.cap) { add('E2', m.root, { table: 'integration', id: i.id, seq: Number(i.seq) || 0 }, 'fix', { cause: m.cause, task: m.task.id, used: m.used, max: m.max, last: m.last }, { key: i.id, seq: Number(i.seq) || 0 }); continue; }
@@ -245,6 +246,7 @@ function derive(snap) {
     const byOrch = (o) => o && o.acted_by !== 'policy' && o.written_by === 'orchestrator' && Number(o.written_at) > end;
     const orchestratorRow = !!t && (t.policy_rev != null && s.policy_rev != null && Number(t.policy_rev) !== Number(s.policy_rev)
       || (byOrch(t) && (t.state === 'cancelled' || t.state === 'assigned'))
+      || (snap.integrations || []).some((o) => o.run_id === runId && o.passed === true && Number(o.written_at) > end && (Array.isArray(o.task_ids) ? o.task_ids : []).some((id) => id === root.id || (byId.get(id) && rootOf(byId.get(id), byId).id === root.id))) // a later merge of the work that passed its checks, the orchestrator's own included
       || tasks.some((o) => byOrch(o) && o.id !== root.id && (o.repairs === root.id || (Array.isArray(o.depends_on) && o.depends_on.includes(root.id)))));
     if (cap && s.step === 'fix') add('E2', root, trigger, 'fix', { step: s.step, error: s.error }, R && R.results ? evOf(R) : { key: `step${s.seq}`, seq: Number(s.seq) }, { lifted: !!orchestratorRow });
     else if (/^E_BUDGET/.test(String(s.error || ''))) add('E9', root, trigger, s.step, { step: s.step, error: s.error }, { key: `step${s.seq}`, seq: Number(s.seq) }, { lifted: true }); // a step refused at the budget's soft threshold (policy-budget.cjs): the wake is the budget's, and it halts nothing

@@ -121,14 +121,26 @@ function mergeAction(i, rf, planFor) {
   const conflict = i.state === 'conflict';
   if (!conflict && !(i.state === 'evaluated' && i.passed === false)) return null;
   const ids = Array.isArray(i.task_ids) ? i.task_ids : [];
-  if (rf.integrations.some((o) => o.id !== i.id && Number(o.seq) > Number(i.seq) && (Array.isArray(o.task_ids) ? o.task_ids : []).some((t) => ids.includes(t)))) return null;
-  const w = rf.byId.get(conflict ? ((i.conflict && i.conflict.task_id) || ids[0]) : failedTask(i, ids));
+  // Superseded means a later merge of THAT task (task_ids are cumulative: a later row names the earlier tasks it carries). A later red merge that names it does not lift a failure.
+  const tid = conflict ? ((i.conflict && i.conflict.task_id) || ids[0]) : failedTask(i, ids);
+  if (rf.integrations.some((o) => o.id !== i.id && Number(o.seq) > Number(i.seq) && (Array.isArray(o.task_ids) ? o.task_ids : []).includes(tid) && (conflict || o.passed !== false))) return null;
+  const w = rf.byId.get(tid);
   const P = w && w.state === 'done' ? planFor(w) : null;
   if (!P || P.plan.fix !== 'builder') return null;
   const root = rootOf(w, rf.byId);
   const base = { kind: conflict ? 'conflict' : 'checks', integration: i, task: w, root, rev: P.rev, cause: conflict ? 'integrate conflict' : 'integration checks failed' };
   if (!left(rf, root.id)) return { ...base, ...capFact(rf, root.id, base.cause, conflict ? ((i.conflict && i.conflict.files) || []).slice(0, 3).join(', ') : (Array.isArray(i.checks) ? i.checks.filter((c) => c && c.passed === false).map((c) => `${(Array.isArray(c.argv) ? c.argv.slice(0, 3).join(' ') : '?')}${c.exit_code != null ? ` exit ${c.exit_code}` : ''}`).join('; ') : '')) };
   return { ...base, step: conflict ? 'fix_conflict' : 'fix_checks', worker: handBy(w) };
+}
+
+// The branch is red when the newest integration into the run's own branch ran its checks and they failed: nothing else is merged onto it until the failing
+// work's fix lands (a merge stacked on it would inherit the blame). -> { integration, root } | null; `root` is the work whose merge is to be tried again.
+function redOf(rf) {
+  const own = `belay/integrate/${rf.runId}`;
+  const newest = rf.integrations.filter((i) => i.into_branch === own).reduce((a, b) => (!a || Number(b.seq) > Number(a.seq) ? b : a), null);
+  if (!newest || newest.state !== 'evaluated' || newest.passed !== false) return null;
+  const w = rf.byId.get(failedTask(newest, Array.isArray(newest.task_ids) ? newest.task_ids : []));
+  return { integration: newest, root: w ? rootOf(w, rf.byId).id : null };
 }
 
 // The newest fix task a merge-side step (fix_conflict, fix_checks) made for the work, once it is done: the work is merged again after it. null while it is
@@ -175,4 +187,4 @@ async function readFailures(core, runId) {
   try { return (((await core.memory.events({ run_id: runId, kinds: ['release_failed'] })) || {}).events || []).map((e) => ({ ...e, task_id: e.task_id || (Array.isArray(e.row_ids) ? e.row_ids[0] : null) })); } catch { return []; }
 }
 
-module.exports = { commitAction, commitHeld, noCommit, readFailures, ctxOf, capsOf, action, flakyDue, mergeAction, mergeFixOf, isMergeFix, mergeSpec, stepRounds, used, left, failing, checkName, ROUND_STEPS, MERGE_FIX_STEPS, SENDING, STEP_NAMES, REASK_MAX };
+module.exports = { redOf, RERUN_STEPS, commitAction, commitHeld, noCommit, readFailures, ctxOf, capsOf, action, flakyDue, mergeAction, mergeFixOf, isMergeFix, mergeSpec, stepRounds, used, left, failing, checkName, ROUND_STEPS, MERGE_FIX_STEPS, SENDING, STEP_NAMES, REASK_MAX };

@@ -60,6 +60,7 @@ function due(snap) {
   let slots = Number.isInteger(snap.maxBuilds) ? snap.maxBuilds - tasks.filter((t) => !isReviewTask(t) && t.lease && !t.lease.expired && t.state !== 'done').length : Infinity;
   const reviewsOf = new Map(); // task id -> the reviews (not cancelled) that depend on it
   for (const t of tasks) if (isReviewTask(t)) for (const d of Array.isArray(t.depends_on) ? t.depends_on : []) reviewsOf.set(d, (reviewsOf.get(d) || []).concat(t));
+  const red = rf ? RF.redOf(rf) : null; // a red branch takes no other merge until the failing work's fix lands (policy-rounds.cjs)
   const merging = (snap.integrations || []).some((i) => i.run_id === runId && i.state === 'merging');
   const out = [];
   const tref = (t) => ({ table: 'task', id: t.id, seq: Number(t.seq) || 0 });
@@ -120,7 +121,7 @@ function due(snap) {
     // integrate: the work's review holds, the work is done and not on the branch, and every task it depends on has landed.
     // After a merge-side fix (fix_conflict, fix_checks) is done, the merge is tried again with that fix in the unit; its trigger is the fix.
     const mf = rf ? RF.mergeFixOf(rf, x.id) : null;
-    if (!x.repairs && plan.integrate === 'on_hold' && x.state === 'done' && !(rf && RF.commitHeld(x, rf)) && x.review && x.review.state === 'holds' && (!merged(x) || (mf && !merged(mf))) && !merging) {
+    if (!x.repairs && plan.integrate === 'on_hold' && x.state === 'done' && !(rf && RF.commitHeld(x, rf)) && x.review && x.review.state === 'holds' && (!merged(x) || (mf && !merged(mf))) && !merging && !(red && red.root !== x.id)) {
       const R = byId.get(x.review.review_id);
       const deps = (Array.isArray(x.depends_on) ? x.depends_on : []).map((d) => byId.get(d));
       const landed = deps.every((d) => d && d.state === 'done' && (d.integration == null || merged(d)));
@@ -156,6 +157,7 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf 
   const ownId = () => own || (own = PROC.createdOf(process.pid).then((r) => ({ pid: process.pid, created: r && r.created != null ? String(r.created) : null }), () => ({ pid: process.pid, created: null })));
   const alive = aliveBy || (async (pid, created) => { if (created == null) return PROC.pidAlive(pid); const r = await PROC.createdOf(pid).catch(() => null); return !!r && String(r.created) === String(created); });
   const stopped = () => closed || gate.aborted || closing();
+  const pending = new Set(); // steps running detached (a re-run of an evaluation): claimed started, settled when the evaluation ends
 
   const read = async (fn, field, fallback) => { const r = await fn({}); return (r && r[field]) || fallback; };
   // What policy-rounds.cjs needs beside the rows: the run's fix caps, and the evaluations that ended with no result (read only when a hand-back waits on one).
@@ -221,6 +223,7 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf 
     const { row, existing } = await g.policy.claim({ claimant_pid: me.pid, ...(me.created != null ? { claimant_created: String(me.created) } : {}), step: c.step, trigger: c.trigger, task_id: c.task_id, ...(c.policy_rev != null ? { policy_rev: c.policy_rev } : {}), ...(c.worker ? { worker_id: c.worker } : {}), ...(turn != null ? { turn } : {}) });
     if (existing) return null;
     const stepCore = gatedCore(g.policyAs(row.seq), gate, 'the policy executor');
+    async function finishStep() {
     let res;
     try {
       const why = await stillDue(c, row.seq);
@@ -237,6 +240,12 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf 
     taken.push({ seq: row.seq, step: c.step, task_id: c.task_id, outcome: res.outcome, row_ref: res.row_ref || null });
     if (res.outcome === 'done' && c.worker && (c.step === 'build' || c.step === 'review') && c[c.step] && c[c.step].spawn) spawnedFor.set(c.worker, c.task_id);
     return res;
+    }
+    // A re-run holds nothing else back: the claim stays started while the evaluation runs, and the pass goes on (the plan reads a started re-run as waiting).
+    if (!RF.RERUN_STEPS.has(c.step)) return finishStep();
+    const p = finishStep().catch((e) => log(`policy ${c.step} ${row.seq}: ${errText(e)}`)).then(() => { pending.delete(p); return stopped() ? null : tick().catch(() => {}); }); // the next step is taken at once, and settle() waits for it
+    pending.add(p);
+    return { outcome: 'started', detached: true };
   }
 
   // One reconciliation. -> { steps: [{ seq, step, task_id, outcome, row_ref }], swept: [seq], held: 'paused'|'ended'|null }.
@@ -305,7 +314,7 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, turnOf 
     gate.aborted = true; // a step still in flight sends no further call; its claim stays `started` and the next life finishes it
   }
 
-  return { tick, close, arm: () => { armed = true; }, isArmed: () => armed, pass, due };
+  return { settle: () => Promise.all([...pending]), tick, close, arm: () => { armed = true; }, isArmed: () => armed, pass, due };
 }
 
 module.exports = { createPolicyExecutor, due, planOf, keyOf, MAX_PARALLEL_BUILDS };

@@ -95,9 +95,10 @@ test('C1: an evaluation that could not run is run again once, bounded; a hand-ba
     assert.deepStrictEqual(await e.poll(), [], 'a lost evaluation is not an E5 while the plan can run it again');
     await e.worker('rv');
     const out = await e.tick();
-    assert.deepStrictEqual(names(out).slice(0, 1), [['rerun_eval', t.id, 'done']]);
+    assert.deepStrictEqual(names(out), [], 'the re-run is detached: the pass does not wait for the evaluation');
+    await e.x.settle();
+    assert.deepStrictEqual(stepNames(e), [['rerun_eval', 'done'], ['review', 'done']], 'the evaluation passed, so the review follows at once');
     assert.strictEqual((await M.rowOf(e, t.id)).state, 'done');
-    assert.deepStrictEqual(names(await e.tick()), [['review', t.id, 'done']]);
     assert.deepStrictEqual(await e.poll(), []);
   } finally { await e.close(); }
 });
@@ -151,7 +152,7 @@ test('C2: a failure beside other evaluations is run alone once; a pass alone pro
     fs.writeFileSync(hold, `const fs = require('node:fs'); if (fs.existsSync(${JSON.stringify(marker)})) process.exit(0); const end = Date.now() + 25000; (function poll() { if (fs.existsSync(${JSON.stringify(flag)})) { fs.writeFileSync(${JSON.stringify(marker)}, '1'); process.exit(1); } if (Date.now() > end) process.exit(3); setTimeout(poll, 10); })();\n`);
     fs.writeFileSync(release, `require('node:fs').writeFileSync(${JSON.stringify(flag)}, '1');\n`);
     const mk = (label, script) => e.orch.task.create({ spec: label, acceptance: cmd(script), policy: M.PLAN });
-    const slow = await mk('slow', hold); const quick = await mk('quick', release);
+    const slow = await mk('slow', hold); const quick = await e.orch.task.create({ spec: 'quick', acceptance: cmd(release) }); // no plan: only the slow work is the plan's
     await e.worker('rv');
     const lease = async (t, w) => { const wc = await e.worker(w); const a = await e.orch.task.assign({ task_id: t.id, worker_id: w }); await wc.lease.release({ lease_id: a.new_lease.id, reason: 'done', result: { branch: 'b', head: 'h' } }); };
     await lease(slow, 'build-slow'); await lease(quick, 'build-quick');
@@ -159,8 +160,8 @@ test('C2: a failure beside other evaluations is run alone once; a pass alone pro
     assert.deepStrictEqual([a.state, b.state], ['released', 'done']);
     assert.deepStrictEqual(await e.poll(), [], 'no E6');
     assert.ok(!(await M.halted(e)).has(slow.id));
-    const out = await e.tick();
-    assert.deepStrictEqual(names(out).filter((s) => s[1] === slow.id), [['rerun_alone', slow.id, 'done']]);
+    await e.tick(); await e.x.settle();
+    assert.deepStrictEqual(M.stepsOf(e).filter((s) => s.task_id === slow.id && s.step === 'rerun_alone').map((s) => s.outcome), ['done']);
     assert.strictEqual((await M.rowOf(e, slow.id)).state, 'done', 'passed alone: it goes on');
     assert.deepStrictEqual(await e.poll(), []);
     assert.deepStrictEqual(M.fixesOf(e, slow.id), []);
@@ -174,35 +175,36 @@ test('C2: a failure beside other evaluations that fails alone too is C1: a fix r
     fs.writeFileSync(hold, `const fs = require('node:fs'); const end = Date.now() + 25000; (function poll() { if (fs.existsSync(${JSON.stringify(flag)})) process.exit(1); if (Date.now() > end) process.exit(3); setTimeout(poll, 10); })();\n`);
     fs.writeFileSync(release, `require('node:fs').writeFileSync(${JSON.stringify(flag)}, '1');\n`);
     const mk = (label, script) => e.orch.task.create({ spec: label, acceptance: cmd(script), policy: M.PLAN });
-    const slow = await mk('slow', hold); const quick = await mk('quick', release);
+    const slow = await mk('slow', hold); const quick = await e.orch.task.create({ spec: 'quick', acceptance: cmd(release) }); // no plan: only the slow work is the plan's
     await e.worker('rv');
     const lease = async (t, w) => { const wc = await e.worker(w); const a = await e.orch.task.assign({ task_id: t.id, worker_id: w }); await wc.lease.release({ lease_id: a.new_lease.id, reason: 'done', result: { branch: 'b', head: 'h' } }); };
     await lease(slow, 'build-slow'); await lease(quick, 'build-quick');
     await Promise.all([M.evaluate(e, slow.id), M.evaluate(e, quick.id)]);
     assert.deepStrictEqual(await e.poll(), []);
-    assert.deepStrictEqual(names(await e.tick()).filter((s) => s[1] === slow.id), [['rerun_alone', slow.id, 'done']]);
-    assert.strictEqual((await M.rowOf(e, slow.id)).state, 'released', 'failed alone');
+    await e.tick(); await e.x.settle();
+    assert.deepStrictEqual(M.stepsOf(e).filter((s) => s.task_id === slow.id).map((s) => [s.step, s.outcome]), [['rerun_alone', 'done'], ['fix_eval', 'done']], 'failed alone too: the one re-run, then the round');
+    assert.strictEqual((await M.rowOf(e, slow.id)).state, 'assigned', 'failed alone, and already sent back');
     assert.deepStrictEqual(await e.poll(), []);
-    assert.deepStrictEqual(names(await e.tick()).filter((s) => s[1] === slow.id), [['fix_eval', slow.id, 'done']]);
     assert.deepStrictEqual(stepNames(e).filter((s) => s[0] !== 'review' && s[0] !== 'note_flaky'), [['rerun_alone', 'done'], ['fix_eval', 'done']]);
   } finally { await e.close(); }
 });
 
 // Two works that edit one file differently, both held; the first merges, the second conflicts at the policy integrate.
-async function conflicting(e, { project = true } = {}) {
+async function conflicting(e, { project = true, third = false } = {}) {
   const repo = makeRepo(e.dir);
   if (project) await e.orch.run.attach({ adapter_pid: process.pid, project_dir: repo }); // the fix task is worked in a tree of the run's repository (tree_of)
-  const edit = async (label, text) => {
-    const t = await e.orch.task.create({ spec: `${label} edits a.txt`, acceptance: M.PASS, policy: M.PLAN });
+  const edit = async (label, text, file = 'a.txt') => {
+    const t = await e.orch.task.create({ spec: `${label} edits ${file}`, acceptance: M.PASS, policy: M.PLAN });
     const wt = (await e.op.task.worktreeCreate({ task_id: t.id, repo })).worktree.path;
-    write(wt, 'a.txt', text); commit(wt, `task ${t.id}`);
+    write(wt, file, text); commit(wt, `task ${t.id}`);
     assert.strictEqual((await M.handBack(e, `build-${label}`, t, undefined, wt)).state, 'done');
     await M.reviewed(e, t, label, 'holds');
     return { t, wt };
   };
   const a = await edit('a', 'from a\n');
   const b = await edit('b', 'from b\n');
-  return { a: a.t, b: b.t, bTree: b.wt, out: await e.tick() };
+  const c = third ? await edit('c', 'from c\n', 'c.txt') : null;
+  return { a: a.t, b: b.t, c: c && c.t, bTree: b.wt, out: await e.tick() };
 }
 // The builder hands the fix back from its own tree and belay evaluates it there.
 async function handBackFix(e, fixId) {
@@ -316,6 +318,93 @@ test('C1: a builder that can never commit burns the cap, and the E2 wake says no
     const w = M.expectOne(await e.poll(), { exception: 'E2', field: 'fix', task_id: t.id, trigger: await M.tref(e, t.id), key: `${t.id}@${await M.evaluatedAt(e, t.id)}` });
     assert.match(w.text, /Fix cap 0\/0; no commit since base: nothing new on your branch/, w.text);
     assert.deepStrictEqual(await e.tick().then(names), []);
+  } finally { await e.close(); }
+});
+
+test('C3: a conflict is not superseded by the next work merged in the same pass: task_ids are cumulative, so it still gets its fix round', async () => {
+  const e = await M.env({ label: 'round-conflict-next' });
+  try {
+    const { a, b, c, out } = await conflicting(e, { third: true });
+    assert.deepStrictEqual(names(out), [['integrate', a.id, 'done'], ['integrate', b.id, 'done'], ['integrate', c.id, 'done']]);
+    assert.deepStrictEqual(await e.poll(), [], 'no E3: the plan takes it');
+    assert.deepStrictEqual(names(await e.tick()), [['fix_conflict', b.id, 'done']], 'the conflicting work still gets its round');
+  } finally { await e.close(); }
+});
+
+test('C3: with no fix step the conflict still wakes E3 when another work was merged after it', async () => {
+  const e = await M.env({ label: 'round-conflict-next-e3' });
+  try {
+    const repo = makeRepo(e.dir);
+    const edit = async (label, text, file) => {
+      const t = await e.orch.task.create({ spec: label, acceptance: M.PASS, policy: M.without(M.PLAN, 'fix') });
+      const wt = (await e.op.task.worktreeCreate({ task_id: t.id, repo })).worktree.path;
+      write(wt, file, text); commit(wt, label);
+      await M.handBack(e, 'build-' + label, t, undefined, wt); await M.reviewed(e, t, label, 'holds');
+      return t;
+    };
+    await edit('a', 'from a\n', 'a.txt'); const b = await edit('b', 'from b\n', 'a.txt'); await edit('c', 'from c\n', 'c.txt');
+    await e.tick();
+    assert.deepStrictEqual((await e.poll()).map((w) => [w.exception, w.task_id]), [['E3', b.id]]);
+  } finally { await e.close(); }
+});
+
+// Work a adds bad.txt; b's check fails once a is in the tree it is merged into; c is unrelated and held.
+async function redBranch(e, plan = M.PLAN) {
+  const repo = makeRepo(e.dir);
+  await e.orch.run.attach({ adapter_pid: process.pid, project_dir: repo });
+  const work = async (label, files, acceptance) => {
+    const t = await e.orch.task.create({ spec: label, acceptance, policy: plan });
+    const wt = (await e.op.task.worktreeCreate({ task_id: t.id, repo })).worktree.path;
+    for (const [f, text] of Object.entries(files)) write(wt, f, text);
+    commit(wt, `task ${t.id}`);
+    assert.strictEqual((await M.handBack(e, `build-${label}`, t, undefined, wt)).state, 'done');
+    await M.reviewed(e, t, label, 'holds');
+    return { t, wt };
+  };
+  const a = await work('a', { 'bad.txt': 'x\n' }, M.PASS);
+  const b = await work('b', { 'check.cjs': "process.exit(require('node:fs').existsSync('bad.txt') ? 1 : 0);\n" }, { commands: [{ argv: [process.execPath, 'check.cjs'], timeout_ms: 20000 }] });
+  const c = await work('c', { 'c.txt': 'c\n' }, M.PASS);
+  return { a, b, c };
+}
+const resolveB = (b) => { git(b.wt, 'merge', '-q', '--no-edit', 'belay/integrate/test-run'); git(b.wt, 'rm', '-q', 'bad.txt'); commit(b.wt, 'remove the file the check refuses'); };
+
+test('C3: nothing is merged onto a red branch: the next work waits until the failing work\'s fix lands, so it is not blamed for it', async () => {
+  const e = await M.env({ label: 'round-red-hold' });
+  try {
+    const { a, b, c } = await redBranch(e);
+    const first = await e.tick();
+    assert.deepStrictEqual(names(first).filter((s) => s[2] !== 'skipped'), [['integrate', a.t.id, 'done'], ['integrate', b.t.id, 'done']], 'c is held');
+    const ints = async () => (await e.h.integration.list({})).integrations;
+    assert.ok((await ints()).every((i) => !i.task_ids.includes(c.t.id)), 'c was not merged onto the red branch');
+    assert.deepStrictEqual(names(await e.tick()), [['fix_checks', b.t.id, 'done']], 'the failing work gets the round, and still c waits');
+    const [fix] = M.fixesOf(e, b.t.id);
+    resolveB(b);
+    assert.strictEqual((await handBackFix(e, fix.id)).state, 'done');
+    assert.deepStrictEqual(names(await e.tick()), [['integrate', b.t.id, 'done']], 'b is merged again first');
+    assert.deepStrictEqual(names(await e.tick()), [['integrate', c.t.id, 'done']], 'then c');
+    assert.deepStrictEqual((await e.poll()).filter((w) => w.exception !== 'E7'), []);
+  } finally { await e.close(); }
+});
+
+test('C3: an E8 on failed integration checks lifts when a later merge of that work passes, the orchestrator\'s own included', async () => {
+  const e = await M.env({ label: 'round-e8-lift' });
+  try {
+    const { a, b } = await redBranch(e, M.without(M.PLAN, 'fix'));
+    await e.tick();
+    const w = (await e.poll()).filter((x) => x.exception === 'E8');
+    assert.strictEqual(w.length, 1, JSON.stringify(w));
+    assert.ok((await M.halted(e)).has(b.t.id), 'halted');
+    resolveB(b);
+    // The orchestrator's own remedy, as in a real run: a plain task in b's tree (no repairs, no depends_on), handed to b's builder, then a merge by hand.
+    const mine = await e.orch.task.create({ spec: 'remove bad.txt', acceptance: M.PASS, tree_of: b.t.id });
+    const lease = await e.orch.task.assign({ task_id: mine.id, worker_id: 'build-b' });
+    await (await e.worker('build-b')).lease.release({ lease_id: lease.new_lease.id, reason: 'done', result: { branch: 'b', head: 'fixed' } });
+    assert.strictEqual((await M.evaluate(e, mine.id, true)).state, 'done');
+    const merged = await e.orch.integration.merge({ task_ids: [b.t.id, mine.id] });
+    assert.strictEqual(merged.passed, true, JSON.stringify(merged.checks));
+    assert.deepStrictEqual(await e.poll(), []);
+    assert.ok(!(await M.halted(e)).has(b.t.id), 'the halt lifted with the passing merge');
+    assert.ok(a.t.id);
   } finally { await e.close(); }
 });
 
