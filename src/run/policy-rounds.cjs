@@ -26,6 +26,7 @@ const COUNTED = new Set(['done', 'started', 'superseded']);
 // idle-close hold on it end, and it is read as finished (the next life's sweep writes the claim itself).
 const STARTED_MAX_MS = 600000;
 const flying = (rf, s) => s.outcome === 'started' && rf.now - Number(s.at || 0) <= STARTED_MAX_MS;
+const ANSWER_MAX_MS = 2700000; // how long a merge fix may be out before the integration it answers reads as unanswered again (45 min); a fix that never returns must not defer the cap wake for ever
 
 const failing = (r) => ((r && r.checks) || []).filter((c) => c && c.passed === false);
 const beside = (c) => (Array.isArray(c.concurrent) ? c.concurrent.length : 0);
@@ -142,6 +143,19 @@ function mergeAction(i, rf, planFor) {
   if (!P || P.plan.fix !== 'builder') return null;
   const root = rootOf(w, rf.byId);
   const base = { kind: conflict ? 'conflict' : 'checks', integration: i, task: w, root, rev: P.rev, cause: conflict ? 'integrate conflict' : 'integration checks failed' };
+  // Already answered: a merge fix (fix_conflict, fix_checks) was claimed for THIS integration and its fix is out or done (and the retry follows it). Its round is the one
+  // that spent the cap, so the same conflict must not read as one the cap stops; the cap is for a NEW conflict or failure after the fix. Not answered once the fix is
+  // cancelled, or has been out longer than ANSWER_MAX_MS without finishing.
+  const claim = rf.steps.find((s) => MERGE_FIX_STEPS.has(s.step) && s.trigger_id === i.id && !reopened(s) && COUNTED.has(s.outcome));
+  if (claim) {
+    // The fix the claim made: the task its row_ref names, or the task holding the lease it names (a step the orchestrator got to first ends superseded with the lease),
+    // else the fix task stamped with this integration as its trigger.
+    const ref = claim.row_ref || '';
+    const fix = (/^task:/.test(ref) ? rf.byId.get(ref.slice(5)) : /^lease:/.test(ref) ? rf.tasks.find((t) => t.lease && t.lease.id === ref.slice(6)) : null)
+      || rf.tasks.find((t) => t.repairs && t.acted_by === 'policy' && t.trigger && t.trigger.id === i.id && rootOf(t, rf.byId).id === root.id) || null;
+    const out = claim.outcome === 'started' ? rf.now - Number(claim.at || 0) <= ANSWER_MAX_MS : !!fix && fix.state !== 'cancelled' && (fix.state === 'done' || rf.now - Number(claim.at || 0) <= ANSWER_MAX_MS);
+    if (out) return { ...base, answered: true };
+  }
   if (!left(rf, root.id)) return { ...base, ...capFact(rf, root.id, base.cause, conflict ? ((i.conflict && i.conflict.files) || []).slice(0, 3).join(', ') : (Array.isArray(i.checks) ? i.checks.filter((c) => c && c.passed === false).map((c) => `${(Array.isArray(c.argv) ? c.argv.slice(0, 3).join(' ') : '?')}${c.exit_code != null ? ` exit ${c.exit_code}` : ''}`).join('; ') : '')) };
   return { ...base, step: conflict ? 'fix_conflict' : 'fix_checks', worker: handBy(w) };
 }
