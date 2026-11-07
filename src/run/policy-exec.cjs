@@ -80,10 +80,10 @@ function due(snap) {
     // A hand-back that failed its own evaluation, or could not be evaluated, goes back to its builder as a round (fix_eval, fix_run), after the re-run that comes first (rerun_*); a pass on a retry is noted.
     if (rf) {
       const a = RF.action(x, plan, rf);
-      if (a && a.step) out.push({ step: a.step, task_id: x.id, trigger: tref(x), policy_rev: rev, worker: a.worker, ...(a.prompt ? { prompt: a.prompt } : {}) });
+      if (a && a.step) out.push({ step: a.step, task_id: x.id, trigger: tref(x), policy_rev: rev, worker: a.worker, ...(plan.build ? { build: plan.build } : {}), ...(a.prompt ? { prompt: a.prompt } : {}) });
       else if (RF.flakyDue(x, rf)) out.push({ step: 'note_flaky', task_id: x.id, trigger: tref(x), policy_rev: rev });
       const ca = RF.commitAction(x, plan, rf); // a done hand-back with no commit past its base goes back to its builder as a fix task
-      if (ca && ca.step) out.push({ step: 'fix_commit', task_id: x.id, trigger: tref(x), policy_rev: rev, worker: ca.worker, conflict_task: x.id, spec: ca.spec });
+      if (ca && ca.step) out.push({ step: 'fix_commit', task_id: x.id, trigger: tref(x), policy_rev: rev, worker: ca.worker, ...(plan.build ? { build: plan.build } : {}), conflict_task: x.id, spec: ca.spec });
     }
     // build: an open work task nobody holds, whose dependencies are all done, and the plan names who builds it (a worker, or a spawn).
     // A task the orchestrator assigned has a lease and is skipped; a fix is made and assigned by its own step. A follow-up the follow_up step
@@ -138,7 +138,7 @@ function due(snap) {
   // An integration that stopped on a conflict, or whose checks failed, goes to the builder as a fix task (fix_conflict, fix_checks).
   if (rf) for (const i of rf.integrations) {
     const m = RF.mergeAction(i, rf, (t) => planOf(t, byId));
-    if (m && m.step) out.push({ step: m.step, task_id: m.root.id, trigger: { table: 'integration', id: i.id, seq: Number(i.seq) || 0 }, policy_rev: m.rev, worker: m.worker, conflict_task: m.task.id, spec: RF.mergeSpec(m, runId) });
+    if (m && m.step) out.push({ step: m.step, task_id: m.root.id, trigger: { table: 'integration', id: i.id, seq: Number(i.seq) || 0 }, policy_rev: m.rev, worker: m.worker, ...((planOf(m.task, byId) || { plan: {} }).plan.build ? { build: planOf(m.task, byId).plan.build } : {}), conflict_task: m.task.id, spec: RF.mergeSpec(m, runId) });
   }
   return out.sort((a, b) => a.trigger.seq - b.trigger.seq || (a.step < b.step ? -1 : a.step > b.step ? 1 : 0));
 }
