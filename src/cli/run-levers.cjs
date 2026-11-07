@@ -282,7 +282,7 @@ const NO_PLAN = 'This run has no run plan: a task has a plan only if you give it
 function runPlanLine(levers) {
   const p = levers && levers.policy_default;
   if (!p || typeof p !== 'object' || !Object.keys(p).length) return NO_PLAN;
-  return `This run's plan, which every work task you create takes unless you give it a \`policy\` of its own or \`policy: null\`, is \`${JSON.stringify(p)}\`. ${PLAN_FIRST}`;
+  return `This run's plan, which every work task you create takes unless you give it a \`policy\` of its own (a field you leave out takes this plan; a field set to null keeps that step yours) or \`policy: null\`, is \`${JSON.stringify(p)}\`. ${PLAN_FIRST}`;
 }
 
 function substituteLevers(text, levers, timeoutMs = 0, opts = {}) {

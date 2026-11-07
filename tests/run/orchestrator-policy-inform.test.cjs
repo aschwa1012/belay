@@ -69,7 +69,7 @@ test('task_create\'s policy description says what wakes the orchestrator and tha
 test('the run plan line names the run\'s plan, or says there is none', () => {
   const { runPlanLine, substituteLevers, parseLevers } = require(path.join(ROOT, 'src/cli/run-levers.cjs'));
   const on = parseLevers({});
-  assert.ok(runPlanLine(on).startsWith('This run\'s plan, which every work task you create takes unless you give it a `policy` of its own or `policy: null`, is `{"build":'), runPlanLine(on));
+  assert.ok(runPlanLine(on).startsWith('This run\'s plan, which every work task you create takes unless you give it a `policy` of its own (a field you leave out takes this plan; a field set to null keeps that step yours) or `policy: null`, is `{"build":'), runPlanLine(on));
   assert.strictEqual(runPlanLine(parseLevers({ policy: null })), NO_PLAN);
   assert.ok(runPlanLine(on).endsWith(PLAN_FIRST), 'a run with a plan is told to plan first and go hands off');
   assert.ok(!runPlanLine(parseLevers({ policy: null })).includes('Plan the work first'), 'a run with no plan keeps the flow where the orchestrator takes each step');
