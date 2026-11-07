@@ -171,3 +171,14 @@ test('plan-first: a stale merging row is no merge in flight, so the safety net s
   const snap = { runId: RUN, tasks: mergeTasks(), integrations: [{ run_id: RUN, state: 'merging', stale: true }], steps: [] };
   assert.deepStrictEqual(untaken(snap), ['t-next'], 'a dead merge carries nothing');
 });
+
+test('plan-first: a review whose reviewer stood down never gets an evaluation, so it carries nothing and the work behind it is named', () => {
+  const tasks = [
+    task({ id: 't-dep', state: 'done', seq: 5, ...evaluated('coder-a') }),
+    task({ id: 'r-dep', state: 'released', seq: 6, depends_on: ['t-dep'], policy: null, acceptance: { verdict: true }, handoff: { result: null, by: 'rv', at: 50, stood_down: 'cannot review' }, results: null }),
+    task({ id: 't-next', seq: 7, depends_on: ['t-dep'] }),
+  ];
+  assert.deepStrictEqual(untaken({ runId: RUN, tasks, integrations: [], steps: [] }), ['t-next'], 'stood down: the safety net names it');
+  delete tasks[1].handoff.stood_down;
+  assert.deepStrictEqual(untaken({ runId: RUN, tasks, integrations: [], steps: [] }), [], 'a real hand-back awaiting its evaluation carries it');
+});
