@@ -72,6 +72,10 @@ async function attach(E, caller, args) {
   if (hardSrcGiven && args.fix_hard_cap_source !== null && (typeof args.fix_hard_cap_source !== 'string' || args.fix_hard_cap_source.length > 80)) {
     throw err('E_ARGS', 'run.attach fix_hard_cap_source must be null or a short string', { fix_hard_cap_source: args.fix_hard_cap_source });
   }
+  const buildsGiven = args.max_parallel_builds !== undefined;
+  if (buildsGiven && args.max_parallel_builds !== null && !(Number.isSafeInteger(args.max_parallel_builds) && args.max_parallel_builds > 0)) {
+    throw err('E_ARGS', 'run.attach max_parallel_builds must be null or a positive integer', { max_parallel_builds: args.max_parallel_builds });
+  }
   const parallelGiven = args.max_parallel_evaluations !== undefined;
   if (parallelGiven && args.max_parallel_evaluations !== null && !(Number.isSafeInteger(args.max_parallel_evaluations) && args.max_parallel_evaluations > 0)) {
     throw err('E_ARGS', 'run.attach max_parallel_evaluations must be null or a positive integer', { max_parallel_evaluations: args.max_parallel_evaluations });
@@ -227,6 +231,7 @@ async function attach(E, caller, args) {
     fix_hard_cap_source: hardSrcGiven ? args.fix_hard_cap_source : (carryPause ? prev.fix_hard_cap_source : null),
     fix_hard_cap: hardCapGiven ? args.fix_hard_cap : (carryPause ? prev.fix_hard_cap : null), // same carry rule
     max_parallel_evaluations: parallelGiven ? args.max_parallel_evaluations : (carryPause ? prev.max_parallel_evaluations : null), // same carry rule
+    max_parallel_builds: buildsGiven ? args.max_parallel_builds : (carryPause ? prev.max_parallel_builds : null), // same carry rule
     memory_levers: leversGiven ? (args.memory_levers === null ? null : resolvedLevers) : (carryPause ? prev.memory_levers : null), // same carry rule
     project: projectGiven ? args.project : (carryPause ? prev.project : null),
     memory_notice: noticeGiven ? args.memory_notice : (carryPause ? prev.memory_notice : null), // same carry rule

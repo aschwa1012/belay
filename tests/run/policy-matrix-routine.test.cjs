@@ -47,9 +47,10 @@ test('a clean run under a plan wakes nobody: hand-back, a holding review, and th
     await M.reviewed(e, t, 'a', 'holds', { findings: [] });
     assert.deepStrictEqual(await wakesAt(e, seen, turnEnd('judge-a')), [], 'a clean hold is routine');
     assert.deepStrictEqual((await e.tick()).steps.map((s) => [s.step, s.outcome]), [['integrate', 'done']]);
-    assert.deepStrictEqual(await wakesAt(e, seen), [], 'and so is the merge');
+    // The merge itself is routine; what follows it is the one routine wake under a plan, "implementation done" (ADR 0074 amendment 4).
+    assert.deepStrictEqual((await wakesAt(e, seen)).map((w) => w.event), ['policy_done'], 'the merge wakes nobody but the done wake');
     assert.strictEqual((await M.rowOf(e, t.id)).integration.state, 'merged');
-    assert.deepStrictEqual(e.wakes, []);
+    assert.deepStrictEqual(e.wakes.map((w) => w.event), ['policy_done']);
   } finally { await e.close(); }
 });
 

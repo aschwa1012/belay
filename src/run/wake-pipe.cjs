@@ -22,6 +22,7 @@ const { pipeName: ownerPipeName } = require('../core/lock.cjs');
 const WR = require('./wake-ref.cjs');
 
 const HEARTBEAT_MS = 5000;
+const PLAN_CHECK_POLLS = 10; // ADR 0074 amendment 2: how often an unplanned run's store is asked whether a plan has arrived (about 10 s at the default poll)
 const { DEATH_GRACE_MS } = require('./exit-hold.cjs'); // the same value headless uses (orchestrator.cjs)
 const RETAIN_MAX = 200;
 const RECEIPT_MAX = 2000;
@@ -59,6 +60,8 @@ function startWakePublisher({
   const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId, enabled: !!notes }); // wave 4: a refuted note
   const callWatcher = require('./call-wake.cjs').createCallWatcher({ core, runId }); // a still_running integrate or task_evaluate
   const policyWatcher = require('./policy-wakes.cjs').createPolicyWatcher({ core, runId }); // ADR 0073: the exceptions of a run under a plan
+  let stallWatch = null; // stall-wake.cjs, made on the first poll
+  const quiet = require('./digest-quiet.cjs').createQuiet(); // ADR 0074 amendment 2: when the steps no wake carried are published on their own
   let wasHeld = false;
   let stopped = false;
   let inFlight = false;
@@ -129,11 +132,12 @@ function startWakePublisher({
   async function rideDigest() {
     try {
       const d = await require('./run-digest.cjs').wakeDigest({ core, dataDir, runId, now });
-      if (!d) return;
+      if (!d) return true; // read, and nothing new
       const line = `${JSON.stringify({ id: d.id, text: d.text })}\n`;
       retained.push(line); if (retained.length > RETAIN_MAX) retained.shift();
       for (const c of clients) send(c, line);
-    } catch (e) { stats.errors += 1; stats.last_error = `digest: ${(e && (e.code || e.message)) || e}`; }
+      return true;
+    } catch (e) { stats.errors += 1; stats.last_error = `digest: ${(e && (e.code || e.message)) || e}`; return false; }
   }
 
   async function pollOnce() {
@@ -152,7 +156,10 @@ function startWakePublisher({
         for (const nw of await noteWatcher.poll()) queue.push({ id: nw.id, text: nw.text, worker_id: nw.worker_id, event: nw.event, paused_at: null, paused_by: null, ev: nw });
         for (const cw of await callWatcher.poll()) queue.push({ id: wakeId(runId, cw), text: cw.text, worker_id: cw.worker_id, event: cw.event, paused_at: null, paused_by: null, ev: cw });
         const enriched = await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), evalSeen, { holdMs: require('./release-eval.cjs').holdMs(), now, workers: list.workers || [] }); // ADR 0058 amendment 4: held for its evaluation
+        if (dataDir && !planned.value() && stats.polls % PLAN_CHECK_POLLS === 1) await planned.check(); // amendment 2: the store's plan arms the watcher without waiting for a turn end; read-only, one check every PLAN_CHECK_POLLS polls until a yes
+        if (planned.value()) evalSeen.policyArmed = true;
         for (const pw of await policyWatcher.poll(evalSeen)) queue.push({ id: wakeId(runId, pw), text: pw.text, worker_id: pw.worker_id, event: pw.event, paused_at: null, paused_by: null, ev: pw }); // after enrichWakes, which hands it this poll's task rows
+        for (const sw of (stallWatch || (stallWatch = require('./stall-wake.cjs').createStallWatcher({ core, runId }))).poll(evalSeen, policyWatcher.snapshot())) queue.push({ id: wakeId(runId, sw), text: sw.text, worker_id: sw.worker_id, event: sw.event, paused_at: null, paused_by: null, ev: sw }); // ADR 0074 amendment 3: open work after a hand-back the plan took
         for (const ev of enriched) {
           const r = byId.get(ev.worker_id) || {};
           // paused_at and paused_by are the row's own pair at derivation: what a resume matches a park against (equality, no clocks)
@@ -188,8 +195,10 @@ function startWakePublisher({
           }
         }
         let out = 0;
-        while (queue.length) { publish(queue.shift()); out += 1; }
-        if (out && dataDir && evalSeen.policyArmed) await rideDigest(); // ADR 0074 decision 4: the steps belay took since the last wake follow the wake
+        while (queue.length) { const q = queue.shift(); publish(q); if (require('./digest-wake.cjs').ridesDigest(q.ev || q)) out += 1; } // out: the wakes a digest follows (ADR 0074 amendment 4)
+        const armed = dataDir && (evalSeen.policyArmed || planned.value() || !!policyWatcher.snapshot()); // the store's plan, not only a poll that saw a turn end
+        if (out && armed) await rideDigest(); // ADR 0074 decision 4: the steps belay took since the last wake follow the wake
+        else if (armed && list) { const k = require('./digest-quiet.cjs').due(quiet, policyWatcher.snapshot(), list.workers || [], runId); if (k && await rideDigest()) require('./digest-quiet.cjs').mark(quiet, k); } // amendment 2: at a quiet moment the steps no wake carried come on their own; a failed read is asked again
       }
     } finally {
       inFlight = false;

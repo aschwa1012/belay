@@ -33,9 +33,9 @@ function coreOf(steps) {
   };
 }
 
-async function publisher(core, dataDir) {
+async function publisher(core, dataDir, opts = {}) {
   const pipe = process.platform === 'win32' ? `\\\\.\\pipe\\belay-test-rw-${crypto.randomBytes(5).toString('hex')}` : path.join(os.tmpdir(), `belay-test-rw-${crypto.randomBytes(5).toString('hex')}.sock`);
-  const pub = startWakePublisher({ core, runId: RUN, dataDir, pipeName: pipe, pollMs: 20 });
+  const pub = startWakePublisher({ core, runId: RUN, dataDir, pipeName: pipe, pollMs: 20, ...opts });
   await pub.listening;
   const lines = [];
   const sock = net.connect(pipe);
@@ -65,15 +65,84 @@ test('the digest rides the wake as one more wake line inside the wake cap, and w
     assert.strictEqual(field.digests.length, 1);
     assert.strictEqual(field.digests[0].via, 'wake');
     assert.strictEqual(field.digests[0].lines.length + field.digests[0].dropped.count, 12, 'every step is shown or counted');
-    // The wait now has nothing of those steps to show, and a new one is shown once.
-    const clock = { t: 0, now: () => clock.t, sleep: async (ms) => { clock.t += ms; } };
-    const rw = createRunWait({ core, runId: RUN, dataDir, pollMs: 50, clock });
-    const quiet = await rw.wait({ ms: 100, t0: 0, workers: [] });
-    assert.strictEqual(quiet.digest, undefined);
-    steps.push(step({ task_id: 'later' }));
-    const later = await rw.wait({ ms: 100, t0: clock.t, workers: [] });
-    assert.strictEqual(later.digest.steps, 1);
-    assert.match(later.digest.text, /later done/);
+  } finally { await p.done(); }
+  // The wait now has nothing of those steps to show, and a new one is shown once. The publisher is stopped first: at a quiet moment it
+  // would publish the new step on its own (ADR 0074 amendment 2), which the next test covers.
+  const clock = { t: 0, now: () => clock.t, sleep: async (ms) => { clock.t += ms; } };
+  const rw = createRunWait({ core, runId: RUN, dataDir, pollMs: 50, clock });
+  const quiet = await rw.wait({ ms: 100, t0: 0, workers: [] });
+  assert.strictEqual(quiet.digest, undefined);
+  steps.push(step({ task_id: 'later' }));
+  const later = await rw.wait({ ms: 100, t0: clock.t, workers: [] });
+  assert.strictEqual(later.digest.steps, 1);
+  assert.match(later.digest.text, /later done/);
+});
+
+test('a step after the last wake is published on its own at a quiet moment, once, and the wait does not show it again', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-rw-wake-')).replace(/\\/g, '/');
+  const steps = [step({ task_id: 'first' })];
+  const core = coreOf(steps);
+  const p = await publisher(core, dataDir);
+  const digests = () => p.lines.filter((l) => l.text && /^belay: policy steps since the last wake: /.test(l.text));
+  try {
+    core.rows[0] = { ...core.rows[0], turns: 1, seq: 2 }; // a turn end: an exception wake, and the digest rides it
+    assert.ok(await p.until(() => digests().length === 1), JSON.stringify(p.lines));
+    assert.match(digests()[0].text, /first done/);
+    // No worker is mid-turn and no wake follows: the trailing step (here a merge) would have reached no digest before.
+    steps.push(step({ task_id: 'last', step: 'integrate', row_ref: 'integration:i1' }));
+    assert.ok(await p.until(() => digests().length === 2), JSON.stringify(p.lines));
+    assert.match(digests()[1].text, /integrate last done/);
+    assert.ok(B(digests()[1].text) <= 221, 'one wake line inside the wake cap');
+    const polls = p.pub.stats().polls;
+    assert.ok(await p.until(() => p.pub.stats().polls >= polls + 6));
+    assert.strictEqual(digests().length, 2, 'nothing is published twice');
+  } finally { await p.done(); }
+  const field = await D.receiptField(core, dataDir, RUN);
+  assert.deepStrictEqual(field.digests.map((d) => [d.via, d.lines.length + d.dropped.count]), [['wake', 1], ['wake', 1]], 'each step in exactly one digest');
+  const clock = { t: 0, now: () => clock.t, sleep: async (ms) => { clock.t += ms; } };
+  const r = await createRunWait({ core, runId: RUN, dataDir, pollMs: 50, clock }).wait({ ms: 100, t0: 0, workers: [] });
+  assert.strictEqual(r.digest, undefined, 'the wait shows neither again');
+});
+
+test('while the run is paused (the publisher\'s wake hold) the quiet digest is held too, not lost: it is published once the hold ends', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-rw-wake-')).replace(/\\/g, '/');
+  const steps = [step({ task_id: 'first' })];
+  const core = coreOf(steps);
+  let held = false;
+  const p = await publisher(core, dataDir, { isHeld: () => held });
+  const digests = () => p.lines.filter((l) => l.text && /^belay: policy steps since the last wake: /.test(l.text));
+  try {
+    core.rows[0] = { ...core.rows[0], turns: 1, seq: 2 };
+    assert.ok(await p.until(() => digests().length === 1));
+    held = true;
+    steps.push(step({ task_id: 'while-held' }));
+    const polls = p.pub.stats().polls;
+    assert.ok(await p.until(() => p.pub.stats().polls >= polls + 6));
+    assert.strictEqual(digests().length, 1, 'nothing published while held');
+    assert.strictEqual(D.readDigests(dataDir, RUN).length, 1, 'and nothing claimed: the step is still owed');
+    held = false;
+    assert.ok(await p.until(() => digests().length === 2), JSON.stringify(p.lines));
+    assert.match(digests()[1].text, /while-held done/);
+  } finally { await p.done(); }
+});
+
+test('while a worker is mid-turn the trailing step waits: it is published once the run is quiet', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-rw-wake-')).replace(/\\/g, '/');
+  const steps = [step({ task_id: 'first' })];
+  const core = coreOf(steps);
+  const p = await publisher(core, dataDir);
+  const digests = () => p.lines.filter((l) => l.text && /^belay: policy steps since the last wake: /.test(l.text));
+  try {
+    core.rows[0] = { ...core.rows[0], turns: 1, seq: 2 };
+    assert.ok(await p.until(() => digests().length === 1));
+    core.rows[0] = { ...core.rows[0], mid_turn: 1 }; // a worker the step gave a turn
+    steps.push(step({ task_id: 'busy' }));
+    const polls = p.pub.stats().polls;
+    assert.ok(await p.until(() => p.pub.stats().polls >= polls + 6));
+    assert.strictEqual(digests().length, 1, 'not while a worker is mid-turn');
+    core.rows[0] = { ...core.rows[0], mid_turn: 0 }; // its turn ended with nothing to wake for (a routine hand-back)
+    assert.ok(await p.until(() => digests().length === 2), JSON.stringify(p.lines));
+    assert.match(digests()[1].text, /busy done/);
   } finally { await p.done(); }
 });
 
@@ -193,5 +262,37 @@ test('an exception the wait claimed and then released is published on the pipe a
     D.release({ dataDir, runId: RUN, uids: [uid] }); // the wait's reply was lost: its claim is released
     assert.ok(await p.until(() => p.lines.some((l) => l.text && /exception E1,/.test(l.text))), JSON.stringify(p.lines));
     assert.strictEqual(p.lines.filter((l) => l.text && /exception E1,/.test(l.text)).length, 1, 'once');
+  } finally { await p.done(); }
+});
+
+test('a quiet digest whose step read fails is asked again on the next quiet pass, and published once', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-rw-wake-')).replace(/\\/g, '/');
+  const steps = [step({ task_id: 'first' })];
+  const core = coreOf(steps);
+  let failPaged = 0;
+  const list = core.policy.list;
+  core.policy.list = async (a = {}) => { if (a.run_id && failPaged > 0) { failPaged -= 1; throw Object.assign(new Error('owner busy'), { code: 'E_BUSY' }); } return list(a); }; // the digest's paged read, not the watcher's
+  const p = await publisher(core, dataDir);
+  const digests = () => p.lines.filter((l) => l.text && /^belay: policy steps since the last wake: /.test(l.text));
+  try {
+    core.rows[0] = { ...core.rows[0], turns: 1, seq: 2 };
+    assert.ok(await p.until(() => digests().length === 1));
+    failPaged = 1;
+    steps.push(step({ task_id: 'retried' }));
+    assert.ok(await p.until(() => digests().length === 2), JSON.stringify(p.lines));
+    assert.strictEqual(failPaged, 0, 'the first read failed');
+    assert.match(digests()[1].text, /retried done/);
+  } finally { await p.done(); }
+});
+
+test('a plan in the store arms the quiet digest without a turn end: a step is published with no wake before it', async () => {
+  const dataDir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-rw-wake-')).replace(/\\/g, '/');
+  const quietW = { ...W, state: 'assigned', results: null, policy: { review: { worker: 'rv' }, fix: 'builder', re_review: 'refuter', integrate: 'on_hold' } }; // planned and still being worked: no step due, no exception
+  const core = coreOf([step({ task_id: 'only' })]);
+  core.task.list = async () => ({ tasks: [quietW] });
+  const p = await publisher(core, dataDir);
+  try {
+    assert.ok(await p.until(() => p.lines.some((l) => l.text && /only done/.test(l.text))), JSON.stringify(p.lines));
+    assert.strictEqual(p.lines.filter((l) => l.text && !/^belay: policy steps since the last wake: /.test(l.text)).length, 0, 'no other wake carried it');
   } finally { await p.done(); }
 });

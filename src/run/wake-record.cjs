@@ -4,7 +4,7 @@
 
 const { exceptionOf } = require('./policy-wakes.cjs');
 
-const establishedBy = (ev) => (ev.event === 'note_refuted' || ev.event === 'scrub_alarm' ? `${ev.event} receipt seq ${ev.seq}` : ev.event === 'budget_pause' ? 'the budget guard' : ev.event === 'evaluated' ? `task ${ev.task_id} results at ${ev.seq}` : ev.event === 'pre_close' ? 'task.worktreeSweep dry run' : `worker.list row seq ${ev.seq} for the run`);
+const establishedBy = (ev) => (ev.established_by ? ev.established_by : ev.event === 'policy_digest' ? `policy.list; digest d${ev.digest_n}` : ev.event === 'time_bound' ? `the run's timeout clock: ${ev.left_ms} ms of ${ev.total_ms} left` : ev.event === 'policy_done' ? `task.list, integration.list, policy.list: implementation done at ${ev.key}` : ev.event === 'note_refuted' || ev.event === 'scrub_alarm' ? `${ev.event} receipt seq ${ev.seq}` : ev.event === 'budget_pause' ? 'the budget guard' : ev.event === 'evaluated' ? `task ${ev.task_id} results at ${ev.seq}` : ev.event === 'pre_close' ? 'task.worktreeSweep dry run' : `worker.list row seq ${ev.seq} for the run`);
 
 // `idle` is read by the caller at the instant of the write (5b), never a stale snapshot.
 function wakeRecord(ev, text, atMs, idle) {
@@ -19,6 +19,8 @@ function wakeRecord(ev, text, atMs, idle) {
   }
   if (ev.event === 'paused') rec.paused_by = ev.paused_by;
   if (ev.turns_skipped) rec.turns_skipped = ev.turns_skipped;
+  if (ev.event === 'policy_digest') rec.digest_n = ev.digest_n; // joins wakes[] to digests[]
+  if (ev.event === 'stalled') rec.task_ids = ev.task_ids;
   return rec;
 }
 

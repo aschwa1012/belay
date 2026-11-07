@@ -20,7 +20,7 @@ const flat = (s) => s.replace(/\s+/g, ' ');
 const REPLACED = [
   'The run ends when you end a turn while no worker is mid-turn.',
   'A live worker that is idle does not keep it open.',
-  'either end your turn (belay wakes you with a message when a worker\'s turn ends or a worker dies;',
+  'end your turn: belay wakes you with a message when a worker\'s turn ends or a worker dies;',
   'that wake exists only when belay started you with `belay run`, and only while some worker is mid-turn',
   'do not poll in a loop',
   'and ending your turn closes the run.',
@@ -28,7 +28,7 @@ const REPLACED = [
   'To stop on purpose, store the outcome in memory, say why, then end a turn with no worker mid-turn.',
   'and when you end the run (the outcome',
   // amendment 6: the headless waiting rules
-  'a timeout is a result: call it again',
+  'a timeout is a result: the worker is still working, so end your turn',
   'Never end a turn just after a `task_assign` whose',
 ];
 // The same sentences as the default fix_cutoff substitution carries them (run-levers.cjs cutoffRule).
@@ -74,8 +74,8 @@ test('interactive prompt: says what the mode is', () => {
     '  again. Never call it in a loop.',
     '  `already: true` means that worker\'s turn ended before your call, not that the work is done.',
     '- In a run where tasks carry a plan, a wake names an exception, and a line beginning `belay: policy steps since the last wake` is the steps',
-    '  belay took since the last wake, with a count of any it left out. Steps no wake line has shown come in `digest` when `mcp__belay__worker_wait` has no',
-    '  `worker_ids`, which can answer with `exceptions` or time out. Each step is shown once. It is belay\'s record, not a request.',
+    '  belay took since the last wake (or, when the run goes quiet, on its own), with a count of any it left out. `mcp__belay__worker_wait` with no',
+    '  `worker_ids` returns the same exceptions and steps; you do not need to call it. Each step is shown once. It is belay\'s record, not a request.',
     '- A worker whose turn has ended without what you waited for is idle, not working. Instead call',
     '  `mcp__belay__worker_message` to tell it what is missing: that starts a turn. Then end your turn.',
     '- When every task is `done`, or when you stop on purpose, store the outcome in memory with',
@@ -115,11 +115,8 @@ test('interactive prompt: apart from three named ranges the twin equals orchestr
   assert.notDeepStrictEqual(role, hs.get('## Your role'), 'the substitution applied');
   assert.deepStrictEqual(ts.get('## Your role'), role);
   for (const k of ['## Tasks', '## Handing a task to a worker', "## Plans: belay's policy manager", '## Rules of thumb']) assert.deepStrictEqual(ts.get(k), hs.get(k), k);
-  // ADR 0037 amendment 6: each "wait on its id" becomes "end your turn until its wake".
-  const WAKE_PHRASES = [
-    ['wait on its id, and evaluate again', 'end your turn until its wake, and evaluate again'],
-    ['with its result, wait on its id; that', 'with its result, end your turn until its wake; that'],
-  ];
+  // ADR 0037 amendment 6, extended to headless by amendment 7: both prompts say "end your turn until its wake", so no phrase is swapped.
+  const WAKE_PHRASES = []; // the headless prompt now waits by the wake too (ADR 0037 amendment 7): these sections are the same in both
   const swap = (L) => L.map((l) => WAKE_PHRASES.reduce((x, [p, q]) => x.replace(p, q), l));
   const checking = swap(hs.get('## Checking the work')), review = swap(hs.get('## Review tasks'));
   assert.strictEqual(checking.concat(review).filter((l, i) => l !== hs.get('## Checking the work').concat(hs.get('## Review tasks'))[i]).length, WAKE_PHRASES.length, 'each phrase replaced once');
@@ -171,7 +168,7 @@ test('headless substitution output is pinned byte for byte (the default mode is 
     + 'the fix needs files outside the task\'s owned set';
   const tail = '. Name the condition and its evidence when you close. Never report a refuted step as passing or mark it done.';
   const want0 = `${common}${tail} The run has no time bound.`;
-  const wantT = `${common}; the run's time bound (600000 ms from its start) is near, judged from the waited_ms your worker_wait answers report${tail}`;
+  const wantT = `${common}; the run's time bound (600000 ms from its start) is near, judged by the time now (\`date -u\` in a shell)${tail}`;
   assert.strictEqual(cutoffRule('orchestrator', 0), want0);
   assert.strictEqual(cutoffRule('orchestrator', 600000), wantT);
   assert.strictEqual(cutoffRule('cap-only', 0), 'Do not stop fix rounds before the fix-round limit.');

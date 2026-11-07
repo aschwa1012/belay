@@ -27,14 +27,14 @@ const ORCHESTRATOR = [
   },
   {
     // ADR 0015. `worker_spawn` above returns at the ready event and the worker keeps running; this is
-    // the call that waits for what happens next. A timeout is a result rather than an error because
+    // a short check of what happened since (ADR 0037 amendment 7: the orchestrator waits by the wake). A timeout is a result rather than an error because
     // the caller's own tool timeout has to be the outer bound, and a refusal would lose the fact that
     // nothing had finished yet.
     name: 'worker_wait',
-    description: 'Block until one of the named workers, or any worker this session launched, finishes a turn or dies, or the timeout passes. Returns which worker, what happened, what established it, its turn and checkpoint id, and how long the call held. timed_out is a result. already: turn ended earlier. In a run with a plan and no worker named: waits for the run, returns at an exception wake or the timeout, with a digest of the steps belay took since the last wait.',
+    description: 'A short status check, not a way to wait: the results, exceptions, deaths and digests you act on reach you by wakes, so end your turn to wait; this alone also reports workers idle without a task and dropped queued messages. timeout_ms defaults to 5000. Holds until one of the named workers, or any worker this session launched, finishes a turn or dies, or the timeout passes. Returns which worker, what happened, what established it, its turn and checkpoint id, and how long the call held. timed_out is a result. already: turn ended earlier. In a run with a plan and no worker named: watches the run, returns at an exception or the timeout, with a digest of the steps no digest has shown.',
     inputSchema: S({
       worker_ids: strs('Otherwise every worker this session launched'),
-      timeout_ms: int('default 110000'),
+      timeout_ms: int('default 5000'),
     }),
   },
   {
@@ -184,4 +184,9 @@ const ORCHESTRATOR = [
   },
 ];
 
-module.exports = { ORCHESTRATOR };
+// ADR 0037 amendment 7: worker_wait is a short check, so a call that names no timeout holds 5 s, not the run manager's own 110 s default.
+const WAIT_DEFAULT_MS = 5000;
+// A missing, zero, negative or non-numeric timeout is the short default too: the run wait reads a falsy one as its own 110 s (run-wait.cjs boundOf).
+const waitArgs = (args) => (args && Number(args.timeout_ms) > 0 ? args : { ...(args || {}), timeout_ms: WAIT_DEFAULT_MS });
+
+module.exports = { ORCHESTRATOR, WAIT_DEFAULT_MS, waitArgs };
