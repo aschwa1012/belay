@@ -157,3 +157,12 @@ test('plan-first: a done dependency waiting behind a merge in flight is carried,
   ];
   assert.deepStrictEqual(untaken({ runId: RUN, tasks, integrations: [{ run_id: RUN, state: 'merging' }], steps: [] }), []);
 });
+
+test('the carried predicate is one module: the stall wake uses it, and a genuinely stuck planned task is still named', () => {
+  assert.strictEqual(untaken, require('../../src/run/policy-carried.cjs').untaken, 'stall-wake exports the shared predicate');
+  // Its build was claimed and finished, the builder is gone, nothing is due, nothing is in flight, nothing blocks it: the safety net names it.
+  const tasks = [task({ id: 't-stuck', seq: 3 })];
+  const steps = [{ seq: 1, run_id: RUN, step: 'build', task_id: 't-stuck', outcome: 'done', trigger_table: 'task', trigger_id: 't-stuck', trigger_seq: 3, finished_at: 5 }];
+  assert.deepStrictEqual(due({ runId: RUN, tasks, integrations: [], steps }), []);
+  assert.deepStrictEqual(untaken({ runId: RUN, tasks, integrations: [], steps }), ['t-stuck']);
+});
