@@ -46,6 +46,7 @@ const BATCH_TOKENS = 512; // tokens in one decode of a reranker (its context's b
 const SAMPLE_MS = 100;
 const SMI_BOUND_MS = 5000;
 const NVIDIA_SMI = 'C:/Windows/System32/nvidia-smi.exe';
+const SMI_ARGS = ['--query-gpu=name,driver_version,memory.total,memory.used,memory.free', '--format=csv,noheader,nounits'];
 const PEAKS_FILE = 'probe-peaks.json';
 // A model file the runtime cannot read as a model (a zeroed or foreign file; a short file is caught earlier, by the size check): not a memory or device problem, and not a probe fault.
 const CORRUPT = /invalid gguf magic|invalid magic/i; // the runtime's own texts for a file that is not a model file; a version it refuses or a driver message is not damage
@@ -170,17 +171,34 @@ function recordedPeak(model, settings, driver, file = peaksFile()) {
 
 // ---- nvidia-smi (the probe only; async, so the owner's loop is never blocked) ----
 
-function defaultSmi() {
-  if (!fs.existsSync(NVIDIA_SMI)) return Promise.resolve(null);
+function parseSmi(out) {
+  const rows = String(out).split(/\r?\n/).map(l => l.trim()).filter(Boolean).map((l) => {
+    const [name, driver, total, used, free] = l.split(',').map(x => x.trim());
+    return { name, driver, total_mb: Number(total), used_mb: Number(used), free_mb: Number(free) };
+  }).filter(r => Number.isFinite(r.total_mb) && Number.isFinite(r.free_mb));
+  return rows.length ? rows.sort((a, b) => b.total_mb - a.total_mb)[0] : null;
+}
+
+// The largest GPU's row, or null: no nvidia-smi, an error, or no answer within `boundMs`. The bound is this function's own timer, not
+// execFile's `timeout`: execFile kills at its timeout but calls back only once the child has closed, and an nvidia-smi inside a wedged
+// driver does not close, so its promise never settled. At the bound the promise settles null whether or not the child exits; the child is
+// killed through its own handle (never looked up by pid or name), its pipes and handle let go so it cannot hold the caller's process open,
+// and a later close is ignored. The options are a test seam (`run`: execFile's shape); every caller passes none.
+function defaultSmi({ exe = NVIDIA_SMI, args = SMI_ARGS, boundMs = SMI_BOUND_MS, run = execFile, exists = fs.existsSync } = {}) {
+  if (!exists(exe)) return Promise.resolve(null);
   return new Promise((resolve) => {
-    execFile(NVIDIA_SMI, ['--query-gpu=name,driver_version,memory.total,memory.used,memory.free', '--format=csv,noheader,nounits'], { timeout: SMI_BOUND_MS, windowsHide: true, encoding: 'utf8' }, (e, out) => {
-      if (e) return resolve(null);
-      const rows = String(out).split(/\r?\n/).map(l => l.trim()).filter(Boolean).map((l) => {
-        const [name, driver, total, used, free] = l.split(',').map(x => x.trim());
-        return { name, driver, total_mb: Number(total), used_mb: Number(used), free_mb: Number(free) };
-      }).filter(r => Number.isFinite(r.total_mb) && Number.isFinite(r.free_mb));
-      resolve(rows.length ? rows.sort((a, b) => b.total_mb - a.total_mb)[0] : null);
-    });
+    let done = false, child = null;
+    const settle = (v) => { if (done) return; done = true; clearTimeout(timer); resolve(v); };
+    const timer = setTimeout(() => {
+      settle(null);
+      if (!child) return;
+      try { child.kill(); } catch { /* already gone */ }
+      for (const p of [child.stdin, child.stdout, child.stderr]) { try { if (p) p.destroy(); } catch { /* closed */ } }
+      try { child.unref(); } catch { /* no handle */ }
+    }, boundMs);
+    try {
+      child = run(exe, args, { windowsHide: true, encoding: 'utf8' }, (e, out) => settle(e ? null : parseSmi(out)));
+    } catch { settle(null); }
   });
 }
 
@@ -369,6 +387,6 @@ async function probe(opts = {}) {
 }
 
 module.exports = {
-  probe, readLast, recordLast, dedicatedFrom, freeDedicated, peakFrom, needed, peakKey, sampler, recordedPeak, recordPeaks, readPeaks, peaksFile, defaultSmi,
+  probe, readLast, recordLast, dedicatedFrom, freeDedicated, peakFrom, needed, peakKey, sampler, recordedPeak, recordPeaks, readPeaks, peaksFile, defaultSmi, SMI_BOUND_MS,
   deriveChunkTokens: C.deriveChunkTokens, HEADROOM_MB, CHUNK_TARGET_MS, BATCH_TOKENS, SANITY_DOCS, QUERY,
 };

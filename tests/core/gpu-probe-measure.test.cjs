@@ -71,14 +71,6 @@ test('the sampler keeps the maximum, drops a call that does not answer, and stop
   assert.deepStrictEqual(await none.stop(), { max: null, n: 0 });
 });
 
-test('nvidia-smi is called asynchronously: the probe never blocks the owner\'s loop on a child process', async () => {
-  const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'core', 'gpu-probe.cjs'), 'utf8');
-  assert.ok(!/execFileSync|spawnSync|execSync/.test(src));
-  const smi = P.defaultSmi();
-  assert.ok(smi instanceof Promise);
-  await smi; // settled, so no nvidia-smi process outlives the test
-});
-
 test('a reranker whose full batch takes longer than the target is refused, with the measured time', async () => {
   const { cache, base } = rig();
   try {
