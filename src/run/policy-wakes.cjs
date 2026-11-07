@@ -355,7 +355,7 @@ async function readRevisions(policy, runId, tasks) {
 // task rows it read this poll) and `seen.policyArmed` once it sees a task under a plan, so a run with no plan reads nothing more.
 // `enabled`: arm from the start (a run whose spec carries a plan). Reads: task.list when enrichWakes did not, then integration.list,
 // policy.list and the release_failed events, only once armed. `active()` is the last derivation, for the executor's halt check.
-function createPolicyWatcher({ core, runId, enabled = false }) {
+function createPolicyWatcher({ core, runId, enabled = false, dataDir = null }) {
   const sent = new Set();
   let last = [];
   let lastSnap = null; // this poll's rows, for the idle close (policy-close-hold.cjs); null while the watcher is off, { failed } when the read failed
@@ -368,7 +368,13 @@ function createPolicyWatcher({ core, runId, enabled = false }) {
     const failures = await RF.readFailures(core, runId);
     const run = core.run && core.run.get ? await core.run.get({}).then((r) => (r && r.run) || null, () => null) : null; // the fix caps the rounds are counted against
     const revisions = await readRevisions(core.policy, runId, tasks);
-    return { runId, tasks, integrations: ints, steps, failures, rounds: { caps: RF.capsOf(run) }, ...(revisions ? { revisions } : {}), ...(readFailed ? { readFailed } : {}) };
+    // The executor lists a relaunch from the worker rows of a dead builder (and the kill mark of an operator's own kill); the stall predicate asks due() the
+    // same question, so it needs the same rows. Read only while a task a builder may have left open exists, as the executor does.
+    let workers;
+    const RLN = require('./policy-relaunch.cjs'), byId = new Map(tasks.map((t) => [t.id, t]));
+    if (core.worker && core.worker.list && RLN.mayNeed(tasks.filter((t) => t.run_id === runId), steps, runId, (t) => rootOf(t, byId))) workers = await core.worker.list({}).then((r) => (r && r.workers) || [], () => { readFailed = true; return undefined; });
+    const KM = require('../core/kill-mark.cjs');
+    return { runId, tasks, integrations: ints, steps, failures, rounds: { caps: RF.capsOf(run) }, ...(workers ? { workers } : {}), ...(workers && dataDir ? { isKilled: (w) => KM.isKilled(dataDir, w.id, w.pid, w.pid_created) } : {}), ...(revisions ? { revisions } : {}), ...(readFailed ? { readFailed } : {}) };
   }
   async function poll(seen) {
     if (!enabled && !(seen && seen.policyArmed)) { lastSnap = null; return []; }
@@ -382,7 +388,9 @@ function createPolicyWatcher({ core, runId, enabled = false }) {
     if (done && !sent.has(`done:${done.key}`)) { sent.add(`done:${done.key}`); out.push(require('./done-wake.cjs').wakeOf(runId, done)); }
     return out;
   }
-  return { poll, active: () => last.slice(), snapshot: () => lastSnap };
+  // The done wake went and the rows still read done: the orchestrator's last word from belay is that wake, and nothing has moved since.
+  const doneCurrent = () => { if (!lastSnap || lastSnap.failed) return false; const d = require('./done-wake.cjs').doneOf(lastSnap, last); return !!d && sent.has(`done:${d.key}`); };
+  return { poll, active: () => last.slice(), snapshot: () => lastSnap, doneCurrent };
 }
 
 module.exports = { unplannedEscalation, escalationFact, fixRoundsLeft, derive, readRevisions, familyIds, exceptionOf, policyOf, rootOf, haltScope, haltedIds, textOf, wakeOf, createPolicyWatcher, HALTING, HALT_SCOPE, WAKE_TEXT_MAX };
