@@ -13,8 +13,8 @@ const M = require('./policy-matrix-env.cjs');
 const test = guarded(nodeTest);
 const amend = (e, id, plan = M.PLAN) => e.orch.task.create({ id, amend: true, policy: plan });
 // After the amend: the wake is not sent again, the watcher derives nothing for it, and the task is not halted.
-async function lifted(e, id) {
-  await amend(e, id);
+async function lifted(e, id, plan = M.PLAN) {
+  await amend(e, id, plan); // the plan the failure happened under, restated: a plan that gained a fix step would carry the failure as a round instead
   assert.deepStrictEqual(await e.poll(), [], 'the same fact is not sent again');
   assert.ok(e.watcher.active().length > 0 && e.watcher.active().every((x) => x.lifted), 'still derived, marked lifted');
   assert.ok(!(await M.halted(e)).has(id));
@@ -57,22 +57,30 @@ test('amend lifts E2 at cap 0', async () => {
 test('amend lifts E5 (a failed evaluation)', async () => {
   const e = await M.env({ label: 'lift-E5' });
   try {
-    const { task } = await M.workDone(e, 'x', { acceptance: M.FAIL });
+    const { task } = await M.workDone(e, 'x', { acceptance: M.FAIL, plan: M.without(M.PLAN, 'fix') });
     assert.strictEqual((await e.poll())[0].exception, 'E5');
     assert.ok((await M.halted(e)).has(task.id));
-    await lifted(e, task.id);
+    await lifted(e, task.id, M.without(M.PLAN, 'fix'));
   } finally { await e.close(); }
 });
 
-test('amend lifts E6 (a pass on a retry)', async () => {
+test('amend lifts E6 (a failure beside other evaluations, from a plan with no fix step)', async () => {
   const e = await M.env({ label: 'lift-E6' });
   try {
-    const marker = `${e.dir}/m`; const script = `${e.dir}/flaky.cjs`;
-    fs.writeFileSync(script, `const fs = require('node:fs'); if (fs.existsSync(${JSON.stringify(marker)})) process.exit(0); fs.writeFileSync(${JSON.stringify(marker)}, '1'); process.exit(1);\n`);
-    const { task } = await M.workDone(e, 'fl', { acceptance: { commands: [{ argv: [process.execPath, script], timeout_ms: 20000, retries_on_fail: 1 }] } });
+    const hold = `${e.dir}/hold.cjs`; const release = `${e.dir}/release.cjs`; const flag = `${e.dir}/other-ran`;
+    fs.writeFileSync(hold, `const fs = require('node:fs'); const end = Date.now() + 25000; (function poll() { if (fs.existsSync(${JSON.stringify(flag)})) process.exit(1); if (Date.now() > end) process.exit(3); setTimeout(poll, 10); })();\n`);
+    fs.writeFileSync(release, `require('node:fs').writeFileSync(${JSON.stringify(flag)}, '1');\n`);
+    const plan = M.without(M.PLAN, 'fix');
+    const mk = async (label, script) => e.orch.task.create({ spec: label, acceptance: { commands: [{ argv: [process.execPath, script], timeout_ms: 30000 }] }, policy: plan });
+    const slow = await mk('slow', hold); const quick = await mk('quick', release);
+    await e.worker('rv');
+    const lease = async (t, w) => { const wc = await e.worker(w); const a = await e.orch.task.assign({ task_id: t.id, worker_id: w }); await wc.lease.release({ lease_id: a.new_lease.id, reason: 'done', result: { branch: 'b', head: 'h' } }); };
+    await lease(slow, 'build-slow'); await lease(quick, 'build-quick');
+    await Promise.all([M.evaluate(e, slow.id), M.evaluate(e, quick.id)]);
+    const task = slow;
     assert.strictEqual((await e.poll())[0].exception, 'E6');
     assert.ok((await M.halted(e)).has(task.id));
-    await lifted(e, task.id);
+    await lifted(e, task.id, plan);
   } finally { await e.close(); }
 });
 

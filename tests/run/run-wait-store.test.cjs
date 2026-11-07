@@ -49,7 +49,7 @@ test('a planned task, a refuted review, the policy fix, then the run wait: the s
 
     // A second planned task whose evaluation fails: an E5 exception, derived from the rows, which the wait delivers.
     const FAIL = { commands: [{ argv: [process.execPath, '-e', 'process.exit(1)'], timeout_ms: 20000 }] };
-    const bad = await orch.task.create({ spec: 'bad', acceptance: FAIL, policy: { fix: 'builder' } });
+    const bad = await orch.task.create({ spec: 'bad', acceptance: FAIL, policy: { integrate: 'on_hold' } }); // no fix step: a failed evaluation is the E5 wake the run wait delivers
     assert.strictEqual((await handBack('builder-2', bad, { branch: 'b2', head: 'h2' })).state, 'released');
 
     const c = { t: 0, now: () => c.t, sleep: async (ms) => { c.t += ms; } };

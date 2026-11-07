@@ -2,8 +2,8 @@
 // policy-wakes.cjs — ADR 0073 decisions 1 to 4. Under a plan (a task's `policy`) the run wakes the orchestrator on exceptions and on
 // nothing routine. The exceptions are derived from store rows, level-triggered, never taken from a worker's words:
 //   E1 the plan has no field for the step a fact calls for   E2 the fix cap          E3 a conflict at a policy integrate
-//   E4 a worker death, stale or restart_failed (today's wakes, unchanged)            E5 an evaluation that failed or could not judge
-//   E6 a pass on a retry, or a failing check that ran beside other evaluations       E7 a hold with should-fix findings
+//   E4 a worker death, stale or restart_failed (today's wakes, unchanged)            E5 an evaluation that failed or could not judge (under a plan with `fix`, a round for the builder: policy-rounds.cjs; E2 at the cap)
+//   E6 a failing check that ran beside other evaluations (re-run alone first; a pass on a retry is a note)       E7 a hold with should-fix findings
 //   E8 a policy step that failed (a policy_step row finished `exception`)            E9 budget (today's budget_pause)
 //   E10 paused, pre_close, note_refuted, scrub_alarm (today's wakes, unchanged)
 // E4, E9 and E10 already are wakes; `exceptionOf` only names them for the run receipt. E1 to E3 and E5 to E8 are derived here: one wake
@@ -18,6 +18,7 @@
 // that rewrites the row does not send it again. The canonical table of trigger, task, key and lift is in api.md (Policy exception wakes).
 
 const reviewWake = require('./review-wake.cjs');
+const RF = require('./policy-rounds.cjs');
 
 const WAKE_TEXT_MAX = 221; // release-eval.cjs WAKE_TEXT_MAX; the mod's text budget less the plugin name
 const ESC_KINDS = new Set(['question', 'blocked', 'scope', 'conflict', 'spec']);
@@ -38,6 +39,7 @@ function unplannedEscalation(x) {
 }
 const REVISION_IDS = 200; // task ids per policy.revisions call (its cap is 500)
 const AMEND_LIFTS = new Set(['E1', 'E2', 'E5', 'E6', 'E7', 'escalation']); // a plan amend after the exception lifts these halts (E8's own lift reads its step's policy_rev)
+const MERGE_SIDE = new Set(['integrate', 'fix_conflict', 'fix_checks', 'fix_commit']); // the steps whose E8 a passing merge lifts
 const HALTING = new Set(['E1', 'E2', 'E3', 'E5', 'E6', 'E7', 'E8', 'escalation']); // E4 is the worker's, E9 pauses the run, E10 is not a task's
 // ADR 0073 Q1 (open): 'task' halts the task and its fixes (the recommendation); 'chain' also halts what depends on them.
 const HALT_SCOPE = 'task';
@@ -87,9 +89,10 @@ const cleanRefutation = (r) => r.executable === true && failing(r).length > 0 &&
 // versions read (a cut-off or failed read, or a fix missing from it) the order is unknown, and it fails toward waking: E2 is raised, never suppressed.
 // A fix round is left on this derived review: the hard cap allows one when there is a hard cap, else max_fix_rounds is not yet reached.
 // With a hard cap max_fix_rounds is a notice only: the fix past it is made with fix_notice, and the fix step wakes E2 on it.
-function fixRoundsLeft(rv) {
-  if (rv.rounds_left != null) return rv.rounds_left > 0;
-  return !(rv.max_fix_rounds != null && rv.fix_rounds_used >= rv.max_fix_rounds);
+// `extra`: the rounds spent without a fix task (policy-rounds.cjs: fix_eval, fix_run), which spend the same cap.
+function fixRoundsLeft(rv, extra = 0) {
+  if (rv.rounds_left != null) return rv.rounds_left - extra > 0;
+  return !(rv.max_fix_rounds != null && rv.fix_rounds_used + extra >= rv.max_fix_rounds);
 }
 
 function finalFixJudged(work, R, tasks, byId, firstSeq) {
@@ -161,6 +164,9 @@ function derive(snap) {
   const evOf = (t) => ({ key: `${t.id}@${t.results.evaluated_at}`, seq: Number(t.results.evaluated_at) || 0, at: Number(t.results.evaluated_at) || 0, row: t.id });
   const tref = (t) => ({ table: 'task', id: t.id, seq: Number(t.seq) || 0 });
   const fails = snap.failures || [];
+  // Under `snap.rounds` (the caps) the failures policy-rounds.cjs carries as rounds are not exceptions while the plan can take them; E2 wakes at the cap.
+  const rf = snap.rounds ? RF.ctxOf({ runId, now: snap.now, tasks: snap.tasks, steps: snap.steps, failures: fails, caps: snap.rounds.caps, integrations: snap.integrations }) : null;
+  const planFor = (t) => { const plan = policyOf(t, byId); return plan ? { plan, rev: null } : null; };
 
   for (const x of tasks) {
     const P = policyOf(x, byId);
@@ -170,10 +176,15 @@ function derive(snap) {
     const own = r.trigger === 'release' && x.handoff && Number(r.evaluated_at) >= Number(x.handoff.at); // belay's own evaluation of a hand-back
     // E5 / E6: the hand-back's evaluation.
     if (own && x.state === 'released' && !cleanRefutation(r) && !r.passed) {
+      const a = rf ? RF.action(x, P, rf) : null;
       const ran = failing(r).filter((c) => beside(c) > 0);
-      if (ran.length) add('E6', root, tref(x), null, { concurrent: ran.map((c) => ({ name: checkName(c), n: beside(c) })), task: x.id }, evOf(x));
+      if (a && a.cap) add('E2', root, tref(x), 'fix', { cause: a.cause, task: x.id, used: a.used, max: a.max, last: a.last }, evOf(x));
+      else if (a) { /* the plan carries it: a step is due or in flight, or waits for the run's other evaluations */ }
+      else if (ran.length) add('E6', root, tref(x), null, { concurrent: ran.map((c) => ({ name: checkName(c), n: beside(c) })), task: x.id }, evOf(x));
       else add('E5', root, tref(x), null, { executable: r.executable !== false, failing: failing(r).map(checkName), task: x.id }, evOf(x));
-    } else if (own && x.state === 'done' && r.flaky) add('E6', root, tref(x), null, { flaky: true, task: x.id }, evOf(x));
+    } else if (own && x.state === 'done' && r.flaky && !rf) add('E6', root, tref(x), null, { flaky: true, task: x.id }, evOf(x));
+    // A done hand-back that committed nothing, with no round left (policy-rounds.cjs commitAction).
+    if (rf && own && x.state === 'done') { const ca = RF.commitAction(x, P, rf); if (ca && ca.cap) add('E2', root, tref(x), 'fix', { cause: ca.cause, task: x.id, used: ca.used, max: ca.max, last: ca.last }, evOf(x)); }
     // escalation (ADR 0074 amendment 4, not an E-code): a worker's hand-back asks for the orchestrator (`result.escalate: { kind, reason }`).
     // It always wakes, planned task or not, and halts the task's planned steps until the orchestrator acts on the task after the hand-back
     // (re-assigns or cancels it) or amends its plan. The reason is the worker's words: quoted, cut, never an instruction.
@@ -182,8 +193,13 @@ function derive(snap) {
     const judgedWork = es && isReviewRow(x) && Array.isArray(x.depends_on) && x.depends_on.length === 1 ? byId.get(x.depends_on[0]) : null;
     if (es) add('escalation', judgedWork ? rootOf(judgedWork, byId) : root, tref(x), 'none', { ...es.detail, planned: true }, es.fact, es.acted ? { lifted: true } : {});
     // E5: a release evaluation that ended without a result (a queue refusal, an error): the ledger's release_failed events.
-    if (x.state === 'released' && x.handoff) {
-      for (const f of fails) if (f.task_id === x.id && f.code !== 'E_CANCELLED' && Number(f.written_at) >= Number(x.handoff.at)) add('E5', root, tref(x), null, { executable: true, failing: [], error: f.code, task: x.id }, { key: `${x.id}!${f.id}`, seq: Number(f.seq) || 0, at: Number(f.written_at) || 0, rowSeq: rowSeqOf(f) });
+    if (x.state === 'released' && x.handoff && !(rf && own)) {
+      const a = rf ? RF.action(x, P, rf) : null;
+      for (const f of fails) if (f.task_id === x.id && f.code !== 'E_CANCELLED' && Number(f.written_at) >= Number(x.handoff.at)) {
+        const fact = { key: `${x.id}!${f.id}`, seq: Number(f.seq) || 0, at: Number(f.written_at) || 0, rowSeq: rowSeqOf(f) };
+        if (a && a.cap) add('E2', root, tref(x), 'fix', { cause: a.cause, task: x.id, used: a.used, max: a.max, last: a.last }, fact);
+        else if (!a) add('E5', root, tref(x), null, { executable: true, failing: [], error: f.code, task: x.id }, fact);
+      }
     }
     // E1 build (rc.6): the plan sets `build` to null, so building is the orchestrator's; once an open, unleased task's dependencies have landed (done, and
     // merged when their plan merges) nothing else would tell it the task is ready. A task with no dependencies is not raised: the orchestrator made it knowing it is its own.
@@ -206,7 +222,7 @@ function derive(snap) {
         if (!P.fix) add('E1', x, tref(R), 'fix', { review: R.id, titles }, fact);
         // E2 is a review REFUTED with no rounds left: the refute of the final allowed fix's re-review. While a newer fix than the one this review judged exists,
         // the last allowed round has not been reviewed yet, so the refute is not the cap.
-        else if (!fixRoundsLeft(rv) && finalFixJudged(x, R, tasks, byId, firstSeq)) add('E2', x, tref(R), 'fix', { review: R.id, titles, used: rv.fix_rounds_used, max: rv.max_fix_rounds }, fact);
+        else if (!fixRoundsLeft(rv, rf ? RF.stepRounds(rf, x.id) : 0) && finalFixJudged(x, R, tasks, byId, firstSeq)) add('E2', x, tref(R), 'fix', { review: R.id, titles, used: rv.fix_rounds_used + (rf ? RF.stepRounds(rf, x.id) : 0), max: rv.max_fix_rounds }, fact);
       } else if (facts.should_fix.n > 0 && (!P.follow_up || P.follow_up === 'wake') && !(rv.follow_ups && rv.follow_ups.length) && !(x.integration && x.integration.state === 'merged')) {
         add('E7', x, tref(R), P.follow_up ? 'follow_up' : 'none', { review: R.id, n: facts.should_fix.n, titles: facts.should_fix.titles }, fact);
       }
@@ -219,10 +235,20 @@ function derive(snap) {
   for (const i of ints) {
     if (i.run_id !== runId || i.state !== 'conflict' || i.acted_by !== 'policy') continue;
     const ids = Array.isArray(i.task_ids) ? i.task_ids : [];
-    if (ints.some((o) => o.id !== i.id && Number(o.seq) > Number(i.seq) && (Array.isArray(o.task_ids) ? o.task_ids : []).some((t) => ids.includes(t)))) continue;
+    const at = (i.conflict && i.conflict.task_id) || ids[0]; // a later merge of that task supersedes it; task_ids are cumulative, so a later row naming other tasks does not
+    if (ints.some((o) => o.id !== i.id && Number(o.seq) > Number(i.seq) && (Array.isArray(o.task_ids) ? o.task_ids : []).includes(at))) continue;
+    const m = rf ? RF.mergeAction(i, rf, planFor) : null;
+    if (m && m.step) continue; // the plan takes it: a fix task for the builder
+    if (m && m.cap) { add('E2', m.root, { table: 'integration', id: i.id, seq: Number(i.seq) || 0 }, 'fix', { cause: m.cause, task: m.task.id, used: m.used, max: m.max, last: m.last }, { key: i.id, seq: Number(i.seq) || 0 }); continue; }
     const tid = (i.conflict && i.conflict.task_id) || ids[0];
     const t = byId.get(tid) || { id: tid };
     add('E3', byId.get(tid) ? rootOf(t, byId) : t, { table: 'integration', id: i.id, seq: Number(i.seq) || 0 }, 'integrate', { files: i.conflict && Array.isArray(i.conflict.files) ? i.conflict.files.length : null, task: tid }, { key: i.id, seq: Number(i.seq) || 0 });
+  }
+
+  // Integration checks that failed, with no round left: the cap (the plan takes them while a round is left, as a fix_checks step).
+  if (rf) for (const i of ints) {
+    const m = i.run_id === runId && i.state === 'evaluated' ? RF.mergeAction(i, rf, planFor) : null;
+    if (m && m.cap) add('E2', m.root, { table: 'integration', id: i.id, seq: Number(i.seq) || 0 }, 'fix', { cause: m.cause, task: m.task.id, used: m.used, max: m.max, last: m.last }, { key: i.id, seq: Number(i.seq) || 0 });
   }
 
   // E8 (and E2 when the fix was refused for the cap): a policy step finished `exception`. Sent once, whenever it is read; it halts the task until a
@@ -241,6 +267,7 @@ function derive(snap) {
     const byOrch = (o) => o && o.acted_by !== 'policy' && o.written_by === 'orchestrator' && Number(o.written_at) > end;
     const orchestratorRow = !!t && (t.policy_rev != null && s.policy_rev != null && Number(t.policy_rev) !== Number(s.policy_rev)
       || (byOrch(t) && (t.state === 'cancelled' || t.state === 'assigned'))
+      || (MERGE_SIDE.has(s.step) && (snap.integrations || []).some((o) => o.run_id === runId && o.passed === true && Number(o.written_at) > end && (Array.isArray(o.merged) ? o.merged : []).some((m) => m && !m.already && (m.task_id === root.id || (byId.get(m.task_id) && rootOf(byId.get(m.task_id), byId).id === root.id))))) // a later merge that put the work (or a fix of it) on the branch and passed its checks, the orchestrator's own included; the cumulative task_ids say nothing
       || tasks.some((o) => byOrch(o) && o.id !== root.id && (o.repairs === root.id || (Array.isArray(o.depends_on) && o.depends_on.includes(root.id)))));
     if (cap && s.step === 'fix') add('E2', root, trigger, 'fix', { step: s.step, error: s.error }, R && R.results ? evOf(R) : { key: `step${s.seq}`, seq: Number(s.seq) }, { lifted: !!orchestratorRow });
     else if (/^E_BUDGET/.test(String(s.error || ''))) add('E9', root, trigger, s.step, { step: s.step, error: s.error }, { key: `step${s.seq}`, seq: Number(s.seq) }, { lifted: true }); // a step refused at the budget's soft threshold (policy-budget.cjs): the wake is the budget's, and it halts nothing
@@ -284,7 +311,7 @@ function textOf(e) {
   let body;
   switch (e.exception) {
     case 'E1': body = ` The plan has no ${e.field} step for this.`; break;
-    case 'E2': body = ` Fix cap reached${d.used != null ? ` (${d.used} used${d.max != null ? ` of ${d.max}` : ''})` : ''}; review ${d.review || 'refuted'}.${d.error ? ` ${d.error}` : ''}${titles}`; break;
+    case 'E2': body = d.cause ? ` Fix cap ${d.used}/${d.max}; ${d.cause}${d.last ? `: ${d.last}` : ''}.` : ` Fix cap reached${d.used != null ? ` (${d.used} used${d.max != null ? ` of ${d.max}` : ''})` : ''}; ${d.cause ? `${d.cause}${d.last ? `: ${d.last}` : ''}` : `review ${d.review || 'refuted'}`}.${d.error ? ` ${d.error}` : ''}${titles}`; break;
     case 'E3': body = ` Integrate conflict on task ${d.task}${d.files != null ? ` (${d.files} file${d.files === 1 ? '' : 's'})` : ''}.`; break;
     case 'E5': body = d.executable === false ? ` Task ${d.task} evaluation could not judge.` : ` Task ${d.task} evaluation failed${d.error ? ` (${d.error})` : ''}${d.failing && d.failing.length ? `: ${d.failing.join(', ')}` : ''}.`; break;
     case 'E6': body = d.flaky ? ` Task ${d.task} passed on a retry (flaky).` : ` Task ${d.task} failed beside other evaluations: ${d.concurrent.map((c) => `${c.name} (with ${c.n})`).join(', ')}.`; break;
@@ -338,9 +365,10 @@ function createPolicyWatcher({ core, runId, enabled = false }) {
     let readFailed = false; // a failed integration or step read is [] for the wakes, as before, and unknown facts for the idle close
     const ints = core.integration && core.integration.list ? await core.integration.list({}).then((r) => (r && r.integrations) || [], () => { readFailed = true; return []; }) : [];
     const steps = core.policy && core.policy.list ? await core.policy.list({}).then((r) => (r && r.rows) || [], () => { readFailed = true; return []; }) : [];
-    const failures = core.memory && core.memory.events ? await core.memory.events({ run_id: runId, kinds: ['release_failed'] }).then((r) => ((r && r.events) || []).map((e) => ({ ...e, task_id: e.task_id || (Array.isArray(e.row_ids) ? e.row_ids[0] : null) })), () => []) : [];
+    const failures = await RF.readFailures(core, runId);
+    const run = core.run && core.run.get ? await core.run.get({}).then((r) => (r && r.run) || null, () => null) : null; // the fix caps the rounds are counted against
     const revisions = await readRevisions(core.policy, runId, tasks);
-    return { runId, tasks, integrations: ints, steps, failures, ...(revisions ? { revisions } : {}), ...(readFailed ? { readFailed } : {}) };
+    return { runId, tasks, integrations: ints, steps, failures, rounds: { caps: RF.capsOf(run) }, ...(revisions ? { revisions } : {}), ...(readFailed ? { readFailed } : {}) };
   }
   async function poll(seen) {
     if (!enabled && !(seen && seen.policyArmed)) { lastSnap = null; return []; }

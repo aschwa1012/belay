@@ -152,13 +152,13 @@ const spawnFor = (manager) => (stepCore) => (args) => manager.spawn({ ...args, a
 // A policy merge names the work unit and nothing else: it goes to the run's own integration branch, never forced or approved.
 async function integrate(c, env) {
   const cur = await env.core.task.get({ task_id: c.task_id });
-  if (cur.state !== 'done' || !cur.review || cur.review.state !== 'holds' || (cur.integration && cur.integration.state === 'merged')) return { outcome: 'skipped', error: `${c.task_id} is no longer a done, held, unmerged task` };
+  if (cur.state !== 'done' || !cur.review || cur.review.state !== 'holds' || (cur.integration && cur.integration.state === 'merged' && !c.retry)) return { outcome: 'skipped', error: `${c.task_id} is no longer a done, held, unmerged task` };
   const row = await env.core.integration.merge({ task_ids: c.task_ids });
   const ref = `integration:${row.id}`;
   if (row.existing === true) return { outcome: row.superseded === true ? 'superseded' : 'done', row_ref: ref };
   if (row.state === 'failed') return exception(`integration ${row.id} failed${row.error ? `: ${String(row.error.message || row.error).slice(0, 200)}` : ''}`, ref);
   if (row.state === 'conflict') return { outcome: 'done', row_ref: ref }; // a conflict is a finished step: the row carries passed:false too, but only E3 wakes for it
-  if (row.passed === false) return exception(`integration ${row.id} checks failed`, ref);
+  if (row.passed === false) return c.fixable ? { outcome: 'done', row_ref: ref } : exception(`integration ${row.id} checks failed`, ref); // fixable: the plan's fix step takes the failed checks as a round (policy-rounds.cjs)
   return { outcome: 'done', row_ref: ref }; // a conflict is a finished step too: the integration row says so and the exception wake carries it
 }
 
@@ -178,9 +178,9 @@ async function followUp(c, env) {
 const RUNNERS = { build, review, fix, re_review: reReview, integrate, follow_up: followUp, relaunch: (c, env) => require('./policy-relaunch.cjs').run(c, env) };
 
 async function run(c, env) {
-  const f = RUNNERS[c.step];
+  const f = RUNNERS[c.step] || require('./policy-rounds-run.cjs').RUNNERS[c.step];
   if (!f) return { outcome: 'skipped', error: `step ${c.step} is not one 0.4.0 takes` };
   try { return await f(c, env); } catch (e) { return exception(errText(e)); }
 }
 
-module.exports = { run, unavailable, spawnFor, leftOver, RUNNERS };
+module.exports = { run, unavailable, handOver, exception, errText, spawnFor, leftOver, RUNNERS };

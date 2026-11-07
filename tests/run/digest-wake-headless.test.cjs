@@ -22,7 +22,7 @@ const RUN = 'r1';
 const fwd = (p) => String(p).split(path.sep).join('/');
 // A task under a plan whose release evaluation failed: one E5 exception, so the run writes one wake.
 const W = {
-  id: 'W', seq: 7, run_id: RUN, state: 'released', policy: { review: { worker: 'rv' }, fix: 'builder' }, depends_on: [], repairs: null, lease: null, review: null, integration: null, written_at: 50,
+  id: 'W', seq: 7, run_id: RUN, state: 'released', policy: { review: { worker: 'rv' } }, depends_on: [], repairs: null, lease: null, review: null, integration: null, written_at: 50,
   handoff: { by: 'w1', at: 10 },
   results: { trigger: 'release', evaluated_at: 20, executable: true, passed: false, checks: [{ kind: 'command', argv: ['npm', 'test'], passed: false, exit_code: 1 }] },
 };
