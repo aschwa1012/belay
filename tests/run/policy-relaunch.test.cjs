@@ -308,3 +308,50 @@ test('a coder the relaunch spawned in the dead builder\'s place is stopped once 
     assert.ok(stopped.includes(fresh), `retired: ${JSON.stringify(stopped)}`);
   } finally { await e.close(); }
 });
+
+// R4: the fix tasks the round steps make are the plan's builders' work too.
+const fixTask = (id, extra = {}) => task(id, { repairs: 'T', depends_on: ['T'], policy: null, policy_made: true, ...extra });
+const fixStep = (step, id, worker = 'b1', seq = 3) => ({ seq, run_id: 'r', step, task_id: 'T', outcome: 'done', worker_id: worker, row_ref: `task:${id}`, trigger_table: 'integration', trigger_id: 'i1', trigger_seq: 1 });
+for (const name of ['fix', 'fix_conflict', 'fix_checks', 'fix_commit']) {
+  test(`due: a fix task the ${name} step made is relaunched when its builder dies, and the bound still holds`, () => {
+    const tasks = [task('T', { state: 'done' }), fixTask('F')];
+    const base = { runId: 'r', tasks, steps: [built('T'), fixStep(name, 'F')], workers: [dead()] };
+    assert.deepStrictEqual(due(base).filter((c) => c.step === 'relaunch').map((c) => [c.task_id, c.worker, c.role]), [['F', 'b1', 'build']]);
+    assert.deepStrictEqual(due({ ...base, steps: [...base.steps, { ...built('F'), seq: 9, step: 'relaunch', task_id: 'F', outcome: 'done', trigger_seq: 5 }] }).filter((c) => c.step === 'relaunch'), [], 'one relaunch a task');
+    assert.deepStrictEqual(due({ ...base, steps: [fixStep(name, 'F')] }).filter((c) => c.step === 'relaunch'), [], 'the work the plan did not build');
+  });
+}
+
+// R3: the reviewer a review step gave a review task.
+const reviewTask = (extra = {}) => ({ id: 'R', run_id: 'r', state: 'open', lease: null, seq: 7, depends_on: ['T'], repairs: null, policy: null, policy_made: true, acceptance: { verdict: true }, ...extra });
+const reviewStep = (step = 'review', worker = 'rv1') => ({ seq: 4, run_id: 'r', step, task_id: 'T', outcome: 'done', worker_id: worker, row_ref: 'task:R', trigger_table: 'task', trigger_id: 'T', trigger_seq: 5 });
+const workDoneTask = () => task('T', { state: 'done', policy: { build: { worker: 'b1' }, review: { spawn: { agent_type: 'reviewer' } } } });
+
+test('due: a dead reviewer of a plan-made review is relaunched once; a live one, a used bound, an unplanned review and an operator kill are not', () => {
+  for (const step of ['review', 're_review']) {
+    const base = { runId: 'r', tasks: [workDoneTask(), reviewTask()], steps: [built('T'), reviewStep(step)], workers: [dead('rv1')] };
+    assert.deepStrictEqual(due(base).filter((c) => c.step === 'relaunch').map((c) => [c.task_id, c.worker, c.role, c.tree_task]), [['R', 'rv1', 'review', 'T']], step);
+    assert.deepStrictEqual(due({ ...base, workers: [{ id: 'rv1', state: 'running' }] }).filter((c) => c.step === 'relaunch'), []);
+    assert.deepStrictEqual(due({ ...base, steps: [built('T'), reviewStep(step), { ...built('R'), seq: 9, step: 'relaunch', task_id: 'R', outcome: 'skipped', error: 'relaunch refused: x', trigger_seq: 7 }] }).filter((c) => c.step === 'relaunch'), [], 'the bound');
+    assert.deepStrictEqual(due({ ...base, steps: [built('T')] }).filter((c) => c.step === 'relaunch'), [], 'a review the orchestrator made and assigned');
+    assert.deepStrictEqual(due({ ...base, isKilled: () => true }).filter((c) => c.step === 'relaunch'), [], 'an operator killed it');
+  }
+});
+
+test('a dead reviewer\'s death waits for its relaunch, like a builder\'s; the step falls back to a fresh reviewer in the work\'s tree', async () => {
+  const w = wakeSide([built('T'), reviewStep()]);
+  w.byId.set('T', workDoneTask()); w.byId.set('R', reviewTask());
+  assert.deepStrictEqual(await w.call([death({ worker_id: 'rv1' })]), [], 'held');
+  const spawned = []; const asked = [];
+  let n = 0;
+  const get = async ({ task_id }) => (task_id === 'T' ? { id: 'T', worktree: { path: 'C:/trees/T' } } : (n++ < 1 ? { id: 'R', state: 'open', lease: null } : { id: 'R', state: 'assigned', lease: { id: 'l2', holder: spawned[0] } }));
+  const env = {
+    runId: 'r', core: { task: { get }, worker: { list: async () => ({ workers: [{ id: 'rv1', state: 'dead', pid: 1 }] }) } },
+    spawn: async (a) => { spawned.push(a.worker_id); asked.push(a); return { id: a.worker_id }; },
+  };
+  const out = await RL.run({ task_id: 'R', worker: 'rv1', role: 'review', tree_task: 'T', cfg: { spawn: { agent_type: 'reviewer' } } }, env);
+  assert.strictEqual(out.outcome, 'done');
+  assert.match(asked[0].worker_id, /^rev-/);
+  assert.deepStrictEqual([asked[0].worktree, asked[0].task_id, asked[0].agent_type], ['C:/trees/T', 'R', 'reviewer']);
+  assert.strictEqual(out.spawned, spawned[0]);
+});

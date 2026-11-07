@@ -10,7 +10,10 @@
 // Only an unexpected death relaunches. A stop is a `stopped` row, not a death; a human's `belay worker kill` leaves a mark (core/kill-mark.cjs)
 // and is the human's. One relaunch a task: a claim that was not reopened uses the bound. A relaunch belay cannot do ends `skipped` with its
 // reason, not `exception` (a budget refusal too), so it raises no E8 and halts nothing, and the death's own E4 wake reaches the orchestrator.
-// Never taken for a task the plan did not build (no `build` step) or a worker still alive.
+// The builders it covers are every worker the plan itself gave a task: a build step's, a fix step's, and the fix tasks the round steps make
+// (fix_conflict, fix_checks, fix_commit); and the reviewer of a review task the plan's review or re_review step gave a worker, by the same rules
+// (a fresh reviewer is spawned from the plan's `review.spawn`).
+// Never taken for a task the plan did not give a worker (no such step) or a worker still alive.
 // The wake side judges each death from the rows alone (`verdict`): wait while a relaunch is due or in flight, ok once it is done, no when
 // it cannot or did not work. `holdDeaths` (release-eval.cjs enrichWakes) keeps a waiting death back for HOLD_MAX_MS; the run wait skips it
 // too. A death a relaunch handled is claimed, so no path returns it later.
@@ -21,17 +24,21 @@ const MAX_RELAUNCHES = 1; // a relaunch step per task; the second death of the s
 const HOLD_MAX_MS = 120000; // a death's wake waits this long for the relaunch step before it is sent anyway
 const REOPENED = /^E_(PAUSED|NOT_NOW)/; // a claim the executor reopens is not a taken relaunch, and not a failed one
 
+const FIX_STEPS = new Set(['fix', 'fix_conflict', 'fix_checks', 'fix_commit']); // the steps that make a fix task and hand it to the builder
+const REVIEW_STEPS = new Set(['review', 're_review']); // the steps that make a review task and hand it to a reviewer
 const isReview = (t) => !!(t.acceptance && t.acceptance.verdict === true);
 const reopened = (s) => s.outcome === 'skipped' && REOPENED.test(s.error || '');
 const stepsOf = (steps, runId) => (steps || []).filter((s) => s.run_id === runId);
 const relaunchesOf = (taskId, steps, runId) => stepsOf(steps, runId).filter((s) => s.step === 'relaunch' && s.task_id === taskId).sort((a, b) => Number(a.seq) - Number(b.seq));
 
-// The worker the plan gave this task: its latest done build step (a fix task: the done fix step that made it). null when the plan gave it none.
+// The worker the plan gave this task: its latest done build step (a fix task: the done fix step that made it; a review: the review step that made
+// it). null when the plan gave it none.
 function builderOf(x, steps, runId, rootId) {
   const mine = stepsOf(steps, runId).filter((s) => s.outcome === 'done' && s.worker_id);
+  if (isReview(x)) { const r = mine.filter((s) => REVIEW_STEPS.has(s.step) && s.row_ref === `task:${x.id}`).pop(); return r ? r.worker_id : null; }
   if (x.repairs) {
     const built = mine.some((s) => s.step === 'build' && s.task_id === rootId);
-    const f = mine.filter((s) => s.step === 'fix' && s.row_ref === `task:${x.id}`).pop();
+    const f = mine.filter((s) => FIX_STEPS.has(s.step) && s.row_ref === `task:${x.id}`).pop();
     return built && f ? f.worker_id : null;
   }
   const b = mine.filter((s) => s.step === 'build' && s.task_id === x.id).pop();
@@ -41,7 +48,7 @@ const used = (taskId, steps, runId) => relaunchesOf(taskId, steps, runId).filter
 
 // -> the worker whose death left task `x` open, when the plan may relaunch it (before the worker's row is looked at), else null.
 function builderToRelaunch(x, plan, steps, runId, rootId) {
-  if (isReview(x) || !plan || !plan.build || x.state !== 'open' || x.lease) return null;
+  if (!plan || !(isReview(x) ? plan.review : plan.build) || x.state !== 'open' || x.lease) return null; // `plan`: the plan of the work the task is (a review: of the work it judges)
   if (used(x.id, steps, runId) >= MAX_RELAUNCHES) return null;
   return builderOf(x, steps, runId, rootId);
 }
@@ -53,10 +60,10 @@ function due(x, plan, rev, snap, rootId) {
   const w = wid && snap.workers.find((r) => r.id === wid);
   if (!w || w.state !== 'dead') return null;
   if (typeof snap.isKilled === 'function' && snap.isKilled(w)) return null;
-  return { step: 'relaunch', task_id: x.id, root_id: rootId, trigger: { table: 'task', id: x.id, seq: Number(x.seq) || 0 }, policy_rev: rev, worker: wid, build: plan.build };
+  return { step: 'relaunch', task_id: x.id, root_id: rootId, trigger: { table: 'task', id: x.id, seq: Number(x.seq) || 0 }, policy_rev: rev, worker: wid, role: isReview(x) ? 'review' : 'build', cfg: isReview(x) ? plan.review : plan.build, ...(isReview(x) ? { tree_task: (Array.isArray(x.depends_on) ? x.depends_on : [])[0] || x.id } : {}) };
 }
 // Whether the pass need read worker rows at all: some task is open, unleased, and was given to a worker by the plan.
-const mayNeed = (tasks, steps, runId, rootOf) => tasks.some((x) => x.run_id === runId && builderToRelaunch(x, { build: true }, steps, runId, x.repairs ? rootOf(x).id : x.id));
+const mayNeed = (tasks, steps, runId, rootOf) => tasks.some((x) => x.run_id === runId && builderToRelaunch(x, { build: true, review: true }, steps, runId, x.repairs ? rootOf(x).id : x.id));
 
 const skipped = (error) => ({ outcome: 'skipped', error });
 const paused = (why) => ({ outcome: 'skipped', error: `E_PAUSED: ${why}; the claim is reopened and the step retaken after the resume` });
@@ -89,12 +96,12 @@ async function run(c, env) {
       why.push(`restart: ${errText(e)}`);
     }
   } else why.push('this run has no restart path');
-  const spawn = c.build && c.build.spawn ? c.build.spawn : null;
+  const spawn = c.cfg && c.cfg.spawn ? c.cfg.spawn : null;
   if (spawn && env.spawn) {
-    const wt = (await env.core.task.get({ task_id: c.task_id })).worktree;
+    const wt = (await env.core.task.get({ task_id: c.tree_task || c.task_id })).worktree; // a reviewer starts in the tree of the work it judges
     if (!wt || !wt.path || wt.removed_at) return skipped(`relaunch refused: ${why.join('; ')}; and ${c.task_id} has no belay worktree to start a coder in`);
     try {
-      const row = await env.spawn({ substrate: 'claude-code', worktree: wt.path, task_id: c.task_id, agent_type: spawn.agent_type, worker_id: `bld-${require('node:crypto').randomUUID().slice(0, 8)}` });
+      const row = await env.spawn({ substrate: 'claude-code', worktree: wt.path, task_id: c.task_id, agent_type: spawn.agent_type, worker_id: `${c.role === 'review' ? 'rev' : 'bld'}-${require('node:crypto').randomUUID().slice(0, 8)}` });
       const l = await holder();
       if (l && l.holder === (row && row.id)) return { outcome: 'done', row_ref: `lease:${l.id}`, spawned: row.id };
       why.push(`spawned ${row && row.id}, but it holds no lease on ${c.task_id}`);
@@ -112,11 +119,13 @@ async function run(c, env) {
 // `ctx`: { runId, tasks, steps, polOf(task) -> plan, rootOf(task) -> task, isKilled(workerId) }.
 function verdict(wid, ctx) {
   const { runId, tasks, steps } = ctx;
+  const byId = new Map(tasks.map((t) => [t.id, t]));
   let wait = false; let no = false; let ok = false;
   for (const x of tasks) {
-    if (x.run_id !== runId || isReview(x)) continue;
-    const plan = ctx.polOf(x);
-    if (!plan || !plan.build || builderOf(x, steps, runId, x.repairs ? ctx.rootOf(x).id : x.id) !== wid) continue;
+    if (x.run_id !== runId) continue;
+    const work = isReview(x) ? byId.get((Array.isArray(x.depends_on) ? x.depends_on : [])[0]) : x; // a review is relaunched under the plan of the work it judges
+    const plan = work && ctx.polOf(work);
+    if (!plan || !(isReview(x) ? plan.review : plan.build) || builderOf(x, steps, runId, x.repairs ? ctx.rootOf(x).id : x.id) !== wid) continue;
     const last = relaunchesOf(x.id, steps, runId).pop() || null;
     if (x.state === 'open' && !x.lease) {
       if (ctx.isKilled && ctx.isKilled(wid)) no = true;

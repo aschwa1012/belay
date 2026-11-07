@@ -71,6 +71,10 @@ function due(snap) {
       const pr = rf && x.state === 'released' ? planOf(x, byId) : null;
       const a = pr ? RF.action(x, pr.plan, rf) : null;
       if (a && a.step) out.push({ step: a.step, task_id: x.id, trigger: tref(x), policy_rev: pr.rev, worker: a.worker, prompt: a.prompt });
+      const wk = byId.get((Array.isArray(x.depends_on) ? x.depends_on : [])[0]); // a reviewer the plan gave this review died: relaunched once, like a builder (policy-relaunch.cjs)
+      const wp = wk && planOf(wk, byId);
+      const rr = wp ? require('./policy-relaunch.cjs').due(x, wp.plan, wp.rev, snap, PW.rootOf(wk, byId).id) : null;
+      if (rr) out.push(rr);
       continue;
     }
     const p = planOf(x, byId);
@@ -93,7 +97,7 @@ function due(snap) {
       out.push({ step: 'build', task_id: x.id, trigger: tref(x), policy_rev: rev, build: plan.build, worker: plan.build.worker || (plan.build.spawn && plan.build.spawn.worker_id) || null, from_run: (Array.isArray(x.depends_on) ? x.depends_on : []).some((d) => merged(byId.get(d) || {})), ...(capped ? { capped: true } : {}) });
     }
     // relaunch (E4): a builder the plan gave this task died and its row is dead; the plan restarts it once (policy-relaunch.cjs), under the build cap.
-    const rl = !x.repairs || plan.fix === 'builder' ? require('./policy-relaunch.cjs').due(x, plan, rev, snap, root.id) : null;
+    const rl = require('./policy-relaunch.cjs').due(x, plan, rev, snap, root.id);
     if (rl) { const capped = slots <= 0; if (!capped) slots -= 1; out.push(capped ? { ...rl, capped: true } : rl); }
     // review: the work is done on a release evaluation, nothing reviews it, and the plan names who does (a worker, or a spawn).
     if (!x.repairs && plan.review && x.state === 'done' && isRelease(x) && !(rf && RF.commitHeld(x, rf)) && !(reviewsOf.get(x.id) || []).filter((r) => !leftOver(r)).length && !(x.review && x.review.review_id && !leftOver(byId.get(x.review.review_id)))) { // a review a paused step made and did not hand over does not count: the retake hands it over
