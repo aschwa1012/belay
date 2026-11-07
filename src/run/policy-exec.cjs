@@ -56,7 +56,7 @@ function due(snap) {
   const built = new Set((snap.steps || []).filter((s) => s.run_id === runId && s.step === 'build' && (s.outcome === 'done' || s.outcome === 'started' || s.outcome === 'superseded')).map((s) => s.task_id));
   const mergedOk = (d) => merged(d) && d.integration.passed !== false && d.integration.checks_passed !== false; // landed, and its integration's checks did not fail
   const depReady = (d) => !!d && d.state === 'done' && (!(PW.policyOf(d, byId) || {}).integrate || mergedOk(d));
-  const rf = snap.rounds ? RF.ctxOf({ runId, tasks: all, steps: snap.roundSteps || snap.steps, failures: snap.failures, caps: snap.rounds.caps, integrations: snap.integrations }) : null; // failures the plan carries as rounds (policy-rounds.cjs)
+  const rf = snap.rounds ? RF.ctxOf({ runId, now: snap.now, tasks: all, steps: snap.roundSteps || snap.steps, failures: snap.failures, caps: snap.rounds.caps, integrations: snap.integrations }) : null; // failures the plan carries as rounds (policy-rounds.cjs)
   let slots = Number.isInteger(snap.maxBuilds) ? snap.maxBuilds - tasks.filter((t) => !isReviewTask(t) && t.lease && !t.lease.expired && t.state !== 'done').length : Infinity;
   const reviewsOf = new Map(); // task id -> the reviews (not cancelled) that depend on it
   for (const t of tasks) if (isReviewTask(t)) for (const d of Array.isArray(t.depends_on) ? t.depends_on : []) reviewsOf.set(d, (reviewsOf.get(d) || []).concat(t));

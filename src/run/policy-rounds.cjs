@@ -33,13 +33,19 @@ const rootOf = (t, byId) => { for (let n = 0; t && t.repairs && byId.get(t.repai
 const reopened = (s) => s.outcome === 'skipped' && /^E_(PAUSED|NOT_NOW)/.test(s.error || ''); // a skip the claim reopens took nothing
 const clean = (s, n) => String(s == null ? '' : s).replace(/[\x00-\x1f\x7f]+/g, ' ').trim().slice(0, n);
 
-const capsOf = (run) => ({ max: run && run.max_fix_rounds != null ? Number(run.max_fix_rounds) : null, hard: run && run.fix_hard_cap != null ? Number(run.fix_hard_cap) : null });
+// A run that states neither lever gets the documented max_fix_rounds default (2): the rounds are never unbounded.
+const DEFAULT_MAX = 2;
+const capsOf = (run) => {
+  const hard = run && run.fix_hard_cap != null ? Number(run.fix_hard_cap) : null;
+  return { max: run && run.max_fix_rounds != null ? Number(run.max_fix_rounds) : (hard == null ? DEFAULT_MAX : null), hard };
+};
+const WAIT_MAX_MS = 120000; // how long a failure waits for the run's other evaluations before it is run (or sent back) anyway
 
 // `snap`: { runId, tasks (task.list rows, every run), steps, failures (release_failed events), caps, integrations }.
 function ctxOf(snap) {
   const { runId } = snap;
   return {
-    runId, byId: new Map((snap.tasks || []).map((t) => [t.id, t])),
+    runId, now: snap.now != null ? Number(snap.now) : Date.now(), byId: new Map((snap.tasks || []).map((t) => [t.id, t])),
     tasks: (snap.tasks || []).filter((t) => t.run_id === runId),
     steps: (snap.steps || []).filter((s) => s.run_id === runId),
     failures: snap.failures || [], caps: snap.caps || { max: null, hard: null },
@@ -57,12 +63,15 @@ const left = (rf, rootId) => { const u = used(rf, rootId); const { max, hard } =
 const capFact = (rf, rootId, cause, last) => ({ cap: true, used: used(rf, rootId), max: rf.caps.max != null ? rf.caps.max : rf.caps.hard, cause, last: clean(last, 80) });
 const lastLine = (r) => { const c = failing(r).find((k) => k.detail && (k.detail.stderr_tail || k.detail.stdout_tail)); const t = c ? String(c.detail.stderr_tail || c.detail.stdout_tail).split('\n').map((l) => l.trim()).filter(Boolean).pop() : ''; return t || names(r); };
 
-// Whether another evaluation of the run is running or queued: a hand-back not yet evaluated (and not known lost), or a re-run in flight.
-function othersEvaluating(x, rf) {
-  const ev = (t) => t.results && t.results.trigger === 'release' && Number(t.results.evaluated_at) >= Number(t.handoff.at);
+// Whether another evaluation of the run is running or queued: a hand-back not yet evaluated (not a stand-down, which is never evaluated, and not known lost),
+// or a re-run in flight. Bounded: `since` is when the failure was evaluated, and past WAIT_MAX_MS it no longer waits (an evaluation lost with its adapter
+// would otherwise hold it for ever).
+function othersEvaluating(x, rf, since) {
+  if (rf.now - Number(since || 0) > WAIT_MAX_MS) return false;
+  const ev = (t) => t.results && Number(t.results.evaluated_at) >= Number(t.handoff.at);
   const lost = (t) => rf.failures.some((f) => f.task_id === t.id && Number(f.written_at) >= Number(t.handoff.at));
   return rf.steps.some((s) => RERUN_STEPS.has(s.step) && s.outcome === 'started')
-    || rf.tasks.some((t) => t.id !== x.id && t.state === 'released' && t.handoff && !ev(t) && !lost(t));
+    || rf.tasks.some((t) => t.id !== x.id && t.state === 'released' && t.handoff && !t.handoff.stood_down && !ev(t) && !lost(t));
 }
 
 function names(r) {
@@ -89,17 +98,17 @@ function action(x, P, rf) {
   if (own && !r.passed) {
     if (cleanRefutation(r)) return null; // the review's refutation: the fix step answers it
     if (isReviewTask(x)) {
-      if (r.executable !== false || mine('reask').length >= REASK_MAX) return null;
+      if (P.fix !== 'builder' || r.executable !== false || mine('reask').length >= REASK_MAX) return null;
       return { step: 'reask', worker: handBy(x), prompt: `belay: your hand-back of review ${x.id} carried no verdict. Judge the work and release the review with your verdict.` };
     }
     if (P.fix !== 'builder') return null;
-    if (failing(r).some((c) => beside(c) > 0) && !since('rerun_alone').length) return othersEvaluating(x, rf) ? { wait: true } : { step: 'rerun_alone', worker: handBy(x) };
+    if (failing(r).some((c) => beside(c) > 0) && !since('rerun_alone').length) return othersEvaluating(x, rf, r.evaluated_at) ? { wait: true } : { step: 'rerun_alone', worker: handBy(x) };
     return round('fix_eval', 'tests red', `belay: your hand-back of task ${x.id} failed belay's own evaluation (${clean(`${names(r)}: ${lastLine(r)}`, 220)}). Fix it in your worktree, commit, and release the task again.`, lastLine(r));
   }
   if (!own && !isReviewTask(x) && P.fix === 'builder') {
     const f = rf.failures.filter((e) => e.task_id === x.id && e.code !== 'E_CANCELLED' && Number(e.written_at) >= hand).sort((a, b) => Number(a.seq) - Number(b.seq)).pop();
     if (!f) return null;
-    if (!since('rerun_eval').length) return othersEvaluating(x, rf) ? { wait: true } : { step: 'rerun_eval', worker: handBy(x) };
+    if (!since('rerun_eval').length) return othersEvaluating(x, rf, f.written_at) ? { wait: true } : { step: 'rerun_eval', worker: handBy(x) };
     return round('fix_run', 'eval could not run', `belay: belay could not evaluate your hand-back of task ${x.id} (${clean(f.code, 40)}), here or on a second try. Make sure your work is committed, and release the task again.`, f.code);
   }
   return null;

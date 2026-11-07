@@ -30,7 +30,11 @@ async function rerun(c, env) {
   const tree = (w && w.worktree) || (cur.worktree && cur.worktree.path && !cur.worktree.removed_at ? cur.worktree.path : null);
   if (!tree) return { outcome: 'skipped', error: `${c.task_id} has no worktree to evaluate in` };
   let row;
-  try { row = await env.core.task.evaluate({ task_id: c.task_id, worktree: tree, trigger: 'release' }); } catch (e) { return { outcome: 'skipped', error: `the re-run did not finish: ${S.errText(e)}` }; }
+  try { row = await env.core.task.evaluate({ task_id: c.task_id, worktree: tree, trigger: 'release' }); } catch (e) {
+    // A queue refusal says nothing about the work: the claim is reopened (E_NOT_NOW) and the re-run is taken again, not a round that tells the builder to commit.
+    if (e && (e.code === 'E_BUSY' || e.code === 'E_TIMEOUT')) return { outcome: 'skipped', error: `E_NOT_NOW: the evaluation could not start (${S.errText(e).slice(0, 120)}); the re-run is taken again` };
+    return { outcome: 'skipped', error: `the re-run did not finish: ${S.errText(e)}` };
+  }
   return { outcome: 'done', row_ref: `task:${row.id}` };
 }
 

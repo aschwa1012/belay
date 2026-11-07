@@ -149,7 +149,7 @@ function derive(snap) {
   const tref = (t) => ({ table: 'task', id: t.id, seq: Number(t.seq) || 0 });
   const fails = snap.failures || [];
   // Under `snap.rounds` (the caps) the failures policy-rounds.cjs carries as rounds are not exceptions while the plan can take them; E2 wakes at the cap.
-  const rf = snap.rounds ? RF.ctxOf({ runId, tasks: snap.tasks, steps: snap.steps, failures: fails, caps: snap.rounds.caps, integrations: snap.integrations }) : null;
+  const rf = snap.rounds ? RF.ctxOf({ runId, now: snap.now, tasks: snap.tasks, steps: snap.steps, failures: fails, caps: snap.rounds.caps, integrations: snap.integrations }) : null;
   const planFor = (t) => { const plan = policyOf(t, byId); return plan ? { plan, rev: null } : null; };
 
   for (const x of tasks) {

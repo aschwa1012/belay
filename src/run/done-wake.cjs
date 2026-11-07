@@ -53,7 +53,7 @@ function doneOf(snap, exceptions = []) {
   const newest = (snap.integrations || []).filter((i) => i.run_id === runId && i.into_branch === own).reduce((a, b) => (!a || Number(b.seq) > Number(a.seq) ? b : a), null);
   if (integrates && (!newest || !['merged', 'evaluated'].includes(newest.state) || newest.passed === false)) return null; // evaluated: merged, then its checks ran on the head
   if (PW.haltedIds(exceptions, all).size) return null;
-  if (due({ runId, tasks: all, integrations: snap.integrations || [], steps: snap.steps || [] }).length) return null;
+  if (due({ runId, tasks: all, integrations: snap.integrations || [], steps: snap.steps || [], rounds: snap.rounds, failures: snap.failures }).length) return null;
   if ((snap.steps || []).some((s) => s.run_id === runId && s.outcome === 'started')) return null;
   const n = work.length;
   // Should-fix findings a held review left with no follow-up (the run's max_follow_ups was reached, or the plan has no follow_up): named, not waking.

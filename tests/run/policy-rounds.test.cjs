@@ -118,9 +118,9 @@ test('C1: a lost evaluation, run again and still lost, is a fix round naming the
   assert.match(next[0].prompt, /could not evaluate your hand-back of task W \(E_BUSY\).*Fix round 1 of 2\./);
   const going = tried.map((s) => ({ ...s, outcome: 'started', error: null }));
   assert.deepStrictEqual(due({ ...lost, tasks: [W], steps: going, failures }), [], 'the re-run in flight: nothing else is due');
-  const env = { core: { task: { get: async () => W, evaluate: async () => { throw Object.assign(new Error('queue full'), { code: 'E_BUSY' }); } }, worker: { list: async () => ({ workers: [{ id: 'b1', worktree: '/w' }] }) } } };
+  const env = { core: { task: { get: async () => W, evaluate: async () => { throw Object.assign(new Error('worktree gone'), { code: 'E_INTERNAL' }); } }, worker: { list: async () => ({ workers: [{ id: 'b1', worktree: '/w' }] }) } } };
   const res = await RR.RUNNERS.rerun_eval({ step: 'rerun_eval', task_id: 'W' }, env);
-  assert.deepStrictEqual([res.outcome, /^the re-run did not finish: E_BUSY/.test(res.error)], ['skipped', true]);
+  assert.deepStrictEqual([res.outcome, /^the re-run did not finish: E_INTERNAL/.test(res.error)], ['skipped', true]);
   const spent = { ...lost, rounds: { caps: { max: 0, hard: null } } };
   assert.deepStrictEqual(due({ ...spent, tasks: [W], steps: tried, failures }), [], 'at the cap nothing is due (the wake is E2)');
 });
@@ -233,7 +233,7 @@ test('C3: a conflict at integrate is a fix task for the builder; when it is done
     const again = await e.tick();
     assert.deepStrictEqual(names(again), [['integrate', b.id, 'done']], 'the merge is retried with the fix, not re-reviewed');
     assert.strictEqual((await M.rowOf(e, b.id)).integration.state, 'merged');
-    assert.deepStrictEqual(await e.poll(), []);
+    assert.deepStrictEqual((await e.poll()).map((w) => w.event), ['policy_done'], 'the one routine wake: implementation done, now that the retried merge landed');
     assert.ok(a.id);
   } finally { await e.close(); }
 });
@@ -279,7 +279,7 @@ test('C3: failed integration checks are a fix task for the builder; when it is d
     assert.strictEqual((await handBackFix(e, fix.id)).state, 'done');
     assert.deepStrictEqual(names(await e.tick()), [['integrate', b.t.id, 'done']], 'tried again with the fix');
     assert.deepStrictEqual([(await newest()).state, (await newest()).passed], ['evaluated', true]);
-    assert.deepStrictEqual((await e.poll()).filter((w) => w.exception !== 'E7'), []);
+    assert.deepStrictEqual((await e.poll()).map((w) => w.event), ['policy_done']);
   } finally { await e.close(); }
 });
 
@@ -382,7 +382,7 @@ test('C3: nothing is merged onto a red branch: the next work waits until the fai
     assert.strictEqual((await handBackFix(e, fix.id)).state, 'done');
     assert.deepStrictEqual(names(await e.tick()), [['integrate', b.t.id, 'done']], 'b is merged again first');
     assert.deepStrictEqual(names(await e.tick()), [['integrate', c.t.id, 'done']], 'then c');
-    assert.deepStrictEqual((await e.poll()).filter((w) => w.exception !== 'E7'), []);
+    assert.deepStrictEqual((await e.poll()).map((w) => w.event), ['policy_done']);
   } finally { await e.close(); }
 });
 
@@ -406,6 +406,53 @@ test('C3: an E8 on failed integration checks lifts when a later merge of that wo
     assert.ok(!(await M.halted(e)).has(b.t.id), 'the halt lifted with the passing merge');
     assert.ok(a.t.id);
   } finally { await e.close(); }
+});
+
+const failBeside = { trigger: 'release', evaluated_at: 20, executable: true, passed: false, checks: [{ kind: 'command', argv: ['node', '--test'], passed: false, exit_code: 1, concurrent: ['B'] }] };
+const beside = (over = {}) => ({ runId: 'r1', integrations: [], steps: [], failures: [], rounds: { caps: { max: 2, hard: null } }, now: 30, ...over });
+
+test('C2: a failure beside another evaluation waits only for a real one: a stand-down or an evaluation lost long ago does not hold it', () => {
+  const A = T('A', { seq: 10, state: 'released', policy: PLAN, policy_rev: 1, handoff: { by: 'b1', at: 10 }, results: failBeside });
+  const standDown = T('B', { seq: 11, state: 'released', policy: PLAN, policy_rev: 1, handoff: { by: 'b2', at: 12, stood_down: 'cannot do it' } });
+  assert.deepStrictEqual(due(beside({ tasks: [A, standDown] })).map((c) => c.step), ['rerun_alone'], 'a stand-down is never evaluated: it is not in flight');
+  const pending = T('B', { seq: 11, state: 'released', policy: PLAN, policy_rev: 1, handoff: { by: 'b2', at: 12 } });
+  assert.deepStrictEqual(due(beside({ tasks: [A, pending] })), [], 'a hand-back being evaluated: wait');
+  assert.deepStrictEqual(due(beside({ tasks: [A, pending], now: 20 + 120001 })).map((c) => c.step), ['rerun_alone'], 'past the bound it no longer waits for an evaluation that never lands');
+  const byHand = { ...pending, results: { evaluated_at: 25, executable: true, passed: true, checks: [] } };
+  assert.deepStrictEqual(due(beside({ tasks: [A, byHand] })).map((c) => c.step), ['rerun_alone'], 'evaluated by the orchestrator, without the release trigger: done being evaluated');
+});
+
+test('C1: a reviewer with no verdict is asked again only under a plan with a fix step', () => {
+  const R = (plan) => T('R', { seq: 20, state: 'released', policy: plan, policy_rev: 1, acceptance: { verdict: true }, handoff: { by: 'rv', at: 10 }, results: { trigger: 'release', evaluated_at: 20, executable: false, passed: false, checks: [{ kind: 'verdict', executable: false, passed: false }] } });
+  assert.deepStrictEqual(due(beside({ tasks: [R(PLAN)] })).map((c) => c.step), ['reask']);
+  assert.deepStrictEqual(due(beside({ tasks: [R({ ...PLAN, fix: undefined })] })), [], 'no fix step: the E5 wake as before');
+});
+
+test('the rounds are never unbounded: a run that states neither lever gets the default of 2', () => {
+  assert.deepStrictEqual(RF.capsOf({}), { max: 2, hard: null });
+  assert.deepStrictEqual(RF.capsOf({ max_fix_rounds: 5 }), { max: 5, hard: null });
+  assert.deepStrictEqual(RF.capsOf({ fix_hard_cap: 3 }), { max: null, hard: 3 });
+});
+
+test('C1: a queue refusal on the re-run reopens the claim: it is taken again, and is not a round that tells the builder to commit', async () => {
+  const W = T('W', { state: 'released', policy: PLAN, policy_rev: 1, handoff: { by: 'b1', at: 10 } });
+  const env = { core: { task: { get: async () => W, evaluate: async () => { throw Object.assign(new Error('queue full'), { code: 'E_BUSY' }); } }, worker: { list: async () => ({ workers: [{ id: 'b1', worktree: '/w' }] }) } } };
+  const res = await RR.RUNNERS.rerun_eval({ step: 'rerun_eval', task_id: 'W' }, env);
+  assert.deepStrictEqual([res.outcome, /^E_NOT_NOW/.test(res.error)], ['skipped', true]);
+  const failures = [{ id: 'f1', seq: 7, task_id: 'W', code: 'E_BUSY', written_at: 30 }];
+  const tried = [{ seq: 1, run_id: 'r1', task_id: 'W', step: 'rerun_eval', trigger_table: 'task', trigger_id: 'W', trigger_seq: 100, outcome: 'skipped', error: res.error, at: 40, finished_at: 41 }];
+  assert.deepStrictEqual(due(beside({ tasks: [W], steps: tried, failures })).map((c) => c.step), ['rerun_eval'], 'not fix_run');
+});
+
+test('the done wake sees the rounds: it is not done while a retried merge is due', () => {
+  const { doneOf } = require('../../src/run/done-wake.cjs');
+  const rows = (R, extra) => ({ runId: 'r1', ...extra });
+  const W = T('W', { state: 'done', policy: PLAN, policy_rev: 1, handoff: { by: 'b1', at: 10 }, results: { trigger: 'release', evaluated_at: 20, executable: true, passed: true, checks: [], head_sha: 'a1', flaky: true }, review: { state: 'holds', review_id: 'R' }, integration: { state: 'merged' } });
+  const R = T('R', { state: 'done', depends_on: ['W'], acceptance: { verdict: true }, results: { trigger: 'release', evaluated_at: 21, executable: true, passed: true, checks: [{ kind: 'verdict', executable: true, passed: true }] } });
+  const ints = [{ id: 'I', run_id: 'r1', seq: 5, into_branch: 'belay/integrate/r1', state: 'evaluated', passed: true, head_sha: 'abc', task_ids: ['W'], acted_by: 'policy' }];
+  const base = { ...rows(null, {}), tasks: [W, R], integrations: ints, steps: [] };
+  assert.ok(doneOf(base), 'without the rounds the flaky note is invisible, as before');
+  assert.strictEqual(doneOf({ ...base, rounds: { caps: { max: 2, hard: null } }, failures: [] }), null, 'with them, the note is still due: not done yet');
 });
 
 test('the plan is what carries it: a plan with no fix step still wakes E5, and the integrate step still ends an exception on failed checks', async () => {
