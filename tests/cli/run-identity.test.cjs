@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1'; // ADR 0034: a run here has no model to warm
 // run-identity.test.cjs — ADR 0045 decisions 4 and 7 end to end, against the production run configuration (audit D06): `belay run`
 // as a subprocess, its owner as that CLI elected it, a worker the run manager launched, and a child of that worker (a stand-in for
@@ -33,9 +34,9 @@ test('run: a worker\'s child cannot claim the operator on the run\'s owner, and 
     core = await connectOrchestratorCore(dataDir, runId);
     m = createRunManager({ core, dataDir, runId, paths: { claudeExe: FAKE_CLAUDE, userSettings: USER_SETTINGS } });
     const wt = `${dir}/w1-wt`; fs.mkdirSync(wt, { recursive: true });
-    Object.assign(process.env, { FAKE_SPAWN_SCRIPT: FORGE, FORGE_DATA_DIR: dataDir, FORGE_RUN_ID: runId, FORGE_WORKER_ID: 'w1', FORGE_OUT: out });
+    Object.assign(process.env, { FAKE_SPAWN_SCRIPT: FORGE, FAKE_FORGE_DATA_DIR: dataDir, FAKE_FORGE_RUN_ID: runId, FAKE_FORGE_WORKER_ID: 'w1', FAKE_FORGE_OUT: out });
     try { worker = await m.spawn({ substrate: 'claude-code', worktree: wt, prompt: 'hello', worker_id: 'w1' }); }
-    finally { for (const k of ['FAKE_SPAWN_SCRIPT', 'FORGE_DATA_DIR', 'FORGE_RUN_ID', 'FORGE_WORKER_ID', 'FORGE_OUT']) delete process.env[k]; }
+    finally { for (const k of ['FAKE_SPAWN_SCRIPT', 'FAKE_FORGE_DATA_DIR', 'FAKE_FORGE_RUN_ID', 'FAKE_FORGE_WORKER_ID', 'FAKE_FORGE_OUT']) delete process.env[k]; }
 
     const done = await waitUntil(() => (fs.existsSync(out) ? true : null), 120000, 200);
     assert.ok(done, 'the worker\'s child never finished its attempts');

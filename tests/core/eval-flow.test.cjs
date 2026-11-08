@@ -9,7 +9,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
-const { makeRepo, git, write, commit, rejectsCode } = require('./worktree-helpers.cjs');
+const { makeRepo, git, write, commit, rejectsCode, stageRuns } = require('./worktree-helpers.cjs');
 const RE = require('../../src/run/release-eval.cjs');
 
 const { openCore } = core('index.cjs');
@@ -23,6 +23,7 @@ before(async () => {
   repo = makeRepo(dir);
   orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
   await orch.run.attach({ adapter_pid: process.pid, project_dir: repo });
+  await stageRuns(`${dir}/data`, ["suite"]);
 });
 
 after(async () => {
@@ -111,7 +112,7 @@ test('gap 10: the failing-test section survives a long output, in task.evaluate 
   commit(t.worktree.path, 'suite');
   await handBack(t.id, t.worktree.path);
   assert.strictEqual((await orch.task.evaluate({ task_id: t.id })).state, 'done');
-  const row = await orch.integration.merge({ task_ids: [t.id], into: 'int/suite' });
+  const row = await orch.integration.merge({ task_ids: [t.id], into: 'belay/integrate/suite' });
   assert.strictEqual(row.checks[0].passed, false);
   assert.match(row.checks[0].stdout_tail, /✖ failing tests:[\s\S]*the-broken-test-name/);
   // The same text through task.evaluate's capture keeps it too.

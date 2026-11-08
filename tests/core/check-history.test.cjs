@@ -110,7 +110,7 @@ test('the integrate answer names each merged task\'s checks and the change an am
 });
 
 test('a carried task and a forced task are named once each', async () => {
-  const repo = makeRepo(dir), into = 'int/check-history';
+  const repo = makeRepo(dir), into = 'belay/integrate/test-run';
   const a = await work(repo, { 'a.txt': 'a\n' }, [exists('a.txt')]);
   const r1 = await orch.integration.merge({ task_ids: [a.id], into });
   assert.deepStrictEqual(r1.task_checks.map((l) => l.split(' ')[0]), [a.id]);

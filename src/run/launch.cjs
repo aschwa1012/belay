@@ -24,7 +24,7 @@ const DEFAULT_ALLOWED_TOOLS = ['Read', 'Edit', 'Write', 'Glob', 'Grep', 'Bash', 
 const DEFAULT_PERMISSION_MODE = 'auto';
 // ADR 0028 decision 1: the levels `--effort` takes; a worker's level is a spawn argument.
 const { EFFORT_LEVELS, ORCHESTRATOR_MODEL } = require('./agent-defaults.cjs');
-const DEFAULT_CODEX_SANDBOX = 'workspace-write';
+const { DEFAULT_CODEX_SANDBOX, codexMcpArgs, codexLaunchArgv, codexResumeArgv } = require('./codex-argv.cjs'); // moved whole (500-line rule); re-exported below
 const WORKER_NAME_PREFIX = 'belay-';
 
 const { SCRUB_EXACT, SCRUB_PREFIXES, SCRUB_CWD, CODEX_RUST_LOG, buildEnv, fwd } = require('./env.cjs'); // moved whole (500-line rule)
@@ -32,7 +32,7 @@ const { SCRUB_EXACT, SCRUB_PREFIXES, SCRUB_CWD, CODEX_RUST_LOG, buildEnv, fwd } 
 // build step 6d: moved verbatim to wire-log.cjs (the 500-line rule) and re-exported below unchanged.
 const { wireLogPath, wireLogHasToolsList, WIRE_LOG_NAME, TOOLS_LIST } = require('./wire-log.cjs');
 const S = require('./surface.cjs'); // ADR 0024: the tool list, setting-sources and cwd hygiene.
-const KG = require('./kill-guard.cjs'); // ADR 0024 amendment 7: the PreToolUse hook that refuses kill-by-name
+const guardHooks = require('./guard.cjs').hooksBlock; // ADR 0024 amendment 7 and ADR 0084: one PreToolUse hook that refuses kill-by-name and a write to the drive-root \tmp
 const CP = require('./compaction.cjs'); // ADR 0007 decision 3: the compact_at_tokens lever's hooks block
 
 
@@ -120,7 +120,7 @@ function mcpConfig({ workerId, runId, dataDir, mcpPath, logPath = null, permit =
 function readPluginConfig(settingsPath) {
   const p = settingsPath || userSettingsPath();
   try {
-    const parsed = JSON.parse(fs.readFileSync(p, 'utf8'));
+    const parsed = JSON.parse(fs.readFileSync(p, 'utf8').replace(/^\uFEFF/, ''));
     const names = parsed && parsed.enabledPlugins;
     if (names && typeof names === 'object') return { names: Object.keys(names), read: true, path: p, error: null };
     return { names: [], read: true, path: p, error: null };
@@ -159,7 +159,7 @@ function writeWorkerFiles({ dir, workerId, runId, dataDir, mcpPath, settingsPath
     JSON.stringify(mcpConfig({ workerId, runId, dataDir, mcpPath, logPath, permit, permitWaitMs, notes, bind }), null, 2) + '\n'
   );
   const plugins = readPluginConfig(settingsPath);
-  const hooks = { ...(CP.hooksBlock({ dir, compactAt }) || {}), ...KG.hooksBlock() }; // the kill guard always; the compaction hooks only with the lever on
+  const hooks = { ...(CP.hooksBlock({ dir, compactAt }) || {}), ...guardHooks({ push: true }) }; // the guard hook always, with the push check (ADR 0085: a worker, not the orchestrator); the compaction hooks only with the lever on
   fs.writeFileSync(workerSettingsPath, JSON.stringify({ ...workerSettings(plugins.names, { cwd, nativeMemory }), hooks }, null, 2) + '\n');
   return { mcpJsonPath, settingsPath: workerSettingsPath, plugins };
 }
@@ -219,65 +219,6 @@ function claudeLaunchArgv(opts) {
   if (permissionPromptTool) argv.push('--permission-prompt-tool', `mcp__${MCP_SERVER_NAME}__permit`);
   if (appendSystemPromptFile) argv.push('--append-system-prompt-file', fwd(appendSystemPromptFile));
   if (resumeSessionId) argv.push('--resume', resumeSessionId);
-  return argv;
-}
-
-// MCP for Codex is configured through -c key=value pairs, not a config file. `args` is a TOML array,
-// which is JSON-shaped for a list of strings. WR-5: tools must be pre-approved or every call is
-// refused under approval_policy="never".
-function codexMcpArgs(adapterArgs) {
-  const argsToml = JSON.stringify(adapterArgs.map(fwd));
-  return [
-    '-c',
-    'approval_policy="never"',
-    '-c',
-    `mcp_servers.${MCP_SERVER_NAME}.command="${fwd(process.execPath)}"`,
-    '-c',
-    `mcp_servers.${MCP_SERVER_NAME}.args=${argsToml}`,
-    '-c',
-    `mcp_servers.${MCP_SERVER_NAME}.default_tools_approval_mode="approve"`,
-  ];
-}
-
-function codexLaunchArgv(opts) {
-  const {
-    worktree,
-    adapterArgs,
-    prompt,
-    sandbox = DEFAULT_CODEX_SANDBOX,
-    model = null,
-    scratchDir = null,
-  } = opts;
-  const argv = [
-    'exec',
-    '--json',
-    '-C',
-    fwd(worktree),
-    '--skip-git-repo-check',
-    '-s',
-    sandbox,
-    ...codexMcpArgs(adapterArgs),
-  ];
-  if (scratchDir) argv.push('--add-dir', fwd(scratchDir)); // a reviewer's scratch folder lies outside the worktree, the only root workspace-write opens: add that one folder
-  if (model) argv.push('-m', model);
-  argv.push('--', prompt); // after `--` the text is the prompt: one that starts with `-` is not an option, and `review` or `resume` not a subcommand
-  return argv;
-}
-
-// ADR 0008 §6: `exec resume` is a strict subset of `exec`. No -C and no -s; the working directory is
-// supplied through the spawn's own cwd option. Passing either exits 2 at the parse layer in ~76 ms.
-function codexResumeArgv(opts) {
-  const { threadId, adapterArgs, prompt, model = null } = opts;
-  const argv = [
-    'exec',
-    'resume',
-    threadId,
-    '--json',
-    '--skip-git-repo-check',
-    ...codexMcpArgs(adapterArgs),
-  ];
-  if (model) argv.push('-m', model);
-  argv.push('--', prompt);
   return argv;
 }
 
@@ -357,7 +298,7 @@ function writeOrchestratorFiles({ dir, runId, dataDir, mcpPath, settingsPath, lo
   // context experiment that is not hygiene but the measurement itself — a plugin's hooks would
   // inject bytes into the very token series being compared.
   const plugins = readPluginConfig(settingsPath);
-  fs.writeFileSync(orchSettingsPath, JSON.stringify({ ...workerSettings(plugins.names, { cwd }), ...(killGuard ? { hooks: KG.hooksBlock() } : {}) }, null, 2) + '\n'); // headless only: the interactive orchestrator is the operator's own session
+  fs.writeFileSync(orchSettingsPath, JSON.stringify({ ...workerSettings(plugins.names, { cwd }), ...(killGuard ? { hooks: guardHooks() } : {}) }, null, 2) + '\n'); // headless only: the interactive orchestrator is the operator's own session
   return { mcpJsonPath, settingsPath: orchSettingsPath, plugins, dir: outDir };
 }
 

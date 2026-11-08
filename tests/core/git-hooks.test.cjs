@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // git-hooks.test.cjs — belay's merge and worktree add run the repository's git hooks. A rejection names the hook and its output
 // tail, a real conflict stays a conflict, and a hook that changed the merged files is reported, never blocked or reverted.
 // Real git in throwaway repositories, with real hook scripts (git runs them through its bundled sh).
@@ -8,7 +9,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
-const { makeRepo, git, write, commit, rejectsCode } = require('./worktree-helpers.cjs');
+const { makeRepo, git, write, commit, rejectsCode, stageRuns } = require('./worktree-helpers.cjs');
 
 const { openCore } = core('index.cjs');
 const H = core('git-hooks.cjs');
@@ -20,6 +21,7 @@ before(async () => {
   dir = sandbox();
   orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
   await orch.run.attach({ adapter_pid: process.pid });
+  await stageRuns(`${dir}/data`, ["conflict", "edit", "msg", "plain", "pre", "rewrite"]);
   op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
 });
 
@@ -53,7 +55,7 @@ test('a pre-merge-commit hook that exits 1 is named, with its output tail, and t
   const repo = makeRepo(dir);
   const a = await doneTask(repo, { 'a.txt': 'a\n' });
   hook(repo, 'pre-merge-commit', ['echo "lint: a.txt is not allowed" >&2', 'exit 1']);
-  const row = await orch.integration.merge({ task_ids: [a.id], into: 'int/pre' });
+  const row = await orch.integration.merge({ task_ids: [a.id], into: 'belay/integrate/pre' });
   assert.strictEqual(row.state, 'failed');
   assert.strictEqual(row.conflict, null);
   assert.match(row.error.message, /your pre-merge-commit hook rejected the merge of task /);
@@ -69,7 +71,7 @@ test('a commit-msg hook that exits 1 is named as commit-msg, not as the merge ho
   const a = await doneTask(repo, { 'a.txt': 'a\n' });
   hook(repo, 'pre-merge-commit', ['exit 0']);
   hook(repo, 'commit-msg', ['echo "subject must not name belay" >&2', 'exit 1']);
-  const row = await orch.integration.merge({ task_ids: [a.id], into: 'int/msg' });
+  const row = await orch.integration.merge({ task_ids: [a.id], into: 'belay/integrate/msg' });
   assert.strictEqual(row.state, 'failed');
   assert.match(row.error.message, /your commit-msg hook rejected the merge of task /);
   assert.match(row.error.message, /subject must not name belay/);
@@ -95,7 +97,7 @@ test('a post-merge hook that amends the merge commit is reported with the files,
     'blob=$(echo stamped | git hash-object -w --stdin)', 'git update-index --add --cacheinfo 100644,$blob,a.txt',
     'c=$(git commit-tree $(git write-tree) -p HEAD^1 -p HEAD^2 -m amended)', 'git update-ref HEAD $c', 'rm -f "$GIT_INDEX_FILE"',
   ]);
-  const row = await orch.integration.merge({ task_ids: [a.id], into: 'int/rewrite' });
+  const row = await orch.integration.merge({ task_ids: [a.id], into: 'belay/integrate/rewrite' });
   assert.ok(row.hook_changed_tree, 'hook_changed_tree is on the result');
   const h = row.hook_changed_tree;
   assert.strictEqual(h.task_id, a.id);
@@ -116,7 +118,7 @@ test('a pre-merge-commit hook that edits a file leaves it uncommitted: reported,
   const a = await doneTask(repo, { 'a.txt': 'a\n' });
   const b = await doneTask(repo, { 'b.txt': 'b\n' });
   hook(repo, 'pre-merge-commit', ['echo "stamped" >> a.txt']);
-  const row = await orch.integration.merge({ task_ids: [a.id, b.id], into: 'int/edit' });
+  const row = await orch.integration.merge({ task_ids: [a.id, b.id], into: 'belay/integrate/edit' });
   const h = row.hook_changed_tree;
   assert.ok(h);
   assert.deepStrictEqual(h.files, []);
@@ -125,11 +127,11 @@ test('a pre-merge-commit hook that edits a file leaves it uncommitted: reported,
   assert.strictEqual(h.judged_tree, h.merged_tree);
   assert.strictEqual(row.state, 'failed');
   assert.strictEqual(row.checks, null, 'no check ran on a tree holding edits that never landed');
-  assert.strictEqual(row.passed, null);
+  assert.strictEqual(row.passed, false, 'a stopped step is not passed');
   assert.strictEqual(row.error.tree_clean, false);
   assert.match(row.error.message, /your pre-merge-commit hook left uncommitted edits/);
   assert.deepStrictEqual(row.merged.map((m) => m.task_id), [a.id], 'nothing more was merged on the dirty tree');
-  const e = await rejectsCode(orch.integration.merge({ task_ids: [b.id], into: 'int/edit' }), 'E_PRECONDITION');
+  const e = await rejectsCode(orch.integration.merge({ task_ids: [b.id], into: 'belay/integrate/edit' }), 'E_PRECONDITION');
   assert.match(e.message, /a hook left them after integration /);
 });
 
@@ -155,7 +157,7 @@ test('a real merge conflict is still a conflict when hooks exist', async () => {
   const a = await doneTask(repo, { 'base/keep.txt': 'from a\n' });
   const b = await doneTask(repo, { 'base/keep.txt': 'from b\n' });
   hook(repo, 'pre-merge-commit', ['grep -q "from b" base/keep.txt && exit 1', 'exit 0']);
-  const row = await orch.integration.merge({ task_ids: [a.id, b.id], into: 'int/conflict' });
+  const row = await orch.integration.merge({ task_ids: [a.id, b.id], into: 'belay/integrate/conflict' });
   assert.strictEqual(row.state, 'conflict');
   assert.strictEqual(row.conflict.task_id, b.id);
   assert.deepStrictEqual(row.conflict.files, ['base/keep.txt']);
@@ -166,7 +168,7 @@ test('with no hooks nothing changes: a clean merge carries no hook field', async
   const repo = makeRepo(dir);
   const a = await doneTask(repo, { 'a.txt': 'a\n' });
   const b = await doneTask(repo, { 'b.txt': 'b\n' });
-  const row = await orch.integration.merge({ task_ids: [a.id, b.id], into: 'int/plain' });
+  const row = await orch.integration.merge({ task_ids: [a.id, b.id], into: 'belay/integrate/plain' });
   assert.strictEqual(row.state, 'evaluated');
   assert.strictEqual(row.hook_changed_tree, undefined);
   assert.ok(row.merged.every((m) => m.hook_changed_tree === undefined));

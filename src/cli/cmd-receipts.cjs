@@ -45,7 +45,8 @@ function checkView(c) {
 
 function taskView(t, since = null, byId = null) {
   const checks = t.results && Array.isArray(t.results.checks) ? t.results.checks : [];
-  return { id: t.id, state: t.state, checks: checks.map(checkView), check_history: require('../core/check-history.cjs').forReceipt(t, since, t.repairs && byId ? byId.get(t.repairs) : null) }; // ADR 0069: the commands and their changes
+  const env = t.results && t.results.env && t.results.env.env_fp ? { env_fp: t.results.env.env_fp, facts: t.results.env.facts || null, changed: t.results.env.changed || null } : null; // ADR 0080
+  return { id: t.id, state: t.state, checks: checks.map(checkView), ...(env ? { env } : {}), check_history: require('../core/check-history.cjs').forReceipt(t, since, t.repairs && byId ? byId.get(t.repairs) : null) }; // ADR 0069: the commands and their changes
 }
 
 function handoffView(h) {
@@ -85,14 +86,14 @@ function costParts(w) {
   };
 }
 
-function workerView(w, tasksById, dataDir, since = null) { // a task's check history is shown whole: a line is never clipped, only wrapped
+function workerView(w, tasksById, dataDir, since = null, inFlight = null) { // a task's check history is shown whole: a line is never clipped, only wrapped
   const t = w.task_id ? tasksById.get(w.task_id) : null;
   const task = t ? { ...taskView(t, since, tasksById), handoff: handoffView(t.handoff) } : null;
   return {
     id: w.id, substrate: nn(w.substrate), state: nn(w.state), model: nn(w.model), turns: nn(w.turns),
     input_tokens: nn(w.input_tokens), output_tokens: nn(w.output_tokens),
     cache_read_tokens: nn(w.cache_read_tokens), cache_creation_tokens: nn(w.cache_creation_tokens),
-    cost_usd: nn(w.cost_usd), ...costParts(w), tool_calls: nn(w.tool_calls),
+    cost_usd: nn(w.cost_usd), ...costParts(w), ...require('../core/inflight-cost.cjs').workerFigures(inFlight, w), tool_calls: nn(w.tool_calls),
     ...wall(w.started_at, w.exited_at),
     exit_code: nn(w.exit_code), base_sha: nn(w.base_sha), head_sha: nn(w.head_sha), task,
     ...(compactionsOf(dataDir, w.id)), // ADR 0007 decision 7: only a worker with compactions carries the key
@@ -124,6 +125,31 @@ function totalsOf(orchestrator, workers) {
   return totals;
 }
 
+// The run's retrieval, from the run row alone (retrieval-view.cjs): what was pinned per role, the device, any fallback and every failure the row
+// records. A run that pinned nothing is on nano with no reranker, and says so.
+function retrievalOf(row) {
+  const RV = require('../core/retrieval-view.cjs');
+  const v = RV.describe(row);
+  if (!v) return { pinned: false, profile: 'cpu-fast', run: { embedder: null, reranker: null, device: 'cpu' }, tiers: {}, probe: null, fallback_from: null, behind: null, fallback: null, failures: [] };
+  return {
+    pinned: true, pinned_at: nn(v.pinned_at), profile: v.profile, run: v.run, tiers: v.tiers, fallback_from: v.run.fallback_from || null,
+    probe: v.probe ? { ok: !!v.probe.ok, device: nn(v.probe.device), reason: nn(v.probe.reason), message: nn(v.probe.message) } : null,
+    behind: v.behind && v.behind.choice ? v.behind : null, fallback: v.fallback, failures: RV.failures(v),
+  };
+}
+
+function retrievalLines(r) {
+  if (!r.pinned) return ['retrieval  nothing pinned: no retrieval routing is recorded on this run (the default tier is cpu-fast: nano, no reranker; the embedder mode and any refusal at start are above)'];
+  const t = (x) => `${v(x.profile)} (embedder ${v(x.embedder, 60)}, reranker ${x.reranker ? v(x.reranker, 60) : 'none'}, ${v(x.device)})${x.fallback_from ? ` fell back from ${v(x.fallback_from)}` : ''}`;
+  const out = [`retrieval  run tier ${t(r.run)}`];
+  const same = (a, b) => a.profile === b.profile && a.embedder === b.embedder && a.reranker === b.reranker && a.device === b.device;
+  for (const [role, x] of Object.entries(r.tiers)) if (!same(x, r.run)) out.push(`  ${v(role, 20)}: ${t(x)}`);
+  if (r.probe) out.push(r.probe.ok ? `  gpu probe ok on ${v(r.probe.device)}` : `  gpu probe refused (${v(r.probe.reason)}): ${v(r.probe.message, 300)}`);
+  if (r.behind) out.push(`  heavy backlog at start: ${r.behind.embedders.map((b) => `${v(b.embedder, 60)} ${b.rows} behind`).join('; ')}; on_heavy_behind ${v(r.behind.choice)}`);
+  for (const f of r.failures) out.push(`  failure ${v(f.code, 40)}:`, ...wrap('    ', `${v(f.message, 700)}${f.options.length ? ` Next: ${f.options.map((o) => v(o, 200)).join('; ')}` : ''}`));
+  return out;
+}
+
 // ---- text ----------------------------------------------------------------------------------------
 
 // The one sanitiser: control characters (U+0000-U+001F, U+007F, U+2028, U+2029) become spaces, and the
@@ -146,12 +172,13 @@ const wallText = (a) => (a.live ? 'live' : (a.wall_ms === null ? 'not recorded' 
 
 // A worker with messages no result line reported shows reported, estimated and the sum, each labelled.
 function costNote(w) {
-  if (!w.cost_source) return '';
+  const live = w.cost_in_flight_usd == null ? '' : ` + ${money(w.cost_in_flight_usd)} ${w.cost_in_flight_source}${w.cost_in_flight_partial ? ' (partial: stream not yet read to its end)' : ''}`; // a turn that has not ended: not in the reported figure
+  if (!w.cost_source) return live;
   const e = w.cost_estimate;
   const n = e && typeof e.messages === 'number' ? e.messages : 0;
   if (e && e.truncated && !n) return ' (not estimated: stream tail over 16 MB)';
   const est = w.cost_estimated_usd == null ? 'not priced' : money(w.cost_estimated_usd);
-  return ` + ${est} estimated from the stream (${n} message${n === 1 ? '' : 's'} no result line reported${e && e.truncated ? ', truncated' : ''}) = ${money(w.cost_combined_usd)}`;
+  return ` + ${est} estimated from the stream (${n} message${n === 1 ? '' : 's'} no result line reported${e && e.truncated ? ', truncated' : ''}) = ${money(w.cost_combined_usd)}${live}`;
 }
 
 // At most 4 decimals, trailing zeros trimmed; a value that rounds to zero prints 0.0000.
@@ -171,6 +198,12 @@ function tokensLine(a) {
 function checksText(checks) {
   if (!checks.length) return 'none';
   return checks.map(c => `${v(c.kind)}:${c.executable === false ? 'n/e' : (c.passed ? 'pass' : 'fail')} ${v(c.ms)}ms`).join(', ');
+}
+
+// ADR 0080: the environment the task's commands last ran in. Names only for what changed since the evaluation before; never a value.
+function envLine(e) {
+  const f = e.facts || {};
+  return clean(`  environment ${e.env_fp}  node ${v(f.node)}${f.git_version ? `  git ${f.git_version}` : ''}${f.temp_drive ? `  temp ${f.temp_drive}` : ''}${e.changed && e.changed.length ? `  changed since the last evaluation: ${e.changed.join(', ')}` : ''}`, Infinity);
 }
 
 function wrap(prefix, text, width = WIDTH) {
@@ -219,7 +252,9 @@ function renderText(rc) {
   const lines = [
     `run ${v(rc.run_id)} (chosen by ${rc.run_id_source})`,
     `  started ${iso(r.started_at)}  ${state}  exit_reason ${v(r.exit_reason)}`,
+    `  belay ${clean(require('../core/run-harness.cjs').line(r.harness), Infinity)}`, // ADR 0082
     ...(r.paused_at != null && r.ended_at == null ? [`  PAUSED${/embedder-failure [(]/.test(r.paused_by || '') ? ' for an embedder failure' : ''} ${iso(r.paused_at)} by ${v(r.paused_by)}`] : []),
+    ...retrievalLines(rc.retrieval),
     `orchestrator  model ${v(o.model)}  turns ${v(o.turns)}  wall ${wallText(o)}  cost ${money(o.cost_usd)}  (orchestrator tool calls: no column)`,
     tokensLine(o),
   ];
@@ -232,6 +267,7 @@ function renderText(rc) {
     if (w.task) {
       lines.push(`  task ${v(w.task.id)} (${v(w.task.state)})`);
       lines.push(`  checks ${checksText(w.task.checks)}`);
+      if (w.task.env) lines.push(envLine(w.task.env));
       if (w.task.check_history) lines.push(`  ${clean(require('../core/check-history.cjs').line(w.task.check_history), Infinity)}`);
       if (w.task.handoff) lines.push(...handoffLines(w.task.handoff)); else lines.push('  handoff none');
     } else lines.push('  task none');
@@ -239,6 +275,7 @@ function renderText(rc) {
   if (!rc.workers.length) lines.push('(no workers)');
   for (const t of rc.unassigned_tasks) {
     lines.push(`unassigned task ${v(t.id)} (${v(t.state)})  checks ${checksText(t.checks)}`);
+    if (t.env) lines.push(envLine(t.env));
     if (t.check_history) lines.push(`  ${clean(require('../core/check-history.cjs').line(t.check_history), Infinity)}`);
   }
   for (const i of rc.integrate_checks || []) lines.push(RCK.integrateLine(i));
@@ -288,13 +325,13 @@ async function run(ctx) {
     const { tasks: everyTask } = await core.task.list({});
     const tasks = everyTask.filter(t => t.run_id === chosen.id);
     const tasksById = new Map(tasks.map(t => [t.id, t]));
-    const workers = everyWorker.filter(w => w.run_id === chosen.id).map(w => workerView(w, tasksById, dataDir, chosen.started_at));
+    const workers = everyWorker.filter(w => w.run_id === chosen.id).map(w => workerView(w, tasksById, dataDir, chosen.started_at, require('../core/run-budget.cjs').publishedInFlight(chosen)));
     const assigned = new Set(workers.filter(w => w.task).map(w => w.task.id));
     const orchestrator = orchestratorView(chosen);
     const receipt = {
       run_id: chosen.id, run_id_source: source,
-      run: { started_at: nn(chosen.started_at), ended_at: nn(chosen.ended_at), exit_reason: nn(chosen.exit_reason), alive: !!chosen.alive, paused_at: nn(chosen.paused_at), paused_by: nn(chosen.paused_by) },
-      orchestrator, workers,
+      run: { started_at: nn(chosen.started_at), ended_at: nn(chosen.ended_at), exit_reason: nn(chosen.exit_reason), alive: !!chosen.alive, paused_at: nn(chosen.paused_at), paused_by: nn(chosen.paused_by), harness: nn(chosen.harness) },
+      retrieval: retrievalOf(chosen), orchestrator, workers,
       unassigned_tasks: tasks.filter(t => !assigned.has(t.id)).map((t) => taskView(t, chosen.started_at, tasksById)),
       integrate_checks: RCK.integrateChecksOf(await core.integration.list({ run_id: chosen.id }).then((r) => r.integrations, () => []), chosen.id), // a read that fails leaves the block empty
       totals: totalsOf(orchestrator, workers), owner,

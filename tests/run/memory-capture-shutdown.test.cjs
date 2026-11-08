@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-capture-shutdown.test.cjs — the observation row and the event that names it are one write unit across
 // shutdown: a store already sent keeps its event until the owner is gone; a store not yet sent is dropped whole.
 // A fake core holds `memory.store` open on a promise the test resolves after it flips the shutdown flags.

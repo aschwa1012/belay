@@ -34,7 +34,7 @@ const probe = (counter, rel) => ({
   argv: [process.execPath, '-e', `require('fs').appendFileSync(${JSON.stringify(counter)}, process.cwd() + '\\n'); process.exit(require('fs').existsSync(${JSON.stringify(rel)}) ? 0 : 1)`],
 });
 const lines = (counter) => (fs.existsSync(counter) ? fs.readFileSync(counter, 'utf8').split('\n').filter(Boolean) : []);
-const into = () => `int/chk-${++n}`;
+const into = () => 'belay/integrate/test-run'; // belay's own staging branch for this run; a custom name is the user's branch and asks first
 const counterFile = () => path.join(dir, `counter-${++n}.txt`);
 
 const TRIVIAL = { argv: [process.execPath, '-e', '0'] }; // a task with no command is never done
@@ -186,4 +186,15 @@ test('a task integration reflects only its own checks; integrate checks are repo
   fact = (await orch.task.list({})).tasks.find((t) => t.id === a.id).integration;
   assert.strictEqual(fact.passed, true, 'the task own check passed');
   assert.strictEqual(fact.checks_passed, false);
+});
+
+// An integration check is code a worker wrote, run as the owner's child: it is in the spawn register as a check while it runs, so what
+// it starts is not taken for the operator (the record is the owner's refusal; see check-command-operator.test.cjs).
+test('an integration check runs as a registered check process', async () => {
+  const repo = makeRepo(dir), seen = counterFile();
+  const a = await work(repo, { 'a.txt': 'a\n' });
+  const asks = `const f = require('path').join(process.env.BELAY_SPAWN_REGISTRY, process.pid + '.json'); require('fs').writeFileSync(${JSON.stringify(seen)}, require('fs').existsSync(f) ? JSON.parse(require('fs').readFileSync(f, 'utf8')).kind : 'unregistered')`;
+  const r = await orch.integration.merge({ task_ids: [a.id], into: into(), evaluate: false, checks: [{ argv: [process.execPath, '-e', asks] }] });
+  assert.strictEqual(r.passed, true, JSON.stringify(mine(r)));
+  assert.strictEqual(fs.readFileSync(seen, 'utf8'), 'check');
 });

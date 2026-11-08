@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // run-wording-audit.test.cjs — the run lever permission_prompt (ADR 0020 decision 1 as amended): the permission tools and the prompt line
 // that goes with them exist only for a run that turns the channel on; and the template header markers are not shown to the model.
 // Pure: levers, templates and argv are built here, nothing is launched.
@@ -18,7 +19,7 @@ const template = (f) => fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), '
 const LINE = '- Answer permission requests (`mcp__belay__permission_list`, `mcp__belay__permission_decide`) only when the request is inside the plan.';
 
 test('permission_prompt is a boolean run lever, absent from the levers unless on', () => {
-  assert.deepStrictEqual(parseLevers({}), { max_fix_rounds: 2, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', on_embedder_failure: 'required' });
+  assert.deepStrictEqual(parseLevers({}), { max_fix_rounds: 2, max_follow_ups: 1, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', on_embedder_failure: 'required' });
   assert.strictEqual(parseLevers({ permission_prompt: false }).permission_prompt, undefined);
   assert.strictEqual(parseLevers({ permission_prompt: true }).permission_prompt, true);
   assert.match(parseLevers({ permission_prompt: 'yes' }).error, /permission_prompt must be true or false/);

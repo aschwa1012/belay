@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // rerank-cpu-smoke.cjs — a real run of the CPU rerank tier on this machine. NOT part of npm test: it loads the two real
 // ONNX rerankers (jina-reranker-v1-tiny-en and gte-reranker-modernbert-base, int8) through belay's pinned transformers.js
 // in the forked child, so run it only when the machine is free.
@@ -25,6 +26,7 @@ const embedderCmd = require(path.join(ROOT, 'src/cli/cmd-embedder.cjs'));
 const K = require(path.join(ROOT, 'src/core/model-cache.cjs'));
 const { CpuRerankClient, cpuRerankProvider } = require(path.join(ROOT, 'src/core/rerank-cpu.cjs'));
 const { pidAlive } = require(path.join(ROOT, 'src/core/lock.cjs'));
+const G = require(path.join(ROOT, 'tests/helpers/proc-gone.cjs'));
 
 const QUERIES = [
   'stop a worker process safely by its pid',
@@ -56,7 +58,6 @@ function scrub(text) {
   }
   return out;
 }
-const waitGone = async (pid, ms) => { const t0 = Date.now(); while (pidAlive(pid) && Date.now() - t0 < ms) await new Promise(r => setTimeout(r, 50)); return !pidAlive(pid); };
 
 (async () => {
   const raw = JSON.parse(fs.readFileSync(NOTES, 'utf8'));
@@ -84,12 +85,13 @@ const waitGone = async (pid, ms) => { const t0 = Date.now(); while (pidAlive(pid
     receipt.models.push(m);
     const client = new CpuRerankClient({});
     const rerank = cpuRerankProvider({ model: e.id, client });
-    let pid = null;
+    let pid = null, pidId = null;
     try {
       await step(`${e.id}: first rerank (starts the child and loads the model)`, async () => {
         const { ids } = pickPairs(notes, 0);
         const out = await rerank({ query: QUERIES[0], docs: ids.map(i => notes[i]), depth: DEPTH, boundMs: 600000 });
         pid = client.pid;
+        pidId = await G.identify(pid); // taken while the child is up: "ended" below means this process, not the number
         m.pid_is_child = pid !== process.pid;
         return { pid_alive: pidAlive(pid), scored: out.scores.length, device: out.device };
       });
@@ -120,7 +122,7 @@ const waitGone = async (pid, ms) => { const t0 = Date.now(); while (pidAlive(pid
       await step(`${e.id}: ping`, async () => { const p = await client.ping(5000); if (!p.ok) throw new Error(p.reason); return { pid: p.pid === pid, models: p.models }; });
     } finally {
       await rerank.close();
-      if (pid) check(`${e.id}: the child ended on close`, await waitGone(pid, 5000));
+      if (pid) check(`${e.id}: the child ended on close`, await G.waitGone(pidId, { deadlineMs: 5000 }));
     }
   }
   receipt.all_ok = allOk && receipt.checks.every(c => c.ok);

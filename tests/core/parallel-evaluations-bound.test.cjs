@@ -126,7 +126,7 @@ test('an integration refused at the bound leaves the branch head unchanged and h
   write(w.path, 'i.txt', 'i\n');
   commit(w.path, 'task int');
   assert.strictEqual((await orch.task.evaluate({ task_id: t.id })).state, 'done');
-  const into = 'belay/integrate/bound-test';
+  const into = 'belay/integrate/test-run';
   const hold = await gatedTask();
   const rh = hold.evaluate();
   await until(() => hold.started());

@@ -13,25 +13,28 @@ const IDENTITY = require('../core/proc-identity.cjs');
 // -> { adapterKnown, list: [{ pid, created }] } of the processes belay owns; throws when they cannot be read.
 // Read with run.list, not run.get: the close's own first run.get must stay the close's. The run row's adapter is the MCP adapter once it has
 // attached; until then it is belay run's own process, which is not the adapter, so it does not count as one.
-async function ownedProcesses(core, runId) {
+// `snap` is the snapshot the capture already took: the register's records are judged against it (a stale record from before the boot, or
+// one whose pid another process holds, is not listed), and the read writes nothing.
+async function ownedProcesses(core, runId, snap = null) {
   const row = (((await core.run.list({})) || {}).runs || []).find((r) => r.id === runId) || {};
-  const list = require('../core/spawn-register.cjs').list().map((r) => ({ pid: r.pid, created: r.created }));
+  const list = require('../core/spawn-register.cjs').list({ snap, persist: false }).map((r) => ({ pid: r.pid, created: r.created }));
   const adapterKnown = Number.isInteger(row.adapter_pid) && row.adapter_pid !== process.pid && row.adapter_pid_created != null;
   if (Number.isInteger(row.adapter_pid)) list.push({ pid: row.adapter_pid, created: row.adapter_pid_created == null ? null : row.adapter_pid_created });
   return { adapterKnown, list };
 }
 
-function createLeftovers({ child, P, state, core, runId, owned = () => ownedProcesses(core, runId) }) {
+function createLeftovers({ child, P, state, core, runId, owned = (snap) => ownedProcesses(core, runId, snap) }) {
   let taking = null; // the one capture, started by the first close
   let targets = [];
   let why = null;
   async function take() {
     if (!IDENTITY.handleLive(child)) return; // an exit already seen: its pid may belong to another process now
     const { snap } = await P.snapshotShared({ kind: 'orchestrator-leftovers' }).catch(() => ({ snap: null }));
+    if (!IDENTITY.handleLive(child)) return; // exited while the snapshot was read: the pid may now be another process's, with its own children
     const root = snap && snap.get(child.pid);
     if (!root || root.created == null) { why = 'the orchestrator\'s own identity could not be read'; return; }
     let own;
-    try { own = await owned(); } catch (e) { why = `the processes belay owns could not be read: ${(e && e.message) || e}`; return; }
+    try { own = await owned(snap); } catch (e) { why = `the processes belay owns could not be read: ${(e && e.message) || e}`; return; }
     if (!own.adapterKnown) { why = 'the run row names no adapter, so the processes belay owns cannot be told from the shell\'s'; return; }
     const skip = new Set();
     for (const o of own.list) {
@@ -40,6 +43,7 @@ function createLeftovers({ child, P, state, core, runId, owned = () => ownedProc
       skip.add(o.pid);
       for (const d of IDENTITY.descendantsOf(o.pid, snap).leavesFirst) skip.add(d.pid);
     }
+    if (!IDENTITY.handleLive(child)) return; // the same, across the owned-process read
     targets = IDENTITY.descendantsOf(child.pid, snap).leavesFirst.filter((t) => !skip.has(t.pid));
   }
   return {

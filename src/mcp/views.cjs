@@ -95,6 +95,7 @@ const SUMMARY_DROP = new Set(['seq', 'run_id', 'written_at', 'written_by', 'file
 function summaryResults(facts, checks) {
   const out = { passed: facts.passed, executable: facts.executable };
   for (const k of ['trigger', 'flaky', 'timed_out', 'uncommitted', 'stale']) if (facts[k] !== undefined && facts[k] !== null) out[k] = facts[k];
+  if (facts.env && facts.env.env_fp) { out.env_fp = facts.env.env_fp; if (Array.isArray(facts.env.changed) && facts.env.changed.length) out.env_changed = facts.env.changed.length > 8 ? [...facts.env.changed.slice(0, 8), `and ${facts.env.changed.length - 8} more`] : facts.env.changed; }
   out.checks = checks.length;
   out.failing = checks.filter((c) => c && !c.passed).map(label);
   const flaky = checks.filter((c) => c && c.passed && c.flaky).map(label);
@@ -131,6 +132,7 @@ function compactTask(row, { detail = false } = {}) {
   if (r && typeof r === 'object') {
     const checks = Array.isArray(r.checks) ? (detail ? allChecks : r.checks) : [];
     const { checks: _c, ...facts } = r;
+    if (facts.env && typeof facts.env === 'object') { const { inputs: _i, ...shown } = facts.env; facts.env = shown; } // ADR 0080: the fingerprint, the facts and the names that changed; the per-input digests stay in the store
     out.results = detail ? { ...facts, checks: checks.map(compactCheck) }
       : summaryResults(facts, checks);
   } else if (r !== undefined) out.results = r;
@@ -229,6 +231,8 @@ function created(row) {
 // task_create's answer to an amend: the task as created answers it, the NEW acceptance, and what it replaced under `replaced`,
 // so the old acceptance is not read as the current one.
 function amendedView(row) {
+  if (row && Array.isArray(row.tasks)) return { tasks: row.tasks.map(amendedView) }; // a batch, ADR 0062
+  if (row && row.worktree && row.worktree.path && !row.worktree.inherited_from && !row.worktree.removed_at) return taskWorktree(row); // a tree this call made
   const out = created(row);
   if (!out || typeof out !== 'object' || !Array.isArray(row.amended) || !row.amended.length) return out;
   const { amended, ...rest } = out;
@@ -238,7 +242,7 @@ function amendedView(row) {
 // fix_from_review: the task as task_create answers it, plus what belay inferred for it (the task it repairs, what it waits for, the
 // files it owns), since the orchestrator did not write those. The spec, acceptance and tree records are the findings' and the base's own.
 function fixCreated(row) {
-  const out = created(row);
+  const out = row && row.follows_up && row.worktree && row.worktree.path && !row.worktree.inherited_from && !row.worktree.removed_at ? taskWorktree(row) : created(row); // a follow-up's tree is its own, and the call just made it
   if (out && row && typeof row === 'object') for (const k of ['repairs', 'depends_on', 'files_owned']) if (!empty(row[k])) out[k] = row[k];
   return out;
 }

@@ -98,6 +98,7 @@ const METHODS = {
   'memory.recordChances': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./memory-chances.cjs', 'recordChances') },
   'memory.noteDeliveries': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./memory-chances.cjs', 'noteDeliveries') },
   'usage.record': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-ledger.cjs', 'usageRecord') },
+  'usage.spend': { roles: ALL, kind: 'read', fn: lazy('./run-budget.cjs', 'usageSpend') },
   'usage.list': { roles: ALL, kind: 'read', fn: lazy('./methods-ledger.cjs', 'usageList') },
   'memory.delete': { roles: ALL, kind: 'write', fn: memory.delete },
   'memory.stats': { roles: ALL, kind: 'read', fn: memory.stats },
@@ -135,6 +136,8 @@ const METHODS = {
   // identity), and it is read back through the ordinary run row.
   'run.setPaused': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: run.setPaused },
   'run.setEmbedderMode': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: run.setEmbedderMode },
+  'run.assertNotPaused': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./paused-run.cjs', 'assertNotPaused') },
+  'run.setBudget': { roles: ['operator'], kind: 'write', fn: lazy('./run-budget.cjs', 'setBudget') },
   // The run's retrieval routing, resolved once (with the GPU probe) and recorded on its row; the run process calls it after run.attach.
   'run.pinRouting': { roles: ['operator'], kind: 'write', fn: lazy('./retrieval-pin.cjs', 'pinRouting') },
   // `belay memory embed --model <gguf id>` and the run start's wait: one bounded drain of a heavy embedder's backlog.
@@ -156,7 +159,7 @@ const METHODS = {
   'task.create': { roles: ORCH, kind: 'write', fn: task.create },
   // build step 6a, ADR 0010 §4 amendment 1: opened to the operator as well (see the comment above
   // ORCH_OR_OPERATOR); the MCP adapter's task_assign tool stays orchestrator-only.
-  'task.assign': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: task.assign },
+  'task.assign': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: require('./paused-run.cjs').gate(task.assign) },
   // The run manager asks this before it relaunches a worker (restart, resume, a Codex turn): the task it holds is held for the manager's live run, or the relaunch is refused.
   'task.ensureHold': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: taskHold.ensureHold },
   'task.list': { roles: ALL, kind: 'read', fn: task.list },
@@ -174,6 +177,8 @@ const METHODS = {
   // ADR 0065: the run's close removes the task trees it can prove finished; the operator's only, with no MCP tool.
   'task.worktreeSweep': { roles: ['operator'], kind: 'write', fn: lazy('./methods-worktree-sweep.cjs', 'sweep') },
   'task.worktreeSweepCancel': { roles: ['operator'], kind: 'write', fn: lazy('./methods-worktree-sweep.cjs', 'cancel') },
+  // ADR 0065 amendment 3: the same removal for the trees of runs that lapsed; without yes, the preview.
+  'task.worktreePrune': { roles: ['operator'], kind: 'write', fn: lazy('./methods-worktree-prune.cjs', 'prune') },
   'integration.merge': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./methods-integration.cjs', 'merge') },
   'integration.remove': { roles: ['operator'], kind: 'write', fn: lazy('./methods-integration.cjs', 'remove') },
   'integration.list': { roles: ALL, kind: 'read', fn: lazy('./methods-integration.cjs', 'list') },

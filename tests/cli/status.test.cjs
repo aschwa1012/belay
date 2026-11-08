@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1'; // ADR 0034: a run here has no model to warm; the one suite that tests the warm-up opts in
 // status.test.cjs — build step 4a, Done item 2. Drives
 // the built CLI as subprocesses with the scaffolding of tests/cli/stop.test.cjs and
@@ -186,12 +187,12 @@ test('status: a live run reads alive, established by a bounded ping and pid chec
     assert.strictEqual(j.run_id_source, 'argument');
     assert.strictEqual(j.verdict, 'alive');
 
-    // An id naming no run at all.
+    // An id naming no run at all: exit 1, like workers, tasks and diff.
     r = checkedStatusJson(['no-such-run'], dataDir, 'unknown run id read');
-    assert.strictEqual(r.status, 0, `status no-such-run: ${r.stdout} / ${r.stderr}`);
-    j = JSON.parse(r.stdout);
-    assert.strictEqual(j.verdict, 'stopped');
-    assert.match(j.rungs.find((x) => x.rung === 'run-alive').by, /no run row for no-such-run/);
+    assert.strictEqual(r.status, 1, `status no-such-run: ${r.stdout} / ${r.stderr}`);
+    const e = JSON.parse(r.stderr).error;
+    assert.strictEqual(e.code, 'E_NOT_FOUND');
+    assert.match(e.message, /no run row exists for no-such-run/);
 
     // Stop the run, then read status again.
     const stop = runStopSync(dataDir, runId);

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // memory-note-contract.test.cjs — the paired write/search contract for notes. A note is written with a `when` (the task that
 // would run into it); its vector is made from "{title}\nWhen: {when}" only (template v2), its keyword text carries the title,
 // the When: line, subjects and applies_to; applies_to is derived from the worker's worktree diff and the evidence, never typed;
@@ -342,7 +343,9 @@ test('resolving a pending note as new with a changed title re-embeds it under it
 
 test('git status is read without optional locks, so reading a worktree cannot make a lock under a worker', () => {
   const src = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'core', 'note-paths.cjs'), 'utf8');
-  assert.match(src, /'git', '--no-optional-locks', 'status'/);
+  assert.match(src, /safeGit\(\['status'/); // the status goes through git-safe, whose environment sets GIT_OPTIONAL_LOCKS=0
+  const safe = fs.readFileSync(path.join(__dirname, '..', '..', 'src', 'core', 'git-safe.cjs'), 'utf8');
+  assert.match(safe, /GIT_OPTIONAL_LOCKS: '0'/);
 });
 
 // ---- a retitle needs the embedder ---------------------------------------------------------------------------------------------

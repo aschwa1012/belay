@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // memory-held-settle-xp.test.cjs — the compare-and-set of memory.heldSettle { if_awaiting } across PROCESSES. Two node processes, each with its own Store connection to
 // one db file. A (release) has read the hold and is held, by a seam in the child script, just before its write transaction opens; B (reoffer) commits in that gap.
 // With the flag A must be refused E_PRECONDITION and the hold stays held with `undecided` cleared; without it the old behaviour (A writes) is what the flag exists

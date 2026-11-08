@@ -16,7 +16,7 @@ if (PID_FILE) fs.writeFileSync(PID_FILE, String(kid.pid));
 const toolsAt = process.argv.indexOf('--tools');
 const tools = [...(toolsAt >= 0 ? process.argv[toolsAt + 1].split(',').filter(Boolean) : []), 'mcp__belay__memory_store'];
 process.stdout.write(JSON.stringify({
-  type: 'system', subtype: 'init', session_id: SESSION, tools,
+  type: 'system', subtype: 'init', session_id: SESSION, tools, apiKeySource: 'none',
   plugins: [{ name: 'agents-md', path: 'builtin', source: 'agents-md@builtin' }],
   mcp_servers: [{ name: 'belay', status: 'connected' }],
 }) + '\n');

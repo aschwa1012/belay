@@ -2,7 +2,7 @@
 // route each one takes into the Core API or the RunManager. `toolsFor(role)` returns exactly what `tools/list` sends for that role:
 // the ten both-role tools plus that role's own. ROUTES is kept separate from the schemas so that no
 // routing field is ever serialised into the listing, which is measured against the ADR 0010 §5 budget
-// (16,384 bytes orchestrator since ADR 0010 amendment 9, 7,168 bytes worker since amendment 6). Descriptions say what the tool returns as proof;
+// (20,480 bytes orchestrator since ADR 0010 amendment 16, 7,168 bytes worker since amendment 6). Descriptions say what the tool returns as proof;
 // a refusal says its own remedy in its error, so it is not repeated here; nothing else, because every byte is a per-turn tax on the orchestrator's context.
 //
 // Two places where ADR 0010 disagrees with itself or with src/core/api.md, resolved in favour of the
@@ -185,7 +185,7 @@ const ORCHESTRATOR = [
       prompt: str('Without task_id, the first message. With it, instructions added after the task\'s spec'),
       task_id: str('Assign this task once ready; belay sends its resume line, then its spec'),
       model: str(),
-      agent_type: { type: 'string', enum: WORKER_TYPES, description: 'Configured model, effort and tools' },
+      agent_type: { type: 'string', enum: WORKER_TYPES, description: 'Configured model, effort and tools; a researcher has no shell by default' },
       effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
       memory_queries: strs('Up to 4 task lines naming the situations the worker will be in, each max 160 bytes'),
       allowed_tools: strs(),
@@ -233,7 +233,7 @@ const ORCHESTRATOR = [
   },
   {
     name: 'task_create',
-    description: 'Create a task with the checks that decide it is done, the files it owns and the tasks it must wait for. Returns id, rev, state open, spec_head (view debug: whole row).',
+    description: 'Create a task with the checks that decide it is done, the files it owns and the tasks it must wait for. Returns id, rev, state open, spec_head (view debug: whole row). worktree makes its tree first; tasks makes up to 10.',
     inputSchema: S({
       spec: str('What is to be done'),
       acceptance: S({
@@ -249,7 +249,10 @@ const ORCHESTRATOR = [
       depends_on: strs('Task ids that must be done before this one can be assigned'),
       repairs: str('A fix task: the id of the work task it repairs; past max_fix_rounds the answer carries fix_notice'),
       base: str('Diff base'),
+      budget_usd: { type: 'number', description: 'USD limit; needs the ledger' },
       tree_of: str('Work in that task\'s worktree (a conflict fix)'),
+      worktree: { type: ['boolean', 'string'], description: 'Own tree: true from HEAD, or a base ref' },
+      tasks: { type: 'array', items: { type: 'object' }, description: 'Several, each with these fields; all or nothing' },
       id: str(),
       amend: { type: 'boolean', description: 'Replace not-done task id\'s acceptance and spec' },
       view: DEBUG,
@@ -264,7 +267,7 @@ const ORCHESTRATOR = [
     // ADR 0020 decision 5: the orchestrator's window onto the permission channel, so a headless run
     // with a prompting worker does not stall until a human types.
     name: 'permission_list',
-    description: 'List permission requests waiting on a verdict. Returns each with its tool, input, age and whether the requesting adapter is still alive. Defaults to pending only.',
+    description: 'List your run\'s permission requests awaiting a verdict (other runs: E_ROLE). Returns each with tool, input, age and whether its adapter is alive. Default pending.',
     inputSchema: S({ run_id: str(), states: strs('pending, allowed, denied or expired; default pending') }),
   },
   {
@@ -299,7 +302,7 @@ const ORCHESTRATOR = [
   {
     // ADR 0053 decision 5.
     name: 'integrate',
-    description: 'Merge done tasks\' branches, at the head each was judged at, in order into into (default belay/integrate/<run>), then re-run their checks there. Returns state, merged (what this call merged), carried (count from earlier rows), not_merged, left_out (commits past it), checks (reused ones marked), passed, forced, not_carried (passing output cut; view debug: whole row). A conflict is aborted, tree clean; conflict names task and files; what merged before it is still checked. task_list gives each task\'s integration state. force with reason also merges tasks not done, recorded as forced. A run with max_parallel_evaluations may queue the re-run; E_BUSY queued: refused before any merge, call again.',
+    description: 'Merge done tasks\' branches, at the head each was judged at, in order into into (default belay/integrate/<run>), then re-run their checks there. Returns state, merged (what this call merged), carried (count from earlier rows), not_merged, left_out (commits past it), checks (reused ones marked), passed, forced, not_carried (passing output cut; view debug: whole row). A conflict is aborted, tree clean; conflict names task and files; what merged before it is still checked. task_list gives each task\'s integration state. force with reason also merges tasks not done, recorded as forced. A run with max_parallel_evaluations may queue the re-run; E_BUSY queued: refused before any merge, call again. into may name a user branch; if the run asks first, approved_in_chat (interactive) or approval (awaiting_approval id).',
     inputSchema: S({
       task_ids: strs(),
       into: str(),
@@ -308,13 +311,15 @@ const ORCHESTRATOR = [
       checks: { type: 'array', items: S({ argv: strs(), cwd: str(), timeout_ms: int() }, ['argv']), description: 'Extra commands run on the merged head, before the tasks re-run; all the commands of the call share one 540 s budget' },
       force: bool(),
       reason: str(),
+      approved_in_chat: bool(),
+      approval: str(),
       view: DEBUG,
     }, ['task_ids']),
   },
   {
     name: 'fix_from_review',
-    description: 'Create the fix task for a review evaluated refuted, with depends_on, repairs, acceptance and files_owned inferred and spec from its findings. Returns id, rev, state, spec_head, repairs, depends_on, files_owned, fix_notice past max_fix_rounds (view debug: whole row).',
-    inputSchema: S({ review_id: str(), spec: str('Default: from the findings'), repairs: str('Which task, if it judged several'), id: str(), view: DEBUG }, ['review_id']),
+    description: 'Create the fix task for a review evaluated refuted, with depends_on, repairs, acceptance and files_owned inferred and spec from its findings. Returns id, rev, state, spec_head, repairs, depends_on, files_owned, fix_notice past max_fix_rounds. With follow_up: true, for a review that held: a follow-up task for its should-fix findings in a tree of its own, not a fix round; E_FOLLOW_UPS past max_follow_ups (view debug: whole row).',
+    inputSchema: S({ review_id: str(), spec: str('Default: from the findings'), repairs: str('Which task, if it judged several'), follow_up: { type: 'boolean' }, id: str(), view: DEBUG }, ['review_id']),
   },
   {
     name: 'task_cancel',
@@ -430,7 +435,7 @@ const allows = (role, name, workerId = null, { notes = false } = {}) => {
   return r === 'both' || r === role;
 };
 
-const BUDGET = { orchestrator: 16384, worker: 7168, permit: 320 }; // ADR 0010 amendment 9: orchestrator 16 KB, worker 7 KB
+const BUDGET = { orchestrator: 20480, worker: 7168, permit: 320 }; // ADR 0010 amendment 16: orchestrator 20 KB, worker 7 KB
 const listingBytes = (role, opts) => Buffer.byteLength(JSON.stringify(toolsFor(role, opts)), 'utf8');
 
 const BY_NAME = new Map();
@@ -455,7 +460,7 @@ const NO_NULL = { task_evaluate: ['base'] };
 const HARNESS_ONLY = { task_evaluate: ['trigger', 'cancel_key'], memory_store: ['task_id', 'turn', 'source', 'embed', 'body', 'worker_id'], worker_spawn: ['native_memory', 'tools', 'sandbox', 'max_budget_usd'] }; // worker_spawn: native_memory is the eval driver's lever (ADR 0024 amendment 3); tools is the built-in list, which only allowed_tools may narrow (amendment 4); sandbox is a Codex worker's sandbox mode and max_budget_usd a job worker's spend cap, both the harness's. permission_prompt and permit_wait_ms stay open: ADR 0020 decision 1 makes the permission channel optional per spawn, and decision 5 has the orchestrator answer its requests
 // Tools that take exactly the properties their schema names: memory_store's row is written from its arguments, so an
 // unnamed one (an id, a created_at, a vector and its model) would reach the core as if the harness had chosen it.
-const CLOSED = new Set(['memory_store']);
+const CLOSED = new Set(['memory_store', 'briefing']);
 // ADR 0043 decision 1: the knowledge agent's id, knowledge-<run>, is the harness's. A worker the orchestrator named
 // with that prefix would be taken for the agent (or block it), so a caller-chosen id with it is refused.
 const RESERVED_WORKER_PREFIX = 'knowledge-';
@@ -490,7 +495,7 @@ function validateArgs(name, args, { notes = false, role = 'worker' } = {}) {
     if (a[k] === undefined || a[k] === null) bad(`${name} needs ${k}`, { tool: name, missing: k });
   }
   // ADR 0061: an amend keeps the task\'s spec unless it names a new one, so only a create needs it.
-  if (name === 'task_create' && a.amend !== true && (a.spec === undefined || a.spec === null)) bad('task_create needs spec', { tool: name, missing: 'spec' });
+  if (name === 'task_create' && a.amend !== true && a.tasks === undefined && (a.spec === undefined || a.spec === null)) bad('task_create needs spec', { tool: name, missing: 'spec' });
   if (name === 'memory_retrieve') {
     const hasId = a.id !== undefined && a.id !== null;
     const hasIds = a.ids !== undefined && a.ids !== null;

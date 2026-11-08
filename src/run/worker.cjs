@@ -34,7 +34,7 @@ function newWorkerRecord({ id, substrate, worktree, dataDir, taskId, model, allo
   const dir = L.workerDir(dataDir, id);
   fs.mkdirSync(dir, { recursive: true });
   const w = {
-    id, substrate, worktree: L.fwd(path.resolve(worktree)), dir, taskId: taskId || null,
+    id, substrate, dataDir, worktree: L.fwd(path.resolve(worktree)), dir, taskId: taskId || null,
     model: model || null, effort: effort || null, agentType: agentType || null, maxBudgetUsd, nativeMemory: nativeMemory == null ? null : trustRecord ? nativeMemory : require('./surface.cjs').checkNativeMemory(nativeMemory), nativeMemoryAuth, tools: narrowed, allowedTools: allowedTools || L.DEFAULT_ALLOWED_TOOLS,
     permissionMode: permissionMode || L.DEFAULT_PERMISSION_MODE, sandbox: sandbox || L.DEFAULT_CODEX_SANDBOX,
     // ADR 0021 decisions 3-4: what the last launch's system/init said it started with (noteInit); null
@@ -82,8 +82,10 @@ function newWorkerRecord({ id, substrate, worktree, dataDir, taskId, model, allo
 // the next adapter's memory, so without this `restart` can only ever reach workers of its own
 // session. The record is settled on arrival: whatever ran under that pid belonged to another
 // adapter, this process is not its parent (invariant 1) and cannot see it exit.
-async function adopt({ core, workerId, dataDir }) {
+async function adopt({ core, workerId, dataDir, runId }) {
+  if (runId === undefined) throw new TypeError('adopt needs runId: the adopting manager run, or null to build a record without the other-run check');
   const row = await core.worker.get({ worker_id: workerId }); // E_NOT_FOUND is the store's answer
+  if (runId !== null) await require('./other-run-guard.cjs').refuseLiveOtherRun(core, runId, row); // runId is required: the manager's run, or null to only build a record from a row (tests) // a worker of another live run is that run's: nothing below is read or written for it
   // 6e-5 item 5: the row has no column for model/allowed_tools/permission_prompt, so a cross-adapter
   // relaunch used to fall back to this build's defaults; argv.json/mcp.json name what actually ran.
   const launchOpts = LC.readLaunchOptions(L.workerDir(dataDir, row.id));
@@ -121,16 +123,20 @@ async function adopt({ core, workerId, dataDir }) {
   w.lastWrittenSeq = Number.isInteger(row.seq) ? row.seq : null; // the guard's basis for a later restating write
   if (toolsRefusal) { w.toolsRefusal = toolsRefusal; w.toolsUnknown = true; } // never overwritten (forWorker sets adoptRefusal for other causes): checkLaunch throws the refusal on every launch, and rowOf writes no tools
   if (launchOpts.error) w.lastError = { where: 'adopt', ...launchOpts.error };
+  // A Codex resume loses the reviewer's scratch folder as a writable root unless the record carries it again: the folder exists only for a reviewer, so its existence under the row's run is the marker (the row has no agent type).
+  w.scratchDir = row.substrate === 'codex' && row.run_id ? require('../core/scratch-dir.cjs').scratchDir(dataDir, row.run_id, row.id) : null;
   w.sessionId = row.session_id || null;
   w.pid = Number.isInteger(row.pid) ? row.pid : null;
   PI.adoptFromRow(w, row);
   w.state = row.state;
+  require('./seen-stamp.cjs').stampAdopted(w); // an adopted worker holds no handle: its register record is stamped by pid and creation time
   w.startedAt = row.started_at || w.startedAt;
   w.lastEventAt = row.last_event_at || null;
   w.turns = row.turns || 0;
   w.inputTokens = row.input_tokens || 0;
   w.outputTokens = row.output_tokens || 0;
   w.costUsd = row.cost_usd || 0;
+  w.adoptedLedger = { cost: w.costUsd, turns: w.turns }; // what the usage ledger already holds for this worker
   w.costBase = row.cost_base || 0; // reported cost of the lives before this session (a fresh session's total starts at zero)
   w.exitedAt = row.exited_at || null;
   w.exitCode = row.exit_code == null ? null : row.exit_code;
@@ -313,6 +319,7 @@ async function onTurnEnd(w, e, ctx) {
   }
   w.lastTurnUsage = e.usage;
   w.turnEnded = true;
+  w.turnSince = w.lastTurnEndAt || 0; // the previous turn's end: this turn's window opens there
   w.lastTurnEndAt = now(); // the pause's cache-deadline receipt's own basis
   // build step 6e-4: every result subtype seen after the park's own interrupt is recorded, in order, so
   // doPause (pause.cjs) can tell whether the interrupt cut a turn off, without waiting on this turn.
@@ -431,7 +438,7 @@ function attach(w, child, ctx) {
 }
 
 // The waits on a record's ready, turn and exit, and the bounded wait for an exit code: worker-waits.cjs.
-const { waitReady, waitTurn, waitExit, awaitExitCode, deathByPidCheck, EXIT_CODE_WAIT_MS } = require('./worker-waits.cjs');
+const { waitReady, waitTurn, waitExit, awaitExitCode, awaitSettled, exitCodeBudgetMs, deathByPidCheck, EXIT_CODE_WAIT_MS } = require('./worker-waits.cjs');
 
 // ADR 0021 decisions 3 and 4, once per launch after the ready gate: what this launch's system/init
 // said it started with. Returns the facts for the caller's receipt (ready.cjs initFacts).
@@ -458,5 +465,5 @@ module.exports = {
   newWorkerRecord, adopt, rowOf, noteInit, attach, settle, terminalState, noteStoppedWhileSettled, onTurnEnd, turnStarted,
   noteToolUse, noteToolResult, appendStream, sha12,
   assertTakesMessage,
-  waitReady, waitTurn, waitExit, awaitExitCode, deathByPidCheck, EXIT_CODE_WAIT_MS, POLL_EXIT_HOLD_MS, DEATH_GRACE_MS, holdForExitEvent, settleHeld,
+  waitReady, waitTurn, waitExit, awaitExitCode, awaitSettled, exitCodeBudgetMs, deathByPidCheck, EXIT_CODE_WAIT_MS, POLL_EXIT_HOLD_MS, DEATH_GRACE_MS, holdForExitEvent, settleHeld,
 };

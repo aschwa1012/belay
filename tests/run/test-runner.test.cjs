@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // Build step H1: scripts/test.cjs runs each phase under a
 // wall-clock bound and, on expiry, stops that phase's exact child pid with its tree.
 
@@ -10,6 +11,7 @@ const path = require('node:path');
 const { spawn } = require('node:child_process');
 
 const P = require('../../src/run/process.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 const { runPhase, runPhases, concurrencyFromEnv } = require('../../scripts/test.cjs');
 
 const fwd = (p) => String(p).split(path.sep).join('/');
@@ -33,11 +35,9 @@ async function withNestedEnv(extra, fn) {
   }
 }
 
-async function waitDead(pid, ms) {
-  const t0 = Date.now();
-  while (Date.now() - t0 < ms) { if (!P.pidAlive(pid)) return true; await sleep(100); }
-  return !P.pidAlive(pid);
-}
+// The fixture's two processes, gone by identity. `pids` is the fixture's file: the creation times are in it once its snapshot landed, and
+// until then a pid that is still held cannot be told from a reused number, which fails rather than counts as gone.
+const waitDead = (pid, created, ms) => G.waitGone(G.recorded(pid, created), { deadlineMs: ms, intervalMs: 100 });
 
 // Whatever runPhase did, the fixture's two pids are stopped by exact pid (the fixture also ends itself
 // after 30 s), so a broken runPhase cannot leave this test file hanging.
@@ -64,8 +64,8 @@ test('test-runner: a hung phase is stopped by exact pid, its tree included, with
     assert.ok(took < 20000, `runPhase took ${took} ms, over the 20,000 ms bound`);
     assert.ok(fs.existsSync(pidsFile), 'the fixture never wrote its pids: it was stopped before it started, so the tree claim is unchecked');
     pids = JSON.parse(fs.readFileSync(pidsFile, 'utf8'));
-    assert.ok(await waitDead(pids.child, 5000), `fixture child pid ${pids.child} is still alive`);
-    assert.ok(await waitDead(pids.grandchild, 5000), `fixture grandchild pid ${pids.grandchild} is still alive: the tree was not stopped`);
+    assert.ok(await waitDead(pids.child, pids.child_created, 5000), `fixture child pid ${pids.child} is still alive`);
+    assert.ok(await waitDead(pids.grandchild, pids.grandchild_created, 5000), `fixture grandchild pid ${pids.grandchild} is still alive: the tree was not stopped`);
   } finally {
     stopFixturePids(pidsFile);
     fs.rmSync(dir, { recursive: true, force: true });
@@ -108,8 +108,13 @@ test('test-runner: a phase whose tree could not be stopped reports stop_failed a
     assert.strictEqual(r.stop_failed, true, `a failed killTree must be reported: ${JSON.stringify(r)}`);
     assert.strictEqual(typeof seen[0], 'object', 'ADR 0039: the runner hands the kill its live child handle, never a bare pid');
     assert.strictEqual(seen[0].exitCode, null);
-    const stopped = stopFixturePids(pidsFile); // the stub stopped nothing: end the fixture (and so the dispatcher) by its place in this test's own process tree
-    assert.ok(stopped && await waitDead(stopped.child, 8000) && await waitDead(stopped.grandchild, 8000), 'ADR 0039: stopFixturePids really stopped the fixtures');
+    // The stub stopped nothing, so both fixtures are alive: take their identities before ending them.
+    let live = null; // the fixture restates the file in place once its snapshot lands, so a read can catch it half written
+    for (let i = 0; i < 100 && !live; i++) { try { live = JSON.parse(fs.readFileSync(pidsFile, 'utf8')); } catch { await sleep(50); } }
+    assert.ok(live, 'the fixture never wrote its pids');
+    const [childId, grandchildId] = await G.identifyAll([live.child, live.grandchild]);
+    const stopped = stopFixturePids(pidsFile); // end the fixture (and so the dispatcher) by its place in this test's own process tree
+    assert.ok(stopped && await G.waitGone(childId, { deadlineMs: 8000, intervalMs: 100 }) && await G.waitGone(grandchildId, { deadlineMs: 8000, intervalMs: 100 }), 'ADR 0039: stopFixturePids really stopped the fixtures');
 
     const dir2 = fwd(fs.mkdtempSync(path.join(os.tmpdir(), 'belay-h1-runner-')));
     try {
@@ -138,9 +143,10 @@ test('stopFixturePids really stops a live fixture and its detached grandchild (A
     assert.ok(pids, 'the fixture never wrote its pids');
     await sleep(300);
     assert.ok(P.pidAlive(pids.child) && P.pidAlive(pids.grandchild), 'both fixture pids start alive');
+    const [childId, grandchildId] = await G.identifyAll([pids.child, pids.grandchild]); // alive, as asserted above
     stopFixturePids(pidsFile);
-    assert.ok(await waitDead(pids.child, 5000), 'the fixture child is still alive');
-    assert.ok(await waitDead(pids.grandchild, 5000), 'the fixture grandchild is still alive');
+    assert.ok(await G.waitGone(childId, { deadlineMs: 5000, intervalMs: 100 }), 'the fixture child is still alive');
+    assert.ok(await G.waitGone(grandchildId, { deadlineMs: 5000, intervalMs: 100 }), 'the fixture grandchild is still alive');
   } finally { if (holder.exitCode === null) holder.kill(); fs.rmSync(dir, { recursive: true, force: true }); }
 });
 
@@ -152,8 +158,9 @@ test('every tests/<dir> that holds a *.test.cjs file is named by a phase glob', 
   const holds = (dir) => fs.readdirSync(dir, { withFileTypes: true }).some((e) => (e.isFile() && /\.test\.cjs$/.test(e.name)) || (e.isDirectory() && e.name !== 'fixtures' && holds(path.join(dir, e.name))));
   const dirs = fs.readdirSync(root, { withFileTypes: true }).filter((e) => e.isDirectory() && holds(path.join(root, e.name))).map((e) => e.name);
   assert.ok(dirs.includes('mod') && dirs.includes('core'), 'the scan sees the directories');
-  // acceptance rows run by `npm run test:acceptance`, not by a glob
-  assert.deepStrictEqual(dirs.filter((d) => !named.has(d) && d !== 'acceptance'), []);
+  // the acceptance rows and the release tooling tests, where present, run by their own npm scripts, not by a glob
+  if (dirs.includes('release')) assert.match(require('../../package.json').scripts['test:release'] || '', /tests\/release\//, 'test:release runs tests/release');
+  assert.deepStrictEqual(dirs.filter((d) => !named.has(d) && d !== 'acceptance' && d !== 'release'), []);
 });
 
 // BELAY_TEST_CONCURRENCY: a fake spawn captures each phase's argv; no real test phase runs.

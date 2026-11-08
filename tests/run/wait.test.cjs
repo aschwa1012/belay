@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // RunManager.wait — experimental, ADR 0014 finding 1, probed before any record adopts it. Every assertion is about a derived fact: a turn that ended on the stream, a
 // process that exited, a timeout that came back as a result. Nothing here is a worker's claim.
 

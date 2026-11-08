@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // helpers.cjs — shared test scaffolding. Not a *.test.cjs file, so the runner does not execute it.
 // Every test runs against a sandbox directory made with fs.mkdtempSync under the OS temp dir; nothing
@@ -19,13 +20,24 @@ function sandbox() {
 
 // Windows can hold a handle for a moment after a store closes, so retry; but a directory that truly
 // will not go must be reported, not swallowed, or %TEMP% fills with belay-core-test-* with no signal.
-function cleanup(dir) {
-  for (let i = 0; i < 5; i++) {
-    try { fs.rmSync(dir, { recursive: true, force: true }); return; }
+// Before a sandbox goes, every store in it is checked against its invariants (tests/helpers/store-invariants.cjs). A test whose store is broken
+// on purpose says so, for the rules its hand-written rows break: cleanup(dir, { skipInvariants: { rules: ['done_evidence'], reason: 'why' } }); both are required,
+// and every other rule still runs. The sandbox is removed before a violation is thrown.
+function cleanup(dir, opts = {}) {
+  const sk = opts.skipInvariants;
+  if (sk !== undefined && (!sk || !String(sk.reason || '').trim() || !Array.isArray(sk.rules) || !sk.rules.length)) throw new Error('cleanup: skipInvariants needs { rules: [...], reason }');
+  let broken = null;
+  try { require('../helpers/store-invariants.cjs').assertStoresUnder(dir, { ignoreRules: sk ? sk.rules : [] }); } catch (e) { broken = e; }
+  let gone = false;
+  for (let i = 0; i < 5 && !gone; i++) {
+    try { fs.rmSync(dir, { recursive: true, force: true }); gone = true; }
     catch { Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 50); }
   }
-  try { fs.rmSync(dir, { recursive: true, force: true }); }
-  catch (e) { process.emitWarning(`sandbox left behind at ${dir}: ${e.code || e.message}`); }
+  if (!gone) {
+    try { fs.rmSync(dir, { recursive: true, force: true }); }
+    catch (e) { process.emitWarning(`sandbox left behind at ${dir}: ${e.code || e.message}`); }
+  }
+  if (broken) throw broken;
 }
 
 // A process root older than any spawn-register lifetime a concurrent test could have recorded (2020-01-01). An operator-check fixture that
@@ -101,26 +113,27 @@ function trackOwnerChild(child) {
 // this test spawned, never a name or a command line, and only after the pid check says it is still there.
 async function stopOwnerProcesses(dataDir) {
   const { openCore } = core('index.cjs');
-  const { pidAlive, readOwnerLock } = core('lock.cjs');
+  const { readOwnerLock } = core('lock.cjs');
   const receipts = [];
   for (const child of [...OWNER_CHILDREN]) {
     const pid = child.pid;
+    const running = () => child.exitCode === null && child.signalCode === null; // the handle, not a bare pid that may have been handed to another process
     try {
       // It cannot be asked to stop before it is serving, so give it a bounded chance to get there.
-      for (let i = 0; i < 200 && pidAlive(pid); i++) {
+      for (let i = 0; i < 200 && running(); i++) {
         const lock = readOwnerLock(dataDir);
         if (lock && lock.listening !== false) break;
         await sleep(25);
       }
-      if (pidAlive(pid)) {
+      if (running()) {
         const c = await openCore({ dataDir, caller: callerFor('operator'), embed: false });
         await c.shutdownOwner();
         await c.close();
       }
     } catch { /* it may never have got far enough to answer */ }
-    for (let i = 0; i < 80 && pidAlive(pid); i++) await sleep(25);
+    for (let i = 0; i < 80 && running(); i++) await sleep(25);
     let killed = false;
-    if (pidAlive(pid)) { try { process.kill(pid); killed = true; } catch { /* it raced us to the exit */ } }
+    if (running()) { try { killed = child.kill(); } catch { /* it raced us to the exit */ } } // by the live handle
     OWNER_CHILDREN.delete(child);
     receipts.push({ pid, killed });
   }

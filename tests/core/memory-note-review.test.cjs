@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // memory-note-review.test.cjs — wave 4: a reviewer other than the writer judges each note, belay checks the citations and
 // applies the verdict with a review: receipt. Real core against a sandbox store, a real stream file and a real git repo
 // for the citations. Nothing here starts a model.

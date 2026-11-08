@@ -36,6 +36,10 @@ function requestHead(w, ctx, requestedState) {
   });
 }
 
+// Whether the row being written carries the landed creation time. A pending or final error is not the value: a row that carries only
+// an error is restated when the value lands (or the error becomes final), so the stored row never keeps an outdated "being read".
+const rowHadPidCreated = (w) => w.pidCreated != null;
+
 // `ctx` is the same context object manager.cjs builds (`{ core, runId, adapterPid, writeRow }`); this
 // factory fills in `writeRow` on it. `flags` is a small mutable object (`{ closed }`) lifecycle.cjs's
 // own `shutdown()` flips once every worker has been asked to stop — a shared reference, not a copy, so
@@ -52,6 +56,7 @@ function createWriteRow(ctx, flags) {
   // pid or the core's E_WORKER_NOT_LIVE returns null with nothing settled, so the exit event (which carries
   // the exit code) or the pid poll records the death as before.
   return async function writeRow(w, state, opts = {}) {
+    const launchesAtEntry = w.launches;
     // build step 6i-2 design item 3 (R4): checked first, before any pid or core work — a write this
     // late has nothing left to elect an owner for.
     if (flags.closed) {
@@ -68,7 +73,7 @@ function createWriteRow(ctx, flags) {
     if (w.settled && w.headSha == null && !w.headRequested && state !== 'starting' && state !== 'running') requestHead(w, ctx, state);
     let written;
     w.lastRowHadBase = w.baseSha != null || w.baseError != null;
-    w.lastRowHadPidCreated = w.pidCreated != null || w.pidCreatedError != null; // ADR 0039: restatePidCreated below
+    w.lastRowHadPidCreated = rowHadPidCreated(w); // ADR 0039: restatePidCreated below
     try {
       const row = W.rowOf(w, state, ctx);
       if (opts.guard && w.lastWrittenSeq != null) row.expect_seq = w.lastWrittenSeq;
@@ -80,10 +85,21 @@ function createWriteRow(ctx, flags) {
       written = await ctx.core.worker.write(row);
     } catch (e) {
       if (state === 'running' && e && e.code === 'E_WORKER_NOT_LIVE') {
-        if (!w.settled && !opts.refresh) W.settle(w, w.exitCode, w.exitSignal, 'core-refused-running', ctx);
+        if (!w.settled && !opts.refresh && !W.holdForExitEvent(w)) W.settle(w, w.exitCode, w.exitSignal, 'core-refused-running', ctx); // the process died in flight: hold for the exit event's code, as the pid-check branch above
         return null;
       }
       throw e;
+    }
+    // The exit-code fill-in (opts.fillIn) follows this record's own direct terminal write whose response was still in flight
+    // when the fill-in was built: its basis seq is one behind. If the row now current is that same terminal state still lacking
+    // the code, it is this record's own life's and is restated once on the new basis; anything else (a forget, a later life) stands.
+    if (written && written.skipped && opts.fillIn) {
+      const cur = await ctx.core.worker.get({ worker_id: w.id });
+      const sameLife = w.launches === launchesAtEntry && cur && cur.pid === w.pid && (w.pidCreated == null || cur.pid_created == null || cur.pid_created === w.pidCreated);
+      if (sameLife && cur.state === state && cur.exit_code == null && cur.exit_signal == null && Number.isInteger(cur.seq)) {
+        w.lastWrittenSeq = cur.seq;
+        return writeRow(w, state, { guard: true });
+      }
     }
     if (written && written.skipped) { // superseded: nothing was written, so nothing here moves; the skip stays visible
       w.lastError = { where: 'worker.write/superseded', state, reason: written.reason, current_seq: written.current_seq };
@@ -103,6 +119,8 @@ function restateBase(w, ctx) {
   const launches = w.launches;
   w.queue = w.queue.then(() => {
     if (w.launches !== launches || w.lastRowHadBase) return null;
+    // As restatePidCreated: a process gone before its exit was processed is not restated (a `starting` row opens a new life for dead-pids.cjs).
+    if (!w.settled && w.pid != null && !P.pidAlive(w.pid)) return null;
     return ctx.writeRow(w, w.settledState || w.state, { guard: true, refresh: true });
   }).catch((e) => {
     w.lastError = { where: 'worker.write/base-sha', code: e && e.code, message: e && e.message };
@@ -126,4 +144,4 @@ function restatePidCreated(w, ctx, force = false) {
   });
 }
 
-module.exports = { createWriteRow, restateBase, restatePidCreated };
+module.exports = { createWriteRow, restateBase, restatePidCreated, rowHadPidCreated };

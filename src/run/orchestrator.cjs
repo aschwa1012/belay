@@ -93,7 +93,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   const fullArgs = [...prefixArgs, ...argv];
   const argvHash = L.writeArgvJson(written.dir, { exe: command, args: fullArgs, cwd: worktree });
 
-  const env = L.buildEnv(process.env, { substrate: 'claude-code', cwd: worktree });
+  const env = L.buildEnv(process.env, { substrate: 'claude-code', cwd: worktree, orchestrator: true });
   env.MCP_TOOL_TIMEOUT = String(mcpToolTimeoutMs);
 
   const child = P.spawnWorker({ exe: command, args: fullArgs, cwd: worktree, env, stdin: 'pipe' });
@@ -109,7 +109,11 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     // 5b fix round (review 2 finding 2): `wakesExpired` names a pendingWrites entry this run gave up
     // waiting on — see `expireStalePendingWrites` below.
     wakes: [], wakesSuppressed: [], wakesExpired: [], baseline: {}, pendingWrites: [],
+    stdinError: null,
   };
+  // A write to a pipe the child has already closed fails as an asynchronous 'error' event, not a throw;
+  // with no listener Node crashes this process. Record it; the exit handler still settles the run.
+  if (child.stdin) child.stdin.on('error', (e) => { state.stdinError = { code: e && e.code, message: e && e.message }; });
 
   const streamFd = fs.openSync(path.join(written.dir, 'stream.jsonl'), 'a');
   const stderrFd = fs.openSync(path.join(written.dir, 'stderr.txt'), 'a');
@@ -118,6 +122,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   let pollHandle = null;
   let pollInFlight = false; // 5a-2: at most one store read at a time, guard not a queue
   let pollByTurnEnd = false; // whether the read in flight was started by a turn end
+  let pollReadDone = false, pollAgain = false; // the pass's read is done; a turn end landed after it, so poll once more
   const deadPids = require('./dead-pids.cjs').createDeadPids({ graceMs: DEATH_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid) });
   const holdRecorder = createHoldRecorder(); // wake.cjs (design item 9): moved out of this file
   const leftovers = require('./orchestrator-leftovers.cjs').createLeftovers({ child, P, state, core, runId }); // ADR 0054 amendment 2
@@ -135,6 +140,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   const hold = createRunHold({
     child, getIdle: () => state.idle, onDeadline: (reason) => closeThenKillOnDeadline(reason),
     writeStdinLine: (text, id, rec) => writeStdinLine(text, id, rec), wakeText, pushWake: (rec) => state.wakes.push(rec),
+    suppressWake: (rec) => state.wakesSuppressed.push({ ...rec, reason: 'stdin was broken when this wake was resumed' }),
     // 6f-2 design item 5 (run-hold.cjs:133): every record's `at_ms` counts from this run's own t0, like
     // every entry in `wakes[]` already does — never the wall clock.
     nowMs: () => Date.now() - t0,
@@ -151,7 +157,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     // ADR 0039: the handle first. A child whose exit was already observed is never killed by its pid.
     if (child.exitCode === null && child.signalCode === null && P.pidAlive(child.pid)) {
       const r = await P.killProcess(child).catch(() => null);
-      state.kill = r ? { signalled_at: r.signalled_at || null, snapshot_ms: Number.isFinite(r.snapshot_ms) ? r.snapshot_ms : null } : null; // ADR 0048 decision 7: a test measures from the signal
+      state.kill = r ? { signalled_at: r.signalled_at || null, snapshot_ms: Number.isFinite(r.snapshot_ms) ? r.snapshot_ms : null, killed_processes: (r.tree && r.tree.killed_processes) || [] } : null; // ADR 0048 decision 7: a test measures from the signal; killed_processes: the tree this signal ended, named from the snapshot taken before it
     }
   }
 
@@ -160,11 +166,9 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   // tree-first. Used by step 9's timeout/interrupt path AND by the ordinary "no worker mid-turn, no
   // wake unanswered" close (`pollOnce`, below): an orchestrator that does not exit when its stdin closes must
   // not make `belay run` permanent, so the same bound applies regardless of which rule closed stdin.
-  // `reason` is recorded only the first time — whichever rule got here first owns `ended_by` — but the
-  // wait-then-kill bound always runs exactly once (`state.boundStarted` guards that), even when stdin
-  // was already closed and `state.finishing` was already set by another rule. `killed_after_close`
-  // (5a-2) names whether the bound had to act: a run whose orchestrator ignored its closed stdin
-  // returns a non-zero exit code even though `ended_by` is still the stdin rule's sentence.
+  // `reason` is recorded only the first time (the first rule here owns `ended_by`); the wait-then-kill bound runs
+  // exactly once (`state.boundStarted`). `killed_after_close` (5a-2) names whether the bound had to act: a run whose
+  // orchestrator ignored its closed stdin returns a non-zero exit code even though `ended_by` is the stdin rule's sentence.
   async function closeThenKillOnDeadline(reason) {
     if (!state.finishing) {
       state.finishing = true;
@@ -209,6 +213,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   // end can tell what it answered. `forWorkerId` is null for the prompt itself; `wakeRecord` is the
   // exact object pushed to `state.wakes` for a worker's wake, so a later match can stamp it directly.
   function writeStdinLine(text, forWorkerId, wakeRecord) {
+    if (child.stdin && child.stdin.destroyed || state.stdinError) return false; // the pipe is broken: nothing was written, so nothing is recorded
     try {
       // The uuid is what the substrate's `command_lifecycle` events name this write by (pending-writes.cjs).
       const uuid = crypto.randomUUID();
@@ -235,47 +240,51 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     const rec = {
       at_ms: Date.now() - t0, worker_id: ev.worker_id, event: ev.event, turn: ev.turn,
       bytes: Buffer.byteLength(text, 'utf8'), orchestrator_idle_at_write: state.idle,
-      established_by: ev.event === 'note_refuted' || ev.event === 'scrub_alarm' ? `${ev.event} receipt seq ${ev.seq}` : ev.event === 'evaluated' ? `task ${ev.task_id} results at ${ev.seq}` : ev.event === 'pre_close' ? 'task.worktreeSweep dry run' : `worker.list row seq ${ev.seq} for the run`,
+      established_by: ev.event === 'note_refuted' || ev.event === 'scrub_alarm' ? `${ev.event} receipt seq ${ev.seq}` : ev.event === 'budget_pause' ? 'the budget guard' : ev.event === 'evaluated' ? `task ${ev.task_id} results at ${ev.seq}` : ev.event === 'pre_close' ? 'task.worktreeSweep dry run' : `worker.list row seq ${ev.seq} for the run`,
     };
     if (ev.event === 'death') {
       rec.exit_code = ev.exit_code; rec.exit_signal = ev.exit_signal; rec.death_established_by = ev.death_established_by;
     }
     if (ev.event === 'paused') rec.paused_by = ev.paused_by;
     if (ev.turns_skipped) rec.turns_skipped = ev.turns_skipped;
-    if (hold.holdWake(rec)) return; // 6f design item 2: held while paused, never suppressed
-    writeStdinLine(text, ev.worker_id, rec);
-    state.wakes.push(rec);
+    if (!ev.unheld && hold.holdWake(rec, text)) return; // 6f design item 2: held while paused, never suppressed; the budget pause's own wake is the one not held
+    if (writeStdinLine(text, ev.worker_id, rec)) state.wakes.push(rec);
+    else state.wakesSuppressed.push({ ...ev, reason: 'stdin was broken when this event was found' });
   }
 
   // 5b: one poll chain for the run's whole life, from the moment the ready check begins until the
   // run is finishing — not only while the orchestrator is idle, because a worker can finish a turn
-  // or die while the orchestrator is still mid-turn on its own, and that wake must still reach stdin
-  // the moment it is found (ADR 0015's evidence: a wake is cheaper precisely because it does not
-  // wait for an idle moment). Started synchronously from the `ready` event itself (`handleEvent`,
-  // below), after the synchronous `verifyClaudeReady` check has already run (S2 fix round 3), so that a worker's turn
+  // or die while the orchestrator is mid-turn, and that wake must reach stdin the moment it is found
+  // (ADR 0015's evidence: a wake does not wait for an idle moment). Started synchronously from the `ready` event itself (`handleEvent`), after the synchronous `verifyClaudeReady` check has already run (S2 fix round 3), so that a worker's turn
   // ending inside the orchestrator's own first stdout chunk — ready and its own first turn end can
   // arrive in the very same chunk — is still caught by a read that began before that chunk's later
   // events set the orchestrator busy or idle. 5a-2's guards still hold: at most one store read in
   // flight, and a failed read does not fail open. Every state is read (not just starting/running) so
   // a death is seen. The stdin-close decision is made only while idle (the freshest `state.idle`, not
-  // the snapshot): no worker of this run mid-turn (the store's own `mid_turn` column, every turn, not
-  // only the first), no wake still unanswered, and (5b-4) no non-terminal row whose pid just died
+  // the snapshot): no worker of this run mid-turn (the store's own `mid_turn` column, every turn), no wake still unanswered, and (5b-4) no non-terminal row whose pid just died
   // still inside its detector grace.
+  // The guard covers the whole pass, not only the read: a second pass could close stdin under the first's unwritten wakes.
+  // A turn end during the pass sets `pollAgain`: it skips its idle close (its rows predate the turn) and polls once more, on
+  // fresh rows, when it ends. Each core call is bounded by the client's 30 s timeout (call-limits.cjs): a stalled owner delays wakes, not wedges them.
   async function pollOnce(byTurnEnd = false) {
     if (state.finishing || pollInFlight) return;
-    pollInFlight = true;
+    pollInFlight = true; pollReadDone = false; pollAgain = false;
+    try { await pollPass(byTurnEnd); } finally { pollInFlight = false; }
+    if (pollAgain && !state.finishing) { if (pollHandle) { clearTimeout(pollHandle); pollHandle = null; } pollOnce(true); }
+  }
+
+  async function pollPass(byTurnEnd) {
     pollByTurnEnd = byTurnEnd;
     const turnAtStart = state.turns;
-    let list = null;
-    let failReason = null;
+    let list = null, failReason = null;
     try { list = await core.worker.list({}); }
     catch (e) { failReason = (e && (e.code || e.message)) || String(e); }
     state.polls += 1;
-    pollInFlight = false;
+    pollReadDone = true;
     // A turn end whose poll was skipped because a read the ready event or the timer started was in flight is the turn a hold from
     // this read names, not the turn the read started at (stale). A later turn end in the same chunk as the end that started this read is neither.
     const turnAtCall = state.skippedTurn == null ? turnAtStart : state.skippedTurn;
-    state.skippedTurn = null;
+    state.skippedTurn = pollAgain ? turnAtCall : null; // a turn end during the read keeps its turn for the re-poll
     if (state.finishing) return; // the run ended while this read was in flight
 
     if (failReason !== null) {
@@ -284,6 +293,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       return;
     }
 
+    if (spec.budgetWake) spec.budgetWake.tick(list.workers || []); // the live workers' turns in flight and, with the lever on, the check, while the orchestrator is silent
     const rows = deadPids.apply(list.workers || []); // a pid seen dead stays dead: a reused number is not the worker (dead-pids.cjs)
     const nowMs = Date.now() - t0;
     const { events, next, pending_deaths } = diffWorkers({
@@ -291,9 +301,10 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       orphanGraceMs: ORPHAN_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid), sinceAt: t0,
     });
     state.baseline = next;
-    for (const ev of (await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), state.evalSeen || (state.evalSeen = new Map()), { holdMs: require('./release-eval.cjs').holdMs(), workers: rows })).concat(await noteWatcher.poll(), await callWatcher.poll())) writeWake(ev); // ADR 0058 amendment 4: a turn_end carries its release evaluation
+    for (const ev of (await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), state.evalSeen || (state.evalSeen = new Map()), { holdMs: require('./release-eval.cjs').holdMs(), workers: rows })).concat(await noteWatcher.poll(), await callWatcher.poll(), spec.budgetWake ? spec.budgetWake.takeWakes() : [])) writeWake(ev); // ADR 0058 amendment 4: a turn_end carries its release evaluation
     if (state.finishing) return; // a wake's own write may have found the child already gone
 
+    if (pollAgain) { pollHandle = setTimeout(pollOnce, pollMs); return; } // a turn ended after the read: decide on the re-poll's rows
     if (state.idle && await require('./orchestrator-idle-close.cjs').idleClose({ state, rows, runId, pending_deaths, turnAtCall, hold, awaitingWakeIds, callWatcher, recordHold, preClose, writeWake, closeThenKillOnDeadline })) return;
     pollHandle = setTimeout(pollOnce, pollMs);
   }
@@ -344,7 +355,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     }
     if (ev.kind === 'control_response') { hold.onControlResponse(ev); return; } // 6f amendment 3 decision 4.3
     if (ev.kind === 'turn_end') {
-      state.turns += 1; usage.onTurnEnd(ev);
+      state.turns += 1; usage.onTurnEnd(ev); if (spec.budgetWake) spec.budgetWake.noteOrchestratorCost(usage.snapshot().orch_cost_usd); // a budgeted run counts the orchestrator's cost
       hold.onTurnEnd(ev); // 6f: lets an in-flight run-pause interrupt see the turn it ended
 
       // 5b-2: the parser now names exactly which write this turn answers, by the order of
@@ -360,7 +371,8 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       // idle period, not to the whole run (ADR 0015's evidence table counts a hold at each turn end).
       holdRecorder.reset();
       if (pollHandle) { clearTimeout(pollHandle); pollHandle = null; }
-      if (pollInFlight && !pollByTurnEnd && state.skippedTurn == null) state.skippedTurn = state.turns;
+      if (pollInFlight && !pollReadDone && !pollByTurnEnd && state.skippedTurn == null) state.skippedTurn = state.turns;
+      if (pollInFlight) pollAgain = true;
       pollOnce(true);
       return;
     }
@@ -378,7 +390,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
 
   child.stdout.on('data', (chunk) => {
     const { lines, events } = parser.pushChunk(chunk);
-    for (const l of lines) { try { fs.writeSync(streamFd, l + '\n'); } catch { /* fd may be closing */ } }
+    for (const l of lines) { try { fs.writeSync(streamFd, l + '\n'); } catch { /* fd may be closing */ } if (spec.budgetWake) spec.budgetWake.noteOrchestratorLine(l); } // the turn in flight, priced as it arrives (budget-guard.cjs)
     for (const ev of events) handleEvent(ev);
   });
   child.stderr.on('data', (chunk) => { try { fs.writeSync(stderrFd, chunk); } catch { /* closing */ } });
@@ -395,7 +407,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       clearTimers();
       try { fs.closeSync(streamFd); } catch { /* already closed */ }
       try { fs.closeSync(stderrFd); } catch { /* already closed */ }
-      expireStalePendingWrites();
+      expireStalePendingWrites(); for (const ev of require('./release-eval.cjs').drainHeld(state.evalSeen)) state.wakesSuppressed.push({ ...ev, reason: 'the run ended while this turn end was held for its release evaluation' }); // recorded either way
       const out = {
         orchestrator: orchestratorBlock(), ended_by: state.endedBy, holds: state.holds, polls: state.polls,
         wakes: state.wakes, wakes_suppressed: state.wakesSuppressed, wakes_expired: state.wakesExpired,
@@ -464,7 +476,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       if (!attached || attached.ok !== true) {
         if (state.finishing) return; // already ending (e.g. the child died first)
         state.finishing = true;
-        state.endedBy = attached && attached.stage === 'pin' ? `the run's retrieval routing could not be pinned (the attach itself succeeded), so the run did not start: ${attached.error}` : `the run's attach write failed after this process became the store owner: ${(attached && attached.error) || 'attach refused'}`;
+        state.endedBy = attached && attached.stage === 'pin' ? `the run's retrieval routing could not be pinned (the attach itself succeeded), so the run did not start: ${attached.error}. The orchestrator process (pid ${child.pid}) had been started for the attach; belay sent it no prompt, and the orchestrator.kill block of this receipt records the stop.` : `the run's attach write failed after this process became the store owner: ${(attached && attached.error) || 'attach refused'}`;
         await killChild();
         return; // the exit handler above resolves once the child actually exits
       }

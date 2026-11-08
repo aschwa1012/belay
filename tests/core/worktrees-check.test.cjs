@@ -9,7 +9,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const { core, sandbox, cleanup, callerFor, deadPid } = require('./helpers.cjs');
-const { makeRepo, git, write, commit, rejectsCode } = require('./worktree-helpers.cjs');
+const { makeRepo, git, write, commit, rejectsCode, stageRuns } = require('./worktree-helpers.cjs');
 
 const { openCore } = core('index.cjs');
 const G = core('git.cjs');
@@ -21,6 +21,7 @@ before(async () => {
   repo = makeRepo(dir);
   orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
   await orch.run.attach({ adapter_pid: process.pid, project_dir: repo });
+  await stageRuns(`${dir}/data`, ["empty-1", "empty-2", "empty-3", "empty-4", "empty-5", "empty-6", "empty-7", "empty-8", "empty-9", "empty-10", "empty-11", "empty-12", "empty-13", "empty-14", "empty-15", "empty-16", "empty-17", "empty-18", "empty-19", "empty-20", "empty-21", "empty-22", "empty-23", "empty-24", "empty-25", "empty-26", "empty-27", "empty-28", "empty-29", "empty-30", "empty-31", "empty-32", "empty-33", "empty-34", "empty-35", "empty-36", "empty-37", "empty-38", "empty-39", "empty-40", "empty-41", "empty-42", "empty-43", "empty-44", "empty-45", "empty-46", "empty-47", "empty-48", "empty-49", "empty-50", "empty-51", "empty-52", "empty-53", "empty-54", "empty-55", "empty-56", "empty-57", "empty-58", "empty-59", "empty-60"]);
   op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
 });
 
@@ -105,7 +106,7 @@ test('finding 3: no merge into a tree where a live or parked worker works, at it
   await orch.worker.write({ id: parked, state: 'paused', pid: deadPid(), paused_at: Date.now(), paused_by: 'operator' }); // a park ends the process
   await rejectsCode(orch.integration.merge({ task_ids: [t.id], into: 'main' }), 'E_WORKER_LIVE');
   await orch.worker.write({ id: parked, state: 'stopped', exited_at: Date.now(), paused_at: null, paused_by: null });
-  assert.strictEqual((await orch.integration.merge({ task_ids: [t.id], into: 'main' })).state, 'evaluated');
+  assert.strictEqual((await op.integration.merge({ task_ids: [t.id], into: 'main' })).state, 'evaluated');
 });
 
 test('finding 3: removal refuses a parked worker and a worker in a subdirectory', async () => {
@@ -146,7 +147,7 @@ test('nits: null optional arguments are absent; an empty branch says so; a cwd u
   assert.strictEqual(w.branch, `belay/${t.id}`);
   assert.strictEqual(w.junctions.length, 1);
   assert.strictEqual((await orch.task.evaluate({ task_id: t.id })).state, 'done', 'nothing committed, nothing outside');
-  const row = await orch.integration.merge({ task_ids: [t.id], into: `int/empty-${n}`, base: null, evaluate: null });
+  const row = await orch.integration.merge({ task_ids: [t.id], into: `belay/integrate/empty-${n}`, base: null, evaluate: null });
   assert.deepStrictEqual(row.merged.map((m) => [m.already, m.empty]), [[true, true]]);
   assert.strictEqual(row.checks[0].cwd, `${row.worktree}/base`, 'the cwd in the main checkout runs in the integration tree');
   assert.strictEqual(row.passed, true);

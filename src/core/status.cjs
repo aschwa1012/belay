@@ -142,6 +142,7 @@ async function get(E, caller, args = {}) {
   // Notes held for the on-demand Opus archive reviewer (a hold of any kind): a plain read, none when the store is absent.
   const notesHeld = storePresent ? heldCount(E.store) : { total: 0, by_project: {}, oldest_age_runs: 0 };
 
+  const inFlightPub = runRow ? require('./run-budget.cjs').publishedInFlight(runRow) : null; // the figures the run process published; no stream is read
   const workerTasks = storePresent ? rows.workerTasks(E.store) : new Map(); // the row's task_id is spawn-only; the lease holds the current one
   return {
     verdict,
@@ -154,14 +155,14 @@ async function get(E, caller, args = {}) {
     rungs,
     // Fix round: reuse runAdapterAlive (the run-alive rung's own fact) so this can't drift from it.
     run: runRow
-      ? { id: runRow.id, epoch: runRow.epoch, adapter_pid: runRow.adapter_pid, alive: runAdapterAlive, ended_at: runRow.ended_at, exit_reason: runRow.exit_reason, paused_at: runRow.paused_at == null ? null : runRow.paused_at, paused_by: runRow.paused_by == null ? null : runRow.paused_by, ...embedBoundsOf(E, runRow.id) }
+      ? { id: runRow.id, epoch: runRow.epoch, adapter_pid: runRow.adapter_pid, alive: runAdapterAlive, ended_at: runRow.ended_at, exit_reason: runRow.exit_reason, paused_at: runRow.paused_at == null ? null : runRow.paused_at, paused_by: runRow.paused_by == null ? null : runRow.paused_by, ...embedBoundsOf(E, runRow.id), ...(runRow.budget_usd != null ? { budget: require('./run-budget.cjs').statusBlock(E, runRow) } : {}) }
       : null,
     // build step 6b: a forgotten row is hidden here too, the same rule worker.list's default carries.
     workers: allWorkers.filter(w => w.state !== 'forgotten').map(w => ({
       id: w.id, substrate: w.substrate, state: w.state, pid: w.pid, pid_alive: pidAlive(w.pid),
       session_id: w.session_id, task_id: workerTasks.has(w.id) ? workerTasks.get(w.id) : w.task_id,
       last_event_age_ms: w.last_event_at == null ? null : Date.now() - Number(w.last_event_at),
-      turns: w.turns, input_tokens: w.input_tokens, output_tokens: w.output_tokens, cost_usd: w.cost_usd, ...CE.statusFigures(w), 
+      turns: w.turns, input_tokens: w.input_tokens, output_tokens: w.output_tokens, cost_usd: w.cost_usd, ...CE.statusFigures(w), ...require('./inflight-cost.cjs').workerFigures(inFlightPub, w),
       // build step 4a: status.get's own projection lacked these two, though worker.list carried both.
       mid_turn: w.mid_turn, death_established_by: w.death_established_by,
     })),

@@ -47,6 +47,8 @@ const SAMPLE_MS = 100;
 const SMI_BOUND_MS = 5000;
 const NVIDIA_SMI = 'C:/Windows/System32/nvidia-smi.exe';
 const PEAKS_FILE = 'probe-peaks.json';
+// A model file the runtime cannot read as a model (a zeroed or foreign file; a short file is caught earlier, by the size check): not a memory or device problem, and not a probe fault.
+const CORRUPT = /invalid gguf magic|invalid magic/i; // the runtime's own texts for a file that is not a model file; a version it refuses or a driver message is not damage
 const OOM = /out of (device |gpu )?memory|failed to allocate|unable to allocate|cannot allocate|VK_ERROR_OUT_OF|not enough (gpu |device )?memory|insufficient (gpu |device )?memory/i;
 
 const QUERY = 'how do I stop a worker by its pid';
@@ -288,7 +290,11 @@ async function probeInner(opts = {}) {
         batch = e.kind === 'embedder' ? await batchEmbedder(client, e) : await batchReranker(client, e, { targetMs, batchTokens });
       } catch (x) {
         sampled.vulkan = await vs.stop(); if (ss) sampled.smi = await ss.stop();
-        if (!OOM.test(String(x && x.message))) throw x;
+        if (!OOM.test(String(x && x.message))) {
+          if (!CORRUPT.test(String(x && x.message))) throw x;
+          const file = e.files && e.files[0] ? e.files[0].path : 'its file';
+          return refuse('model_corrupt', `${e.id} (file ${file}) could not be read as a model: ${String(x.message).replace(/[\u0000-\u001f]/g, ' ').slice(0, 200)}. The file in the model cache is corrupt or incomplete`, [`delete it: belay embedder delete --gpu --model ${e.id}`, `fetch it again: belay embedder fetch --gpu --model ${e.id}`, 'or use a CPU profile'], { model: e.id, file });
+        }
         const n = needed({ ...peaks, [e.id]: { peak_mb: e.vram_mb_ref } }, headroomMb);
         return refuse('insufficient_vram', `the GPU ran out of memory loading ${e.id}: ${x.message}. The set needs about ${n.needed_mb} MiB (the table's hint for this model, plus headroom) and ${fd.free_mb} MiB of dedicated memory is free on ${device.name}`,
           ['choose smaller models', 'close other programs that use the GPU', 'lower the vram_headroom_gb lever'], { device, dedicated, peaks, needed_mb: n.needed_mb, free_mb: fd.free_mb, cause: 'allocation_failed' });

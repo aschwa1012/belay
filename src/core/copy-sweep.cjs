@@ -31,7 +31,9 @@ function rm(p) { try { fs.rmSync(p, { recursive: true, force: true }); return tr
 function sweep(root, opts = {}) {
   const now = opts.now !== undefined ? opts.now : Date.now();
   const alive = opts.alive || pidAlive;
-  const started = Date.now();
+  const budgetMs = opts.budgetMs !== undefined ? opts.budgetMs : TIME_BUDGET_MS;
+  const clock = opts.clock || Date.now; // the budget's clock; a test injects one
+  const started = clock();
   const out = { examined: 0, removed: 0 };
   try {
     const parent = path.join(root, PARENT);
@@ -39,7 +41,7 @@ function sweep(root, opts = {}) {
     try { names = fs.readdirSync(parent); } catch { return out; }
     let looked = 0;
     for (const name of names) {
-      if (out.examined >= MAX_EXAMINE || ++looked > MAX_NAMES || Date.now() - started > TIME_BUDGET_MS) break;
+      if (out.examined >= MAX_EXAMINE || ++looked > MAX_NAMES || clock() - started > budgetMs) break;
       try {
         const m = ENTRY_RE.exec(name);
         if (!m || alive(Number(m[1]))) continue;

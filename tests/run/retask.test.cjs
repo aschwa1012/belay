@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // retask.test.cjs — a task_assign to a running worker moves the run manager's record of the worker's task (manager.retask), so a
 // restart, a park-resume and the worker's rows use the task it holds now, not the one it was spawned for.
 

@@ -22,6 +22,7 @@ const { ping } = core('ping.cjs');
 const M = core('models.cjs');
 const K = core('model-cache.cjs');
 const I = core('embed-identity.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity or by the child's own handle: a bare pid may be handed to another process (ADR 0039)
 
 const VOYAGE = M.MODELS[M.DEFAULT_MODEL];
 const MINILM = M.MODELS['Xenova/all-MiniLM-L6-v2'];
@@ -145,36 +146,28 @@ test('embedder: the identity is one transaction, and only the exact legacy MiniL
 // warm-up does this), and the core re-pings a live owner once with a 2,000 ms bound before calling it lost.
 // An UNWARMED owner (a CLI-elected one) still pays the fork stall at its first vector call; the core's 2,000 ms
 // re-ping covers it (embedder-wait.test.cjs). This test models a run that has warmed: the fork stall happens in the warm call, the load that follows is
-// what this test watches. The assertion is the product's claim and is unchanged.
-test('embedder: the owner answers its pipe within 250 ms while the model loads, and the thread ends with the owner (m10)', async t => {
+// what this test watches. The 250 ms bounds on the owner's event-loop gap and on the slowest ping are timing claims and
+// live in tests/budgets/embedder-budgets.test.cjs, which runs alone; this test keeps the claims that do not depend on time.
+test('embedder: the owner answers every ping while the model loads, and the thread ends with the owner (m10)', async t => {
   if (noVoyage) return t.skip(noVoyage);
   await withCore({}, async (c, dir) => {
-    // The owner shares this process's event loop, so a stall anywhere in the load shows up as a gap
-    // between ticks of this timer, whether or not a ping happened to be in flight during it.
-    let last = Date.now(), gap = 0;
-    const beat = setInterval(() => { const now = Date.now(); gap = Math.max(gap, now - last); last = now; }, 20);
-    t.after(() => clearInterval(beat)); // a failed assertion below must not leave the timer holding the process open
     await c.memory.warm({}); // the run's warm-up: elects the owner and forks the child here, then returns
     await new Promise(r => setTimeout(r, 600)); // the fork's own stall is over before the watch begins; the load itself continues
-    last = Date.now(); gap = 0;
     const first = c.memory.store({ namespace: 'm10', text: 'a row that makes the owner load the model' });
     let done = false;
     first.then(() => { done = true; }, () => { done = true; });
-    let n = 0, max = 0, seen = false;
+    let n = 0, seen = false;
     const bad = [];
     while (!done) {
       const r = await ping(dir, 2000);
       // The very first ping can land before the owner's pipe is listening; count from the first answer.
       if (r.ok) seen = true;
-      if (!done && seen) { n += 1; max = Math.max(max, r.ms); if (!r.ok) bad.push(r.reason); }
+      if (!done && seen) { n += 1; if (!r.ok) bad.push(r.reason); }
       await new Promise(res => setTimeout(res, 20));
     }
     await first;
-    clearInterval(beat);
-    assert.ok(gap < 250, `the owner's event loop stalled for ${gap} ms during the load`);
     assert.deepStrictEqual(bad, [], 'every ping during the load was answered');
     assert.ok(n >= 3, `only ${n} pings landed during the load; it was not in flight long enough to prove anything`);
-    assert.ok(max < 250, `the slowest ping during the load took ${max} ms`);
     assert.ok(c.owner.embedderObj.child, 'the embedder runs in a child process');
   });
   // shutdownOwner ended the thread.
@@ -248,7 +241,6 @@ test('memory.search: the scan ceiling at the check site follows the namespace\'s
 test('embedder: stopping an owner mid-embed exits 0 within 5 s and the embedder child is gone (m11)', async t => {
   if (noVoyage) return t.skip(noVoyage);
   const { spawn } = require('node:child_process');
-  const { pidAlive } = core('lock.cjs');
   const dir = sandbox();
   try {
     const child = spawn(process.execPath, [`${ROOT}/tests/core/fixtures/owner-embed-stop.cjs`, dir], { windowsHide: true, stdio: ['ignore', 'pipe', 'pipe'] });
@@ -268,7 +260,7 @@ test('embedder: stopping an owner mid-embed exits 0 within 5 s and the embedder 
     assert.strictEqual(info.owner_pid, child.pid);
     assert.strictEqual(r.code, 0, `the owner exited ${r.code}/${r.signal}: ${out} ${err}`);
     assert.ok(r.at - stoppingAt < 5000, `the owner took ${r.at - stoppingAt} ms to exit after the stop`);
-    assert.strictEqual(pidAlive(info.embedder_pid), false, 'the embedder child is gone');
+    await G.assertGone(G.recorded(info.embedder_pid, info.embedder_created), 'the embedder child is gone');
     assert.match(out, /"stopped":true/);
   } finally { cleanup(dir); }
 });
@@ -299,8 +291,11 @@ test('embedder: a child that dies after a good load makes later calls say so, an
 
 test('embedder: a failure after a good load is coded, closes the child and publishes nothing (SF2)', async t => {
   if (noVoyage) return t.skip(noVoyage);
-  const { pidAlive } = core('lock.cjs');
   const real = I.writeMeta;
+  // The failed store closes the embedder, which clears its child handle; keep the handle as the close takes it.
+  const realClose = Embedder.prototype.close;
+  let handle = null;
+  Embedder.prototype.close = function close() { if (this.child) handle = this.child; return realClose.call(this); };
   let pid = null;
   try {
     I.writeMeta = () => { throw new Error('planted meta write failure'); };
@@ -316,8 +311,9 @@ test('embedder: a failure after a good load is coded, closes the child and publi
       assert.strictEqual(s.embedder, null, 'nothing half-published');
       await assert.rejects(c.memory.search({ namespace: 'sf2', query: 'x', mode: 'semantic' }), x => x.code === 'E_INTERNAL', 'sticky, with the same code');
     });
-  } finally { I.writeMeta = real; }
-  assert.strictEqual(pidAlive(pid), false, 'the child was closed');
+  } finally { I.writeMeta = real; Embedder.prototype.close = realClose; }
+  assert.ok(handle && handle.pid === pid, 'the embedder child was closed through its handle');
+  assert.ok(await G.childExited(handle), 'the child was closed');
 });
 
 test('memory.search: a vector call that times out against a live owner is E_TIMEOUT naming its pid, not a copy fallback (SF3)', async () => {

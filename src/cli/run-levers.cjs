@@ -11,6 +11,7 @@ const MN = require('../core/memory-notice.cjs'); // pure; the shared wording of 
 
 const FIX_CUTOFFS = ['orchestrator', 'cap-only'];
 const DEFAULT_MAX_FIX_ROUNDS = 2;
+const DEFAULT_MAX_FOLLOW_UPS = 1; // ADR 0064 decision 5; 0 refuses every follow-up
 const DEFAULT_FIX_HARD_CAP = 5; // ADR 0031 amendment 3: the safety net of a run with no time bound; a run with a timeout is notice-only
 const HARD_CAP_DEFAULT_SOURCE = 'default, no run timeout';
 const DEFAULT_FIX_CUTOFF = 'orchestrator';
@@ -123,6 +124,12 @@ function parseLevers(spec, opts = {}) {
     }
     maxFixRounds = v;
   }
+  let maxFollowUps = DEFAULT_MAX_FOLLOW_UPS;
+  if (spec.max_follow_ups !== undefined) {
+    const v = spec.max_follow_ups;
+    if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 0) return { error: 'max_follow_ups must be a non-negative integer' };
+    maxFollowUps = v;
+  }
   // ADR 0031 amendment 3: the user's fix_hard_cap wins (null says no cap); unset, a run with no time bound (timeout_ms 0, the default) gets
   // DEFAULT_FIX_HARD_CAP and a run with a timeout gets none. The source is recorded beside the cap.
   // The time bound is run-spec.cjs's parsed number when it is given (a numeric string counts), else the raw key, 0 when absent.
@@ -153,7 +160,7 @@ function parseLevers(spec, opts = {}) {
   } else if (spec.memory !== null && opts.config && opts.config.memory && opts.config.memory.on_embedder_failure !== undefined) { // an explicit `memory: null` inherits nothing from the config
     onEmbedderFailure = EM.normalize(opts.config.memory.on_embedder_failure) || DEFAULT_ON_EMBEDDER_FAILURE; // a bad config value is refused by parseMemoryBlock below
   }
-  const out = { max_fix_rounds: maxFixRounds, fix_cutoff: fixCutoff, on_embedder_failure: onEmbedderFailure };
+  const out = { max_fix_rounds: maxFixRounds, max_follow_ups: maxFollowUps, fix_cutoff: fixCutoff, on_embedder_failure: onEmbedderFailure };
   out.fix_hard_cap = fixHardCap; out.fix_hard_cap_source = fixHardCapSource; // null: no cap
   const ca = CP.parseCompactAt(spec.compact_at_tokens);
   if (ca.error) return { error: ca.error };
@@ -170,6 +177,12 @@ function parseLevers(spec, opts = {}) {
   // ADR 0020 decision 1 as amended: the permission tools are listed to the orchestrator, and their prompt line given, only for a run that turns the channel on.
   if (spec.permission_prompt !== undefined && typeof spec.permission_prompt !== 'boolean') return { error: 'permission_prompt must be true or false' };
   if (spec.permission_prompt === true) out.permission_prompt = true;
+  // Merging into a branch the user owns: "ask" (the default; absent from the levers unless the spec says it) or "allowed". Fixed for the run.
+  if (spec.merge_into !== undefined && spec.merge_into !== 'ask' && spec.merge_into !== 'allowed') return { error: 'merge_into must be "ask" or "allowed"' };
+  if (spec.merge_into !== undefined) out.merge_into = spec.merge_into;
+  // Merging another run's tasks, or into another run's integrate branch: off unless the spec says true. Fixed for the run.
+  if (spec.cross_run_merge !== undefined && typeof spec.cross_run_merge !== 'boolean') return { error: 'cross_run_merge must be true or false' };
+  if (spec.cross_run_merge === true) out.cross_run_merge = true;
   // ADR 0054 amendment 1: the run close deletes the reviewers' scratch folders; this opt-in keeps them. Absent unless on.
   if (spec.keep_review_scratch !== undefined && typeof spec.keep_review_scratch !== 'boolean') return { error: 'keep_review_scratch must be true or false' };
   if (spec.keep_review_scratch === true) out.keep_review_scratch = true;
@@ -213,6 +226,8 @@ function parseLevers(spec, opts = {}) {
   const off = spec.memory === null || (spec.memory === undefined && !!opts.config && opts.config.memory === null);
   Object.defineProperty(out, 'memory_notice', { value: MN.noticeFor(off ? null : merged.block), enumerable: false });
   if (merged.dropped) out.memory_dropped = merged.dropped; // config levers a spec's `notes: false` left out, so the receipt says what did not apply
+  const bud = require('./run-budget-levers.cjs').applyBudget(out, spec, opts); // the run's dollar budget; turns the usage ledger on
+  if (bud.error) return bud;
   return out;
 }
 

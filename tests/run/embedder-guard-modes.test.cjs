@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // embedder-guard-modes.test.cjs — the guard under each value of on_embedder_failure (ADR 0034 amendment 1): required pauses the run
 // loudly, keyword records and goes on, off records and turns the run memory off; stop and continue are the old names; the mode can
 // be chosen at a resume; a warm-up that failed under keyword or off is the run's first event.
@@ -137,4 +138,14 @@ test('the spawn-embed bound under keyword is recorded and pauses nothing; under 
   assert.deepStrictEqual([k.calls.pause, k.guard.events()[0].action, k.guard.events()[0].code, k.guard.memoryOff()], [[], 'continue', 'E_EMBED_BOUND', false]);
   const o = await boundedCall('off');
   assert.deepStrictEqual([o.calls.pause, o.guard.events()[0].action, o.guard.memoryOff()], [[], 'off', true]);
+});
+
+test('a reload at a resume is recorded apart from the failures: the fresh child, or the load that still failed', () => {
+  const { guard } = make('required');
+  assert.deepStrictEqual(guard.reloads(), []);
+  guard.noteReload({ ok: false, code: 'E_MODEL_ABSENT', cause: 'absent', message: 'no model' });
+  guard.noteReload({ ok: true, reloaded: true, pid: 4242, warm_ms: 900 });
+  assert.strictEqual(guard.noteReload({ ok: true, reloaded: false, pid: 4242 }), null, 'a healthy embedder was not reloaded');
+  assert.deepStrictEqual(guard.reloads().map((r) => [r.ok, r.code || null, r.pid || null]), [[false, 'E_MODEL_ABSENT', null], [true, null, 4242]]);
+  assert.deepStrictEqual(guard.events(), [], 'a reload is not a failure');
 });

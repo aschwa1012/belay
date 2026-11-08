@@ -35,16 +35,19 @@ function createStartFail({ core, writeRow }) {
     }
     // The exit code is the most useful field the failure carries, and a pid check can establish the death before the exit event
     // delivers one (by seconds under load). Wait, bounded, for it.
-    if (exitCode && W.deathByPidCheck(w)) await W.awaitExitCode(w, W.EXIT_CODE_WAIT_MS);
+    if (exitCode && W.deathByPidCheck(w)) await W.awaitExitCode(w, W.exitCodeBudgetMs(w));
     await step(() => w.queue);
-    if (w.state !== 'dead' && !park) await step(() => writeRow(w, 'dead'));
+    if (w.state !== 'dead' && !park && !(w.stopRequested && w.state === 'stopped')) await step(() => writeRow(w, 'dead')); // a row the operator's stop made terminal stays
     return bind;
   }
 
   // The one shape a failed start takes: E_NO_READY { pid, exit_code, stderr_tail, reason }. Nothing rejects before the worker is
   // settled and its `dead` row is written (invariant 5).
   async function failNoReady(w, reason, extra = {}) {
+    if (w.stopRequested) { extra = { ...extra, stopped_during_launch: true, startup_failure: reason }; reason = `worker ${w.id} was stopped before it was ready; the start was abandoned`; } // the stop ended the start, not the window
     const bind = await abortStart(w, { exitCode: true });
+    const unknownFeature = w.substrate === 'codex' ? await require('./codex-surface.cjs').explainStart(w.dir, w.stderr) : null; // Codex exited at once on a feature name it does not know
+    if (unknownFeature) { reason = unknownFeature.message; extra = { ...extra, ...unknownFeature.detail }; }
     fail('E_NO_READY', reason, {
       worker_id: w.id, pid: w.pid, exit_code: w.exitCode, exit_signal: w.exitSignal,
       stderr_tail: w.stderr.slice(-2000), reason, spawn_error: w.spawnError,

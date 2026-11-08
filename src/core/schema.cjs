@@ -237,11 +237,30 @@ const MIGRATIONS = [
   'ALTER TABLE task ADD COLUMN base TEXT',
   // ADR 0061 section 1: the acceptances (and specs) an amend replaced, oldest first (JSON text, nullable), carried by every later row.
   'ALTER TABLE task ADD COLUMN amended TEXT',
+  // ADR 0064 decision 1: the held review, the judged task and the work a follow-up task follows ({review_id, task_id, root}, JSON
+  // text, nullable), written only by task.fixFromReview in follow-up mode; and the run lever max_follow_ups beside max_fix_rounds.
+  'ALTER TABLE task ADD COLUMN follows_up TEXT',
+  'ALTER TABLE run ADD COLUMN max_follow_ups INTEGER',
   // ADR 0053 amendment 2: the process that runs an integration (its pid and start time), so a row a crash left `merging` reads stale.
   'ALTER TABLE integration ADD COLUMN owner_pid INTEGER',
   'ALTER TABLE integration ADD COLUMN owner_boot INTEGER',
   // ADR 0061, forced merge: who forced a merge of tasks not done, when, why, and what it forced (JSON text, nullable).
   'ALTER TABLE integration ADD COLUMN forced TEXT',
+  // A merge into a branch the user owns: the run's merge_into setting and its mode (set by the launching attach, operator only), the permission
+  // row's kind (null reads as substrate), and the proof columns an integration row into a user branch carries.
+  'ALTER TABLE run ADD COLUMN merge_into TEXT',
+  'ALTER TABLE run ADD COLUMN run_mode TEXT',
+  // The run's cross_run_merge setting (1 when its spec allows merging another run's tasks, or into another run's integrate branch; null reads as off).
+  'ALTER TABLE run ADD COLUMN cross_run_merge INTEGER',
+  // ADR 0082 decision 1: the belay that wrote the row, as JSON text: { build, schema_version, dirty, prompt_sha, prompt_marker }. Nullable; a row from before it reads as not recorded.
+  'ALTER TABLE run ADD COLUMN harness TEXT',
+  'ALTER TABLE permission ADD COLUMN kind TEXT',
+  'ALTER TABLE integration ADD COLUMN target TEXT',
+  'ALTER TABLE integration ADD COLUMN head_before TEXT',
+  'ALTER TABLE integration ADD COLUMN head_after TEXT',
+  'ALTER TABLE integration ADD COLUMN applied TEXT',
+  'ALTER TABLE integration ADD COLUMN approver TEXT',
+  'ALTER TABLE integration ADD COLUMN prepared TEXT',
   // ADR 0054 amendment 1: a review lease's snapshot of the reviewer's tree at grant (JSON text, nullable), carried by every
   // later row of the lease; lease.release compares it with the tree at the hand-back.
   'ALTER TABLE lease ADD COLUMN tree TEXT',
@@ -249,6 +268,10 @@ const MIGRATIONS = [
   // The worker's first dead row names the leases that death released (JSON array of { lease_id, task_id }), for the death wake.
   'ALTER TABLE lease ADD COLUMN released_reason TEXT',
   'ALTER TABLE worker ADD COLUMN leases_released TEXT',
+  // The spend budget (USD) of a run and of a task, and the run's budget record (JSON text: pauses, raises and overrides). Null when none.
+  'ALTER TABLE run ADD COLUMN budget_usd REAL',
+  'ALTER TABLE run ADD COLUMN budget TEXT',
+  'ALTER TABLE task ADD COLUMN budget_usd REAL',
   // ADR 0068 (proposed): a stopped or dead row whose life ended with no `result` event carries what its stream's last turn cost,
   // priced from the per-message usage (JSON text), and `cost_source` names it; both null when the row's figures were all reported.
   // The estimate has its own columns: cost_usd and the token columns stay what Claude Code reported.

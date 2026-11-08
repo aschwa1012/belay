@@ -8,7 +8,7 @@ const crypto = require('node:crypto');
 const COLUMNS = {
   run: ['id', 'epoch', 'orchestrator_pid', 'adapter_pid', 'started_at', 'ended_at', 'exit_reason',
     'orch_model', 'orch_input_tokens', 'orch_output_tokens', 'orch_cache_read_tokens', 'orch_cache_creation_tokens',
-    'orch_cost_usd', 'orch_turns', 'orch_effort_requested', 'max_fix_rounds', 'fix_hard_cap', 'fix_hard_cap_source', 'adapter_pid_created', 'max_parallel_evaluations'],
+    'orch_cost_usd', 'orch_turns', 'orch_effort_requested', 'max_fix_rounds', 'max_follow_ups', 'fix_hard_cap', 'fix_hard_cap_source', 'adapter_pid_created', 'max_parallel_evaluations', 'budget_usd'],
   worker: ['id', 'run_id', 'substrate', 'pid', 'session_id', 'adapter_pid', 'argv_hash', 'state',
     'worktree', 'task_id', 'started_at', 'exited_at', 'exit_code', 'exit_signal', 'turns',
     'input_tokens', 'output_tokens', 'cost_usd', 'last_event_at', 'mid_turn', 'death_established_by',
@@ -16,23 +16,23 @@ const COLUMNS = {
     'paused_at', 'paused_by', 'park_turns',
     'model', 'cache_read_tokens', 'cache_creation_tokens', 'tool_calls', 'base_sha', 'head_sha',
     'effort_requested', 'head_error', 'base_error', 'pid_created', 'pid_created_error', 'pid_image', 'memory_queries', 'native_memory', 'native_memory_auth', 'tools', 'max_budget_usd', 'model_requested', 'leases_released', 'cost_estimate', 'cost_source', 'cost_base', 'agent_type'],
-  task: ['id', 'run_id', 'spec', 'acceptance', 'files_owned', 'state', 'results', 'depends_on', 'handoff', 'repairs', 'worktree', 'answers', 'base', 'amended'],
+  task: ['id', 'run_id', 'spec', 'acceptance', 'files_owned', 'state', 'results', 'depends_on', 'handoff', 'repairs', 'worktree', 'answers', 'base', 'amended', 'follows_up', 'budget_usd'],
   lease: ['id', 'task_id', 'run_id', 'holder', 'holder_role', 'granted_at', 'expires_at',
     'released_at', 'supersedes', 'ttl_ms', 'released_reason', 'tree'],
   checkpoint: ['id', 'task_id', 'worker_id', 'run_id', 'turn', 'files_touched', 'tool_digest',
     'stated', 'source'],
   permission: ['id', 'run_id', 'worker_id', 'adapter_pid', 'tool', 'input', 'input_truncated',
-    'input_sha256', 'state', 'verdict_by', 'reason', 'requested_at', 'decided_at'],
+    'input_sha256', 'state', 'verdict_by', 'reason', 'requested_at', 'decided_at', 'kind'],
   // ADR 0053 decision 5.
   integration: ['id', 'run_id', 'repo', 'into_branch', 'worktree', 'created_worktree', 'base_sha', 'head_sha', 'state',
-    'task_ids', 'merged', 'conflict', 'error', 'checks', 'passed', 'junctions', 'removed_at', 'owner_pid', 'owner_boot', 'forced'],
+    'task_ids', 'merged', 'conflict', 'error', 'checks', 'passed', 'junctions', 'removed_at', 'owner_pid', 'owner_boot', 'forced', 'target', 'head_before', 'head_after', 'applied', 'approver', 'prepared'],
 };
 
 // Text in SQLite, parsed objects on the wire (api.md §1).
 const JSON_COLUMNS = {
   run: [], worker: ['memory_queries', 'tools', 'leases_released', 'cost_estimate'], lease: ['tree'],
-  task: ['acceptance', 'files_owned', 'results', 'depends_on', 'handoff', 'worktree', 'answers', 'amended'],
-  integration: ['task_ids', 'merged', 'conflict', 'error', 'checks', 'junctions', 'forced'],
+  task: ['acceptance', 'files_owned', 'results', 'depends_on', 'handoff', 'worktree', 'answers', 'amended', 'follows_up'],
+  integration: ['task_ids', 'merged', 'conflict', 'error', 'checks', 'junctions', 'forced', 'approver', 'prepared'],
   checkpoint: ['files_touched', 'tool_digest', 'stated'],
   // build step 6d: `input` stays a string on the wire, never parsed here. A truncated JSON text
   // (input_truncated: 1) does not parse as JSON at all, and an operator reading `pending` needs to

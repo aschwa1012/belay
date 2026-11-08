@@ -25,25 +25,25 @@ after(async () => {
 });
 
 let k = 0;
-async function handBack(taskId, result) {
+async function handBack(taskId, result, by = orch) { // by: the orchestrator of the run that owns the task
   const id = `w-${++k}`;
-  await orch.worker.write({ id, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: `s-${id}`, last_event_at: Date.now() });
-  const w = await openCore({ dataDir: dir, caller: callerFor('worker', { worker_id: id }), embed: false });
+  await by.worker.write({ id, substrate: 'claude-code', pid: process.pid, state: 'running', session_id: `s-${id}`, last_event_at: Date.now() });
+  const w = await openCore({ dataDir: dir, caller: callerFor('worker', { worker_id: id, ...(by.runId ? { run_id: by.runId } : {}) }), embed: false }); // a worker acts for the run of the orchestrator that leased it
   workers.set(id, w);
-  const a = await orch.task.assign({ task_id: taskId, worker_id: id });
+  const a = await by.task.assign({ task_id: taskId, worker_id: id });
   return w.lease.release({ lease_id: a.new_lease.id, reason: 'done', ...(result ? { result } : {}) });
 }
 
-async function doneWork(task) {
-  await handBack(task.id, { branch: 'b' });
-  assert.strictEqual((await orch.task.evaluate({ task_id: task.id, worktree: dir })).state, 'done');
+async function doneWork(task, by = orch) {
+  await handBack(task.id, { branch: 'b' }, by);
+  assert.strictEqual((await by.task.evaluate({ task_id: task.id, worktree: dir })).state, 'done');
 }
 
-async function judge(task, verdict) {
-  const r = await orch.task.create({ spec: `review ${task.id}`, depends_on: [task.id], acceptance: { verdict: true } });
+async function judge(task, verdict, by = orch) {
+  const r = await by.task.create({ spec: `review ${task.id}`, depends_on: [task.id], acceptance: { verdict: true } });
   if (verdict) {
-    await handBack(r.id, { verdict, summary: 's', findings: [] });
-    await orch.task.evaluate({ task_id: r.id, worktree: dir });
+    await handBack(r.id, { verdict, summary: 's', findings: [] }, by);
+    await by.task.evaluate({ task_id: r.id, worktree: dir });
   }
   return r;
 }
@@ -137,19 +137,24 @@ test('two reviewers: the decision made last decides, not the review made last, a
 });
 
 test('rounds_left across runs: it is what the run of the newest fix would allow next, as task.create would answer', async () => {
-  const w = await orch.task.create({ spec: 'work f', acceptance: PASS });
-  await doneWork(w);
-  const f1 = await orch.task.fixFromReview({ review_id: (await judge(w, 'refuted')).id });
+  // A run's work is its own while it is live: the first run ends before another takes the next round.
+  const first = await openCore({ dataDir: dir, caller: callerFor('orchestrator', { run_id: 'run-a' }), embed: false });
+  workers.set('run-a', first); first.runId = 'run-a';
+  await first.run.attach({ adapter_pid: process.pid, fix_hard_cap: 2 });
+  const w = await first.task.create({ spec: 'work f', acceptance: PASS });
+  await doneWork(w, first);
+  const f1 = await first.task.fixFromReview({ review_id: (await judge(w, 'refuted', first)).id });
   assert.deepStrictEqual(await reviewOf(w.id), { state: 'refuted', review_id: (await reviewOf(w.id)).review_id, rounds: 1, rounds_left: 1 });
+  await doneWork(f1, first);
+  const r2 = await judge(f1, 'refuted', first);
+  await first.run.end({ exit_reason: 'test' });
   // Another run, capped at 1, takes the next round: two rounds in all, none left in that run.
   const other = await openCore({ dataDir: dir, caller: callerFor('orchestrator', { run_id: 'run-b' }), embed: false });
-  workers.set('run-b', other);
+  workers.set('run-b', other); other.runId = 'run-b';
   await other.run.attach({ adapter_pid: process.pid, fix_hard_cap: 1 });
-  await doneWork(f1);
-  const r2 = await judge(f1, 'refuted');
   const f2 = await other.task.fixFromReview({ review_id: r2.id });
-  await doneWork(f2);
-  const r3 = await judge(f2, 'refuted');
+  await doneWork(f2, other); // f2 is run-b's: only run-b's orchestrator assigns and evaluates it
+  const r3 = await judge(f2, 'refuted', other);
   assert.deepStrictEqual(await reviewOf(w.id), { state: 'refuted', review_id: r3.id, rounds: 2, rounds_left: 0 });
   await assert.rejects(other.task.fixFromReview({ review_id: r3.id }), (e) => e.code === 'E_FIX_ROUNDS');
 });
@@ -216,7 +221,7 @@ test('a refutation decided in the same millisecond a fix was made is not answere
     const f = { id: 'f', state: 'done', repairs: 'w', depends_on: ['w'], run_id: 'r' }; // no answers: a row from before the field
     const fr = { id: 'fr', ...done, acceptance: { verdict: true }, depends_on: ['f'], results: { evaluated_at: 200, checks: [] } };
     const ix = { born: new Map([['w', { s: 1, at: 1 }], ['rv', { s: 2, at: 2 }], ['f', { s: 3, at: fixBorn }], ['fr', { s: 4, at: 150 }]]),
-      reviewsOf: new Map([['w', [r]], ['f', [fr]]]), fixesOf: new Map([['w', [f]]]), caps: new Map(), notice: new Map() };
+      rootOf: (t) => t.repairs || t.id, reviewsOf: new Map([['w', [r]], ['f', [fr]]]), fixesOf: new Map([['w', [f]]]), caps: new Map(), notice: new Map() };
     return RS.ofTask(w, ix).state;
   };
   assert.strictEqual(run(100), 'refuted', 'a tie is not an answer');

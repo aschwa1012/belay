@@ -74,6 +74,12 @@ function parseRunRow(row) {
   if (row && typeof row.pause_parks === 'string') {
     try { row.pause_parks = JSON.parse(row.pause_parks); } catch { /* malformed text is surfaced, not hidden */ }
   }
+  if (row && typeof row.harness === 'string') {
+    try { row.harness = JSON.parse(row.harness); } catch { /* malformed text is surfaced, not hidden */ }
+  }
+  if (row && typeof row.budget === 'string') {
+    try { row.budget = JSON.parse(row.budget); } catch { /* malformed text is surfaced, not hidden */ }
+  }
   return row;
 }
 

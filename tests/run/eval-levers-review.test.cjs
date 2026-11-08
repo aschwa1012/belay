@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // eval-levers-review.test.cjs: the review fixes for the two eval-only levers (native_memory, handback_question). Another run's
 // native_memory is never adopted into a run that did not opt in, a stored lever that cannot be read refuses the spawn, the hand-back
 // question closes a resume that carries an operator message, an absent lever leaves the recorded levers as they were, and a bad
@@ -34,7 +35,7 @@ function sandbox() {
 // A fake core whose run row holds `stored` (an object, stringified, or a raw string); `base` shares the worker rows between managers.
 const coreWith = (stored, base) => {
   const core = base ? Object.create(base) : createFakeCore({ runId: 'run-el', resumeLineText: RESUME });
-  core.run = { get: async () => ({ run: { memory_levers: typeof stored === 'string' ? stored : JSON.stringify(stored) } }) };
+  core.run = { list: async () => ({ runs: [] }), get: async () => ({ run: { memory_levers: typeof stored === 'string' ? stored : JSON.stringify(stored) } }) };
   return core;
 };
 const make = (sb, core, runId) => createRunManager({ core, dataDir: sb.data, runId, paths: PATHS });

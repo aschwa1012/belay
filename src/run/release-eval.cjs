@@ -6,12 +6,13 @@
 // A stop, pause, restart or resume (lifecycle.cjs runOp, and so the run's shutdown) cancels it first: the owner kills the command
 // running by its live child handle and the evaluation writes nothing (core evaluate-cancel.cjs). Nothing waits on the cancel.
 //
-// `enrichWakes` is the wake side, facts only (task, state, which checks failed), never the worker's words (ADR 0015 section 2). A
+// `enrichWakes` is the wake side, facts only (task, state, which checks failed), never the worker's words, except a review's verdict, counts, finding titles and a cut summary (review-wake.cjs; ADR 0015 section 2). A
 // turn_end wake carries the result if it has landed; otherwise the task is watched and a later poll sends one `evaluated` wake.
 // Every wake text is cut to WAKE_TEXT_MAX, the interactive mod's own text budget (src/mod/hooks/wake/core.mjs maxTextBytes: 226 B
 // less the plugin name), so the mod never cuts it and the headless line stays inside the 400-byte hook budget (invariant 9).
 
 const crypto = require('node:crypto');
+const reviewWake = require('./review-wake.cjs');
 
 const WAKE_TEXT_MAX = 221;
 const PENDING_MAX_MS = 900000; // a watched evaluation that never lands (cancelled, or the owner gone) is forgotten after this, unless its worker is live: a release evaluation may queue for a slot and then run 540 s
@@ -30,20 +31,29 @@ function fixRoundsOf(row, byId) {
   const dep = byId && Array.isArray(row.depends_on) && row.depends_on.length === 1 ? byId.get(row.depends_on[0]) : null;
   const rv = dep && dep.review;
   if (!rv || r.passed || !r.executable || !(r.checks || []).some((c) => c.kind === 'verdict') || rv.max_fix_rounds == null) return null;
-  return { work: dep.id, used: rv.fix_rounds_used, max: rv.max_fix_rounds, hard: rv.fix_hard_cap == null ? null : rv.fix_hard_cap };
+  let root = dep; // a fix of a fix names the work it began from, not the fix before it
+  for (let n = 0; root.repairs && byId.get(root.repairs) && n < 100; n++) root = byId.get(root.repairs);
+  return { work: root.id, used: rv.fix_rounds_used, max: rv.max_fix_rounds, hard: rv.fix_hard_cap == null ? null : rv.fix_hard_cap };
 }
 
-// The work a refuted review judged, read for the turn's own summary (worker_wait): a Map of that one task, or null.
+// The work a refuted review judged, read for the turn's own summary (worker_wait): a Map of that task and the fixes it repairs back to the original work, or null.
 async function workOf(core, row) {
   const r = row.results || {};
   if (r.passed || !r.executable || !Array.isArray(row.depends_on) || row.depends_on.length !== 1 || typeof core.task.get !== 'function') return null;
-  try { const t = await core.task.get({ task_id: row.depends_on[0] }); return t ? new Map([[t.id, t]]) : null; } catch { return null; }
+  try {
+    // The judged task and the chain of fixes it repairs, up to the work they began from, so the wake names that work.
+    const m = new Map();
+    let t = await core.task.get({ task_id: row.depends_on[0] });
+    for (let n = 0; t && !m.has(t.id) && n < 100; n++) { m.set(t.id, t); t = t.repairs ? await core.task.get({ task_id: t.repairs }).catch(() => null) : null; }
+    return m.size ? m : null;
+  } catch { return null; }
 }
 
 function summaryOf(row, byId) {
   const r = row.results || {};
   const fr = fixRoundsOf(row, byId);
-  return { task_id: row.id, state: row.state, passed: !!r.passed, executable: !!r.executable, checks: ((r.checks) || []).length, failing: failedKinds(row), ...(r.flaky ? { flaky: true } : {}), ...(r.uncommitted ? { uncommitted: true } : {}), ...(r.queued ? { queued: r.queued } : {}), ...(fr ? { fix_rounds: fr } : {}) };
+  const review = reviewWake.reviewOf(row); // a review whose verdict check was executable: its facts ride on the wake (review-wake.cjs)
+  return { task_id: row.id, state: row.state, passed: !!r.passed, executable: !!r.executable, checks: ((r.checks) || []).length, failing: failedKinds(row), ...(review ? { review } : {}), ...(r.flaky ? { flaky: true } : {}), ...(r.uncommitted ? { uncommitted: true } : {}), ...(r.queued ? { queued: r.queued } : {}), ...(fr ? { fix_rounds: fr } : {}) };
 }
 
 const unevaluated = (t, runId, workerId) => t.run_id === runId && t.state === 'released' && t.handoff && t.handoff.by === workerId && !t.handoff.stood_down
@@ -93,9 +103,10 @@ async function run(w, ctx, ev) {
       // ADR 0058 decision 8: the stop waits for the worker's queue itself, and this is not on it.
       if (row.state === 'done' && ctx.stopIdleOnDone && ctx.manager && !ev.cancelled) { out[out.length - 1].stop_idle_on_done = true; w.idleStopping = ctx.manager.idleStop(row).then((r) => { if (r) w.idleStop = r; }, () => {}); }
     } catch (e) {
-      recordFailure(ctx, w, t.id, e && e.detail && e.detail.cancelled ? 'E_CANCELLED' : (e && e.code) || 'E_INTERNAL', (e && e.message) || e, ev.turn);
+      const reason = e && e.detail && e.detail.reassigned ? 'the task was re-assigned while its checks ran' : (e && e.message) || e;
+      recordFailure(ctx, w, t.id, e && e.detail && e.detail.cancelled ? 'E_CANCELLED' : (e && e.code) || 'E_INTERNAL', reason, ev.turn);
       out.push(e && e.detail && e.detail.cancelled ? { task_id: t.id, cancelled: true, by: e.detail.by || ev.cancelled }
-        : { task_id: t.id, error: (e && e.code) || 'E_INTERNAL', message: String((e && e.message) || e).slice(0, 200) });
+        : { task_id: t.id, error: (e && e.code) || 'E_INTERNAL', message: String(reason).slice(0, 200) });
     }
   }
   ev.done = true; // in the same tick the loop ends: from here a later hand-back starts a new chain instead of joining this one
@@ -158,6 +169,13 @@ function clause(evs, room) {
     : e.error === 'E_BUSY' ? `task ${e.task_id} not evaluated at release: another evaluation of it is running`
     : e.error ? `task ${e.task_id} could not be evaluated at release (${e.error}); call task_evaluate to run it`
     : `task ${e.task_id} evaluated at release: ${e.state === 'done' ? `${e.flaky ? 'passed on a retry (flaky), done' : 'passed, done'}${e.uncommitted ? '; uncommitted changes: commit before integrate' : ''}` : `not done${e.fix_rounds ? `; fix rounds ${e.fix_rounds.used} of max ${e.fix_rounds.max}${e.fix_rounds.hard == null ? '' : `, hard cap ${e.fix_rounds.hard}`}` : ''}; failing: ${e.failing.join(', ') || 'no executable check'}`}`); }
+  if (evs.some((e) => e.review)) {
+    const body = reviewWake.render(parts, evs, room - 2);
+    if (body) return ` ${body}.`;
+    // Even the bare clauses do not fit: they are cut, but a review's findings and changed tree are still said.
+    const flags = reviewWake.flagsOf(evs);
+    return `${cut(` ${parts.join('; ')}`, room - 1 - Buffer.byteLength(flags, 'utf8'))}${flags}.`;
+  }
   return cut(` ${parts.join('; ')}.`, room);
 }
 
@@ -250,7 +268,8 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     } else if (!t || !unevaluated(t, runId, p.worker_id) || (t0 - p.since > PENDING_MAX_MS && !(liveWorkers && liveWorkers.has(p.worker_id)))) pending.delete(id);
   }
   for (const [wid, evs] of follow) {
-    const text = cut(`belay: worker ${wid}'s hand-back:${clause(evs, WAKE_TEXT_MAX)}`, WAKE_TEXT_MAX);
+    const head = `belay: worker ${wid}'s hand-back:`;
+    const text = cut(`${head}${clause(evs, WAKE_TEXT_MAX - Buffer.byteLength(head, 'utf8'))}`, WAKE_TEXT_MAX);
     const seq = Math.max(...evs.map((e) => Number(seen.get(e.task_id)) || Number(e.seq) || 0));
     out.push({ event: 'evaluated', worker_id: `eval:${evs[0].task_id}`, turn: 0, seq, task_id: evs[0].task_id, ...(evs.length > 1 ? { task_ids: evs.map((e) => e.task_id) } : {}), text });
   }
@@ -276,4 +295,14 @@ function evaluatingHolds(seen, rows, runId) {
   return [...pending].filter(([, p]) => live.has(p.worker_id)).map(([id]) => `eval:${id}`).concat(held);
 }
 
-module.exports = { unevaluated, notePending, evaluatingHolds, startRelease, cancelEvaluation, evalOf, enrichWakes, clause, turnEndText, summaryOf, cut, holdMs, WAKE_TEXT_MAX, PENDING_MAX_MS, RELEASE_WAKE_HOLD_MS };
+// The turn_end wakes still held for their evaluation when a run ends, removed from `seen.held`: the caller records each as
+// suppressed with its reason, so no wake found is left out of the receipt.
+function drainHeld(seen) {
+  const held = seen && seen.held;
+  if (!held || !held.size) return [];
+  const evs = [...held.values()].map((h) => h.ev);
+  held.clear();
+  return evs;
+}
+
+module.exports = { unevaluated, notePending, evaluatingHolds, drainHeld, startRelease, cancelEvaluation, evalOf, enrichWakes, clause, turnEndText, summaryOf, workOf, cut, holdMs, WAKE_TEXT_MAX, PENDING_MAX_MS, RELEASE_WAKE_HOLD_MS };

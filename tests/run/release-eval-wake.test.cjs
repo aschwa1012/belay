@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // release-eval-wake.test.cjs — ADR 0058 decision 5: the evaluation facts a wake carries fit the interactive wake budget, so the
 // mod (src/mod/hooks/wake/core.mjs) never cuts a wake. The budget is the mod's own number, read from the mod, not restated here.
 

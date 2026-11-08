@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // ADR 0041 §2: capture fields on tool_use and tool_result, and the proof that capture off changes
 // nothing. The off-hashes were taken from the parser at the base commit (Date.now fixed to 1,
 // sha256 of JSON.stringify of every event), so they pin the pre-capture output byte for byte.
@@ -25,7 +26,8 @@ function run(substrate, ls, opts) {
 const hashOf = (events) => crypto.createHash('sha256').update(JSON.stringify(events)).digest('hex');
 
 const OFF_HASHES = {
-  'claude-stream.jsonl': ['claude-code', 'fb8f7e6c1bfb6390aa18b8b19666dc674d4142aedb13ed73ab0270fccafb9ada'],
+  // Moved on purpose: the system/init event now carries api_key_source (the launch gate in ready.cjs reads it).
+  'claude-stream.jsonl': ['claude-code', '46ed497347ccf0bf6a3c888a32f9fcee7ff421a5102e79b02f5b654df9cf94c0'],
   // The two Codex hashes moved once, on purpose: ADR 0058 (B7) gives a command_execution tool_use its command as args.
   'codex-stream.jsonl': ['codex', '59fc75485488a1f7cbc3fc5947cbca59767f3a863bf417b3e0b73f04510cb8ce'],
   'capture-claude.jsonl': ['claude-code', '0ed1c4c7d3d82ed8374efa30eae6f533654493779ef16c589281f8e1e7a0ba5f'],

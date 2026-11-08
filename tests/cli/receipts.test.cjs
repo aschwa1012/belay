@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // receipts.test.cjs — build step S4c. Drives the built CLI's
 // `receipts` as a subprocess against a sandbox store planted through the core the way
 // tests/cli/observe.test.cjs plants rows, never through a live run. Every sandbox is removed in finally.
@@ -205,7 +206,7 @@ test('receipts: a live worker and a live run have wall_ms null and live true', g
   assert.match(text, /^  model .*  wall live/m);
   assert.strictEqual(j.run.alive, true);
   // SF6: the same run with a dead adapter pid says what is known, not "live".
-  const dead = spawnSync(process.execPath, ['--version'], { windowsHide: true });
+  const dead = { pid: require('../helpers/dead-pid.cjs').deadPid() }; // an exited child's pid is reused on Windows
   const dir2 = sandbox();
   try {
     await plant(`${dir2}/.belay`, 'run-c2', { ended: false, adapterPid: dead.pid });
@@ -449,4 +450,18 @@ test('receipts: an estimate whose stream tail lay beyond the scan window says so
   const text = receipts([], dataDir, { json: false }).stdout;
   assert.match(text, /not estimated: stream tail over 16 MB/);
   assert.strictEqual(JSON.parse(receipts([], dataDir).stdout).workers.find((x) => x.id === 'wt').cost_estimate.truncated, true);
+}));
+
+test('receipts: a live worker turn that has not ended shows an in-flight estimate, labelled and apart from the reported cost', guarded(async (dir, dataDir) => {
+  await withOwner(dataDir, 'run-fl', 'orchestrator', async (orch) => {
+    await orch.run.attach({ adapter_pid: process.pid });
+    await orch.worker.write({ id: 'wf', substrate: 'claude-code', pid: process.pid, state: 'running', started_at: Date.now() - 1000, cost_usd: 0.5, turns: 1 });
+  });
+  await withOwner(dataDir, 'run-fl', 'operator', async (op) => { // what the run process publishes while the turn runs
+    await op.run.setBudget({ budget_usd: 5, budget: { counts_in_flight: false, orchestrator: { counted: true, usd: 0, in_flight_usd: 0 }, in_flight_workers: { usd: 1, by_worker: { wf: 1 }, partial: [], unpriced: [] } } });
+  });
+  const j = JSON.parse(receipts([], dataDir).stdout);
+  const w = j.workers.find((x) => x.id === 'wf');
+  assert.deepStrictEqual([w.cost_usd, w.cost_in_flight_usd, w.cost_in_flight_source, w.cost_source], [0.5, 1, 'in flight (estimate)', null]);
+  assert.match(receipts([], dataDir, { json: false }).stdout, /cost \$0\.5 \+ \$1 in flight \(estimate\)/);
 }));

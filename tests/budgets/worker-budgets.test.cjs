@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // worker-budgets.test.cjs — build step 6b, design item 4,
 // the shape of tests/budgets/cli-budgets.test.cjs's groups. `worker kill` and `worker rm` against a data
 // dir that does not exist, and `worker kill` against a dead store with no such worker, each interleaved

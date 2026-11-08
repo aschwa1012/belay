@@ -5,6 +5,18 @@
 const { METHODS } = require('./engine.cjs');
 const { err } = require('./errors.cjs');
 
+// The reason the owner's operator check refused a connection, as a client may be told it: one line of printable ASCII, at most
+// REASON_MAX characters. It is the check's own wording (it names pids and images of processes on this machine), never text a request sent.
+const REASON_MAX = 300;
+// The fixed words operator-check.cjs puts on a refusal (`cause`); anything else is dropped.
+const CAUSES = new Set(['root_unfollowable', 'root_in_window', 'root_after_owner', 'direct_spawn']);
+const causeOf = (v) => (v && CAUSES.has(v.cause) ? v.cause : undefined);
+function boundedReason(r) {
+  if (typeof r !== 'string' || !r) return 'the operator check gave no reason';
+  const one = r.replace(/[^ -~]+/g, ' ').trim();
+  return one.length > REASON_MAX ? `${one.slice(0, REASON_MAX - 3)}...` : one;
+}
+
 // ADR 0045 decisions 2 and 3: who is calling, settled before the request reaches a method. Returns null (admitted, with
 // req.params.caller now the identity belay established), a refusal, or a promise of either. The request's own `caller`
 // is never what a keyed call runs as; it supplies only a pid (for retirement's liveness check) and a channel request.
@@ -33,7 +45,12 @@ function admit(owner, c, req) {
   if (req.method === 'ping') {
     // a keyless operator on the loopback port asks to be checked now (client.cjs _verifyOperator), so the check's cost is not its first call's
     if (params.verify_operator === true && sent.role === 'operator' && c.belayTransport === 'tcp' && typeof owner.opts.operatorCheck === 'function') {
-      return Promise.resolve(owner.opts.operatorCheck({ conn: c, caller: sent, method: 'ping' })).then((v) => { c.belayVerified = !!(v && v.ok === true); return null; }, () => null);
+      return Promise.resolve(owner.opts.operatorCheck({ conn: c, caller: sent, method: 'ping' })).then((v) => {
+        c.belayVerified = !!(v && v.ok === true);
+        c.belayVerifyReason = c.belayVerified ? undefined : boundedReason(v && v.reason);
+        c.belayVerifyCause = c.belayVerified ? undefined : causeOf(v);
+        return null;
+      }, () => { c.belayVerified = undefined; c.belayVerifyReason = 'the operator check failed to run'; c.belayVerifyCause = undefined; return null; });
     }
     return null;
   }
@@ -47,7 +64,7 @@ function admit(owner, c, req) {
     c.belayVia = 'anonymous';
     return null;
   };
-  const refuse = (reason, message) => ({ code: 'E_UNBOUND', message, detail: { reason, method: req.method, role: sent.role === undefined ? null : sent.role } });
+  const refuse = (reason, message, extra = {}) => ({ code: 'E_UNBOUND', message, detail: { reason, method: req.method, role: sent.role === undefined ? null : sent.role, ...extra } });
   const checks = sent.role === 'operator' && typeof owner.opts.operatorCheck === 'function' && c.belayTransport === 'tcp';
   // The operator's own reads (a search of another run's namespace) need the operator, so a claim on the loopback port is checked first;
   // a refused claim on an open read falls back to anonymous rather than to a refusal, which is all an unverified caller could have had.
@@ -57,7 +74,7 @@ function admit(owner, c, req) {
   if (sent.role !== 'operator') return refuse('unbound', `${req.method} needs a bound caller on this owner (it serves bound callers): a role is taken from a bound process or from the operator check, never from a request`);
   if (typeof owner.opts.operatorCheck !== 'function') return refuse('unverifiable', `${req.method} claims the operator, and this owner has no check that can vouch for a pipe client, so it fails closed`);
   return Promise.resolve(owner.opts.operatorCheck({ conn: c, caller: sent, method: req.method, persist: !!spec && spec.kind === 'write' })).then((v) => {
-    if (!v || v.ok !== true) return open ? anonymous() : refuse('operator_check', `${req.method}: the operator check refused this connection${v && v.reason ? ` (${v.reason})` : ''}`);
+    if (!v || v.ok !== true) return open ? anonymous() : refuse('operator_check', `${req.method}: the operator check refused this connection${v && v.reason ? ` (${boundedReason(v.reason)})` : ''}`, causeOf(v) ? { operator_cause: causeOf(v) } : {});
     c.belayVia = v.via || 'peer';
     const { peer_pid: forged, ...rest } = sent; // the checked peer's pid is the owner's finding, never the request's
     params.caller = { ...rest, role: 'operator', ...(v.peer && Number.isInteger(v.peer.pid) ? { peer_pid: v.peer.pid } : {}) };

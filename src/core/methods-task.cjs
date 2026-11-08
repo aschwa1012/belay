@@ -29,78 +29,16 @@ const dependsOf = (task) => (Array.isArray(task && task.depends_on) ? task.depen
 
 const { findCycle } = require('./task-cycle.cjs'); // ADR 0013 §1: the acyclicity walk over depends_on
 
-async function create(E, caller, args, own = {}) { // own: core-internal, task.fixFromReview's inherited worktree and answered reviews; no tool reaches it
+async function create(E, caller, args, own = {}) {
+  if (args.tasks === null || args.worktree === null) { const { tasks, worktree, ...rest } = args; args = { ...rest, ...(tasks === null ? {} : { tasks }), ...(worktree === null ? {} : { worktree }) }; } // null is absent (ADR 0062) // own: core-internal, task.fixFromReview's inherited worktree and answered reviews; no tool reaches it
+  if (args.tasks !== undefined || (args.worktree != null && args.worktree !== false)) return require('./methods-task-batch.cjs').createWithTrees(E, caller, args, own); // ADR 0062: trees first, then every row in one transaction
   const AM = require('./methods-task-amend.cjs'); // ADR 0061: amend revises an existing task; tree_of gives a new one another's tree
-  if (args.amend !== undefined && args.amend !== false) return AM.amend(E, caller, args); // amend: false is a plain create
+  if (args.amend !== undefined && args.amend !== false) return AM.amend(E, caller, args);
   const runTop = args.tree_of != null ? await AM.runRepo(E, caller) : null; // the only await: everything below is one turn
   if (args.tree_of != null && typeof args.tree_of === 'string') { const src = rows.current(E.store, 'task', args.tree_of); if (src) await require('./methods-worktree.cjs').assertTreeListed(src); } // a tree the sweep was cut inside is not handed out
-  if (typeof args.spec !== 'string' || !args.spec.trim()) throw err('E_ARGS', 'task.create needs a spec describing the work');
-  const filesOwned = args.files_owned == null ? null : args.files_owned;
-  if (filesOwned != null && (!Array.isArray(filesOwned) || filesOwned.some(p => typeof p !== 'string'))) {
-    throw err('E_ARGS', 'task.files_owned must be an array of worktree-relative path strings');
-  }
-  const acceptance = args.acceptance == null ? null : args.acceptance;
-  AM.checkAcceptance(acceptance);
-  const dependsOn = args.depends_on == null ? null : args.depends_on;
-  if (dependsOn != null && (!Array.isArray(dependsOn) || dependsOn.some(d => typeof d !== 'string' || !d))) {
-    throw err('E_ARGS', 'task.depends_on must be an array of task ids this task cannot be assigned before');
-  }
-  if (args.repairs != null && (typeof args.repairs !== 'string' || !args.repairs)) {
-    throw err('E_ARGS', 'task.repairs must be the id of the work task this fix task repairs');
-  }
-  const repairs = args.repairs == null ? null : args.repairs;
-  const id = args.id || rows.newId();
-  if (rows.current(E.store, 'task', id)) throw err('E_ARGS', `a task with id ${id} already exists in this store; choose another id, leave id out for a generated one, or pass amend: true to revise its acceptance`, { task_id: id });
-  if (args.tree_of != null && own.worktree) throw err('E_ARGS', 'task.create tree_of: this task already inherits a tree');
-  const tree = args.tree_of != null ? AM.treeOf(E, args.tree_of, runTop) : own.worktree;
-
-  const deps = dependsOn ? [...new Set(dependsOn)] : null;
-  if (deps) {
-    for (const dep of deps) {
-      if (!rows.current(E.store, 'task', dep)) {
-        throw err('E_NOT_FOUND', `task ${id} would depend on ${dep}, which has no row in this store, so nothing could ever mark it done`, { task_id: id, missing_dependency: dep });
-      }
-    }
-    const cycle = findCycle(E.store, id, deps);
-    if (cycle) {
-      throw err('E_DEPENDENCY_CYCLE', `these dependencies form a cycle, ${cycle.join(' -> ')}, and every task in it would refuse assignment for ever`, { task_id: id, cycle });
-    }
-  }
-
-  // ADR 0031 amendment 3: a fix task names its work; core refuses one only past the user's fix_hard_cap (none by default), and past max_fix_rounds the row carries a fix_notice.
-  let fixNotice = null;
-  if (repairs) {
-    if (!rows.current(E.store, 'task', repairs)) {
-      throw err('E_NOT_FOUND', `task ${id} would repair ${repairs}, which has no row in this store`, { task_id: id, missing_repairs: repairs });
-    }
-    const run = rows.current(E.store, 'run', caller.run_id);
-    const hard = run && run.fix_hard_cap != null ? Number(run.fix_hard_cap) : null;
-    const cap = run && run.max_fix_rounds != null ? Number(run.max_fix_rounds) : null;
-    const used = rows.currentAll(E.store, 'task').filter(o => o.repairs === repairs && o.run_id === caller.run_id).length;
-    if (hard != null && used >= hard) {
-      throw err('E_FIX_ROUNDS', `task ${repairs} already has ${used} fix task${used === 1 ? '' : 's'} and this run's fix_hard_cap is ${hard}${run.fix_hard_cap_source ? ` (${run.fix_hard_cap_source})` : ''}; no further fix task can be created for it in this run, and nothing was written`, { task_id: id, repairs, fix_rounds_used: used, fix_hard_cap: hard, fix_hard_cap_source: run.fix_hard_cap_source || null });
-    }
-    if (cap != null && used >= cap) fixNotice = `task ${repairs} now has ${used + 1} fix task${used === 0 ? '' : 's'} in this run, past max_fix_rounds ${cap}`;
-  }
-
-  let overlaps = [];
-  if (filesOwned && filesOwned.length) {
-    // ADR 0046 decision 1: only a task that holds its files (its run is live) can refuse this one. ADR 0059 decision 4: a new
-    // task has no tree yet, so it is judged as shared, and only a holder in the shared tree refuses it; one in its own
-    // worktree is reported in `overlaps`.
-    const scan = holds.scanOverlaps(E.store, filesOwned, null, undefined, tree ? holds.treeOf(E.store, { worktree: tree }, null) : undefined); // an inherited tree is its own
-    const first = scan.find((c) => c.same_tree);
-    if (first) throw filesOverlap(first, treeHint(E.store, null));
-    overlaps = holds.acrossTrees(scan);
-  }
-
-  const t = Date.now();
-  const row = rows.append(E.store, 'task', {
-    id, run_id: caller.run_id, spec: args.spec, acceptance, files_owned: filesOwned, state: 'open',
-    results: null, depends_on: deps, repairs, ...(tree ? { worktree: tree } : {}), ...(own.answers ? { answers: own.answers } : {}), ...(args.base != null ? { base: require('./methods-worktree.cjs').baseArg(args.base) } : {}),
-  }, E.writtenBy(caller), t);
-  E.noteWrite();
-  return overlaps.length || fixNotice ? { ...row, ...(overlaps.length ? { overlaps } : {}), ...(fixNotice ? { fix_notice: fixNotice } : {}) } : row;
+  const made = require('./methods-task-new.cjs').one(E, caller, args, own, runTop);
+  require('./run-budget.cjs').noteRows(E, caller, made); // the run process learns of a task limit once the row is written
+  return made;
 }
 
 // The dependency gate shared by task.assign and task.evaluate: only `done` opens it (ADR 0013 §1, ADR 0030 decision 2).
@@ -165,7 +103,9 @@ async function assign(E, caller, args) {
     // of a run that came back to life after this task's run did yields, so the run live now keeps the paths.
     // The hold belongs to a live run: a task whose own run has ended is taken over by the run of the worker that takes it
     // (the calling orchestrator's run for a check_only), and is refused when no live run can own it.
+    require('./worker-run-guard.cjs').refuseOtherRunTask(E, caller, task); // a live run's task is that run's: no move of it or its lease by another run
     const worker = checkOnly ? null : rows.current(E.store, 'worker', args.worker_id);
+    require('./worker-run-guard.cjs').refuseOtherRunWorker(E, caller, worker); // a live run's worker is that run's: no lease on another run's work
     // ADR 0058 amendment 1: a worker runs in one directory for its whole life, so a task with its own worktree goes only to a
     // worker that runs there. A check_only call checks the directory the spawn will run in, when it names one. Checked before
     // the hold, so a worker in the wrong tree is told that, not a hold's remedy (ADR 0059).
@@ -260,10 +200,12 @@ async function evaluate(E, caller, args, queued = null) {
   if (args.trigger !== undefined && args.trigger !== 'release') throw err('E_ARGS', 'task.evaluate: trigger is release (the run manager evaluating a hand-back) or absent');
   const task = rows.current(E.store, 'task', args.task_id);
   if (!task) throw err('E_NOT_FOUND', `no task row exists for ${args.task_id}`, { task_id: args.task_id });
+  const leaseAtStart = (rows.currentLeaseForTask(E.store, task.id) || {}).id || null; // read with the task, before any await
   // The same two gates assign applies, checked before any command runs and again inside the write's transaction. `done` is
   // final: a re-run would overwrite its passing evidence, or keep `done` over failing results. An open dependency is refused
   // rather than evaluated without `done`, because a task is not done while its dependency is open (ADR 0013 section 1).
   const gate = (t) => {
+    require('./worker-run-guard.cjs').refuseOtherRunTask(E, caller, t); // a live run's task is that run's
     if (t.state === 'done') throw err('E_TASK_DONE', `task ${t.id} is already done${t.results && t.results.evaluated_at ? ` (evaluated at ${t.results.evaluated_at})` : ''}; its results are in task_list with task_ids. To redo the work, create a new task`, { task_id: t.id, state: 'done' });
     if (t.state === 'cancelled') throw err('E_ARGS', `task ${t.id} was cancelled, which is final; there is nothing to evaluate`, { task_id: t.id, state: 'cancelled' });
     assertDependenciesDone(E, t);
@@ -275,9 +217,11 @@ async function evaluate(E, caller, args, queued = null) {
   const at = require('./methods-worktree.cjs').evaluateTarget(task, args); // ADR 0053 decision 4: the recorded worktree and base
   const EC = args.cancel_key !== undefined ? require('./evaluate-cancel.cjs') : null; // ADR 0058: a release evaluation can be cancelled
   const cancel = EC ? EC.register(args.cancel_key) : null;
+  const envT0 = Date.now();
+  const env = await require('./check-env.cjs').forTask(E.store, task, at.worktree); // ADR 0080: the environment the commands run in, recorded; nothing reads it to decide
   const J = require('./judged.cjs'), judged = await J.stateOf(task, at.worktree); // ADR 0060 decisions 4 and 6: what integrate may merge
   let commandChecks;
-  try { commandChecks = await runAcceptance(task.acceptance, at.worktree, task.files_owned, { ...at, cancel, budgetMs: require('./evaluate-cancel.cjs').budgetAfter(queued && queued.waited_ms, ACCEPTANCE_BUDGET_MS, args.trigger), beside: (a, b) => require('./evaluate-cancel.cjs').during(task.id, a, b) }); } finally { if (cancel) EC.unregister(args.cancel_key, cancel); }
+  try { commandChecks = await runAcceptance(task.acceptance, at.worktree, task.files_owned, { ...at, cancel, budgetMs: Math.max(1, require('./evaluate-cancel.cjs').budgetAfter(queued && queued.waited_ms, ACCEPTANCE_BUDGET_MS, args.trigger) - (Date.now() - envT0)), beside: (a, b) => require('./evaluate-cancel.cjs').during(task.id, a, b) }); } finally { if (cancel) EC.unregister(args.cancel_key, cancel); }
   if (cancel && cancel.cancelled) throw EC.cancelled(task, cancel);
   // The commands can run for minutes, so the row is read again inside the transaction that writes it: a
   // release that landed meanwhile (its handoff, its state) is what the verdict check reads and what the
@@ -287,6 +231,8 @@ async function evaluate(E, caller, args, queued = null) {
     const fresh = rows.current(E.store, 'task', args.task_id) || task;
     gate(fresh);
     if ((fresh.amended || []).length !== (task.amended || []).length) throw err('E_BUSY', `task ${task.id}'s acceptance was amended while it was evaluated; nothing was written. Evaluate it again`, { op: 'evaluate', task_id: task.id, amended: true }); // ADR 0061
+    // Assigned again while the commands ran: the evidence is of the earlier hand-back's tree, and `done` would un-earn the new lease.
+    if (((rows.currentLeaseForTask(E.store, task.id) || {}).id || null) !== leaseAtStart) throw err('E_BUSY', `task ${task.id} was assigned again while it was evaluated; nothing was written. Evaluate it again after the new hand-back`, { op: 'evaluate', task_id: task.id, reassigned: true });
     const checks = [...commandChecks];
     if (fresh.acceptance && fresh.acceptance.verdict === true) checks.push(verdictCheck(E.store, fresh));
     if (fresh.acceptance && fresh.acceptance.handoff) checks.push(require('./handoff-check.cjs').handoffCheck(E.store, fresh)); // ADR 0058 decision 6
@@ -295,7 +241,7 @@ async function evaluate(E, caller, args, queued = null) {
     const executable = checks.length > 0 && checks.every(c => c.executable);
     const passed = checks.length > 0 && checks.every(c => c.passed);
     const results = {
-      evaluated_at: Date.now(), executable, passed, checks, ...(args.trigger ? { trigger: args.trigger } : {}), ...(queued ? { queued } : {}), ...J.fields(judged), ...(checks.some(c => c.flaky) ? { flaky: true } : {}), // ADR 0060: what was judged (4, 6); a pass only on a retry is never silent (2)
+      evaluated_at: Date.now(), executable, passed, checks, ...(args.trigger ? { trigger: args.trigger } : {}), ...(queued ? { queued } : {}), ...J.fields(judged), ...(env ? { env } : {}), ...(checks.some(c => c.flaky) ? { flaky: true } : {}), // ADR 0060: what was judged (4, 6); a pass only on a retry is never silent (2)
       ...(checks.length === 0 ? { note: 'the task declares no acceptance criteria, so nothing was executed and nothing is proven' } : {}),
     };
     return rows.append(E.store, 'task', {
@@ -331,8 +277,8 @@ function requireCurrentLease(E, leaseId) {
 
 async function renew(E, caller, args) {
   const l = requireCurrentLease(E, args.lease_id);
-  if (l.holder !== caller.worker_id || l.holder_role !== 'worker') {
-    throw err('E_NOT_HOLDER', `lease ${l.id} is held by ${l.holder_role} ${l.holder}, and this call came from worker ${caller.worker_id}`, { lease_id: l.id, holder: l.holder, holder_role: l.holder_role });
+  if (l.holder !== caller.worker_id || l.holder_role !== 'worker' || require('./worker-run-guard.cjs').leaseOfOtherRun(E, caller, l)) {
+    throw err('E_NOT_HOLDER', `lease ${l.id} is held by ${l.holder_role} ${l.holder} under run ${l.run_id}, and this call came from worker ${caller.worker_id} of run ${caller.run_id}`, { lease_id: l.id, holder: l.holder, holder_role: l.holder_role, lease_run_id: l.run_id });
   }
   const t = Date.now();
   if (l.released_at != null) throw err('E_LEASE_EXPIRED', `lease ${l.id} was released at ${l.released_at} and a released lease cannot be renewed`, { lease_id: l.id, released_at: l.released_at });
@@ -388,8 +334,8 @@ async function releaseNow(E, caller, args) {
     // release acts on the lease the task actually has.
     LHD.refuseSupersededDeath(E.store, args.lease_id); // ADR 0026 amendment 2: a death release the task has moved on from is named
     const l = requireCurrentLease(E, args.lease_id);
-    if (caller.role === 'worker' && (l.holder !== caller.worker_id || l.holder_role !== 'worker')) {
-      throw err('E_NOT_HOLDER', `lease ${l.id} is held by ${l.holder_role} ${l.holder}, and this call came from worker ${caller.worker_id}`, { lease_id: l.id, holder: l.holder, holder_role: l.holder_role });
+    if (caller.role === 'worker' && (l.holder !== caller.worker_id || l.holder_role !== 'worker' || require('./worker-run-guard.cjs').leaseOfOtherRun(E, caller, l))) {
+      throw err('E_NOT_HOLDER', `lease ${l.id} is held by ${l.holder_role} ${l.holder} under run ${l.run_id}, and this call came from worker ${caller.worker_id} of run ${caller.run_id}`, { lease_id: l.id, holder: l.holder, holder_role: l.holder_role, lease_run_id: l.run_id });
     }
     const task = rows.current(E.store, 'task', l.task_id);
     if (!task) throw err('E_NOT_FOUND', `lease ${l.id} names task ${l.task_id}, which has no row in this store`, { lease_id: l.id, task_id: l.task_id });
@@ -464,10 +410,11 @@ async function takeControl(E, caller, args) {
 }
 
 // The lease a worker must hold before it may write a checkpoint (api.md §3, continuity.checkpoint).
-function heldLease(E, taskId, workerId) {
+function heldLease(E, taskId, workerId, runId) {
   const l = rows.currentLeaseForTask(E.store, taskId);
   if (!l || l.released_at != null) return null;
   if (l.holder !== workerId || l.holder_role !== 'worker') return null;
+  if (runId && require('./worker-run-guard.cjs').liveOtherRun(E, runId, l.run_id)) return null; // the lease of another live run is that run's
   if (l.expires_at != null && Number(l.expires_at) < Date.now()) return null;
   return l;
 }

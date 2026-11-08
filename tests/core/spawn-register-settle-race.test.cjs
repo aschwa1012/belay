@@ -10,12 +10,15 @@ const os = require('node:os');
 const path = require('node:path');
 const { core, deadPid } = require('./helpers.cjs');
 
+// The product derives the boot time from os.uptime(); pin it so the dated records below never depend on how long the host has been up.
+os.uptime = () => 30 * 86400;
+
 const SR = core('spawn-register.cjs');
 const Prov = core('spawn-provenance.cjs');
 
 const H = 3600000;
 const NOW = Date.now();
-const BOOT = NOW - 10 * 24 * H; // a fixed boot, so the test does not depend on the host's real uptime
+const BOOT = SR.bootMs(NOW);
 
 function withRegistry(fn) {
   const keep = process.env.BELAY_SPAWN_REGISTRY;

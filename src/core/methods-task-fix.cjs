@@ -18,7 +18,7 @@ function verdictDetail(review) {
 // A finding as one plain line: where (file:line), its severity and clause, then what. The core does not fix a finding's shape, so
 // the text is the first of the usual fields a reviewer writes (note, what, text, ...), followed by every other field (evidence, where, ...)
 // as key: value pairs. A finding that is a bare string is that string.
-const WHAT = ['note', 'what', 'text', 'description', 'detail', 'message', 'summary', 'issue', 'finding'];
+const WHAT = ['title', 'note', 'what', 'text', 'description', 'detail', 'message', 'summary', 'issue', 'finding'];
 const WHERE = ['file', 'path', 'location'];
 const scalar = (v) => (typeof v === 'string' || typeof v === 'number' || typeof v === 'boolean') && String(v).trim() !== '';
 function findingLine(f) {
@@ -91,9 +91,12 @@ function ownedSet(given, judged, tree) {
 
 async function fixFromReview(E, caller, args) {
   const T = require('./methods-task.cjs');
+  if (args.follow_up !== undefined && typeof args.follow_up !== 'boolean') throw err('E_ARGS', 'task.fixFromReview follow_up must be a boolean');
+  if (args.follow_up === true) return require('./methods-follow-up.cjs').followUp(E, caller, args); // ADR 0064: a held review's should-fix findings, not a fix round
   if (!args.review_id || typeof args.review_id !== 'string') throw err('E_ARGS', 'task.fixFromReview needs the review_id of a refuted review task');
   const review = rows.current(E.store, 'task', args.review_id);
   if (!review) throw err('E_NOT_FOUND', `no task row exists for ${args.review_id}`, { review_id: args.review_id });
+  require('./worker-run-guard.cjs').refuseOtherRunTask(E, caller, review); // a live run's review is that run's to answer
   if (!review.acceptance || review.acceptance.verdict !== true) throw err('E_ARGS', `task ${review.id} is not a review task (its acceptance has no verdict: true); pass the id of the review task that judged the work`, { review_id: review.id });
   if (!T.refutedReview(review)) {
     throw err('E_PRECONDITION', `review ${review.id} was not last evaluated refuted (an executable verdict check that failed); evaluate it first, and fix only after a refuted review`, { review_id: review.id, state: review.state });
@@ -105,8 +108,11 @@ async function fixFromReview(E, caller, args) {
   }
   const judged = rows.current(E.store, 'task', judgedId);
   if (!judged) throw err('E_NOT_FOUND', `review ${review.id} depends on ${judgedId}, which has no row in this store`, { review_id: review.id, missing: judgedId });
-  const repairs = judged.repairs || judged.id;
-  const original = (judged.repairs && rows.current(E.store, 'task', judged.repairs)) || judged;
+  require('./worker-run-guard.cjs').refuseOtherRunTask(E, caller, judged); // and so is the work it judged, with its tree and branch
+  // The work a chain of fixes began from, however many hand-made fixes of fixes lie between it and the judged task.
+  let original = judged;
+  for (let n = 0; original.repairs && n < 100; n++) { const up = rows.current(E.store, 'task', original.repairs); if (!up) break; original = up; }
+  const repairs = original.id;
   // Called again for a review an open fix of this run already answers (the same review, or another refutation that fix took in),
   // that fix is returned, and no fix round is spent. A refutation decided after the fix was made is not in it: it gets its own.
   let { refs, existing } = unanswered(E, caller, judged, review, repairs);
@@ -130,4 +136,4 @@ async function fixFromReview(E, caller, args) {
   return { ...row, from_review: review.id };
 }
 
-module.exports = { fixFromReview };
+module.exports = { fixFromReview, findingLine, verdictDetail, inheritedTree, ownedSet, brief };

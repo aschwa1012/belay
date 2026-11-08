@@ -44,8 +44,12 @@ function renderText(receipt) {
     lines.push(`run: ${r.id} epoch ${r.epoch} ${life}`);
     // ADR 0034: a run paused by an embedder failure says so, with the worker, the call and the cause.
     if (r.embed_bounds) lines.push(`embedder: ${r.embed_bounds} index-query embed${r.embed_bounds === 1 ? '' : 's'} hit the ${require('../core/spawn-bounds.cjs').SPAWN_EMBED_MS} ms spawn bound (E_EMBED_BOUND); those workers got a keyword-only index`);
-    if (r.index_bounds) lines.push(`index: ${r.index_bounds} first-message index${r.index_bounds === 1 ? '' : 'es'} hit the index bound (E_INDEX_BOUND): refused under on_embedder_failure required, or built without its vector lists otherwise; see belay events --kind index_bound`);
+    if (r.index_bounds) lines.push(`index: ${r.index_bounds} first-message index${r.index_bounds === 1 ? '' : 'es'} hit the index bound (E_INDEX_BOUND): refused under on_embedder_failure required, or built without its vector lists otherwise; fix the embedder (belay doctor checks it)`);
+    if (r.budget) lines.push(`budget: ${require('../core/run-budget.cjs').textOf(r.budget)}`);
     if (r.paused_at != null && r.ended_at == null) lines.push(`run paused at ${new Date(r.paused_at).toISOString()} by ${r.paused_by}${/embedder-failure [(]/.test(r.paused_by || '') ? ` (an embedder failure, on_embedder_failure required: fix the embedder and belay resume, or choose: belay resume ${r.id} --embedder keyword | --embedder off, which also saves the choice; belay settings memory.on_embedder_failure keyword | off saves it for later runs; or leave it paused)` : ''}`);
+  }
+  for (const w of receipt.workers || []) { // a turn that has not ended: an estimate from the worker's stream, apart from the reported cost
+    if (w.cost_in_flight_usd != null) lines.push(`worker ${w.id}: $${w.cost_in_flight_usd.toFixed(2)} ${w.cost_in_flight_source}${w.cost_in_flight_partial ? ' (partial: stream not yet read to its end)' : ''}, not in its reported cost ${w.cost_usd == null ? 'not recorded' : `$${Number(w.cost_usd).toFixed(2)}`}`);
   }
   if (receipt.store) {
     const st = receipt.store;
@@ -77,6 +81,10 @@ async function run(ctx) {
     let runId = parsed.runId;
     let runIdSource = parsed.runId ? 'argument' : null;
     const { runs } = await core.run.list({});
+    if (runId && !runs.some(r => r.id === runId)) {
+      const message = `no run row exists for ${runId}`;
+      return { code: 1, text: `belay status: ${message}\n`, json: { error: { code: 'E_NOT_FOUND', message, run_id: runId } } };
+    }
     if (!runId) {
       if (runs.length) {
         // Fix round: run.list orders by the row most recently WRITTEN, not by which run is actually

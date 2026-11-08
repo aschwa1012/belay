@@ -8,7 +8,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
-const { makeRepo, write, commit, rejectsCode } = require('./worktree-helpers.cjs');
+const { makeRepo, write, commit, rejectsCode, stageRuns } = require('./worktree-helpers.cjs');
 
 const { openCore } = core('index.cjs');
 
@@ -18,6 +18,7 @@ before(async () => {
   dir = sandbox();
   orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
   await orch.run.attach({ adapter_pid: process.pid });
+  await stageRuns(`${dir}/data`, ["inc-1", "inc-2", "inc-3", "inc-4", "inc-5", "inc-6", "inc-7", "inc-8", "inc-9", "inc-10", "inc-11", "inc-12", "inc-13", "inc-14", "inc-15", "inc-16", "inc-17", "inc-18", "inc-19", "inc-20", "inc-21", "inc-22", "inc-23", "inc-24", "inc-25", "inc-26", "inc-27", "inc-28", "inc-29", "inc-30", "inc-31", "inc-32", "inc-33", "inc-34", "inc-35", "inc-36", "inc-37", "inc-38", "inc-39", "inc-40", "inc-41", "inc-42", "inc-43", "inc-44", "inc-45", "inc-46", "inc-47", "inc-48", "inc-49", "inc-50", "inc-51", "inc-52", "inc-53", "inc-54", "inc-55", "inc-56", "inc-57", "inc-58", "inc-59", "inc-60", "inc-61", "inc-62", "inc-63", "inc-64", "inc-65", "inc-66", "inc-67", "inc-68", "inc-69", "inc-70", "inc-71", "inc-72", "inc-73", "inc-74", "inc-75", "inc-76", "inc-77", "inc-78", "inc-79", "inc-80"]);
   op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
 });
 
@@ -42,7 +43,7 @@ async function work(repo, files, commands, { evaluate = true } = {}) {
   commit(w.path, `task ${t.id}`);
   return evaluate ? orch.task.evaluate({ task_id: t.id }) : orch.task.get({ task_id: t.id });
 }
-const into = () => `int/inc-${++n}`;
+const into = () => `belay/integrate/inc-${++n}`;
 const counterFile = () => path.join(dir, `counter-${++n}.txt`);
 
 test('T2 then T1 into one branch keeps T2 without re-listing it, and names every task on the branch', async () => {
@@ -176,6 +177,8 @@ test('a conflict in an append keeps the tasks already on the branch and checks t
   assert.deepStrictEqual(r2.not_merged.map((m) => [m.task_id, m.reason]), [[b.id, 'conflict']]);
   assert.strictEqual(runs(c), 1, 'the head did not move, so the passed check was reused');
   assert.strictEqual(r2.reused_checks.length, 1);
+  assert.strictEqual(r2.checks.every((ch) => ch.passed), true, 'the checks on what landed passed');
+  assert.strictEqual(r2.passed, false, 'a step that stopped on a conflict is not passed, whatever its reused checks say');
 });
 
 test('two integrates into one branch at once: one is refused, and the retry appends to what the other left', async () => {
@@ -200,6 +203,7 @@ test('a task whose branch was judged again since it was merged is not carried at
   const op2 = await openCore({ dataDir: `${dir}/data-fix`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
   try {
     await o2.run.attach({ adapter_pid: process.pid, project_dir: repo });
+    await stageRuns(`${dir}/data-fix`, ["inc-1", "inc-2", "inc-3", "inc-4", "inc-5", "inc-6", "inc-7", "inc-8", "inc-9", "inc-10", "inc-11", "inc-12", "inc-13", "inc-14", "inc-15", "inc-16", "inc-17", "inc-18", "inc-19", "inc-20", "inc-21", "inc-22", "inc-23", "inc-24", "inc-25", "inc-26", "inc-27", "inc-28", "inc-29", "inc-30", "inc-31", "inc-32", "inc-33", "inc-34", "inc-35", "inc-36", "inc-37", "inc-38", "inc-39", "inc-40", "inc-41", "inc-42", "inc-43", "inc-44", "inc-45", "inc-46", "inc-47", "inc-48", "inc-49", "inc-50", "inc-51", "inc-52", "inc-53", "inc-54", "inc-55", "inc-56", "inc-57", "inc-58", "inc-59", "inc-60", "inc-61", "inc-62", "inc-63", "inc-64", "inc-65", "inc-66", "inc-67", "inc-68", "inc-69", "inc-70", "inc-71", "inc-72", "inc-73", "inc-74", "inc-75", "inc-76", "inc-77", "inc-78", "inc-79", "inc-80"]);
     const mk = async (files, commands, extra = {}) => {
       const t = await o2.task.create({ spec: 'work', acceptance: { commands }, ...extra });
       if (!extra.tree_of) await op2.task.worktreeCreate({ task_id: t.id, repo }).catch(() => null);

@@ -117,7 +117,13 @@ function killPidRaw(target, signal, opts) {
       if (!snap) return nom(unreadable(pid, m), 'unverifiable');
       const e = snap.get(pid);
       if (!e) return nom(`pid ${pid} is not running`, 'absent');
-      if (target.image == null || !ID.imageIn(e.image, target.image)) return nom(`no recorded creation time for pid ${pid} and its image ${e.image} is not the expected one`, 'unverifiable');
+      if (target.image == null) return nom(`no recorded creation time for pid ${pid} and no expected image to check it against`, 'unverifiable');
+      if (!ID.imageIn(e.image, target.image)) {
+        // A live process never changes its image, so another image than the one the spawner recorded proves the original has
+        // exited and the pid was reused. An image that is only the substrate's guess proves nothing (the launch may be a shim).
+        if (target.image_recorded === true) return nom(`no recorded creation time for pid ${pid} and its image ${e.image} is not the recorded one: the process belay meant has exited and the pid was reused`, 'mismatch');
+        return nom(`no recorded creation time for pid ${pid} and its image ${e.image} is not the expected one`, 'unverifiable');
+      }
       return { ...base, ...sendKill(pid, signal, opts.kill), ...sm, ok: true, identity: { via: 'image', image: e.image } };
     }
     const c = snap ? ID.checkIdentity(pid, { created: target.created, image: target.image }, snap) : { ok: false, kind: 'unverifiable', detail: unreadable(pid, m) };
@@ -160,13 +166,16 @@ function killTreeRaw(target, opts = {}) {
         if (!c.ok) return { ...fail(c.detail, c.kind), ...sm };
         identity = c.identity;
       }
-      if (snap) tree = ID.descendantsOf(pid, snap);
+      // The handle proved the root only until the snapshot was awaited: an exit during it may have given the pid to another
+      // process, whose children the snapshot would then name. Re-confirmed here, in the same synchronous step as the kills.
+      if (snap && handle && !ID.handleLive(target)) treeNote = `the child handle for pid ${pid} exited while the process snapshot was read: descendants not killed`;
+      else if (snap) tree = ID.descendantsOf(pid, snap);
       const killed = []; const errors = []; let signalledAt = null;
       const one = (p) => { const k = sendKill(p, 'SIGKILL', opts.kill); if (k.signalled) { killed.push(p); signalledAt = k.signalled_at; } else if (k.error !== 'ESRCH') errors.push(`${p}:${k.error}`); };
       for (const d of tree.leavesFirst) one(d.pid);
       if (handle && !ID.handleLive(target)) errors.push(`${pid}:exited meanwhile`); else one(pid);
       const ok = errors.length === 0;
-      const processes = killed.map((p) => ({ pid: p, image: snap && snap.get(p) ? snap.get(p).image : null })); // named from the snapshot taken before the kill
+      const processes = killed.map((p) => ({ pid: p, created: snap && snap.get(p) ? snap.get(p).created : null, image: snap && snap.get(p) ? snap.get(p).image : null })); // named from the snapshot taken before the kill
       return done({ ok, terminated: killed.length, killed, killed_processes: processes, skipped: tree.skipped, identity, ...sm, signalled_at: signalledAt, output: [treeNote, ...errors].filter(Boolean).join('; ').slice(0, 400), ...(treeNote ? { tree_refused: treeNote } : {}) });
     });
   })();
@@ -183,6 +192,7 @@ function rowTarget(row, pidField = 'pid', createdField = 'pid_created') {
     pid: row[pidField], created: Number.isFinite(row[createdField]) ? row[createdField] : null,
     image: row.pid_image ? [row.pid_image] : (SUBSTRATE_IMAGES[row.substrate] || []),
   };
+  if (row.pid_image) t.image_recorded = true; // the image the spawner launched, not the substrate's guess: another image at the pid proves a reuse
   if (row.pid_created_error) { t.unverified = row.pid_created_error; if (Number.isInteger(row.adapter_pid)) t.holder_pid = row.adapter_pid; }
   return t;
 }
@@ -221,9 +231,12 @@ async function killProcessRaw(target, opts) {
 // first; [] when the snapshot is unreadable. For a caller that must kill them after something else ends the
 // parent (pause.cjs): the identity is taken before, and checked again by killMany after. `expectCreated`: the root's
 // creation time; a root the snapshot shows with any other (the pid now belongs to another process) has no descendants of ours.
+// `handle`: the root's child handle, when the caller holds one. It must still be live after the snapshot, else the pid may
+// belong to another process and there are none (the case where the creation time is not yet known).
 async function descendantTargets(pid, opts = {}) {
   const { snap } = await acquire(opts);
   if (!snap) return [];
+  if (opts.handle && opts.expectCreated == null && !ID.handleLive(opts.handle)) return []; // a known creation time proves the root without the handle
   const root = snap.get(assertPid(pid));
   if (opts.expectCreated != null && !(root && root.created === opts.expectCreated)) return [];
   return ID.descendantsOf(pid, snap).leavesFirst;
@@ -305,7 +318,21 @@ async function waitPidGone(pid, { timeoutMs = 15000, intervalMs = 25 } = {}) {
   return null;
 }
 
+// Wait for the process {pid, created} to disappear (ADR 0039). waitPidGone polls the bare pid, which another process may take
+// inside the wait, so at its deadline the pid is checked once more against ONE snapshot: a different or absent creation time
+// means the process we meant is gone. 'unverifiable' (no created time, or an unreadable snapshot) proves nothing and stays alive.
+// -> ms until gone, or null when it may still be running. `wait` and `snapshot` are seams.
+async function waitProcessGone(pid, created, { timeoutMs = 15000, intervalMs = 25, wait = waitPidGone, snapshot = null } = {}) {
+  const ms = await wait(pid, { timeoutMs, intervalMs });
+  if (ms !== null || !Number.isFinite(created)) return ms;
+  const r = snapshot ? await snapshot() : await ID.snapshotShared({ kind: 'liveness' });
+  const snap = r instanceof Map ? r : (r && r.snap) || null;
+  const c = ID.checkIdentity(pid, { created }, snap);
+  return c.kind === 'mismatch' || c.kind === 'absent' ? timeoutMs : null;
+}
+
 module.exports = {
+  waitProcessGone,
   IS_WINDOWS, assertPid, killPid, killTree, killProcess, rowTarget, manualStopHint, withKillLock, descendantTargets, killMany, childPids, waitPidGone, isHandle,
   processSnapshot: ID.processSnapshot, snapshotShared: ID.snapshotShared, gate: ID.gate, createdOf: ID.createdOf, recentRefusals: () => refusals.slice(),
 };

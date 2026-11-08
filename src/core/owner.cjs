@@ -56,7 +56,11 @@ class Owner {
     // ADR 0045 decision 4: a `bound` owner vouches for an operator by the operator's process (operator-check.cjs), unless the caller
     // brought its own check. Where the peer cannot be examined (not Windows) it has no check and fails closed.
     if (this.mode === 'bound' && typeof this.opts.operatorCheck !== 'function' && OperatorCheck.SUPPORTED) {
-      this.opts.operatorCheck = OperatorCheck.create({ startedAt: this.startedAt, spawned: (ctx) => this._spawnedProcesses(ctx), provenance: (snap, o) => require('./spawn-provenance.cjs').refresh(snap, o), deps: this.opts.operatorCheckDeps });
+      // A check that finds many closed tombstones has this owner prune them after it answers (register-prune.cjs, ADR 0045 amendment 8).
+      const deps = this.opts.operatorCheckDeps || {};
+      this.pruner = require('./register-prune.cjs').createPruner({ snapshot: () => (deps.snapshot ? deps.snapshot() : require('./proc-identity.cjs').snapshotShared({ kind: 'register-prune' }).then((r) => r.snap)), ...(Number.isFinite(this.opts.registerPruneGapMs) ? { gapMs: this.opts.registerPruneGapMs } : {}) });
+      const provenance = (snap, o) => { const r = require('./spawn-provenance.cjs').refresh(snap, o); if (!this.stopped) this.pruner.note(r.closed); return r; };
+      this.opts.operatorCheck = OperatorCheck.create({ startedAt: this.startedAt, spawned: (ctx) => this._spawnedProcesses(ctx), provenance, deps: this.opts.operatorCheckDeps });
     }
     this.conns = new Set();
     this.counters = { calls: 0, errors: 0 };
@@ -205,6 +209,7 @@ class Owner {
           setInterval(() => { try { this._idleCheckpoint(); } catch { /* closing */ } }, this.opts.idleCheckMs),
         ];
         for (const t of this.timers) t.unref();
+        if (this.pruner) this._warming = require('./spawn-register.cjs').warmTombstones(); // the operator check's first read of the register, off the loop
         resolve();
       });
     });
@@ -223,7 +228,7 @@ class Owner {
       for (const r of db.prepare('SELECT w.pid, w.state FROM worker w JOIN (SELECT id, MAX(seq) m FROM worker GROUP BY id) x ON w.id = x.id AND w.seq = x.m WHERE w.pid IS NOT NULL AND w.pid_created IS NULL').all()) if (live.has(r.state)) out.push({ pid: r.pid, created: null, kind: 'worker' });
     } catch { /* a store that cannot be read has no workers to name; the chain rule still stands */ }
     if (typeof this.opts.spawnedProcesses === 'function') { try { out.push(...this.opts.spawnedProcesses()); } catch { /* the run's own list is best effort */ } }
-    out.push(...require('./spawn-register.cjs').list({ snap, persist })); // every harness on the machine, other stores' workers among them; unreadable throws, and the operator check refuses on it
+    out.push(...require('./spawn-register.cjs').list({ snap, persist })); // every harness on the machine, other stores' workers among them; an unreadable directory throws, and the operator check refuses on it (an unreadable record is unproven, spawn-register.cjs)
     return out;
   }
 
@@ -346,7 +351,9 @@ class Owner {
     if (who && typeof who === 'object') c.belayCaller = { pid: Number.isInteger(who.pid) ? who.pid : null, role: typeof who.role === 'string' ? who.role : null };
 
     if (req.method === 'ping') {
-      const result = { pid: process.pid, pipe: this.pipe, uptime_ms: Date.now() - this.startedAt, calls: this.counters.calls, embedder: this.embedInfo || null, ...(c.belayVerified === undefined ? {} : { operator_verified: c.belayVerified }) };
+      // A stopping owner is not a serving one: it refuses every call, so its ping must not read as liveness.
+      if (this.stopped) return this._refuse(c, req, { code: 'E_OWNER_STOPPING', message: 'the store owner is stopping and serves no calls', detail: { method: 'ping', sent: false, owner_stopping: true } });
+      const result = { pid: process.pid, pipe: this.pipe, uptime_ms: Date.now() - this.startedAt, calls: this.counters.calls, embedder: this.embedInfo || null, ...(c.belayVerified === undefined ? {} : { operator_verified: c.belayVerified }), ...(c.belayVerifyReason ? { operator_reason: c.belayVerifyReason } : {}), ...(c.belayVerifyCause ? { operator_cause: c.belayVerifyCause } : {}) };
       if (!c.destroyed) c.write(JSON.stringify({ id: req.id, result }) + '\n');
       return;
     }
@@ -384,7 +391,7 @@ class Owner {
       // Like an engine call: once the owner is stopping a bind or ticket call is not run (sent: false, so the client re-dials), and
       // one served before that is in inFlightCalls, so stop() lets its reply be written before it destroys the connection.
       if (this.stopped) {
-        return this._refuse(c, req, { code: 'E_OWNER_LOST', message: `the store owner is stopping, so ${req.method} was not run; the client re-runs it against the next owner`, detail: { method: req.method, sent: false, owner_stopping: true } });
+        return this._refuse(c, req, { code: 'E_OWNER_LOST', message: `the store owner is stopping, so ${req.method} was not run; the client re-runs it against the next owner`, detail: { method: req.method, sent: false, owner_stopping: true, owner_pid: process.pid, owner_token: this.lockToken } });
       }
       const call = Promise.resolve().then(() => (req.method.startsWith('ticket.') ? this.ticketCall(req.method, rest, caller) : this.bindCall(req.method, params, params.caller))).then(
         (result) => { if (!c.destroyed) c.write(JSON.stringify({ id: req.id, result }) + '\n'); },
@@ -405,7 +412,7 @@ class Owner {
     // Once the owner is stopping, a new call is not run: it could commit after stop() took its list of calls to answer and have its
     // reply destroyed. E_OWNER_LOST with sent: false is the answer a client already re-runs on the next owner (ADR 0033).
     if (this.stopped) {
-      return this._refuse(c, req, { code: 'E_OWNER_LOST', message: `the store owner is stopping, so ${req.method} was not run; the client re-runs it against the next owner`, detail: { method: req.method, sent: false, owner_stopping: true } });
+      return this._refuse(c, req, { code: 'E_OWNER_LOST', message: `the store owner is stopping, so ${req.method} was not run; the client re-runs it against the next owner`, detail: { method: req.method, sent: false, owner_stopping: true, owner_pid: process.pid, owner_token: this.lockToken } });
     }
     const call = Promise.resolve()
       .then(() => this.engine.handle(req.method, decodeWire(req.params || {})))

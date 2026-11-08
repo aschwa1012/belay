@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1'; // ADR 0034: a run here has no model to warm; the one suite that tests the warm-up opts in
 // run-close.test.cjs — ADR 0029 decisions 1, 3 and 4 through the built CLI: `belay run` waits for the
 // orchestrator's adapter to be gone, stops a worker still alive by its exact pid, and ends the run with the
@@ -14,6 +15,8 @@ const { spawn, spawnSync } = require('node:child_process');
 
 const H = require('./stop-helpers.cjs');
 const P = require('../../src/run/process.cjs');
+const { deadPid, stillRunning } = require('../helpers/dead-pid.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 
 const { ROOT, sleep, sandbox, cleanup, waitUntil, waitForFileLine, waitForExit, makeSpec, runCli, receiptOf, connectOrchestratorCore, readStoreCopy, releaseCore, currentRunRow } = H;
 const FAKE_CLAUDE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
@@ -66,16 +69,21 @@ async function s8Scenario({ stallSetupMs = 0 }) { // checks run before the sandb
     // The orchestrator's adapter: a process whose pid is the run row's adapter_pid, alive for a while yet.
     adapter = sleeper(30000);
     await core.run.attach({ adapter_pid: adapter.pid });
-    worker = sleeper(60000);
+    // A pid no process holds and none will be handed (tests/helpers/dead-pid.cjs). A real child the test killed frees its pid, which
+    // Windows hands out again within seconds under load; the close then finds a live pid whose identity it cannot prove, rightly
+    // refuses to kill it, and exits 1 ("still alive after its kill", seen once in a full suite).
+    const live = sleeper(60000); // the row must first be written over a live pid (the core refuses `running` over a dead one)
+    worker = { child: null, pid: deadPid() };
     const t = Date.now();
-    await core.worker.write({ id: 'w-s8', run_id: runId, substrate: 'claude-code', pid: worker.pid, pid_image: 'node.exe', state: 'running', worktree: wt, turns: 0, started_at: t });
-    await core.worker.write({ id: 'w-s8', state: 'stopping' });
+    await core.worker.write({ id: 'w-s8', run_id: runId, substrate: 'claude-code', pid: live.pid, pid_image: 'node.exe', state: 'running', worktree: wt, turns: 0, started_at: t });
+    // Then the row moves to the dead pid and the real child is killed at once, so no pid the host can hand out again is in the row.
+    await core.worker.write({ id: 'w-s8', state: 'stopping', pid: worker.pid });
+    require('../crash.cjs').crash(live.child);
     const seqBefore = workerRowCount(dataDir, 'w-s8');
     fs.writeFileSync(gate, 'go'); // setup is complete: now the orchestrator's turn may end
 
     assert.ok(await waitForFileLine(`${orchestratorDir}/stream.jsonl`, '"type":"result"', 120000), 'the orchestrator turn never ended');
-    // The shutdown is cut off: the worker is gone, and no final row will be written.
-    require('../crash.cjs').crash(worker.child);
+    // The shutdown is cut off: the worker is gone (its pid is dead from the start), and no final row will be written.
     // When the adapter's kill was issued, taken in this process at the call. Its own 'exit' event is not
     // a death time: on a saturated host the event reached the test seconds after the pid was gone
     // (w2-flakes/exit-lag-32.txt), so comparing the run's clock with the event's flaked.
@@ -117,7 +125,7 @@ function checkS8(r) {
 
   const w = workerRow(dataDir, 'w-s8');
   assert.strictEqual(w.state, 'dead');
-  assert.strictEqual(w.death_established_by, `run.end: pid ${worker.pid} not alive when the run ended; no adapter wrote its exit`);
+  assert.strictEqual(w.death_established_by, `run.end: a stop was in flight (the row was stopping) and pid ${worker.pid} was not alive when the run ended; no adapter wrote the exit that would say how it ended`);
   assert.strictEqual(w.head_sha, head);
   assert.ok(Number.isInteger(w.exited_at));
   assert.strictEqual(w.exit_code, null);
@@ -192,6 +200,7 @@ test('run close: a worker pid still alive when the run ends is killed by its exa
   try {
     core = await connectOrchestratorCore(dataDir, runId);
     worker = sleeper(120000);
+    const workerBornBy = Date.now(); // a live pid created after this is not the worker: the host hands a killed pid out again
     bystander = sleeper(120000); // a live process of the test's own: nothing may touch it
     // A running worker with no turn owed does not hold the idle close (orchestrator.cjs), so the run ends
     // around it with its pid alive.
@@ -201,7 +210,7 @@ test('run close: a worker pid still alive when the run ends is killed by its exa
     assert.ok(exited, `belay run did not exit; stderr: ${run.stderr.slice(-1500)}`);
     const receipt = receiptOf(run, exited.code);
     assert.strictEqual(exited.code, 0, `exit ${exited.code}; ended_by: ${receipt.ended_by}`);
-    assert.ok(!P.pidAlive(worker.pid), 'the surviving worker pid is still alive after the run');
+    assert.ok(!(await stillRunning(worker.pid, workerBornBy)), 'the surviving worker pid is still alive after the run');
     assert.ok(P.pidAlive(bystander.pid), 'a process the run never owned was killed');
     const wc = receipt.workers_closed;
     assert.strictEqual(wc.killed.length, 1);
@@ -215,7 +224,7 @@ test('run close: a worker pid still alive when the run ends is killed by its exa
     assert.strictEqual(w.state, 'dead');
     assert.match(w.death_established_by, /^run\.end: pid \d+ not alive when the run ended/);
     assert.strictEqual(w.head_sha, head);
-    assert.ok(await waitUntil(() => !P.pidAlive(run.proc.pid), 5000, 50));
+    assert.ok(await G.childExited(run.proc, { deadlineMs: 5000 }), 'the run process has not exited');
   } finally {
     await releaseCore(core);
     killIfAlive(worker && worker.child); killIfAlive(bystander && bystander.child);

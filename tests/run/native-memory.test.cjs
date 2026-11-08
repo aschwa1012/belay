@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // native-memory.test.cjs — ADR 0024 amendment 3 (proposed): the eval-only native_memory spawn lever. Settings with and without it,
 // checkSurface's exact-equality accept and every reject, and a relaunch keeping the folder. Driven over the fake executable.
 
@@ -14,6 +15,7 @@ const LC = require('../../src/run/lifecycle.cjs');
 const { createRunManager } = require('../../src/run/index.cjs');
 const { createFakeCore } = require('./fake-core.cjs');
 const { cleanup } = require('../core/helpers.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 
 const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(/\\/g, '/');
 const fwd = (p) => String(p).replace(/\\/g, '/');
@@ -224,6 +226,14 @@ test('readLaunchOptions: nothing is recovered from the worker-writable settings.
   } finally { cleanup(d); }
 });
 
+// A spawn returns before its creation time is read (pid-identity.cjs), on a snapshot that can take seconds on a busy host, and an adopter that meets the row still
+// pending refuses to kill by a guess (ADR 0039). These adopt-and-stop tests hold the read back and adopt once it lands, as an adapter that died later leaves it.
+const P = require('../../src/run/process.cjs');
+async function spawnLanded(m, core, spec, stallMs = 1500) {
+  const createdOf = P.createdOf; P.createdOf = (pid, o) => new Promise((r) => setTimeout(r, stallMs)).then(() => createdOf(pid, o));
+  const row = await m.spawn(spec).finally(() => { P.createdOf = createdOf; }); // the read is called inside the spawn
+  for (const end = Date.now() + 15000; core.currentWorker(spec.worker_id).pid_created == null; await new Promise((r) => setTimeout(r, 20))) assert.ok(Date.now() < end, `the creation time of pid ${row.pid} landed on the row`);
+  return row; }
 const alive = (pid) => { try { process.kill(pid, 0); return true; } catch (e) { return !!(e && e.code === 'EPERM'); } };
 const cfgWith = (d) => { const cfg = path.join(d, 'fake-config'); fs.mkdirSync(path.join(cfg, 'projects', 'p', 'memory'), { recursive: true }); return cfg; };
 
@@ -252,14 +262,14 @@ test('adopt: a second manager restarting a worker whose settings.json was edited
 test('adopt: a second manager stops a live worker whose settings.json was edited, and the pid goes', async () => {
   const sb = sandbox(); const core = createFakeCore(); const first = mgr(sb, core); let second = null;
   try {
-    const row = await first.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'w-stop' });
+    const row = await spawnLanded(first, core, { substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'w-stop' });
     const file = path.join(L.workerDir(sb.data, 'w-stop'), 'settings.json');
     fs.writeFileSync(file, JSON.stringify({ ...settingsOf(sb, 'w-stop'), autoMemoryEnabled: true, autoMemoryDirectory: sb.mem }));
     second = mgr(sb, core);
     assert.ok(alive(row.pid));
+    const rowId = await G.identify(row.pid);
     await second.stop({ worker_id: 'w-stop', mode: 'graceful', timeout_ms: 8000 });
-    for (let i = 0; i < 100 && alive(row.pid); i++) await new Promise((r) => setTimeout(r, 50));
-    assert.equal(alive(row.pid), false, 'a stop always goes through');
+    assert.ok(await G.waitGone(rowId, { deadlineMs: 5000, intervalMs: 50 }), 'a stop always goes through');
     assert.notEqual(core.currentWorker('w-stop').death_established_by, 'native_memory_settings_mismatch', 'a stop is not rewritten as a mismatch death');
   } finally { if (second) await second.shutdown().catch(() => {}); await first.shutdown().catch(() => {}); cleanup(sb.d); }
 });
@@ -427,12 +437,12 @@ test('adopt: a stop goes through even when the recorded folder is now refused by
   const sb = sandbox(); const core = createFakeCore(); const first = mgr(sb, core); let second = null; const prev = process.env.CLAUDE_CONFIG_DIR;
   process.env.FAKE_MEMORY_AUTO = 'echo';
   try {
-    const row = await first.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'w-badrec', native_memory: sb.mem });
+    const row = await spawnLanded(first, core, { substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'w-badrec', native_memory: sb.mem });
+    const rowId = await G.identify(row.pid);
     process.env.CLAUDE_CONFIG_DIR = fwd(sb.d); // the recorded folder now sits inside the config directory
     second = mgr(sb, core);
     await second.stop({ worker_id: 'w-badrec', mode: 'graceful', timeout_ms: 8000 });
-    for (let i = 0; i < 100 && alive(row.pid); i++) await new Promise((r) => setTimeout(r, 50));
-    assert.equal(alive(row.pid), false, 'a stop is never refused by the lever check');
+    assert.ok(await G.waitGone(rowId, { deadlineMs: 5000, intervalMs: 50 }), 'a stop is never refused by the lever check');
     await assert.rejects(second.restart({ worker_id: 'w-badrec', first_turn_timeout_ms: 45000 }), (e) => e.code === 'E_ARGS' && e.detail.reason === 'claude_config_dir', 'a launch is');
   } finally { if (prev === undefined) delete process.env.CLAUDE_CONFIG_DIR; else process.env.CLAUDE_CONFIG_DIR = prev; delete process.env.FAKE_MEMORY_AUTO; if (second) await second.shutdown().catch(() => {}); await first.shutdown().catch(() => {}); cleanup(sb.d); }
 });
@@ -442,14 +452,14 @@ test('adopt: a stop goes through when the recorded folder can no longer be creat
   process.env.FAKE_MEMORY_AUTO = 'echo';
   try {
     const mem = fwd(path.join(sb.d, 'parent', 'mem'));
-    const row = await first.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'w-enotdir', native_memory: mem });
+    const row = await spawnLanded(first, core, { substrate: 'claude-code', worktree: sb.worktree, prompt: 'hi', worker_id: 'w-enotdir', native_memory: mem });
     fs.rmSync(path.join(sb.d, 'parent'), { recursive: true, force: true });
     fs.writeFileSync(path.join(sb.d, 'parent'), 'a file where the folder\'s parent was'); // mkdir of the recorded folder now fails ENOTDIR
     second = mgr(sb, core);
     assert.ok(alive(row.pid));
+    const rowId = await G.identify(row.pid);
     await second.stop({ worker_id: 'w-enotdir', mode: 'graceful', timeout_ms: 8000 });
-    for (let i = 0; i < 100 && alive(row.pid); i++) await new Promise((r) => setTimeout(r, 50));
-    assert.equal(alive(row.pid), false, 'a stop always goes through, whatever the folder error');
+    assert.ok(await G.waitGone(rowId, { deadlineMs: 5000, intervalMs: 50 }), 'a stop always goes through, whatever the folder error');
     await assert.rejects(second.restart({ worker_id: 'w-enotdir', first_turn_timeout_ms: 45000 }), (e) => e.code === 'E_ARGS' && e.detail.reason === 'not_a_directory', 'a launch is refused, now before the create is tried');
   } finally { delete process.env.FAKE_MEMORY_AUTO; if (second) await second.shutdown().catch(() => {}); await first.shutdown().catch(() => {}); cleanup(sb.d); }
 });

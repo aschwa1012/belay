@@ -93,6 +93,6 @@ test('adopt: a dead row keeps its reported cost and tokens whole, and its cost b
     cost_estimate: { source: 'transcript_estimate', usd: 1.2, input_tokens: 10, output_tokens: 20, cache_read_tokens: 300, cache_creation_tokens: 7 },
   };
   const core = { worker: { async get() { return row; } } };
-  const w = await adopt({ core, workerId: 'wd', dataDir: fwd(d) });
+  const w = await adopt({ core, workerId: 'wd', runId: null, dataDir: fwd(d) });
   assert.deepStrictEqual([w.costUsd, w.costBase, w.inputTokens, w.outputTokens, w.cacheReadTokens, w.cacheCreationTokens], [4.2, 1.5, 110, 60, 1000, 7]);
 });

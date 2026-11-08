@@ -8,7 +8,7 @@ const assert = require('node:assert');
 const fs = require('node:fs');
 const path = require('node:path');
 const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
-const { makeRepo, git, write, commit, rejectsCode } = require('./worktree-helpers.cjs');
+const { makeRepo, git, write, commit, rejectsCode, stageRuns } = require('./worktree-helpers.cjs');
 
 const { openCore } = core('index.cjs');
 
@@ -18,6 +18,7 @@ before(async () => {
   dir = sandbox();
   orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
   await orch.run.attach({ adapter_pid: process.pid });
+  await stageRuns(`${dir}/data`, ["conflict", "cwd", "notboth", "remove", "twobases"]);
   op = await openCore({ dataDir: `${dir}/data`, caller: { role: 'operator', run_id: 'cli', pid: process.pid }, embed: false });
 });
 
@@ -72,7 +73,7 @@ test('a check that passes in each task\'s tree but fails on the merged result fa
   const notBoth = { argv: [process.execPath, '-e', "const f=require('fs');process.exit(f.existsSync('a.txt')&&f.existsSync('b.txt')?1:0)"] };
   const a = await doneTask(repo, { 'a.txt': 'a\n' }, [notBoth]);
   const b = await doneTask(repo, { 'b.txt': 'b\n' }, [notBoth]);
-  const row = await orch.integration.merge({ task_ids: [a.task.id, b.task.id], into: 'int/notboth' });
+  const row = await orch.integration.merge({ task_ids: [a.task.id, b.task.id], into: 'belay/integrate/notboth' });
   assert.strictEqual(row.state, 'evaluated');
   assert.strictEqual(row.passed, false);
   assert.strictEqual(row.checks[0].exit_code, 1);
@@ -84,7 +85,7 @@ test('a conflict stops the merge: aborted, the tree clean, the conflicting task 
   const a = await doneTask(repo, { 'base/keep.txt': 'from a\n' }, [exists('base/keep.txt')]);
   const b = await doneTask(repo, { 'base/keep.txt': 'from b\n' }, [exists('base/keep.txt')]);
   const c = await doneTask(repo, { 'c.txt': 'c\n' }, [exists('c.txt')]);
-  const row = await orch.integration.merge({ task_ids: [a.task.id, b.task.id, c.task.id], into: 'int/conflict' });
+  const row = await orch.integration.merge({ task_ids: [a.task.id, b.task.id, c.task.id], into: 'belay/integrate/conflict' });
   assert.strictEqual(row.state, 'conflict');
   assert.strictEqual(row.conflict.task_id, b.task.id);
   assert.deepStrictEqual(row.conflict.files, ['base/keep.txt']);
@@ -93,25 +94,30 @@ test('a conflict stops the merge: aborted, the tree clean, the conflicting task 
   assert.deepStrictEqual(row.merged.map((m) => m.task_id), [a.task.id], 'c was not tried');
   assert.deepStrictEqual(row.not_merged, [{ task_id: b.task.id, reason: 'conflict' }, { task_id: c.task.id, reason: 'not_tried' }]);
   // What landed before the conflict is checked, and only its own commands run: a's, never b's or c's.
-  assert.strictEqual(row.passed, true);
+  assert.strictEqual(row.passed, false, "a step that stopped on a conflict is not passed");
   assert.deepStrictEqual(row.checks.map((ch) => ch.task_ids), [[a.task.id]]);
   assert.strictEqual(git(row.worktree, 'status', '--porcelain'), '');
   assert.strictEqual(fs.readFileSync(path.join(row.worktree, 'base/keep.txt'), 'utf8'), 'from a\n');
   assert.strictEqual(git(row.worktree, 'rev-parse', 'HEAD'), row.head_sha);
 });
 
-test('the default branch is merged into only when named, in its own checkout, and only when that checkout is clean', async () => {
+test('the default branch is merged into only when named, and a clean checkout is not merged in: the merge is prepared beside it', async () => {
   const repo = makeRepo(dir);
   const a = await doneTask(repo, { 'a.txt': 'a\n' }, [exists('a.txt')]);
   write(repo, 'loose.txt', 'dirty\n');
   const e = await rejectsCode(orch.integration.merge({ task_ids: [a.task.id], into: 'main' }), 'E_PRECONDITION');
   assert.deepStrictEqual(e.detail.dirty, ['loose.txt']);
   fs.unlinkSync(path.join(repo, 'loose.txt'));
-  const row = await orch.integration.merge({ task_ids: [a.task.id], into: 'main' });
+  const before = git(repo, 'rev-parse', 'HEAD');
+  const row = await op.integration.merge({ task_ids: [a.task.id], into: 'main' });
   assert.strictEqual(row.state, 'evaluated');
-  assert.strictEqual(row.created_worktree, false);
-  assert.strictEqual(row.worktree, repo);
-  assert.ok(fs.existsSync(path.join(repo, 'a.txt')));
+  assert.strictEqual(row.applied, 'prepared');
+  assert.strictEqual(row.head_before, before);
+  assert.strictEqual(row.head_after, before, 'main did not move');
+  assert.strictEqual(git(repo, 'rev-parse', 'HEAD'), before);
+  assert.ok(!fs.existsSync(path.join(repo, 'a.txt')), 'the user checkout holds none of it');
+  assert.strictEqual(row.prepared.ff_command, `git merge --ff-only ${row.head_sha}`);
+  assert.ok(!fs.existsSync(row.worktree), 'the temporary tree is gone');
 });
 
 test('refusals: a task not done, a task with no branch, uncommitted work in a task tree, different bases with no base given', async () => {
@@ -130,8 +136,8 @@ test('refusals: a task not done, a task with no branch, uncommitted work in a ta
   write(repo, 'moved.txt', 'main moves\n');
   commit(repo, 'main moves');
   const b = await doneTask(repo, { 'b.txt': 'b\n' }, [exists('b.txt')]);
-  await rejectsCode(orch.integration.merge({ task_ids: [a.task.id, b.task.id], into: 'int/twobases' }), 'E_ARGS');
-  const row = await orch.integration.merge({ task_ids: [a.task.id, b.task.id], into: 'int/twobases', base: 'main' });
+  await rejectsCode(orch.integration.merge({ task_ids: [a.task.id, b.task.id], into: 'belay/integrate/twobases' }), 'E_ARGS');
+  const row = await orch.integration.merge({ task_ids: [a.task.id, b.task.id], into: 'belay/integrate/twobases', base: 'main' });
   assert.strictEqual(row.state, 'evaluated');
   assert.strictEqual(row.passed, true);
   await rejectsCode(orch.integration.merge({ task_ids: [] }), 'E_ARGS');
@@ -150,7 +156,7 @@ test('a command cwd inside the task\'s own worktree is moved to the same place i
   write(w.path, 'sub/s.txt', 's\n');
   commit(w.path, 'sub');
   assert.strictEqual((await orch.task.evaluate({ task_id: t.id })).state, 'done');
-  const row = await orch.integration.merge({ task_ids: [t.id], into: 'int/cwd' });
+  const row = await orch.integration.merge({ task_ids: [t.id], into: 'belay/integrate/cwd' });
   assert.strictEqual(row.checks[0].cwd, `${row.worktree}/sub`);
   assert.strictEqual(row.passed, true);
 });
@@ -158,13 +164,13 @@ test('a command cwd inside the task\'s own worktree is moved to the same place i
 test('integration.remove takes away a tree belay made, junction first; the branch stays', async () => {
   const repo = makeRepo(dir);
   const a = await doneTask(repo, { 'a.txt': 'a\n' }, [exists('a.txt')]);
-  const row = await orch.integration.merge({ task_ids: [a.task.id], into: 'int/remove' });
+  const row = await orch.integration.merge({ task_ids: [a.task.id], into: 'belay/integrate/remove' });
   await rejectsCode(orch.integration.remove({ id: row.id }), 'E_ROLE');
   const out = await op.integration.remove({ id: row.id });
   assert.ok(out.removed_at > 0);
   assert.strictEqual(out.removal.junctions_unlinked.length, 1);
   assert.ok(!fs.existsSync(row.worktree));
   assert.ok(fs.existsSync(path.join(repo, 'node_modules', 'dep', 'index.js')));
-  assert.strictEqual(git(repo, 'rev-parse', 'int/remove'), row.head_sha);
+  assert.strictEqual(git(repo, 'rev-parse', 'belay/integrate/remove'), row.head_sha);
   await rejectsCode(op.integration.remove({ id: row.id }), 'E_NOT_FOUND');
 });

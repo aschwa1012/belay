@@ -9,11 +9,18 @@ const { memoryText } = require('./run-levers.cjs');
 // written, in a directory that was never created. `receipt.receipt_path` is the path written, or
 // `null`, and the line prints only when it is not.
 function renderText(receipt) {
+  // A refusal fills an all-null orchestrator block: no process ever existed, so there is no pid, session,
+  // turn count or exit code to print. Say that, with the reason, rather than a row of "null".
+  const neverStarted = receipt.orchestrator.pid == null && receipt.orchestrator.session_id == null;
   const lines = [
     `run_id: ${receipt.run_id}`,
-    `orchestrator pid ${receipt.orchestrator.pid}, session ${receipt.orchestrator.session_id}, ${receipt.orchestrator.turns} turn(s)`,
-    `ended_by: ${receipt.ended_by}`,
-    `exit_code: ${receipt.orchestrator.exit_code}`,
+    ...(neverStarted
+      ? [`never started: ${receipt.ended_by}`]
+      : [
+        `orchestrator pid ${receipt.orchestrator.pid}, session ${receipt.orchestrator.session_id}, ${receipt.orchestrator.turns} turn(s)`,
+        `ended_by: ${receipt.ended_by}`,
+        `exit_code: ${receipt.orchestrator.exit_code}`,
+      ]),
     `holds: ${receipt.holds.length}`,
     `polls: ${receipt.polls}`,
   ];
@@ -32,7 +39,7 @@ function renderText(receipt) {
   else if (pl && pl.unchanged === false) lines.push(`plugin copy changed after spawn: ${(pl.changed_files || []).join(', ') || 'unreadable'}`); // ADR 0037 amendment 5 decision 4
   if (receipt.levers) {
     const rr = receipt.review_rounds === null ? `unknown (${receipt.review_rounds_reason})` : receipt.review_rounds;
-    lines.push(`levers: max_fix_rounds ${receipt.levers.max_fix_rounds}${receipt.levers.fix_hard_cap === undefined ? '' : `, fix_hard_cap ${receipt.levers.fix_hard_cap === null ? 'none' : `${receipt.levers.fix_hard_cap} (${receipt.levers.fix_hard_cap_source})`}`}, fix_cutoff ${receipt.levers.fix_cutoff}, on_embedder_failure ${receipt.levers.on_embedder_failure}${receipt.levers.max_parallel_evaluations ? `, max_parallel_evaluations ${receipt.levers.max_parallel_evaluations}` : ''}${memoryText(receipt.levers)}; review_rounds: ${rr}`);
+    lines.push(`levers: max_fix_rounds ${receipt.levers.max_fix_rounds}${receipt.levers.max_follow_ups !== undefined ? `, max_follow_ups ${receipt.levers.max_follow_ups}` : ''}${receipt.levers.fix_hard_cap === undefined ? '' : `, fix_hard_cap ${receipt.levers.fix_hard_cap === null ? 'none' : `${receipt.levers.fix_hard_cap} (${receipt.levers.fix_hard_cap_source})`}`}, fix_cutoff ${receipt.levers.fix_cutoff}, on_embedder_failure ${receipt.levers.on_embedder_failure}${receipt.levers.max_parallel_evaluations ? `, max_parallel_evaluations ${receipt.levers.max_parallel_evaluations}` : ''}${memoryText(receipt.levers)}; review_rounds: ${rr}`);
   }
   lines.push(...RI.embedderLines(receipt), ...require('../run/review-scratch.cjs').lines(receipt), ...require('./run-trees.cjs').lines(receipt), ...require('./run-checks.cjs').lines(receipt)); // ADR 0054 amendment 1: what the close removed
   if (receipt.receipt_path) lines.push(`receipt: ${receipt.receipt_path}`);

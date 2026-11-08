@@ -23,6 +23,7 @@ const rerankTier = { profile: 'custom', embedder: RP.NANO, reranker: RR4, device
 const heavyTier = { profile: 'custom', embedder: EMB4, reranker: null, device: 'gpu', depth: 0 };
 const docs = [{ id: 'a', text: 'lunch order for friday' }, { id: 'b', text: 'stop a worker process by its pid' }, { id: 'c', text: 'worker pid list' }];
 const { waitGone: gone } = require('../helpers/wait.cjs');
+const G = require('../helpers/proc-gone.cjs'); // waitGone takes the identity of a process taken while it lived: a bare pid may be handed to another process (ADR 0039)
 
 test('the owner builds the GPU rerank provider on the first get, once, and a non-owner never does', async () => {
   assert.strictEqual(RPV.get(rerankTier), null, 'no owner fact, nothing built');
@@ -63,8 +64,9 @@ test('one child holds the reranker and the embedder, and closeAll closes it', as
   assert.strictEqual(ping.ok, true);
   assert.deepStrictEqual([...ping.models].sort(), [EMB4, RR4].sort(), 'both models are loaded in the one child');
   assert.ok(pidAlive(pid));
+  const id = await G.identify(pid);
   await RPV.closeAll();
-  assert.ok(await gone(pid), 'closing the rerank providers closed the shared GPU child');
+  assert.ok(await gone(id), 'closing the rerank providers closed the shared GPU child');
   assert.strictEqual(GS.isOpen(), false);
   assert.strictEqual(RPV.get(rerankTier), null, 'a closed provider is forgotten');
 });
@@ -74,8 +76,9 @@ test('the embed providers closeAll closes the shared child too, and both are saf
   const e = EP.get(heavyTier, { owner: true });
   await e.embedQuery('hello');
   const pid = GS.client().pid;
+  const id = await G.identify(pid);
   await EP.closeAll();
-  assert.ok(await gone(pid));
+  assert.ok(await gone(id));
   await EP.closeAll();
   await RPV.closeAll();
   assert.strictEqual(EP.get(heavyTier), null);

@@ -139,11 +139,11 @@ function deathText(event) {
   return full + POINTER;
 }
 
-// No worker turn text, ever: the id, the turn and (for a death) the exit facts are the whole of it (pre_close: see pre-close-wake.cjs).
+// No worker output, ever, except a review hand-back's verdict, counts, finding titles and a cut summary (review-wake.cjs); otherwise ids and facts (pre_close: see pre-close-wake.cjs).
 // Both shapes stay comfortably under 400 bytes for any id this codebase generates.
 // A wake never names idle workers: worker_wait's answer does (idle-remind.cjs).
 function wakeText(event) {
-  if (event.event === 'note_refuted' || event.event === 'scrub_alarm' || event.event === 'evaluated' || event.event === 'pre_close') return event.text; // evaluated: release-eval.cjs, facts only // note-wake.cjs: belay's own record, built from the core's facts
+  if (event.event === 'note_refuted' || event.event === 'scrub_alarm' || event.event === 'evaluated' || event.event === 'pre_close' || event.event === 'budget_pause') return event.text; // evaluated: release-eval.cjs, facts, and for a review its quoted words (review-wake.cjs) // note-wake.cjs: belay's own record, built from the core's facts
   if (event.event === 'death') return deathText(event);
   // build step 6f, decision 3's own words, ids and facts only (ADR 0015 §2): no worker output.
   if (event.event === 'paused') {

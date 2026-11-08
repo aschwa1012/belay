@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // park-5.test.cjs — build step 6i, hygiene: four carried
 // pause findings each get a test that can fail against the unchanged code (a planted revert must turn
 // it red). (h1) drives wake.cjs's `diffWorkers` directly, pure and store-free, the way wake.test.cjs

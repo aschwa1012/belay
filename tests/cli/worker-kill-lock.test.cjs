@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1';
 // worker-kill-lock.test.cjs — `belay worker kill` takes the kill lock (src/core/process.cjs withKillLock) around its kill, as every
 // other kill site does. In process: the lock and the kill are wrapped by spies, the row's pid is a sleeper this test spawned with a

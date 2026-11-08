@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1'; // ADR 0034: a run here has no model to warm
 // run-register.test.cjs — ADR 0045 decision 4, the headless orchestrator's record in the machine-wide spawn register. A register
 // that cannot be written must not leave the orchestrator running unrecorded: another store's owner would take its descendants for
@@ -11,14 +12,14 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const P = require('../../src/run/process.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 const { sandbox, cleanup, makeSpec } = require('./stop-helpers.cjs');
 
 const ROOT = path.resolve(__dirname, '..', '..').split(path.sep).join('/');
 const CLI = `${ROOT}/src/cli/belay.cjs`;
 const FAKE_CLAUDE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
 
-test('run: a headless orchestrator that cannot be recorded in the spawn register is ended before its prompt and the run fails', () => {
+test('run: a headless orchestrator that cannot be recorded in the spawn register is ended before its prompt and the run fails', async () => {
   const dir = sandbox();
   const dataDir = `${dir}/.belay`;
   const { specPath, runId, orchestratorDir } = makeSpec(dir, { startup_timeout_ms: 30000 });
@@ -34,7 +35,8 @@ test('run: a headless orchestrator that cannot be recorded in the spawn register
     assert.match(receipt.ended_by, /could not be recorded in the spawn register/, receipt.ended_by);
     assert.ok(!receipt.attach, 'the run was attached to an unrecorded orchestrator: ' + JSON.stringify(receipt.attach));
     assert.ok(Number.isInteger(receipt.orchestrator.pid), JSON.stringify(receipt.orchestrator));
-    assert.strictEqual(P.pidAlive(receipt.orchestrator.pid), false, 'the unrecorded orchestrator is still running');
+    // The creation time is the one the run read right after spawning it (ADR 0039); the number alone could now belong to another process.
+    await G.assertGone(G.recorded(receipt.orchestrator.pid, receipt.orchestrator.pid_created), 'the unrecorded orchestrator is still running');
     // the prompt never reached it: a stream-json session answers a user message with a system/init event, and there is none
     const stream = fs.readdirSync(orchestratorDir).filter((n) => /stream/.test(n)).map((n) => fs.readFileSync(`${orchestratorDir}/${n}`, 'utf8')).join('');
     assert.ok(!/"type":"system"/.test(stream), `the orchestrator answered a prompt: ${stream.slice(0, 300)}`);

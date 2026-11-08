@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // park-4.test.cjs — build step 6f-2, closing what both
 // second reviews found in the merged pause: a turn still in the pipe beats the exit (r7, worker.cjs:318,
 // rebuilt at build step 6i design item 7c against a synthetic child — C1); a stale row carrying this

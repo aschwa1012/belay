@@ -56,10 +56,10 @@ test('a retired record closes at its last-seen time, never at the time it is rea
   assert.strictEqual(SR.live({ snap, now: NOW, boot: BOOT }).length, 0);
   const closed = SR.tombstones().filter((t) => t.pid === 4100);
   assert.strictEqual(closed.length, 0, 'its own tombstone is dropped after the refresh');
-  // The same, read directly through the register: the tombstone's until is the stamp.
+  // The same, read directly through the register: the tombstone's until is two stamp periods past the stamp (a skipped tick, or a
+  // harness killed between ticks), never the time of the read.
   putRecord(dir, { pid: 4101, created: spawned, at: spawned + 100, seen_at: spawned + 600000 });
   SR.live({ snap: snapOf({}), now: NOW, boot: BOOT });
-  // touch skips within one refresh interval, so a stamped process can live two past its last stamp: the lifetime closes there (never earlier).
   assert.strictEqual(tomb(4101).until, spawned + 600000 + 2 * SR.SEEN_REFRESH_MS);
   putRecord(dir, { pid: 4102, created: spawned, at: spawned + 100 });
   SR.live({ snap: snapOf({}), now: NOW, boot: BOOT });
@@ -114,9 +114,15 @@ test('retire closes a dead pid\'s record at the later of its stamp and the row\'
   assert.strictEqual(SR.retire(process.pid, NOW), false, 'a pid that still answers is not retired');
   assert.ok(fs.existsSync(path.join(dir, `${process.pid}.json`)));
   assert.strictEqual(SR.retire(d1, NOW, t + 90000), true);
-  // The row's last event (t + 90000) is later than the stamp plus two refresh intervals (t + 61000), so it sets the close.
-  assert.strictEqual(tomb(d1).until, t + 90000);
+  assert.strictEqual(tomb(d1).until, t + 90000, 'the row\'s last event is later than the stamp');
   putRecord(dir, { pid: d2, created: t, at: t + 100 });
   SR.retire(d2, t + 50, t + 90000);
   assert.strictEqual(tomb(d2).until, t + 50, 'never later than the time of the close');
+}));
+
+test('touch stamps once the last stamp is 30 s old, so a tick a moment early is skipped and the gap between stamps can reach two timer periods', () => withRegistry((dir) => {
+  const t = NOW - HOUR;
+  putRecord(dir, { pid: 4500, created: t, at: t, seen_at: t });
+  assert.strictEqual(SR.touch(4500, t + 29999), false, 'under 30 s: skipped');
+  assert.strictEqual(SR.touch(4500, t + 30000), true, 'exactly one timer period later: written');
 }));

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // release-eval-queued.test.cjs — a wake's evaluation clause says when a failing command ran beside other evaluations, and when
 // an evaluation waited for a slot under max_parallel_evaluations.
 

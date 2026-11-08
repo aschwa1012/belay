@@ -13,8 +13,9 @@ function notMerged(r) {
   if (r.state === 'merging' || r.state === 'abandoned') return null;
   const landed = new Set((r.merged || []).map((m) => m.task_id));
   const stop = (r.conflict && r.conflict.task_id) || (r.error && r.error.task_id) || null;
+  const prepared = new Set((r.prepared && r.prepared.task_ids) || []); // a merge belay built for the user to take: not merged yet
   return (r.task_ids || []).filter((id) => !landed.has(id))
-    .map((task_id) => ({ task_id, reason: task_id !== stop ? 'not_tried' : r.conflict ? 'conflict' : 'failed' }));
+    .map((task_id) => ({ task_id, reason: prepared.has(task_id) ? 'prepared' : task_id !== stop ? 'not_tried' : r.conflict ? 'conflict' : 'failed' }));
 }
 
 // A `merging` row whose recorded process is gone. A read cannot tell a reused pid from the owner, so a live pid reads not stale;

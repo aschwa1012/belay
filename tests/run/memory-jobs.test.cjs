@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-jobs.test.cjs — ADR 0041 decisions 4 to 6 and ADR 0043 decision 2: the work after a turn and at a
 // run's end. A spy core records every call; no process, store or model is involved.
 
@@ -138,6 +139,51 @@ test('usage: a delta across turns, a new row per turn, and a fresh delta for a n
   assert.strictEqual(core.usageRows.length, 5);
 });
 
+test('usage: a fresh session after a restart writes its own cost, not the row total that carries the earlier sessions (cost_base)', async () => {
+  const core = spyCore();
+  const ctx = mkCtx(core, lv({ cost_ledger: true }));
+  const w = worker();
+  const turn = async (over) => { Object.assign(w, over); MJ.afterTurn(w, ctx, {}); await flush(w); };
+  await turn({ turns: 1, costUsd: 0.50 });
+  await turn({ turns: 2, costUsd: 0.75 });
+  await turn({ turns: 3, costUsd: 0.75 + 0.10, costBase: 0.75, pid: 200 }); // restart on the replace branch: the session's total restarts at zero, the row adds the base
+  await turn({ turns: 4, costUsd: 0.75 + 0.30, costBase: 0.75, pid: 200 });
+  assert.deepStrictEqual(core.usageRows.map((r) => Number(r.cost_usd.toFixed(4))), [0.5, 0.25, 0.1, 0.2]);
+  assert.strictEqual(Number(core.usageRows.reduce((n, r) => n + r.cost_usd, 0).toFixed(4)), 1.05, 'the ledger sums to the row cost, nothing twice');
+});
+
+test('usage: a resume of the same session carries its total, so the new process writes only the difference', async () => {
+  const core = spyCore();
+  const ctx = mkCtx(core, lv({ cost_ledger: true }));
+  const w = worker();
+  const turn = async (over) => { Object.assign(w, over); MJ.afterTurn(w, ctx, {}); await flush(w); };
+  await turn({ turns: 1, costUsd: 0.50 });
+  await turn({ turns: 2, costUsd: 0.75 });
+  await turn({ turns: 3, costUsd: 0.85, pid: 200 }); // a park and resume: new process, same session, the reported total carries
+  assert.deepStrictEqual(core.usageRows.map((r) => Number(r.cost_usd.toFixed(4))), [0.5, 0.25, 0.1]);
+  assert.deepStrictEqual(core.usageRows.map((r) => r.cost_basis), ['delta-of-cumulative', 'delta-of-cumulative', 'delta-of-cumulative']);
+});
+
+test('usage: a counter that restarts lower after a replace counts its own total, not the carried base again', async () => {
+  const core = spyCore();
+  const ctx = mkCtx(core, lv({ cost_ledger: true }));
+  const w = worker();
+  const turn = async (over) => { Object.assign(w, over); MJ.afterTurn(w, ctx, {}); await flush(w); };
+  await turn({ turns: 1, costUsd: 0.75 });
+  await turn({ turns: 2, costUsd: 0.85, costBase: 0.75, pid: 200 }); // a replace: the session's total 0.10 on top of the base
+  await turn({ turns: 3, costUsd: 0.80, costBase: 0.75, pid: 300 }); // a resume whose session did not carry: the counter restarts at 0.05
+  assert.deepStrictEqual(core.usageRows.map((r) => Number(r.cost_usd.toFixed(4))), [0.75, 0.1, 0.05]);
+  assert.strictEqual(core.usageRows[2].cost_basis, MJ.NEW_PROCESS);
+});
+
+test('usage: an adopted worker starts from the cost its row recorded, so the ledger does not take it again', async () => {
+  const core = spyCore();
+  const ctx = mkCtx(core, lv({ cost_ledger: true }));
+  const w = worker({ turns: 2, costUsd: 0.75, adoptedLedger: { cost: 0.75, turns: 2 }, pid: 300 });
+  await (async () => { Object.assign(w, { turns: 3, costUsd: 0.85 }); MJ.afterTurn(w, ctx, {}); await flush(w); })();
+  assert.deepStrictEqual(core.usageRows.map((r) => [r.turn, Number(r.cost_usd.toFixed(4)), r.cost_basis]), [[3, 0.1, 'delta-of-cumulative']]);
+});
+
 test('usage: a snapshot is taken when the turn ends, so a later turn_end does not change the row', async () => {
   const core = spyCore();
   const ctx = mkCtx(core, lv({ cost_ledger: true }));
@@ -163,19 +209,34 @@ test('usage: Codex rows carry no dollars and the cached subset moves to cache_re
   assert.strictEqual(core.usageRows[1].cost_usd, 0.2);
 });
 
-test('usage: a failed row is an ok:0 event naming the code, and the next row carries the cost the failed one lost', async () => {
+test('usage: a refused row (never committed) is an ok:0 event naming the code, and the next row carries the cost the failed one lost', async () => {
   let failNext = true;
-  const core = spyCore({ fail: { 'usage.record': () => { if (failNext) { failNext = false; return failing('E_TIMEOUT', 'owner slow'); } return null; } } });
+  const core = spyCore({ fail: { 'usage.record': () => { if (failNext) { failNext = false; return failing('E_ARGS', 'refused'); } return null; } } });
   const ctx = mkCtx(core, lv({ cost_ledger: true }));
   const w = worker({ turns: 1, costUsd: 0.01 });
   MJ.afterTurn(w, ctx, {}); await flush(w);
   assert.strictEqual(core.usageRows.length, 0);
   const ev = core.events.find((e) => e.kind === 'usage');
-  assert.ok(ev && ev.ok === 0 && ev.code === 'E_TIMEOUT');
+  assert.ok(ev && ev.ok === 0 && ev.code === 'E_ARGS');
   Object.assign(w, { turns: 2, costUsd: 0.03 });
   MJ.afterTurn(w, ctx, {}); await flush(w);
   assert.strictEqual(core.usageRows.length, 1);
   assert.strictEqual(core.usageRows[0].cost_usd, 0.03);
+});
+
+test('usage: a timed-out row that may have committed is not re-sent and its cost is not carried into the next row', async () => {
+  let failNext = true;
+  const lost = () => Object.assign(failing('E_TIMEOUT', 'owner slow'), { detail: { may_have_committed: true } });
+  const core = spyCore({ fail: { 'usage.record': () => { if (failNext) { failNext = false; return lost(); } return null; } } });
+  const ctx = mkCtx(core, lv({ cost_ledger: true }));
+  const w = worker({ turns: 1, costUsd: 0.01 });
+  MJ.afterTurn(w, ctx, {}); await flush(w);
+  const ev = core.events.find((e) => e.kind === 'usage');
+  assert.ok(ev && ev.ok === 0 && ev.code === 'E_TIMEOUT' && /outcome unknown/.test(ev.message));
+  Object.assign(w, { turns: 2, costUsd: 0.03 });
+  MJ.afterTurn(w, ctx, {}); await flush(w);
+  assert.strictEqual(core.usageRows.length, 1);
+  assert.ok(Math.abs(core.usageRows[0].cost_usd - 0.02) < 1e-9);
 });
 
 test('summary: written once per (task, worker) under concurrent turns, labelled, never the worker\'s words', async () => {

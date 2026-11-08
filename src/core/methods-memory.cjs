@@ -247,11 +247,20 @@ async function store(E, caller, args) {
     run_id: caller.run_id, task_id: worker ? derivedTask(E, caller) : (task_id ?? turnTask ?? null), turn: worker ? null : (turn ?? null),
     source: source || (caller.role === 'operator' ? 'operator' : 'model'),
   };
-  const a = embed === false ? base : await withEmbedding(E, base, 'embedding', 'text', caller);
+  // Under keyword in a run an embedder failure never loses the write (a model's row, a harness turn row): it is stored without a vector,
+  // found by keyword search, and the result says so; the guard has recorded the failure (withEmbedding). Elsewhere the failure stands.
+  let a = base, unembedded = null;
+  if (embed !== false) {
+    try { a = await withEmbedding(E, base, 'embedding', 'text', caller); } catch (e) {
+      if (!(e && e.detail && e.detail.embedder === true && runEmbedderMode(E, caller).source === 'guard' && E.embedderMode() === 'keyword')) throw e;
+      unembedded = { code: e.code, message: e.message };
+    }
+  }
   E.assertRunOpen(caller, 'memory.store'); // the embedding was awaited above; run.end may have committed meanwhile (audit D42)
   const row = E.store.store(a);
   E.noteWrite();
-  return withLasting(E, caller, namespace, row);
+  const out = withLasting(E, caller, namespace, row);
+  return unembedded && out && out.has_embedding === false ? { ...out, embedded: false, embedder_failure: unembedded, note: 'stored without a vector (on_embedder_failure keyword): found by keyword search only' } : out;
 }
 
 // ADR 0057 decision 8 (C8): the default namespace is the run's scratch. A model's write there, in a run with a project whose rows are not promoted
@@ -280,6 +289,11 @@ async function del(E, caller, args) {
     if (r && (r.type === 'note' || isReserved(r.namespace))) throw err('E_ROLE', `row ${args.id} is a ${r.type === 'note' ? 'note' : `row of ${r.namespace.split('/')[0]}/`}, and only the operator deletes those (an archived note leaves only by the operator's purge)`, { id: args.id, role: caller.role });
   }
   checkOwnRow(E, caller, args.id, 'delete');
+  if (caller.role === 'orchestrator') {
+    // The orchestrator's tool-channel delete reaches only the rows it may write: its own run, its own project and its own summary.
+    const t = E.store.p('SELECT namespace FROM memory_entries WHERE id = ?').get(args.id);
+    if (t) checkOrchestratorWrite(E, caller, t.namespace, t.namespace.startsWith('summary/') ? 'summary' : undefined);
+  }
   const r = E.store.delete(args.id);
   E.noteWrite();
   return r;
@@ -302,11 +316,12 @@ async function stats(E, caller) {
 // it reports the same cause.
 async function warm(E, caller, args = {}) {
   const o = E.owner;
-  if ((args.reload || args.retry) && o && o.resetEmbedder) await o.resetEmbedder();
+  const reload = !!(args.reload || args.retry);
+  const reloaded = reload && o && o.resetEmbedder ? (await o.resetEmbedder()) === true : false; // true only when a failed embedder was cleared
   const p = E.getEmbedder();
   if (args.wait) await p; else p.catch(() => { /* reported by state and error below */ });
   const state = o && o.embedState ? o.embedState() : 'unknown';
-  return { state, pid: o && o.embedInfo ? o.embedInfo.pid : null, error: o && o.embedError ? o.embedError : null, rerankers: require('./retrieval-warm.cjs').warmList(E) };
+  return { state, pid: o && o.embedInfo ? o.embedInfo.pid : null, error: o && o.embedError ? o.embedError : null, ...(reload ? { reloaded } : {}), rerankers: require('./retrieval-warm.cjs').warmList(E) };
 }
 
 module.exports = { leversOf, runAlpha, store, delete: del, stats, warm, nsFor, resolveNamespace, projectOf, withEmbedding, notifyEmbedderFailure, adviseEmbedderFailure, reachOf, checkReach, runEmbedderMode, scrub };

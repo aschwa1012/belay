@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // orchestrator-leftovers.test.cjs — ADR 0054 amendment 2: what a headless orchestrator's shell left running is ended once the run's
 // own close is done, by exact pid after its identity is checked again. The orchestrator's MCP adapter, the workers belay spawned
 // (the spawn register) and their subtrees are belay's own and are never taken.
@@ -15,6 +16,7 @@ const SR = require('../../src/core/spawn-register.cjs');
 const { createFakeCore } = require('./fake-core.cjs');
 const { cleanup } = require('../core/helpers.cjs');
 const P = require('../../src/run/process.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 
 const fwd = (p) => String(p).split(path.sep).join('/');
 const FAKE = fwd(path.join(__dirname, 'fakes', 'fake-claude.cjs'));
@@ -71,6 +73,7 @@ test("at the close the shell's stray process is ended; the adapter, a spawned wo
     const registered = await pidFrom(f('registered.pid'));
     kids.push(stray, adapter, adaptersWorker, registered);
     assert.strictEqual(P.pidAlive(stray), true, "nothing is ended before the run's own close is done");
+    const strayId = await G.identify(stray);
     assert.strictEqual(typeof result.endLeftovers, 'function');
     assert.strictEqual(Object.keys(result).includes('endLeftovers'), false, 'and the function is not part of the receipt');
 
@@ -80,7 +83,7 @@ test("at the close the shell's stray process is ended; the adapter, a spawned wo
       assert.ok(!l.found.includes(pid), `${name} is not taken`);
       assert.strictEqual(P.pidAlive(pid), true, `${name} is still running`);
     }
-    assert.strictEqual(P.pidAlive(stray), false);
+    await G.assertGone(strayId, `the shell's stray process (pid ${stray}) is still alive after the leftovers were ended`);
   } finally {
     for (const k of KNOBS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
     for (const pid of [...kids, other.pid]) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
@@ -142,4 +145,23 @@ test('a captured stray that exited (absent) or whose pid was reused (mismatch) i
   assert.deepStrictEqual([...r.gone].sort(), [900001, 900002, 900003]);
   assert.deepStrictEqual(r.refused.map((x) => x.pid), [900004]);
   assert.deepStrictEqual(r.killed, []);
+});
+
+test('the register is judged against the snapshot the capture took, and the read writes nothing', async () => {
+  const fs = require('node:fs'); const os = require('node:os'); const path = require('node:path');
+  const SRg = require('../../src/core/spawn-register.cjs');
+  const keep = process.env.BELAY_SPAWN_REGISTRY;
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-leftovers-reg-'));
+  process.env.BELAY_SPAWN_REGISTRY = dir;
+  try {
+    const boot = SRg.bootMs();
+    // a record from before the boot whose pid (this process) is now a stranger's: the bare read lists it and hides its subtree
+    fs.writeFileSync(path.join(dir, `${process.pid}.json`), JSON.stringify({ pid: process.pid, created: null, kind: 'orchestrator', data_dir: null, worker_id: null, spawned_at: boot - 36e5, by_pid: 1, at: boot - 36e5 + 500 }));
+    const before = fs.readFileSync(path.join(dir, `${process.pid}.json`), 'utf8');
+    const snap = new Map([[process.pid, { ppid: 1, created: Date.now() - 1000, image: 'node.exe' }]]);
+    const core = { run: { list: async () => ({ runs: [{ id: 'r1', adapter_pid: 4242, adapter_pid_created: 5 }] }) } };
+    const { list } = await require('../../src/run/orchestrator-leftovers.cjs').ownedProcesses(core, 'r1', snap);
+    assert.deepStrictEqual(list.map((o) => o.pid), [4242], 'only the run row\'s adapter: the stale record is not owned');
+    assert.strictEqual(fs.readFileSync(path.join(dir, `${process.pid}.json`), 'utf8'), before, 'and the record is untouched');
+  } finally { process.env.BELAY_SPAWN_REGISTRY = keep; fs.rmSync(dir, { recursive: true, force: true }); }
 });

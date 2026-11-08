@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // lifecycle-env.cjs — shared scaffolding for the notes lifecycle tests (scrubApply, reviewApply, restore, purge). Not a
 // *.test.cjs file, so the runner does not execute it. A real Engine over a stamped store in a sandbox, a tiny git
 // repository for the citation check, and notes written straight into the project namespace with stored vectors.

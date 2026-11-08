@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // bind-launch.test.cjs — ADR 0045 decision 2, the spawning side: every launch of an adapter binds it first. The run manager asks the
 // core for a bind, writes its pipe name into the worker's mcp.json as --bind, and a restart opens a fresh one and revokes the last;
 // a core that cannot open a bind fails the launch E_BIND and nothing starts. The orchestrator's files carry its bind the same way.
@@ -15,6 +16,7 @@ const L = require('../../src/run/launch.cjs');
 const BL = require('../../src/run/bind-launch.cjs');
 const { createFakeCore } = require('./fake-core.cjs');
 const { cleanup } = require('../core/helpers.cjs');
+const G = require('../helpers/proc-gone.cjs'); // a child the test holds is gone when its handle says it exited, never by a bare pid (ADR 0039)
 
 const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(/[\\]/g, '/');
 const USER_SETTINGS = path.join(__dirname, 'fixtures', 'user-settings.json');
@@ -150,7 +152,7 @@ test('a stop that lands while a Codex message awaits its bind wins: the launch i
     assert.strictEqual(r.err.code, 'E_SUBSTRATE');
     assert.strictEqual(r.err.detail.reason, 'stopped_during_launch');
     assert.strictEqual(w.launches, launches, 'no process was started');
-    assert.ok(!w.child || !alive(w.pid), 'no live process of the worker');
+    assert.ok(!w.child || await G.childExited(w.child, { deadlineMs: 5000 }), 'no live process of the worker'); // the handle: w.pid is the previous turn\'s number, which may now belong to another process
     assert.notStrictEqual(core.currentWorker('w-race').state, 'running', 'no running row was written after the stop');
     assert.strictEqual(log.opened.length, opened + 1, 'the launch did open its bind');
     assert.strictEqual(log.opened.length, 2, 'the spawn and the message each opened one');

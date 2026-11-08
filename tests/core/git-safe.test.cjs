@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 // git-safe.test.cjs — the core's reads of a worker's tree (files_within_owned's status, the review tree snapshot) use the
 // same hardening as git_read: a repository whose config names an fsmonitor program and a clean filter runs neither, and an
@@ -74,21 +75,20 @@ test('an inherited GIT_DIR is dropped: the read is of the worktree, not the dire
   } finally { p.rm(); fs.rmSync(other, { recursive: true, force: true }); }
 });
 
-test('the system core keys that run nothing come back in the one system read: fscache to every read, line endings and symlinks to a content hash', async () => {
+test('the system core keys that run nothing come back in the one scope-tagged read: fscache to every read, line endings and symlinks to a content hash', async () => {
   const seen = [];
-  const sys = ['filter.lfs.clean\ngit-lfs clean -- %f', 'core.fscache\ntrue', 'core.autocrlf\ntrue', 'core.symlinks\nfalse', 'core.safecrlf\nwarn'].join('\0') + '\0';
+  const sys = [['system', 'filter.lfs.clean\ngit-lfs clean -- %f'], ['system', 'core.fscache\ntrue'], ['system', 'core.autocrlf\ntrue'], ['system', 'core.symlinks\nfalse'], ['system', 'core.safecrlf\nwarn']].map(([s, e]) => `${s}\0${e}\0`).join('');
   const run = async (g, argv, opts) => {
     seen.push({ argv, system: !!opts.system });
-    if (!opts.system) return { code: 1, out: Buffer.alloc(0), total: 0, kept: 0, errTail: '' }; // no filter key outside the system config
     const out = Buffer.from(sys, 'utf8');
     return { code: 0, out, total: out.length, kept: out.length, errTail: '' };
   };
   assert.deepStrictEqual(await GS.filterOverrides(run, 'git', '.', {}, 1000), ['-c', 'filter.lfs.clean=git-lfs clean -- %f', '-c', 'core.fscache=true']);
-  assert.strictEqual(seen.length, 2, 'two git config calls, as before the core keys');
+  assert.strictEqual(seen.length, 1, 'one git config call');
   assert.deepStrictEqual(await GS.filterOverrides(run, 'git', '.', {}, 1000, { lineEndings: true }),
     ['-c', 'filter.lfs.clean=git-lfs clean -- %f', '-c', 'core.fscache=true', '-c', 'core.autocrlf=true', '-c', 'core.symlinks=false', '-c', 'core.safecrlf=warn']);
   const asked = new RegExp(seen[0].argv[seen[0].argv.length - 1]);
-  assert.ok(seen[0].system && seen[0].argv.includes('--system'));
+  assert.ok(seen[0].system && seen[0].argv.includes('--show-scope'), 'the system config is on, and entries carry their scope');
   for (const k of ['filter.lfs.clean', 'core.fscache', 'core.autocrlf', 'core.eol', 'core.safecrlf', 'core.symlinks']) assert.ok(asked.test(k), `the system read asks for ${k}`);
   assert.ok(!asked.test('core.fsmonitor') && !asked.test('core.hookspath') && !asked.test('core.fscachex'), 'never a key that runs a program, nor a longer name');
 });

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // memory-k2-review-fixes.test.cjs — the second-look fixes of the note lifecycle: an unsupported hold's file cite is read at the hold's own head,
 // a chain of merges and a restore keep each note's own deliveries, the archive of a superseder names every note that left with it, a
 // write-time hold keeps its writer's head, and the recorded-match guard fails a one-line mutation of each of its clauses.

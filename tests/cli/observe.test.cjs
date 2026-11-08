@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // observe.test.cjs — build step 4b, amended by the
 // orchestrator's Amendment section (B1, B3, B4, B5). Drives the built CLI's `tasks` and `briefing`
 // as subprocesses, with the scaffolding of tests/cli/status.test.cjs and tests/cli/stop-helpers.cjs.

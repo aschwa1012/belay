@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // park.test.cjs — build step 6e-4, ADR 0023 amendment 2, a
 // real RunManager over tests/run/fakes/fake-claude.cjs (fake-claude-with-child.cjs for p4/p12, fake-codex.cjs
 // for p6), with tests/run/fake-core.cjs standing in for the store. Replaces pause.test.cjs/pause-bg.test.cjs.
@@ -13,6 +14,7 @@ const { cleanup } = require('../core/helpers.cjs');
 const { Client } = require('../../src/core/client.cjs');
 const { createParser } = require('../../src/run/parsers.cjs');
 const P = require('../../src/run/process.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 
 const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(/\\/g, '/');
 const FAKE_WITH_CHILD = path.join(__dirname, 'fakes', 'fake-claude-with-child.cjs').replace(/\\/g, '/');
@@ -56,6 +58,7 @@ test('park: a mid-turn worker is interrupted, its process exits, and its row is 
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
     await sleep(300); // the spawn's own turn is in flight, held by FAKE_ANSWER_DELAY_MS
     const pid = m._worker('w1').pid;
+    const pidId = await G.identify(pid);
     const r = await m.pause({ worker_id: 'w1', by: 'operator:999' });
     assert.strictEqual(r.paused, true);
     assert.strictEqual(r.already, false);
@@ -70,7 +73,7 @@ test('park: a mid-turn worker is interrupted, its process exits, and its row is 
     assert.strictEqual(r.row.state, 'paused');
     assert.strictEqual(r.row.paused_by, 'operator:999');
     assert.strictEqual(r.row.session_id, r.session_id);
-    assert.strictEqual(P.pidAlive(pid), false, 'the worker process must be dead once parked');
+    await G.assertGone(pidId, 'the worker process must be dead once parked');
     assert.strictEqual(r.cache_deadline.enforced, false);
   } finally {
     delete process.env.FAKE_ANSWER_DELAY_MS;
@@ -110,6 +113,7 @@ test('park: every background task seen running gets stop_task, the receipt names
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
     await m._waitTurn('w1', 8000); // the turn that backgrounded the task has ended
     const orphanPid = Number(fs.readFileSync(pidFile, 'utf8'));
+    const orphanId = await G.identify(orphanPid);
     const r = await m.pause({ worker_id: 'w1', by: 'operator:1' });
     assert.strictEqual(r.background_tasks.length, 1, JSON.stringify(r.background_tasks));
     assert.strictEqual(r.background_tasks[0].status_after, 'killed');
@@ -120,7 +124,7 @@ test('park: every background task seen running gets stop_task, the receipt names
     // The orphan is spawned detached, its own process group, so a graceful exit's own job-object
     // teardown does not take it — only doPause's own step 5 kill loop does.
     assert.ok(r.descendants.killed_after_exit.includes(orphanPid), JSON.stringify(r.descendants));
-    assert.strictEqual(P.pidAlive(orphanPid), false, 'the orphaned descendant must not outlive the exit');
+    await G.assertGone(orphanId, 'the orphaned descendant must not outlive the exit');
   } finally {
     delete process.env.FAKE_BG_TASK; delete process.env.FAKE_BG_TASK_MS;
     delete process.env.FAKE_ORPHAN_CHILD; delete process.env.FAKE_CHILD_PID_FILE;
@@ -141,6 +145,7 @@ test('park: a worker that ignores stdin close is killed by exact pid within the 
     const pid = m._worker('w1').pid;
     const childPid = await pollUntil(() => fs.existsSync(pidFile), 5000) ? Number(fs.readFileSync(pidFile, 'utf8')) : null;
     assert.ok(childPid, 'the fake never wrote its own child pid');
+    const [pidId, childId] = await G.identifyAll([pid, childPid]);
     const t0 = Date.now();
     const r = await m.pause({ worker_id: 'w1', by: 'operator:1', interrupt_timeout_ms: 300, exit_timeout_ms: 800 });
     const ms = Date.now() - t0;
@@ -151,8 +156,8 @@ test('park: a worker that ignores stdin close is killed by exact pid within the 
     assert.strictEqual(r.exit.graceful, false);
     assert.strictEqual(r.exit.killed, true);
     assert.strictEqual(r.row.state, 'paused');
-    assert.strictEqual(P.pidAlive(pid), false);
-    assert.strictEqual(P.pidAlive(childPid), false, 'the tree kill must take the child with it');
+    await G.assertGone(pidId, `the worker (pid ${pid}) is still alive after the kill`);
+    await G.assertGone(childId, 'the tree kill must take the child with it');
   } finally { delete process.env.FAKE_CHILD_PID_FILE; await teardown({ m, sb }); }
 });
 

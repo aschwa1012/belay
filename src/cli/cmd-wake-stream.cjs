@@ -7,6 +7,7 @@
 // answers). The belay mod spawns this verb and reads its stdout.
 
 const net = require('node:net');
+const { StringDecoder } = require('node:string_decoder');
 
 const HEARTBEAT_TIMEOUT_MS = 15000;
 const USAGE = 'usage: belay wake-stream --run <id> --nonce <n> [--heartbeat-timeout-ms <n>] [--data <dir>]\n';
@@ -37,7 +38,11 @@ async function run(ctx) {
   const parsed = parseArgs(ctx.argv);
   if (parsed.error) return usageError(parsed.error);
   const { wakePipeName } = require('../run/wake-pipe.cjs');
-  const pipe = (ctx.wakeStreamDeps && ctx.wakeStreamDeps.pipe) || wakePipeName(ctx.dataDir, parsed.runId, parsed.nonce);
+  // The store directory is found as every other command finds it (--data, then the config's data_dir, then <project root>/.belay):
+  // the launcher names its pipe from that directory. config.cjs reads files only; it starts nothing and writes nothing.
+  const C = require('./config.cjs');
+  const seam = ctx.wakeStreamDeps && ctx.wakeStreamDeps.pipe;
+  const pipe = seam || wakePipeName(C.dataDirOf(C.discover(ctx.cwd || process.cwd()), ctx), parsed.runId, parsed.nonce);
   const out = ctx.emit || ((t) => { process.stdout.write(t); });
   const started = Date.now();
   return new Promise((resolve) => {
@@ -58,9 +63,10 @@ async function run(ctx) {
       timer = setTimeout(() => finish(1, `belay wake-stream: no line from ${pipe} for ${parsed.timeoutMs} ms\n`, 'no heartbeat'), parsed.timeoutMs);
     };
     arm();
+    const dec = new StringDecoder('utf8');
     sock.on('data', (d) => {
       arm();
-      buf += d.toString('utf8');
+      buf += dec.write(d);
       let i;
       while ((i = buf.indexOf('\n')) >= 0) {
         const line = buf.slice(0, i);

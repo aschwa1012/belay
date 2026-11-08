@@ -74,7 +74,7 @@ export function normMenu(json: unknown): BelayMenu | null {
     headroomMb: num(j.headroom_mb) ?? 768, profiles, models,
     mainTypes: strs(types?.main).map(s => one(s, 32)), advancedTypes: strs(types?.advanced).map(s => one(s, 32)),
     selectedEmbedder: str(j.selected_embedder), behind: num(j.behind) ?? 0, backlogReason: str(j.backlog_reason) ? one(str(j.backlog_reason)!, 80) : null,
-    diskBytes: num(disk?.bytes) ?? 0, diskModels: num(disk?.models) ?? 0,
+    diskBytes: num(disk?.bytes) ?? 0, diskModels: num(disk?.models) ?? 0, liveRuns: strs(j.live_runs).map(s => one(s, 40)),
   }
 }
 
@@ -216,6 +216,10 @@ export const fetchFlags = (r: BelayMenuModel): string[] => (r.runtime === 'gguf'
 // Commands too long to run from a panel that a reload ends: the person runs them, and the menu prints each exactly.
 export const fetchLine = (r: BelayMenuModel): string => `belay embedder fetch${fetchFlags(r).map(f => ` ${f}`).join('')}`
 export const runtimeLine = (m: BelayMenu): string => m.gpu.runtimeCommand
+// The download's command(s): `fetch --gpu --model` takes only the GGUF, so a GPU model with the runtime missing is the runtime step, then the model.
+export const downloadLine = (m: BelayMenu, r: BelayMenuModel): string => (r.runtime === 'gguf' && !m.gpu.runtimeOk ? `${runtimeLine(m)}  then  ${fetchLine(r)}` : fetchLine(r))
+// What a `cmd` button says: the panel ran nothing, and the line is for the person's terminal (a reload of this panel would end a command of minutes).
+export const cmdToast = (line: string): string => `belay: nothing was run. In a terminal, run: ${line}`
 export const embedLine = (m: BelayMenu, r: BelayMenuModel): string => `belay memory embed --model ${r.id}${m.project ? ` --project ${m.project}` : ' --project <p>'}`
 // The probe runs inside a GPU model's load, so the nearest command is the first heavy embedder that is fetched (it probes, then embeds its backlog).
 export function probeLine(m: BelayMenu): string {
@@ -224,8 +228,18 @@ export function probeLine(m: BelayMenu): string {
   return embedLine(m, h)
 }
 
+// A profile setting is the config's default for the NEXT run: a live run keeps the profile it started with, and a run spec's own memory.profile overrides the config.
+export const PROFILE_KEYS = ['memory.profile', 'memory.profile_cpu']
+function profileScope(key: string, m: BelayMenu | null): string {
+  if (key !== 'memory.profile' && key !== 'memory.profile_cpu') return ''
+  const live = m ? m.liveRuns : []
+  const over = `a spec's ${key} overrides it`
+  if (!live.length) return `; applies to the next run, and ${over}`
+  return `; live ${live.length === 1 ? `run ${live[0]} keeps the profile it started with` : `runs ${live.join(', ')} keep the profiles they started with`}, this applies to the next run, and ${over}`
+}
+
 // What a finished command says, as one toast line: a settings receipt (`old -> new`), an embedder receipt, or the refusal's first line.
-export function resultLine(a: MemAction, exitCode: number, stdout: string, stderr: string): string {
+export function resultLine(a: MemAction, exitCode: number, stdout: string, stderr: string, m: BelayMenu | null = null): string {
   let j: Record<string, unknown> | null = null
   try { j = obj(JSON.parse(stdout)) } catch { j = null }
   const said = (): string => {
@@ -233,7 +247,7 @@ export function resultLine(a: MemAction, exitCode: number, stdout: string, stder
     return one(e ?? ((stdout.trim() ? stdout : stderr).split('\n').map(l => l.trim()).find(l => l !== '') ?? 'no answer'), 160)
   }
   if (a.kind === 'set') {
-    if (exitCode === 0 && j && typeof j.key === 'string') return `belay: ${a.key} set to ${a.value} (was ${JSON.stringify(obj(j.old)?.value ?? null)})`
+    if (exitCode === 0 && j && typeof j.key === 'string') return `belay: ${a.key} set to ${a.value} (was ${JSON.stringify(obj(j.old)?.value ?? null)})${profileScope(a.key, m)}`
     return `belay: ${a.key} was not written: ${said()}`
   }
   if (a.kind === 'setMany') return exitCode === 0 && j && Array.isArray(j.keys) ? `belay: ${a.pairs.map(p => p[0]).join(' and ')} saved` : `belay: nothing was written: ${said()}`

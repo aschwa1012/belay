@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // instructions-launch.test.cjs — build step S2-2, ADR 0024 amendment 1, over the fakes (never a real
 // session; A18 is the paid row). The spawn-time copy of the worktree's CLAUDE.md reaches every launch
 // through --append-system-prompt-file, and no later launch re-reads the worktree.
@@ -14,6 +15,7 @@ const { createRunManager } = require('../../src/run/index.cjs');
 const { runOrchestrator } = require('../../src/run/orchestrator.cjs');
 const { createFakeCore } = require('./fake-core.cjs');
 const P = require('../../src/run/process.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 
 const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(/\\/g, '/');
 const USER_SETTINGS = path.join(__dirname, 'fixtures', 'user-settings.json').replace(/\\/g, '/');
@@ -109,8 +111,9 @@ test('adopt: a worker adopted with an existing copy relaunches with it; one with
     await first._waitTurn('w-i8b', 8000);
     for (const id of ['w-i8a', 'w-i8b']) {
       const pid = core.currentWorker(id).pid;
+      const pidId = await G.identify(pid);
       await first.stop({ worker_id: id, mode: 'kill', timeout_ms: 8000 });
-      assert.equal(P.pidAlive(pid), false);
+      await G.assertGone(pidId, `the worker pid ${pid} is still alive after the stop`);
     }
     assert.equal(noCopy.instructions.path, null);
     // The worktrees change after the fact; an adoption must not notice.

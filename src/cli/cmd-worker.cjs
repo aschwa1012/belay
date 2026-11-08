@@ -180,7 +180,7 @@ async function runRm(core, dataDir, workerId) {
     if (e.code === 'E_WORKER_LIVE') {
       return {
         worker_id: workerId, forgotten: false,
-        reason: `${e.detail.state} with pid ${e.detail.pid} alive; kill it first`,
+        reason: `${e.detail.state} with pid ${e.detail.pid} alive; run belay worker kill ${workerId} first (if that refuses because the pid now belongs to another process, worker rm succeeds once that process exits)`,
         error: { code: e.code, message: e.message, detail: e.detail },
       };
     }
@@ -279,8 +279,11 @@ async function runStopOrRestart(ctx, sub, parsed) {
     const boundMs = sub === 'stop' ? stopBoundMs(parsed.timeoutMs) : restartBoundMs(parsed.firstTurnTimeoutMs);
 
     const { success, ...rest } = await callWorkerAdapter(core, dataDir, { workerId: parsed.workerId, method, params, boundMs });
-    const receipt = { ...rest, [key]: success };
-    return { code: success ? 0 : 1, text: render(receipt), json: receipt };
+    // A stop that could not prove the process was not a stop: the pipe answered, but nothing ended and the worker may be running.
+    const maybeLive = sub === 'stop' && rest.may_be_live === true;
+    const ok = success && !maybeLive;
+    const receipt = { ...rest, [key]: ok, ...(maybeLive ? { reason: `${rest.note}. ${rest.manual}` } : {}) };
+    return { code: ok ? 0 : 1, text: render(receipt), json: receipt };
   } finally {
     // Never elects on this path (worker.get and run.list are reads), kept for symmetry with kill/rm.
     if (core.isOwner()) { try { await require('./release-owner.cjs').releaseOwnerOf(core); } catch { /* best effort */ } }

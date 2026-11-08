@@ -28,7 +28,27 @@ function parseArgs(argv) {
   return { all };
 }
 
-function digestOf(input) {
+// A merge request (belay's own, for a merge into the user's branch) is read whole: its input is JSON the operator must be able to read.
+function mergeOf(r) {
+  if (r.kind !== 'merge') return null;
+  try {
+    const q = JSON.parse(r.input);
+    return { kind: 'merge', into: q.into, into_head: q.into_head, base: q.base, tasks: (q.tasks || []).map((t) => ({ id: t.id, sha: t.sha ? String(t.sha).slice(0, 12) : null })), evaluate: q.evaluate, checks: (q.checks || []).map((c) => ({ argv: c.argv, cwd: c.cwd })), integrate_checks: (q.integrate_checks || []).map((c) => ({ argv: c.argv, cwd: c.cwd, timeout_ms: c.timeout_ms })) };
+  } catch { return null; }
+}
+
+function mergeLines(r) {
+  const m = r.merge;
+  if (!m) return [];
+  return [`${r.id}  merge request, run ${r.run_id}`, `  kind: merge`, `  into: ${m.into}`, `  head before: ${m.into_head || `(new branch, from ${m.base})`}`,
+    `  tasks: ${m.tasks.map((t) => `${t.id}@${t.sha}`).join(', ')}`,
+    `  checks: ${m.evaluate ? (m.checks.length ? '' : 'none declared') : 'none (evaluate is false)'}`,
+    ...m.checks.map((c) => `    ${c.argv.join(' ')}${c.cwd ? `  (cwd ${c.cwd})` : ''}`),
+    ...(m.integrate_checks && m.integrate_checks.length ? ['  checks named by the call:', ...m.integrate_checks.map((c) => `    ${c.argv.join(' ')}${c.cwd ? `  (cwd ${c.cwd})` : ''}`)] : [])];
+}
+
+function digestOf(input, r) {
+  if (r && r.kind === 'merge') { const m = mergeOf(r); if (m) return `merge into ${m.into}`; }
   const s = String(input == null ? '' : input);
   return s.length > 120 ? `${s.slice(0, 120)}…` : s;
 }
@@ -44,6 +64,7 @@ function renderText(requests, all) {
   const line = (vals) => vals.map((v, i) => String(v).padEnd(widths[i])).join('  ');
   const lines = [line(columns)];
   for (const r of requests) lines.push(line(columns.map((c) => cell(r, c))));
+  for (const r of requests) lines.push(...mergeLines(r));
   lines.push('');
   return lines.join('\n');
 }
@@ -59,7 +80,7 @@ async function run(ctx) {
   try {
     const states = parsed.all ? PERMISSION_STATES : ['pending'];
     const { requests } = await core.permission.list({ states });
-    const rendered = requests.map((r) => ({ ...r, digest: digestOf(r.input) }));
+    const rendered = requests.map((r) => ({ ...r, digest: digestOf(r.input, r), ...(r.kind === 'merge' ? { merge: mergeOf(r) } : {}) }));
     const owner = core.ownerInfo();
     const receipt = { states, requests: rendered, count: rendered.length, owner };
     return { code: 0, text: renderText(rendered, parsed.all), json: receipt };
@@ -71,4 +92,4 @@ async function run(ctx) {
   }
 }
 
-module.exports = { run };
+module.exports = { run, renderText, mergeOf };

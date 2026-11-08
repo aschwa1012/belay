@@ -23,16 +23,18 @@ function pidAlive(pid) {
 
 // Spawn a worker. stdin is a pipe for Claude Code (the control channel, ADR 0008 §1) and ignored
 // for Codex (one process per turn, prompt in argv).
-function spawnWorker({ exe, args, cwd, env, stdin = 'pipe' }) {
+// `input` (Codex only): the prompt of `codex exec -`, written to a piped stdin that is then closed; stdin is ignored without it.
+function spawnWorker({ exe, args, cwd, env, stdin = 'pipe', input }) {
   // Taken before the call: Windows stamps the creation time when CreateProcess starts, and the call can return late (antivirus), ADR 0048.
   const startedAt = Date.now();
   const child = spawn(exe, args, {
     cwd,
     env,
-    stdio: [stdin, 'pipe', 'pipe'],
+    stdio: [input === undefined ? stdin : 'pipe', 'pipe', 'pipe'],
     windowsHide: true,
   });
   child.belaySpawnStartedAt = startedAt;
+  if (input !== undefined) { child.stdin.on('error', () => {}); child.stdin.end(input, 'utf8'); } // a child that exits first is seen by its exit event
   return child;
 }
 
@@ -78,5 +80,7 @@ module.exports = {
   spawnWorker,
   gracefulStop,
   waitPidGone,
+  // The wait through this module's own `waitPidGone` (read at call time), then an identity re-check at the deadline.
+  waitProcessGone: (pid, created, opts = {}) => coreProcess.waitProcessGone(pid, created, { wait: (p, o) => module.exports.waitPidGone(p, o), ...opts }),
   withKillLock: coreProcess.withKillLock, // ADR 0039 review: belay stop's worker kills and the run's worker close share it
 };

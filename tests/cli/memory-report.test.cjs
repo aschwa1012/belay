@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-report.test.cjs — `belay memory report <note-id> --reason <text> [--replaced-by <id>]`: a write (it elects an owner, writes, returns the proof and
 // leaves no owner behind), exit 0 with the proof, exit 1 on a refusal, exit 2 on a usage error, refused inside a worker. The built CLI as a subprocess
 // against a sandbox store.

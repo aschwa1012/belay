@@ -102,7 +102,7 @@ async function restartFirstText(w, branch, { core, ctx, hold }) {
   }
   const rl = await core.continuity.resumeLine(key).catch(() => null);
   return (rl && rl.text ? rl.text + '\n\n' : '') +
-    'This is a fresh session replacing an interrupted one. Read resume.md in your worker directory, then continue.' + require('./task-body.cjs').PROCESS_LINE + (await currentRule(w, core, hold)); // a new session has not seen the standing line or the hand-back rule (and its required fields)
+    'This is a fresh session replacing an interrupted one. Read resume.md in your worker directory, then continue.' + require('./task-body.cjs').PROCESS_LINE + require('./task-body.cjs').toolsLine(w) + (await currentRule(w, core, hold)); // a new session has not seen the standing line or the hand-back rule (and its required fields)
 }
 
 // The hand-back rule for the task this worker holds now, rebuilt from the core: the spawn's rule names the spawn task's lease, which a

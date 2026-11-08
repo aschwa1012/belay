@@ -71,7 +71,7 @@ const VERBS = {
   show: { flags: [], positional: [1, 50], usage: 'belay memory show <id>...' },
   timeline: { flags: ['--before', '--after', '--scope'], positional: [1, 1], usage: 'belay memory timeline <id> [--before n] [--after n] [--scope task|worker|run|namespace]' },
   verify: { flags: ['--status', '--receipt'], positional: [1, 1], usage: 'belay memory verify <id> --status verified|refuted|unverified --receipt <r>' },
-  stats: { flags: [], positional: [0, 1], usage: 'belay memory stats [run-id]' },
+  stats: { flags: [], positional: [0, 0], usage: 'belay memory stats   (the whole store; it takes no run id)' },
   export: { flags: ['--namespace', '--since', '--out', '--all'], positional: [0, 1], usage: 'belay memory export [run-id] [--namespace ns]... [--since <ms|iso>] [--out <file>] [--all]' },
   embed: { flags: ['--project', '--dry-run', '--reembed', '--template', '--model'], positional: [0, 0], usage: 'belay memory embed --model <gguf embedder> [--project <p>] | belay memory embed [--project <p>] [--dry-run] | belay memory embed --reembed --template v2 [--project <p>] [--dry-run]' },
   import: { flags: ['--namespace-map', '--namespace', '--no-embed'], positional: [1, 1], usage: 'belay memory import <file> [--namespace-map from=to]... [--namespace ns] [--no-embed]' },
@@ -79,7 +79,7 @@ const VERBS = {
   restore: { flags: ['--reason', '--candidates'], positional: [1, 1], usage: 'belay memory restore <id> --reason <text>   |   belay memory restore <id> --candidates' },
   scrub: { flags: ['--run', '--worktree', '--goal', '--summary'], positional: [0, 0], usage: 'belay memory scrub [--run <id>] [--worktree <dir>] [--goal <text>] [--summary <text>]' },
   review: { flags: ['--run', '--project', '--worktree', '--all', '--start'], positional: [0, 0], usage: 'belay memory review [--project <p>] [--all] [--run <id>] [--worktree <dir>] [--start]' },
-  resolve: { flags: ['--evidence'], positional: [2, 3], usage: 'belay memory resolve <id> new   |   belay memory resolve <id> repeats <of>   |   belay memory resolve <id> supersedes <of> --evidence <text>' },
+  resolve: { flags: ['--evidence'], positional: [2, 3], usage: 'belay memory resolve <id> new   |   belay memory resolve <id> repeats <of>   |   belay memory resolve <id> refines <of> [--evidence <text>]   |   belay memory resolve <id> supersedes <of> --evidence <text>' },
   promote: { flags: ['--approve', '--reject', '--reason'], positional: [1, 1], usage: 'belay memory promote <note-id> (--approve | --reject) [--reason <text>]' },
   'search-log': { flags: ['--export', '--run', '--since', '--force'], positional: [0, 0], usage: 'belay memory search-log --export <file> [--run <id>] [--since <ms|iso>] [--force]' },
   menu: { flags: ['--badge'], positional: [0, 0], usage: 'belay memory menu [--badge]   (the facts the panel Memory menu shows: GPU, profiles, models, backlog; a read; --badge: only the backlog of the selected embedder)' },
@@ -312,6 +312,8 @@ function renderSearchText(r, view) {
   if (typeof r.absence_established === 'boolean') tail.push(`absence_established: ${r.absence_established}`);
   out.push(tail.join('  '));
   for (const f of r.modes_failed || []) out.push(`failed: ${f.mode} ${f.code}${f.message ? ` (${f.message})` : ''}`);
+  // A held note is shown after the ranked hits, so a short page can cut it: it still matched.
+  if (Array.isArray(r.held_matches) && r.held_matches.length) out.push(`held matches off this page: ${r.held_matches.map(h => `${h.id} (${h.kind || 'held'})`).join(', ')}`);
   return `${out.join('\n')}\n`;
 }
 
@@ -364,6 +366,8 @@ function renderImportText(r) {
     `inserted: ${r.inserted}  updated: ${r.updated}${r.unchanged ? `  unchanged: ${r.unchanged}` : ''}  refused: ${r.refused.length}${ignored}`];
   const sk = r.skipped || {};
   if (sk.refuted || sk.superseded) out.push(`skipped (not live in the file): refuted ${sk.refuted || 0}, superseded ${sk.superseded || 0}`);
+  // An imported row is type `imported`, and a run with notes on shows a worker or the orchestrator only the notes of project/<p>: say so, so the operator is not surprised by a search that never finds them.
+  if ((r.rows || []).some((x) => x.action !== 'unchanged' && typeof x.namespace === 'string' && x.namespace.startsWith('project/'))) out.push('note: imported rows are not notes; in a run with notes on, a worker or the orchestrator cannot search or read the ones in project/ namespaces (the command line reads them)');
   for (const x of r.refused) out.push(`refused line ${x.line}: ${x.code}${x.message ? ` (${P.clean(x.message, 300)})` : ''}`);
   return `${out.join('\n')}\n`;
 }

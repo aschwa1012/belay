@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-preface-embed.test.cjs — the first-message index uses vector search. When a worker is spawned or relaunched the run
 // manager has the store owner embed the task's own text (memory.embedQuery, with the worker id), passes the vectors to
 // memory.index, and records one JSON receipt on index_injected: { hybrid, queries: [{ label, ms, ok }], failure? }. A failure
@@ -229,6 +230,20 @@ test('through the manager under required: the spawn is refused, the starting row
     assert.strictEqual(events[0].ok, 0);
     assert.strictEqual(m._worker('w1').launchFailed, true);
     assert.ok(!m._worker('w1').pid, 'nothing was launched');
+  });
+});
+
+test('through the manager, a fatal embedder failure keeps its own message: no second "spawn again" instruction is appended and the record stays', async () => {
+  await withManager(failEmbed('required', { code: 'E_MODEL_CHANGED', cause: 'canary' }), async (m, sb) => {
+    await assert.rejects(m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w1', task_id: 't1' }), (e) => {
+      assert.strictEqual(e.code, 'E_PAUSED');
+      assert.strictEqual(e.detail.cause, 'embedder_failure');
+      assert.match(e.message, /Do not spawn again/);
+      assert.doesNotMatch(e.message, /NEW worker id/);
+      assert.doesNotMatch(e.message, /its starting row was written dead/);
+      return true;
+    });
+    assert.strictEqual(m._worker('w1').launchFailed, true, 'the embedder path keeps the worker record, as before');
   });
 });
 

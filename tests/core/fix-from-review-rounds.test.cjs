@@ -4,11 +4,12 @@
 // it fixes, so the coder idle in that tree can take it, and the tree is removed for every task that shares it. Real core, a
 // sandbox store and a throwaway repository (worktree-helpers.cjs), never this checkout.
 
+require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 const { test: nodeTest, before, after } = require('node:test');
 const assert = require('node:assert');
 const fs = require('node:fs');
 const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
-const { makeRepo, write, commit, rejectsCode, guarded } = require('./worktree-helpers.cjs');
+const { makeRepo, write, commit, rejectsCode, stageRuns, guarded } = require('./worktree-helpers.cjs');
 const test = guarded(nodeTest); // a longer hang guard than the runner's 60 s; see guarded
 
 const { openCore } = core('index.cjs');
@@ -22,6 +23,7 @@ before(async () => {
   repo = makeRepo(dir);
   orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
   await orch.run.attach({ adapter_pid: process.pid, project_dir: repo, fix_hard_cap: 3 });
+  await stageRuns(`${dir}/data`, ["abandon", "differs", "dirty", "headless", "land", "late", "newest", "reset", "unit-a", "unit-b"]);
 });
 
 after(async () => {
@@ -156,16 +158,16 @@ async function workWithOpenFix(name) {
 
 test('integrate refuses the done work while its fix, on the same branch, is open; once the fix is done both merge', async () => {
   const { w, f } = await workWithOpenFix('land');
-  const e = await rejectsCode(orch.integration.merge({ task_ids: [w.id], into: 'int/land' }), 'E_PRECONDITION');
+  const e = await rejectsCode(orch.integration.merge({ task_ids: [w.id], into: 'belay/integrate/land' }), 'E_PRECONDITION');
   assert.ok(e.message.includes(`task ${f.id} (open)`), e.message);
   assert.deepStrictEqual([e.detail.task_id, e.detail.open_task_id], [w.id, f.id]);
-  assert.strictEqual((await orch.integration.list({})).integrations.filter((i) => i.into_branch === 'int/land').length, 0, 'nothing was written');
+  assert.strictEqual((await orch.integration.list({})).integrations.filter((i) => i.into_branch === 'belay/integrate/land').length, 0, 'nothing was written');
   // The fix commits on the shared branch and is judged done; now the work and the fix merge, the fix as already merged.
   write(w.worktree.path, 'src/land.cjs', 'fixed\n');
   commit(w.worktree.path, 'land fix');
   await handBack(f.id, 'c-land', w.worktree.path, { branch: w.worktree.branch });
   assert.strictEqual((await orch.task.evaluate({ task_id: f.id })).state, 'done');
-  const row = await orch.integration.merge({ task_ids: [w.id, f.id], into: 'int/land' });
+  const row = await orch.integration.merge({ task_ids: [w.id, f.id], into: 'belay/integrate/land' });
   assert.ok(['merged', 'evaluated'].includes(row.state), row.state);
 });
 
@@ -181,6 +183,37 @@ test('two removals of one shared tree at once: one removes it, the other reports
   assert.strictEqual((await orch.task.worktreeRemove({ task_id: second.id })).removal.already, true);
   assert.ok(!fs.existsSync(w.worktree.path));
 });
+
+// Holds one git call of the first removal until released, so the second removal arrives at a fixed point. In-process owner only.
+async function gatedPair(name, fn) {
+  const G = core('git.cjs');
+  const real = G[fn];
+  let release, held, armed = false, calls = 0;
+  const gate = new Promise((r) => { release = r; });
+  const heldAt = new Promise((r) => { held = r; });
+  G[fn] = async (...a) => { if (armed && ++calls === 1) { held(); await gate; } return real(...a); };
+  try {
+    const { w, f } = await workWithOpenFix(name); // setup's own git calls run ungated
+    await orch.task.cancel({ task_id: f.id });
+    await orch.worker.write({ id: `c-${name}`, substrate: 'claude-code', pid: process.pid, state: 'stopped', session_id: `s-c-${name}`, last_event_at: Date.now(), worktree: w.worktree.path });
+    armed = true; // only the removals' calls are counted and gated
+    const pa = orch.task.worktreeRemove({ task_id: w.id }); // held inside its first gated git call
+    // The first call is inside the gated call, so the second arrives at a fixed point; a first call that ends first fails fast.
+    await Promise.race([heldAt, pa.then(() => { throw new Error('the first removal ended before reaching the gated git call'); })]);
+    const pb = orch.task.worktreeRemove({ task_id: f.id });
+    await new Promise(setImmediate);
+    release();
+    const [ra, rb] = await Promise.allSettled([pa, pb]); // neither call outlives the test
+    assert.strictEqual(ra.status, 'fulfilled', ra.reason && ra.reason.message);
+    assert.strictEqual(rb.status, 'fulfilled', rb.reason && rb.reason.message);
+    const [a, b] = [ra.value, rb.value];
+    assert.ok(a.worktree.removed_at && !a.removal.already, 'the first call removes the tree');
+    assert.deepStrictEqual([b.removal.already, b.removal.removed_through, !!b.worktree.removed_at], [true, w.id, true], 'the second waits and runs no git');
+  } finally { release(); G[fn] = real; }
+}
+
+test('a second removal that arrives while the first checks the run\'s repository waits for it', () => gatedPair('gate-repo', 'toplevel'));
+test('a second removal that arrives while the first\'s git runs waits for it', () => gatedPair('gate-git', 'worktrees'));
 
 test('a fix in a shared tree that names fewer files owns the work\'s files too, so the branch it is judged on passes', async () => {
   let w = await orch.task.create({ spec: 'narrow work', acceptance: { files_within_owned: true }, files_owned: ['src/narrow-a.cjs'] });
@@ -213,10 +246,10 @@ const integrationOf = async (id) => (await orch.task.get({ task_id: id })).integ
 test('a shared branch lands as one: merging the fix marks the work merged', async () => {
   const a = await workWithOpenFix('unit-a');
   await finishFix(a.w, a.f, 'unit-a');
-  const ra = await orch.integration.merge({ task_ids: [a.f.id], into: 'int/unit-a' });
+  const ra = await orch.integration.merge({ task_ids: [a.f.id], into: 'belay/integrate/unit-a' });
   assert.deepStrictEqual([(await integrationOf(a.f.id)).state, (await integrationOf(a.f.id)).via], ['merged', undefined]);
   const wa = await integrationOf(a.w.id);
-  assert.deepStrictEqual([wa.state, wa.via, wa.id, wa.into], ['merged', a.f.id, ra.id, 'int/unit-a'], 'the work landed with its fix');
+  assert.deepStrictEqual([wa.state, wa.via, wa.id, wa.into], ['merged', a.f.id, ra.id, 'belay/integrate/unit-a'], 'the work landed with its fix');
   const listed = (await orch.task.list({})).tasks.find((t) => t.id === a.w.id).integration;
   assert.deepStrictEqual([listed.state, listed.via], ['merged', a.f.id], 'task.list says the same');
 });
@@ -224,7 +257,7 @@ test('a shared branch lands as one: merging the fix marks the work merged', asyn
 test('a shared branch lands as one: merging the work marks the fix, and a later round is not', async () => {
   const b = await workWithOpenFix('unit-b');
   await finishFix(b.w, b.f, 'unit-b');
-  await orch.integration.merge({ task_ids: [b.w.id], into: 'int/unit-b' });
+  await orch.integration.merge({ task_ids: [b.w.id], into: 'belay/integrate/unit-b' });
   const fb = await integrationOf(b.f.id);
   assert.deepStrictEqual([fb.state, fb.via], ['merged', b.w.id], 'the fix, done before the merge, landed with the work');
   // A second round after the merge: its fix is done after that merge, so the merge did not land it.
@@ -248,7 +281,7 @@ test('integrate merges the head the work was judged at: a cancelled fix\'s commi
   commit(w.worktree.path, 'abandoned fix');
   const stray = git(w.worktree.path, 'rev-parse', 'HEAD');
   await orch.task.cancel({ task_id: f.id });
-  const row = await orch.integration.merge({ task_ids: [w.id], into: 'int/abandon' });
+  const row = await orch.integration.merge({ task_ids: [w.id], into: 'belay/integrate/abandon' });
   const m = row.merged[0];
   assert.deepStrictEqual([m.sha, m.judged_by, m.covers, m.left_out], [judged, w.id, [w.id], { branch: w.worktree.branch, head: stray, judged, commits: 1 }]);
   assert.deepStrictEqual(row.left_out, [{ task_id: w.id, branch: w.worktree.branch, head: stray, judged, commits: 1 }]);
@@ -265,7 +298,7 @@ test('a commit made after done, with no fix at all, is left out of the merge', a
   const judged = await judgedHeadOf(t.id);
   write(t.worktree.path, 'src/late.cjs', 'after done\n');
   commit(t.worktree.path, 'after done');
-  const row = await orch.integration.merge({ task_ids: [t.id], into: 'int/late' });
+  const row = await orch.integration.merge({ task_ids: [t.id], into: 'belay/integrate/late' });
   assert.deepStrictEqual([row.merged[0].sha, row.merged[0].left_out.commits], [judged, 1]);
   assert.strictEqual(git(row.worktree, 'show', 'HEAD:src/late.cjs'), 'judged');
 });
@@ -280,12 +313,12 @@ test('a done task that records no judged head is refused, naming the branch head
   await orch.task.worktreeRemove({ task_id: t.id });
   await handBack(t.id, 'c-headless', dir);
   assert.strictEqual((await orch.task.evaluate({ task_id: t.id, worktree: dir })).results.head_sha, undefined);
-  const e = await rejectsCode(orch.integration.merge({ task_ids: [t.id], into: 'int/headless' }), 'E_PRECONDITION');
+  const e = await rejectsCode(orch.integration.merge({ task_ids: [t.id], into: 'belay/integrate/headless' }), 'E_PRECONDITION');
   assert.deepStrictEqual([e.detail.task_id, e.detail.branch_head], [t.id, tip]);
   // A shared branch merges the newest judged head among its done tasks, whichever of them is named.
   const { w, f } = await workWithOpenFix('newest');
   await finishFix(w, f, 'newest');
-  const row = await orch.integration.merge({ task_ids: [w.id], into: 'int/newest' });
+  const row = await orch.integration.merge({ task_ids: [w.id], into: 'belay/integrate/newest' });
   assert.deepStrictEqual([row.merged[0].sha, row.merged[0].judged_by, row.merged[0].covers.sort(), row.left_out], [await judgedHeadOf(f.id), f.id, [w.id, f.id].sort(), null]);
 });
 
@@ -306,7 +339,7 @@ test('work judged uncommitted: the evaluation says so, integrate refuses until i
   assert.strictEqual(t.results.head_sha, t.worktree.base_sha, 'HEAD was still the base');
   assert.strictEqual(git(t.worktree.path, 'status', '--porcelain'), '?? src/', 'the real index is untouched: the file is still untracked');
   commit(t.worktree.path, 'dirty, committed as judged');
-  const row = await orch.integration.merge({ task_ids: [t.id], into: 'int/dirty' });
+  const row = await orch.integration.merge({ task_ids: [t.id], into: 'belay/integrate/dirty' });
   assert.deepStrictEqual([row.merged[0].sha, row.merged[0].covers, row.left_out], [git(t.worktree.path, 'rev-parse', 'HEAD'), [t.id], null]);
   assert.strictEqual(git(row.worktree, 'show', 'HEAD:src/dirty.cjs'), 'judged', 'the judged change landed');
   assert.strictEqual((await orch.task.get({ task_id: t.id })).integration.state, 'merged');
@@ -314,14 +347,14 @@ test('work judged uncommitted: the evaluation says so, integrate refuses until i
 
 test('a commit that differs from the judged state is refused, naming the judged tree, the branch head and the remedy', async () => {
   const t = await judgedUncommitted('differs');
-  const e1 = await rejectsCode(orch.integration.merge({ task_ids: [t.id], into: 'int/differs' }), 'E_PRECONDITION');
+  const e1 = await rejectsCode(orch.integration.merge({ task_ids: [t.id], into: 'belay/integrate/differs' }), 'E_PRECONDITION');
   assert.match(e1.message, /uncommitted work behind/, 'a dirty tree is refused first, as before');
   write(t.worktree.path, 'src/differs.cjs', 'more than was judged\n');
   commit(t.worktree.path, 'differs');
-  const e = await rejectsCode(orch.integration.merge({ task_ids: [t.id], into: 'int/differs' }), 'E_PRECONDITION');
+  const e = await rejectsCode(orch.integration.merge({ task_ids: [t.id], into: 'belay/integrate/differs' }), 'E_PRECONDITION');
   assert.match(e.message, /commit exactly the judged state, or merge it as a new task/);
   assert.deepStrictEqual([e.detail.judged_tree, e.detail.branch_head], [t.results.tree_sha, git(t.worktree.path, 'rev-parse', 'HEAD')]);
-  assert.strictEqual((await orch.integration.list({})).integrations.filter((i) => i.into_branch === 'int/differs').length, 0, 'nothing was written');
+  assert.strictEqual((await orch.integration.list({})).integrations.filter((i) => i.into_branch === 'belay/integrate/differs').length, 0, 'nothing was written');
 });
 
 test('a merged entry whose commit does not contain a task\'s judged change never reads merged for it (reset --hard)', async () => {
@@ -329,7 +362,7 @@ test('a merged entry whose commit does not contain a task\'s judged change never
   // The branch is reset to its base, losing the work's judged commit; the fix then commits other content and is judged done.
   git(w.worktree.path, 'reset', '-q', '--hard', w.worktree.base_sha);
   await finishFix(w, f, 'reset', 'redone\n');
-  const row = await orch.integration.merge({ task_ids: [w.id], into: 'int/reset' });
+  const row = await orch.integration.merge({ task_ids: [w.id], into: 'belay/integrate/reset' });
   assert.deepStrictEqual([row.merged[0].task_id, row.merged[0].judged_by, row.merged[0].covers], [w.id, f.id, [f.id]]);
   assert.deepStrictEqual(await integrationOf(w.id), { state: 'not_merged', into: null }, 'the work\'s judged change did not land');
   const fi = await integrationOf(f.id);
@@ -394,4 +427,35 @@ test('a finding in the shape reviewers hand back (severity, clause, what, eviden
     '- [blocking, clause a] exit 0 for a project whose client is archived -- evidence: lib/clients.js:88 probe: tock project unarchive p1 exited 0',
     '- [should-fix] help text omits the flag -- where: lib/help.js:40',
   ]);
+});
+
+test('a finding with a title reads as its title, with the detail after it', async () => {
+  const w = await orch.task.create({ spec: 'titled findings', acceptance: PASS });
+  await handBack(w.id, 'plain-coder', dir, { branch: 'b', head: 'h' });
+  await orch.task.evaluate({ task_id: w.id, worktree: dir });
+  const r = await orch.task.create({ spec: 'review it', depends_on: [w.id], acceptance: { verdict: true } });
+  await handBack(r.id, 'judge-title', dir, { verdict: 'refuted', summary: 's', findings: [{ severity: 'blocking', title: 'expiry never fires', where: 'src/c.cjs:3' }, { severity: 'should-fix', title: 'rename x', detail: 'the old name is kept' }] });
+  await orch.task.evaluate({ task_id: r.id, worktree: dir });
+  const f = await orch.task.fixFromReview({ review_id: r.id });
+  assert.deepStrictEqual(f.spec.split('\n').slice(3), ['- [blocking] expiry never fires -- where: src/c.cjs:3', '- [should-fix] rename x -- detail: the old name is kept']);
+});
+
+test('a fix made from a review after a hand-made fix of a fix repairs the original work, and its answer is matched there', async () => {
+  const w = await orch.task.create({ spec: 'chain root work', acceptance: PASS });
+  await handBack(w.id, 'c-chain-0', dir);
+  assert.strictEqual((await orch.task.evaluate({ task_id: w.id, worktree: dir })).state, 'done');
+  const hand = await orch.task.create({ spec: 'hand-made fix', acceptance: PASS, repairs: w.id, depends_on: [w.id] });
+  await handBack(hand.id, 'c-chain-h', dir);
+  assert.strictEqual((await orch.task.evaluate({ task_id: hand.id, worktree: dir })).state, 'done');
+  const mid = await orch.task.create({ spec: 'hand-made fix of the fix', acceptance: PASS, repairs: hand.id, depends_on: [hand.id] });
+  await handBack(mid.id, 'c-chain-1', dir);
+  assert.strictEqual((await orch.task.evaluate({ task_id: mid.id, worktree: dir })).state, 'done');
+  const r = await orch.task.create({ spec: 'review of the chain', depends_on: [mid.id], acceptance: { verdict: true } });
+  await handBack(r.id, 'j-chain', dir, { verdict: 'refuted', summary: 's', findings: [{ severity: 'blocking', clause: 'a', note: 'n' }] });
+  await orch.task.evaluate({ task_id: r.id, worktree: dir });
+  const f = await orch.task.fixFromReview({ review_id: r.id });
+  assert.strictEqual(f.repairs, w.id, 'the root, not the intermediate fix');
+  assert.match(f.spec, new RegExp(`a fix of task ${w.id}`));
+  const again = await orch.task.fixFromReview({ review_id: r.id });
+  assert.deepStrictEqual([again.id, again.existing], [f.id, true], 'the same review is answered by that fix, no round spent');
 });

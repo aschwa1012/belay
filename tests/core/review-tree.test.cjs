@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // review-tree.test.cjs — ADR 0054 amendment 1. A reviewer can write (Edit, Write, Bash). belay snapshots the
 // reviewer's worktree at the review lease's grant, again at the hand-back, and stores the comparison in the handoff, which
 // the verdict check shows (detail.tree, detail.tree_changed) without failing the verdict. Only a change made while the
@@ -408,7 +409,7 @@ test('task_assign of a review: the answer carries the real scratch folder, made 
   await worker('coder-type-reviewing', wt); // a worker of another type: no scratch folder yet
   assert.strictEqual(SD.scratchDir(dir, 'test-run', 'coder-type-reviewing'), null);
   let sent = null;
-  const fakeManager = { _worker: () => true, message: async ({ text }) => { sent = text; return {}; } };
+  const fakeManager = { _worker: () => ({ id: 'coder-type-reviewing' }), message: async ({ text }) => { sent = text; return {}; } }; // a launched worker's record, as manager._worker returns it
   const callCore = (dotted, args) => { const [g, n] = dotted.split('.'); return orch[g][n](args); };
   const C = createCompose({ callCore, manager: () => fakeManager, openManager: async () => fakeManager, dataDir: dir, runId: 'test-run' });
   const out = await C.assign({ task_id: r.id, worker_id: 'coder-type-reviewing', prompt: 'review it' });
@@ -469,7 +470,7 @@ test('no worker row at the grant, or one naming no worktree: the tree is null wi
       assert.strictEqual(got.worktree, null, id);
       assert.match(got.error, /no worktree on record at its grant/, id);
     }
-  } finally { store.close(); cleanup(d); }
+  } finally { store.close(); cleanup(d, { skipInvariants: { rules: ['done_evidence'], reason: 'the test writes done task rows by hand, with no evaluation behind them' } }); }
 });
 
 test("the reviewed task's own worktree is removed: the tree is null and the error says so, not the same path from a row", async () => {
@@ -482,5 +483,5 @@ test("the reviewed task's own worktree is removed: the tree is null and the erro
     const got = store.tx(() => RT.reviewedTree(store, { id: 'r', depends_on: ['w'], acceptance: { verdict: true } }));
     assert.strictEqual(got.worktree, null);
     assert.strictEqual(got.error, 'the reviewed worktree was removed');
-  } finally { store.close(); cleanup(d); }
+  } finally { store.close(); cleanup(d, { skipInvariants: { rules: ['done_evidence'], reason: 'the test writes done task rows by hand, with no evaluation behind them' } }); }
 });

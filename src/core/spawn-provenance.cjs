@@ -20,7 +20,8 @@
 // and a process reparented by another tool to one that was never recorded. A same-user process that spoofs its parent is outside the
 // check (ADR 0045 "What this does not stop").
 //
-// Every file call can throw; a refresh that throws is a refusal in the operator check (fail closed).
+// Every file call can throw; a refresh that throws is a refusal in the operator check (fail closed). One file that cannot be read is
+// not a throw: spawn-register.cjs judges it unproven, a live one refuses what it could cover, and a gone one is moved aside.
 
 const SR = require('./spawn-register.cjs');
 
@@ -54,18 +55,27 @@ function beforeBoot(t, boot) {
 // -> { alive: [{ pid, created, kind }] } the recorded descendants whose process is alive. The decision is computed from the register's
 // files and `snap` and nothing else; with `persist` false (a read command's operator check) nothing is written, and the same files give
 // the same answer next time. With it (a writer's check) the retired records, the new descendants and the dropped lifetimes are saved.
+// `closed` is how many closed tombstones (an exited process's lifetime with its end) the register holds: the owner's prune reads it
+// (register-prune.cjs).
 function refresh(snap, { now = Date.now(), boot = SR.bootMs(now), persist = true, afterScan = null } = {}) {
   const scan = SR.scan({ snap, now, boot }); // first: the records whose process is gone have lifetimes, read below with the tombstones
   if (afterScan) afterScan(); // test seam: the interleaving between the scan and the settle
   const known = new Map();
-  for (const t of SR.tombstones()) known.set(keyOf(t), t);
+  const tombs = SR.tombstoneScan({ snap, now, boot }); // an unproven one is judged against the same snapshot (spawn-register.cjs)
+  const closed = tombs.list.filter((t) => t.until != null && !t.unproven).length;
+  for (const t of tombs.list) known.set(keyOf(t), t);
   for (const d of scan.dead) if (d.tomb) known.set(keyOf(d.tomb), d.tomb);
+  // A dead file that cannot be read still gives a bounded lifetime for this check (its orphans are found below); then it is moved aside.
+  for (const u of [...scan.dead.filter((d) => d.unproven).map((d) => d.unproven), ...tombs.dead]) {
+    const life = SR.unprovenLife(u, now, boot);
+    if (life && !known.has(keyOf(life))) known.set(keyOf(life), life);
+  }
   const saves = new Map(); const drops = [];
   for (const [k, t] of [...known]) if (beforeBoot(t, boot)) { known.delete(k); drops.push(t); }
   for (const t of known.values()) if (t.until == null && !present(t, snap)) { t.until = now; saves.set(keyOf(t), t); }
   const lifetimes = [
     ...scan.live.map((r) => ({ pid: r.pid, created: Number.isFinite(r.created) ? r.created : null, from: SR.startOf(r), until: null, kind: r.kind || 'worker', window: true })),
-    ...[...known.values()].map((t) => ({ ...t, window: t.via == null })),
+    ...[...known.values()].map((t) => ({ ...t, window: t.via == null && !t.ppid_only })),
   ];
   for (const [pid, e] of snap) {
     if (e.created == null || !isRoot(pid, e, snap) || known.has(`${pid}-${e.created}`)) continue;
@@ -84,8 +94,9 @@ function refresh(snap, { now = Date.now(), boot = SR.bootMs(now), persist = true
     SR.settle(scan.dead, { tombstones: false }); // their lifetimes were used above and are dropped below
     for (const t of saves.values()) if (t.until == null) SR.saveTombstone(t);
     for (const t of drops) SR.dropTombstone(t);
+    for (const u of tombs.dead) SR.moveAside(u); // an unproven tombstone whose process is gone: moved aside, never deleted
   }
-  return { alive };
+  return { alive, closed };
 }
 
-module.exports = { refresh, isRoot, covers, SLACK_MS };
+module.exports = { refresh, isRoot, covers, beforeBoot, SLACK_MS };

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // judged-safe.test.cjs — ADR 0060 decision 6 as hardened: recording what a task was judged on runs no program the repository
 // names (a hook, core.fsmonitor, a clean filter: ADR 0054 decision 2), converts line endings as the system config says (Git for
 // Windows sets core.autocrlf=true there), keeps the head when the content cannot be read, and names the uncommitted paths. Real
@@ -11,7 +12,7 @@ const os = require('node:os');
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
-const { makeRepo, git, write, commit } = require('./worktree-helpers.cjs');
+const { makeRepo, git, write, commit, stageRuns } = require('./worktree-helpers.cjs');
 
 const { openCore } = core('index.cjs');
 const PASS = { commands: [{ argv: [process.execPath, '-e', 'process.exit(0)'], timeout_ms: 20000 }] };
@@ -27,6 +28,7 @@ before(async () => {
   fs.mkdirSync(marks);
   orch = await openCore({ dataDir: `${dir}/data`, caller: callerFor('orchestrator'), embed: false });
   await orch.run.attach({ adapter_pid: process.pid, project_dir: repo });
+  await stageRuns(`${dir}/data`, ["crlf"]);
 });
 
 after(async () => {
@@ -88,7 +90,7 @@ test('with the system core.autocrlf=true, CRLF content judged uncommitted and th
     const left = await judged((tree) => write(tree, 'crlf.txt', crlf));
     assert.strictEqual(left.results.uncommitted, true);
     commit(left.worktree.path, 'crlf, committed as judged');
-    const row = await orch.integration.merge({ task_ids: [left.id], into: 'int/crlf' });
+    const row = await orch.integration.merge({ task_ids: [left.id], into: 'belay/integrate/crlf' });
     assert.ok(['merged', 'evaluated'].includes(row.state), row.state);
     assert.deepStrictEqual([row.merged[0].covers, row.left_out], [[left.id], null]);
     // Committed before it is judged: clean, nothing uncommitted.

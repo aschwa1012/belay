@@ -43,6 +43,13 @@ function resolveExitedWaiters(w, code, signal, establishedBy) {
 // whose stdio never closes.
 const EXIT_CLOSE_BOUND_MS = 2000;
 
+// A descendant that inherited the worker's stdout or stderr (a background shell, an MCP server) keeps those pipes open after the
+// worker is gone, and the adapter that spawned it is long-lived: our ends are dropped once the worker is settled. The survivor
+// itself is not touched (nothing may kill it by a bare pid); its later writes to the dropped pipes fail with a broken pipe.
+function dropPipes(child) {
+  for (const s of [child.stdout, child.stderr, child.stdin]) { try { if (s && !s.destroyed) s.destroy(); } catch { /* closed */ } }
+}
+
 // Liveness is derived, never self-reported (invariant 4): this is the exit-event half, and the
 // manager's 1,000 ms pid poll is the other. Whichever gets there first calls settle().
 function settle(w, code, signal, establishedBy, ctx) {
@@ -57,7 +64,8 @@ function settle(w, code, signal, establishedBy, ctx) {
       w.deathEstablishedBy = w.deathEstablishedBy + '+' + establishedBy;
       // Fix round, should-fix finding: `w.settledState`, fixed at the first settle() call, not `w.state`
       // (which a queued write behind this one can still leave 'stopping'/'paused' racing settle's own).
-      lifeWrite(w, ctx, w.settledState, 'worker.write/exit-code');
+      // Guarded: a row someone else wrote since this record's last (an operator's forget) is never restated over.
+      lifeWrite(w, ctx, w.settledState, 'worker.write/exit-code', { guard: true, fillIn: true });
     }
     return;
   }
@@ -89,9 +97,9 @@ function settle(w, code, signal, establishedBy, ctx) {
     // launch) names the launch this close-wait was armed for; a record no test ever relaunches keeps it
     // unchanged, so this resolves exactly as before.
     const stillCurrent = () => w.settledChild === child;
-    const timer = setTimeout(() => { if (!done) { done = true; if (stillCurrent()) resolveExitedWaiters(w, code, signal, establishedBy); } }, EXIT_CLOSE_BOUND_MS);
+    const timer = setTimeout(() => { setImmediate(() => dropPipes(child)); /* after a poll phase, so a read already pending is ingested first */ if (!done) { done = true; if (stillCurrent()) resolveExitedWaiters(w, code, signal, establishedBy); } }, EXIT_CLOSE_BOUND_MS);
     if (timer.unref) timer.unref();
-    child.once('close', () => { if (done) return; done = true; clearTimeout(timer); if (stillCurrent()) resolveExitedWaiters(w, code, signal, establishedBy); });
+    child.once('close', () => { dropPipes(child); if (done) return; done = true; clearTimeout(timer); if (stillCurrent()) resolveExitedWaiters(w, code, signal, establishedBy); });
   } else {
     resolveExitedWaiters(w, code, signal, establishedBy);
   }
@@ -106,7 +114,7 @@ function settle(w, code, signal, establishedBy, ctx) {
 // launches (manager.cjs doRestart), so the previous life's row normally lands first and this is the backstop. A Codex turn's
 // message launches the next process without draining (one process per turn, message.cjs), so there the drop is the rule: its exit
 // facts are kept as `w.droppedRow` and the next turn's worker_wait answer carries them (wait.cjs).
-function lifeWrite(w, ctx, state, where) {
+function lifeWrite(w, ctx, state, where, opts) {
   const launches = w.launches;
   const facts = { state, exit_code: w.exitCode, exit_signal: w.exitSignal, established_by: w.deathEstablishedBy };
   w.queue = w.queue.then(() => {
@@ -115,7 +123,7 @@ function lifeWrite(w, ctx, state, where) {
       w.droppedRow = { ...facts, launch: w.launches };
       return null;
     }
-    return ctx.writeRow(w, state);
+    return ctx.writeRow(w, state, opts);
   }).catch((e) => {
     w.lastError = { where, code: e && e.code, message: e && e.message };
   });
@@ -123,4 +131,4 @@ function lifeWrite(w, ctx, state, where) {
 
 // 6i-2 fix round (item 5, the bound-timer half): exported so its own test (h15b, park-6.test.cjs) waits
 // the real bound rather than a hand-copied guess of it.
-module.exports = { terminalState, noteStoppedWhileSettled, settle, EXIT_CLOSE_BOUND_MS };
+module.exports = { dropPipes, terminalState, noteStoppedWhileSettled, settle, EXIT_CLOSE_BOUND_MS };

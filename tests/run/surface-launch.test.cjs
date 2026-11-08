@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // surface-launch.test.cjs — build step S2, ADR 0024: the
 // ready gate's surface check, driven over the fakes (never a real Claude Code session — those cost
 // money and are the acceptance rows' job, not this suite's). fake-claude.cjs's FAKE_SURFACE and
@@ -15,6 +16,7 @@ const { runOrchestrator } = require('../../src/run/orchestrator.cjs');
 const { createFakeCore } = require('./fake-core.cjs');
 const { cleanup } = require('../core/helpers.cjs');
 const P = require('../../src/run/process.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 
 const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(/\\/g, '/');
 const fwd = (p) => String(p).replace(/\\/g, '/');
@@ -45,6 +47,7 @@ test('spawn: a first init with an extra tool fails E_NO_READY naming it, and the
   const sb = sandbox();
   const core = createFakeCore();
   const m = mgr(sb, core);
+  const born = G.identifyOnWrite(core); // the worker's identity, taken when its pid row is written, before the gate refuses it
   process.env.FAKE_SURFACE = 'extra-tool';
   try {
     let pid = null;
@@ -58,7 +61,8 @@ test('spawn: a first init with an extra tool fails E_NO_READY naming it, and the
       }
     );
     assert.ok(Number.isInteger(pid) && pid > 0);
-    assert.equal(P.pidAlive(pid), false, 'a worker refused at the surface gate is killed, not left behind');
+    assert.ok(born.id && born.id.pid === pid, 'the worker was identified when its pid row was written');
+    await G.assertGone(born.id, 'a worker refused at the surface gate is killed, not left behind');
     const states = core.rowsFor('w-extra').map((r) => r.state);
     assert.equal(states[states.length - 1], 'dead');
   } finally {
@@ -179,6 +183,7 @@ test('spawn: a malformed plugins field fails E_NO_READY with the worker dead and
   const sb = sandbox();
   const core = createFakeCore();
   const m = mgr(sb, core);
+  const born = G.identifyOnWrite(core);
   process.env.FAKE_SURFACE = 'plugins-object';
   try {
     let pid = null;
@@ -192,7 +197,8 @@ test('spawn: a malformed plugins field fails E_NO_READY with the worker dead and
       }
     );
     assert.ok(Number.isInteger(pid) && pid > 0);
-    assert.equal(P.pidAlive(pid), false, 'a worker refused at the surface gate is killed, not left behind');
+    assert.ok(born.id && born.id.pid === pid, 'the worker was identified when its pid row was written');
+    await G.assertGone(born.id, 'a worker refused at the surface gate is killed, not left behind');
     const states = core.rowsFor('w-badplugins').map((r) => r.state);
     assert.equal(states[states.length - 1], 'dead');
   } finally {

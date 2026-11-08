@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // surface-job.test.cjs — the ADR 0024 surface gate for belay's own job workers (reserved id prefixes). Their adapter lists no belay tool by
 // design, so the gate expects none and exactly the job's built-ins. The fake follows its argv (--tools, --mcp-config), so the gate runs
 // through the real launch path: a real run found every job failing at launch while the old fake hid it.
@@ -54,7 +55,7 @@ for (const prefix of PREFIXES) {
 
 test('the ready gate: a job id passes with no belay tool, an ordinary worker id with the same init fails', () => {
   const R = require('../../src/run/ready.cjs');
-  const init = { claude_code_version: '2.1.290', mcp_servers: [{ name: 'belay', status: 'connected' }], ...ready(JOB_TOOLS) };
+  const init = { claude_code_version: '2.1.290', api_key_source: 'none', mcp_servers: [{ name: 'belay', status: 'connected' }], ...ready(JOB_TOOLS) };
   assert.ok(R.verifyClaudeReady({ substrate: 'claude-code', id: 'notereview-x', tools: JOB_TOOLS }, init).ok);
   const plain = R.verifyClaudeReady({ substrate: 'claude-code', id: 'w-plain', tools: JOB_TOOLS }, init);
   assert.ok(!plain.ok && /no mcp__belay__\* tool is listed/.test(plain.reason), plain.reason);

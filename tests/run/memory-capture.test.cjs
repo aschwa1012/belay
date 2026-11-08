@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-capture.test.cjs — ADR 0041 decisions 2, 3 and 7: the turn's event buffer and the observation row.
 // The unit tests push real parser output (tests/run/fixtures/capture-claude.jsonl) through the buffer; the
 // integration tests run the manager against the fake substrate and a fake core with the memory surface.
@@ -50,6 +51,14 @@ async function until(fn, ms = 4000) {
   const t0 = Date.now();
   while (Date.now() - t0 < ms) { if (fn()) return true; await sleep(20); }
   return false;
+}
+// The turn's memory work runs on the worker's queue after the turn's waiters resolve (worker.cjs), so a turn's end
+// does not mean its writes are queued. Wait for the store count the turn writes, then for the queue to go quiet:
+// each pass awaits the tail it saw, and a job chained while it ran moves the tail and is awaited on the next.
+async function memoryDrained(core, m, id, storesAtLeast) {
+  assert.ok(await until(() => core.stores.length >= storesAtLeast, 30000), `the turn never stored (${storesAtLeast} expected)`);
+  const w = m._worker(id);
+  for (let q; q !== w.memoryQueue;) { q = w.memoryQueue; if (q) await q.catch(() => {}); }
 }
 const observations = (core) => core.stores.filter((s) => s.type === 'observation');
 const obsEvents = (core) => core.events.filter((e) => e.kind === 'observation');
@@ -183,7 +192,7 @@ test('a failed observation store is an ok 0 event with the code, is not retried,
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
     await m._waitTurn('w1', 8000);
     assert.ok(await until(() => obsEvents(core).length === 1));
-    await sleep(300);
+    await memoryDrained(core, m, 'w1', 2); // the failed observation store, then the turn row that stands in
     assert.strictEqual(observations(core).length, 1, 'attempted exactly once');
     const ev = obsEvents(core)[0];
     assert.strictEqual(ev.ok, 0);
@@ -204,7 +213,7 @@ test('a failed event write is named on the worker and never retried', async () =
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
     await m._waitTurn('w1', 8000);
     assert.ok(await until(() => core.callsTo('memory.recordEvent').length === 1));
-    await sleep(300);
+    await memoryDrained(core, m, 'w1', 1);
     assert.strictEqual(core.callsTo('memory.recordEvent').length, 1);
     assert.strictEqual(m._worker('w1').lastError.where, 'memory.recordEvent');
   });
@@ -231,11 +240,12 @@ test('the jobs after a turn get the turn events and the observation id, only whe
     await run(core, async (m, sb) => {
       await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
       await m._waitTurn('w1', 8000);
-      await sleep(300);
+      await memoryDrained(core, m, 'w1', 1); // turn 1's work is finished before the module is swapped in
+      const turn1Stores = core.stores.length;
       m._worker('w1').ctx.modules = { jobs: { afterTurn: async (w, ctx, a) => { seen.push(a); } } };
       await m.message({ worker_id: 'w1', text: 'two' });
       await m._waitTurn('w1', 8000);
-      await sleep(400);
+      await memoryDrained(core, m, 'w1', turn1Stores + 1); // and turn 2's, so every call it makes has been counted
       assert.strictEqual(seen.length, expectCalls, JSON.stringify(levers));
       if (expectCalls) {
         assert.strictEqual(seen[0].turnEvents.length, 4, 'two tool_use and two tool_result');
@@ -252,7 +262,7 @@ test('a jobs module that throws is named on the worker and does not break the ne
   await run(core, async (m, sb) => {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
     await m._waitTurn('w1', 8000);
-    await sleep(300);
+    await memoryDrained(core, m, 'w1', 1);
     m._worker('w1').ctx.modules = { jobs: { afterTurn: async () => { throw new Error('boom'); } } };
     await m.message({ worker_id: 'w1', text: 'two' });
     await m._waitTurn('w1', 8000);

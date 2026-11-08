@@ -21,8 +21,8 @@ const exitedYet = (child) => child.exitCode !== null && child.exitCode !== undef
 // The register record is written at spawn without a creation time (conservative: its window opens at the spawn call), so a failed update
 // costs precision, not safety. It must never reject a promise nothing awaits (that ends the adapter and skips every worker's cleanup):
 // the failure is kept on the record, where status reads it, and the conservative record stays.
-function updateRegister(w, pid, created) {
-  try { SR.update(pid, created); }
+function updateRegister(w, pid, created, spawnedAt = null) {
+  try { SR.update(pid, created, { workerId: w.id, dataDir: w.dataDir, spawnedAt }); }
   catch (e) { w.lastError = { where: 'spawn-register.update', code: e && e.code, message: (e && e.message) || String(e) }; }
 }
 const restate = (w, force) => { if (w.ctx && w.ctx.writeRow) require('./write-row.cjs').restatePidCreated(w, w.ctx, force); };
@@ -49,12 +49,10 @@ async function endUnregistered(child, error) {
 // The record carries the last moment its process was seen alive, so a record retired after its harness died closes there and not when
 // it is read. The harness holds the child handle: while the handle says the child has not exited, a timer stamps the record every
 // SEEN_STAMP_MS, whether or not the worker writes a row (a long tool call writes none). A writer; never a read path.
-const SEEN_STAMP_MS = 30000;
-function stampWhileAlive(child, { every = SEEN_STAMP_MS, touch = (pid) => SR.touch(pid), setTimer = setInterval, clearTimer = clearInterval } = {}) {
-  const timer = setTimer(() => { if (!exitedYet(child)) { try { touch(child.pid); } catch { /* a stamp is a refinement */ } } }, every);
-  if (timer && typeof timer.unref === 'function') timer.unref();
-  child.once('exit', () => clearTimer(timer));
-  return timer;
+function stampWhileAlive(child, opts = {}) {
+  const s = require('./seen-stamp.cjs').stampWhile(() => !exitedYet(child), child.pid, opts);
+  child.once('exit', s.stop);
+  return s.timer;
 }
 
 function registerSpawn(w, child, dataDir, kind = 'worker') {
@@ -65,7 +63,7 @@ function registerSpawn(w, child, dataDir, kind = 'worker') {
     Object.defineProperty(refusal, 'teardown', { value: endUnregistered(child, refusal).catch(() => null), enumerable: false });
     throw refusal;
   }
-  child.once('exit', () => SR.unregister(child.pid));
+  child.once('exit', () => SR.unregister(child.pid, { workerId: w.id, dataDir, spawnedAt: child.belaySpawnStartedAt }));
   stampWhileAlive(child);
 }
 
@@ -73,7 +71,9 @@ function noteSpawn(w, child, { createdOf = P.createdOf, gate = ID.gate, schedule
   const pid = child.pid;
   const spawnedAt = Number.isFinite(child.belaySpawnStartedAt) ? child.belaySpawnStartedAt : Date.now(); // the time before the spawn call, when the spawner took it
   const spawnSeq = gate.stamp(); // a snapshot counts for this spawn only if it started after this
-  w.pidCreated = null; w.pidCreatedError = null;
+  // The first row goes out before the read finishes. It says so, so a process that meets that row (an adapter that died inside the
+  // window leaves it behind) refuses by the pending error rather than killing by image name for a row with no creation time.
+  w.pidCreated = null; w.pidCreatedError = `creation time of pid ${child.pid} pending at spawn; retrying while the worker runs (try 0)`;
   w.pidImage = child.spawnfile ? path.basename(String(child.spawnfile)) : null;
   if (!Number.isInteger(pid)) { w.pidCreatedError = 'the spawn gave no pid'; w.pidCreatedPromise = null; return null; }
   const mine = () => w.pid === pid; // a relaunch took the record over; a read for the old life belongs to nobody
@@ -82,7 +82,7 @@ function noteSpawn(w, child, { createdOf = P.createdOf, gate = ID.gate, schedule
   const setPending = (why) => { w.pidCreatedError = `${why}; retrying while the worker runs (try ${tries})`; };
   const accept = (e) => { // the three conditions of decision 3, checked where the reading is taken
     if (!pending || !mine() || exitedYet(child) || !e || !Number.isFinite(e.created) || e.created < spawnedAt - SPAWN_SLACK_MS) return false;
-    w.pidCreated = e.created; w.pidCreatedError = null; stop(); updateRegister(w, pid, e.created); restate(w, true);
+    w.pidCreated = e.created; w.pidCreatedError = null; stop(); updateRegister(w, pid, e.created, child.belaySpawnStartedAt); restate(w, true);
     return true;
   };
   const scheduleNext = () => {
@@ -95,7 +95,7 @@ function noteSpawn(w, child, { createdOf = P.createdOf, gate = ID.gate, schedule
     if (!mine()) return;
     // A child that exited before the read may have lost its pid to another process: its snapshot entry proves nothing.
     if (exitedYet(child)) w.pidCreatedError = `the child had already exited when the creation time of pid ${pid} was read, so the reading is discarded`;
-    else if (r && Number.isFinite(r.created) && (!Number.isFinite(child.belaySpawnStartedAt) || r.created >= spawnedAt - SPAWN_SLACK_MS)) w.pidCreated = r.created; // the same rule as a later reading
+    else if (r && Number.isFinite(r.created) && (!Number.isFinite(child.belaySpawnStartedAt) || r.created >= spawnedAt - SPAWN_SLACK_MS)) { w.pidCreated = r.created; w.pidCreatedError = null; } // the same rule as a later reading
     else {
       pending = true; tries = 1;
       setPending(`the process snapshot had no creation time for pid ${pid} (unreadable, or the process had already gone)`);
@@ -107,7 +107,7 @@ function noteSpawn(w, child, { createdOf = P.createdOf, gate = ID.gate, schedule
     if (mine()) w.pidCreatedError = `the process snapshot failed: ${(e && e.message) || e}`;
   }).then(() => {
     // The first rows went out before the read finished: restate the current state once with it.
-    if (mine()) { if (w.pidCreated != null) updateRegister(w, pid, w.pidCreated); restate(w, false); }
+    if (mine()) { if (w.pidCreated != null) updateRegister(w, pid, w.pidCreated, child.belaySpawnStartedAt); restate(w, false); }
   });
   return w.pidCreatedPromise;
 }
@@ -165,4 +165,24 @@ async function killWorker(w) {
   return P.killProcess(targetOf(w)).catch((e) => ({ tree: null, pidKill: { signalled: false, error: 'EIDENTITY' }, identity: null, refused: { refused: 'identity', kind: 'unverifiable', detail: (e && e.message) || String(e) } }));
 }
 
-module.exports = { RETRY_SCHEDULE_MS, RETRY_EVERY_MS, killWorker, noteSpawn, registerSpawn, stampWhileAlive, adoptFromRow, rowFields, targetOf, noProcess, pidLive, verifiedLive };
+// What a relaunch may do after killing an adopted record's old process (invariant 1, ADR 0039). Two outcomes leave the old
+// process possibly running, and a relaunch on the same session would then race it, so both refuse and launch nothing: the kill
+// was refused as 'unverifiable' (it proves nothing), or the kill was sent but the pid is still alive after the wait. A 'mismatch'
+// or 'absent' refusal proves the worker is not at that pid and goes on. `hold` is what the launch's task hold already did
+// before this point; the refusal names it, since those rows stay.
+async function settleAdoptedKill(w, kr, verb, hold = null, { waitMs = 5000 } = {}) {
+  const r = kr && kr.refused;
+  let why;
+  if (r) {
+    if (r.kind !== 'unverifiable' || !P.pidAlive(w.pid)) return;
+    why = `could not be proven to be this worker's old process (${r.detail}), so it was not killed`;
+  } else {
+    if ((await P.waitProcessGone(w.pid, w.pidCreated, { timeoutMs: waitMs })) !== null) return;
+    why = 'did not end after the kill was sent';
+  }
+  const manual = (r && r.manual) || `End pid ${w.pid} by hand once you have checked it is the worker (belay worker kill ${w.id}), then run ${verb} again.`;
+  const held = hold ? ` The task's files were already held for this run (task ${hold.task_id || w.taskId}) and stay held.` : '';
+  throw err('E_PRECONDITION', `worker ${w.id}: ${verb} refused, nothing was launched: pid ${w.pid} is still running and ${why}, and a second process on session ${w.sessionId || 'none'} would race it. ${manual}${held}`, { worker_id: w.id, pid: w.pid, ...(r ? { refused: r.refused, kind: r.kind, detail: r.detail } : { kill_sent: true }), ...(r && r.manual ? { manual: r.manual } : {}), old_process_may_be_live: true, task_hold_made: !!hold });
+}
+
+module.exports = { RETRY_SCHEDULE_MS, RETRY_EVERY_MS, settleAdoptedKill, killWorker, noteSpawn, registerSpawn, stampWhileAlive, adoptFromRow, rowFields, targetOf, noProcess, pidLive, verifiedLive };

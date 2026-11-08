@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // The run manager against a fake substrate and the in-memory fake core. Every assertion is about
 // an effect: a row written, a checkpoint written, a memory entry written, a file on disk. A
 // returned status word on its own is never treated as proof (invariant 5).
@@ -88,7 +89,8 @@ test('a killed worker is written dead, and carries its exit code once the exit e
   try {
     const row = await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hello', worker_id: 'w3' });
     const t0 = Date.now();
-    require('../crash.cjs').crash(m._worker('w3').child);
+    const child = m._worker('w3').child; // the record clears its handle when it settles, so hold it for the proof below
+    require('../crash.cjs').crash(child);
     await m._waitExit('w3', 8000);
     // _waitExit resolves when either channel settles the record, but the exit code arrives only with the
     // exit event, which can trail the pid poll. Wait for that event and the queued writes behind it.
@@ -104,6 +106,7 @@ test('a killed worker is written dead, and carries its exit code once the exit e
     );
     assert.ok(cur.exited_at >= t0);
     assert.match(String(cur.death_established_by), /exit-event/, 'named channel: ' + cur.death_established_by);
-    assert.equal(P.pidAlive(row.pid), false);
+    // The exit event was seen above: the child handle is the proof the process ended, and a bare pid check could hit a reused number.
+    assert.ok(child.exitCode !== null || child.signalCode !== null, `the killed worker (pid ${row.pid}) has not exited`);
   } finally { await teardown(m, sb); }
 });

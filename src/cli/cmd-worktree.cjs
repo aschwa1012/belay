@@ -13,14 +13,35 @@ const USAGE = {
   worktree: 'usage: belay worktree create <task-id> [--base <ref>] [--branch <name>] [--repo <dir>] [--no-junction]\n'
     + '       belay worktree remove <task-id> [--force] [--delete-branch]\n'
     + '       belay worktree remove --integration <id> [--force] [--take-over]\n'
-    + '       belay worktree merge <task-id>... [--into <branch>] [--base <ref>] [--no-evaluate] [--take-over]\n',
+    + '       belay worktree merge <task-id>... [--into <branch>] [--base <ref>] [--no-evaluate] [--take-over]\n'
+    + '       belay worktree prune [--run <id>] [--yes] [--drop-pins]\n',
   worktrees: 'usage: belay worktrees [run-id] [--all] [--data <dir>] [--json]\n',
 };
 
 const usageError = (command, message) => ({ code: 2, text: `belay ${command}: ${message}\n\n${USAGE[command]}`, json: { error: message } });
 
-const VALUE = new Set(['--base', '--branch', '--repo', '--into', '--integration']);
-const FLAG = new Set(['--force', '--delete-branch', '--no-evaluate', '--no-junction', '--all', '--take-over']);
+const VALUE = new Set(['--base', '--branch', '--repo', '--into', '--integration', '--run']);
+const FLAG = new Set(['--force', '--delete-branch', '--no-evaluate', '--no-junction', '--all', '--take-over', '--yes', '--drop-pins']);
+
+// The options each write verb reads. The parser knows the union; a verb given an option outside its own
+// set would drop it silently, so the verb refuses it instead.
+const TAKES = {
+  create: ['base', 'branch', 'repo', 'no-junction'],
+  'remove-task': ['force', 'delete-branch'],
+  'remove-integration': ['integration', 'force', 'take-over'],
+  merge: ['into', 'base', 'no-evaluate', 'take-over'],
+  prune: ['run', 'yes', 'drop-pins'],
+};
+
+function foreignOption(sub, opts) {
+  const key = sub === 'remove' ? (opts.integration ? 'remove-integration' : 'remove-task') : sub;
+  const takes = TAKES[key];
+  if (!takes) return null;
+  const bad = Object.keys(opts).find((k) => !takes.includes(k));
+  if (!bad) return null;
+  const label = key === 'remove-integration' ? 'remove --integration' : key === 'remove-task' ? 'remove <task-id>' : key;
+  return `--${bad} is not an option of worktree ${label}; it takes ${takes.map((t) => `--${t}`).join(', ')}`;
+}
 
 function parse(argv) {
   const opts = {}, rest = [];
@@ -59,11 +80,35 @@ function mergeText(r) {
   return [head, ...merged, ...stop, ...missed, ...checks, ''].join('\n');
 }
 
+// What a prune did, or (without --yes) would do: one line per tree, then the kept trees with their reasons.
+function pruneText(r) {
+  const ids = (e) => `${e.path} (task ${e.task_ids.join(', ')}, run ${e.run_id}, branch ${e.branch})`;
+  const lines = [];
+  if (r.dry_run) {
+    lines.push(`would remove ${r.would_remove.length} tree(s), keep ${r.kept.length}, fail ${r.failed.length}; nothing was removed (pass --yes to remove)`);
+    for (const e of r.would_remove) lines.push(`  would remove ${ids(e)}; its head is pinned first`);
+  } else {
+    lines.push(`removed ${r.removed.length} tree(s), kept ${r.kept.length}, failed ${r.failed.length}`);
+    for (const e of r.removed) lines.push(`  removed ${ids(e)}; head ${String(e.head).slice(0, 12)} pinned as ${e.kept_by ? e.kept_by.ref : 'none'}`);
+  }
+  for (const e of r.kept) lines.push(`  kept ${ids(e)}: ${e.reason}${e.detail ? ` (${e.detail})` : ''}`);
+  for (const e of r.failed) lines.push(`  not removed ${ids(e)}: ${e.code}: ${e.error}${e.remedy ? `; ${e.remedy}` : ''}`);
+  for (const x of r.runs.filter((y) => y.reason === 'no_run_row')) lines.push(`  run ${x.run_id}: no run has that id`);
+  if (!r.runs.length) lines.push('  no run records a tree that is still there');
+  const pinNote = (p) => `${p.ref} (${p.sha.slice(0, 12)}) ${p.droppable ? `also reached by ${p.kept_by_branches.join(', ')}; --yes --drop-pins drops it` : 'no branch reaches it; it is the only keeper and is never dropped'}`;
+  if (r.pins.length) lines.push(`${r.pins.length} pin(s) in refs/belay/kept/:`, ...r.pins.map((p) => `  pin ${pinNote(p)}`));
+  for (const p of r.pins_dropped) lines.push(`  dropped pin ${p}`);
+  if (r.removed.length || r.would_remove.length) lines.push('A process belay does not track (an editor, a terminal) holding a tree makes git fail; the tree is then reported failed, and belay worktree remove <task-id> finishes it once the process is gone.');
+  return lines.join('\n') + '\n';
+}
+
 async function write(ctx, core) {
   const p = parse(ctx.argv.slice(1));
   if (p.error) return usageError('worktree', p.error);
   const { opts, rest } = p;
   const sub = ctx.argv[0];
+  const foreign = foreignOption(sub, opts);
+  if (foreign) return usageError('worktree', foreign);
   try {
     if (sub === 'create') {
       if (rest.length !== 1) return usageError('worktree', 'create needs exactly one task id');
@@ -82,7 +127,7 @@ async function write(ctx, core) {
       if (rest.length !== 1) return usageError('worktree', 'remove needs exactly one task id');
       const row = await core.task.worktreeRemove({ task_id: rest[0], ...(opts.force ? { force: true } : {}), ...(opts['delete-branch'] ? { delete_branch: true } : {}) });
       const b = row.removal.branch_deleted ? 'deleted' : `kept${row.removal.branch_kept ? ` (${row.removal.branch_kept})` : ''}`;
-      return { code: 0, text: `task ${row.id}: worktree removed (${row.removal.junctions_unlinked.length} junction(s) unlinked first); branch ${row.worktree.branch} ${b}\n`, json: row };
+      return { code: 0, text: `task ${row.id}: worktree removed (${row.removal.junctions_unlinked.length} junction(s) unlinked first); ${row.removal.kept_by ? `head pinned as ${row.removal.kept_by.ref}; ` : ''}branch ${row.worktree.branch} ${b}\n`, json: row };
     }
     if (sub === 'merge') {
       if (!rest.length) return usageError('worktree', 'merge needs at least one task id');
@@ -92,7 +137,12 @@ async function write(ctx, core) {
       const good = row.state === 'merged' || (row.state === 'evaluated' && row.passed === true);
       return { code: good ? 0 : 1, text: mergeText(row), json: row };
     }
-    return usageError('worktree', sub === undefined ? 'needs a subcommand: create, remove or merge' : `unknown subcommand ${sub}`);
+    if (sub === 'prune') {
+      if (rest.length) return usageError('worktree', 'prune takes no task id; --run <id> names a run');
+      const r = await core.task.worktreePrune({ ...(opts.run ? { run_id: opts.run } : {}), ...(opts.yes ? { yes: true } : {}), ...(opts['drop-pins'] ? { drop_pins: true } : {}) });
+      return { code: r.failed.length ? 1 : 0, text: pruneText(r), json: r };
+    }
+    return usageError('worktree', sub === undefined ? 'needs a subcommand: create, remove, merge or prune' : `unknown subcommand ${sub}`);
   } catch (e) {
     return failure('worktree', e);
   }
@@ -122,8 +172,8 @@ async function read(ctx, core) {
 async function run(ctx) {
   const { openCore } = require('../core/index.cjs');
   const command = ctx.command === 'worktrees' ? 'worktrees' : 'worktree';
-  if (command === 'worktree' && !['create', 'remove', 'merge'].includes(ctx.argv[0])) {
-    return usageError('worktree', ctx.argv[0] === undefined ? 'needs a subcommand: create, remove or merge' : `unknown subcommand ${ctx.argv[0]}`);
+  if (command === 'worktree' && !['create', 'remove', 'merge', 'prune'].includes(ctx.argv[0])) {
+    return usageError('worktree', ctx.argv[0] === undefined ? 'needs a subcommand: create, remove, merge or prune' : `unknown subcommand ${ctx.argv[0]}`);
   }
   const dataDir = C.dataDirOf(C.discover(ctx.cwd), ctx);
   const core = await openCore({ dataDir, caller: { role: 'operator', run_id: 'cli', pid: process.pid } });

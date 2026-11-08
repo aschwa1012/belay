@@ -91,7 +91,7 @@ test('a live run that is still pinning counts through the models its recorded le
 test('a paused run holds its pin whatever its pid says, and the refusal says how to clear a stale one', async () => {
   const { proj, data } = project('s3');
   const dir = fakeFetch(process.env.BELAY_MODEL_CACHE, GGUF_MODELS[R4]);
-  const dead = spawnSync(process.execPath, ['-e', '0']).pid;
+  const dead = require('../helpers/dead-pid.cjs').deadPid(); // an exited child's pid is reused on Windows
   const pin = { routing: { run: { embedder: NANO, reranker: R4 }, tiers: {} } };
   runs(data, [{ id: 'r-park', pid: dead, paused: true, pin }]);
   const m = await build(proj, data);
@@ -99,7 +99,7 @@ test('a paused run holds its pin whatever its pid says, and the refusal says how
   const r = await del(proj, data, R4);
   assert.strictEqual(r.code, 1);
   assert.match(r.text, /r-park \(paused\)/);
-  assert.match(r.text, /To clear a stale run: r-park \(paused\).*belay stop r-park/);
+  assert.match(r.text, /To clear a stale run: r-park \(paused\).*belay stop r-park.*re-run belay run with that run_id/);
   assert.ok(fs.existsSync(dir));
 });
 
@@ -118,7 +118,7 @@ test('delete confirms a live adapter pid against one process snapshot: a reused 
     embedderExtra.seams.snapshot = async () => null;
     const unread = await del(proj, data, R4);
     assert.strictEqual(unread.code, 1);
-    assert.match(unread.text, /r-reused \(adapter pid .* could not be verified\): if it is dead, end it with belay stop r-reused/);
+    assert.match(unread.text, /r-reused \(adapter pid .* could not be verified\): if it is live, end it with belay stop r-reused; if belay stop says "no live run", it is dead/);
     embedderExtra.seams.snapshot = async () => new Map([[process.pid, { created: 222, image: 'node' }]]);
     const reused = await del(proj, data, R4);
     assert.strictEqual(reused.code, 0, reused.text);

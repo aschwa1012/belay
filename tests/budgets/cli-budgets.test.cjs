@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // cli-budgets.test.cjs — build step 0018-gate-2,
 // implementing ADR 0018 amendment 1. Every spawned-process budget gate lives here, in a directory
 // package.json's four `test` globs do not reach: `npm test` runs this file in a second, sequential
@@ -150,6 +151,7 @@ let projDir = null;
 let noStoreDir = null;
 let orchDir = null;
 let txDir = null; // an interactive run's orchestrator dir: a launch marker and no stream
+let liveDir = null; // a budgeted run with 10 live workers in long turns (9 MB streams, no result line)
 let txCfg = null; // the sandbox CLAUDE_CONFIG_DIR holding the ~10 MB transcript the marker names
 
 before(async () => {
@@ -176,6 +178,23 @@ before(async () => {
   let epoch;
   try { epoch = (await core.run.list({})).runs.find((r) => r.id === 'run-budgets').epoch; } finally { await core.shutdownOwner(); await core.close(); }
   fs.writeFileSync(`${txDir}/run-start.json`, JSON.stringify({ run_id: 'run-budgets', epoch, mode: 'interactive', started_at: 1, launcher_pid: 1, session_id: 's', session_file: session }));
+  // ADR 0066 amendment (a turn in flight): a budgeted run with 10 live workers, each in one long turn whose stream is 9 MB with no result
+  // line, and the in-flight figures the run process would have published. A read must show them without parsing a stream.
+  liveDir = `${dir}/.belay-live`;
+  const lc = await openCore({ dataDir: liveDir, caller: { role: 'orchestrator', run_id: 'run-live', pid: process.pid } });
+  const lo = await openCore({ dataDir: liveDir, caller: { role: 'operator', run_id: 'run-live', pid: process.pid } });
+  try {
+    await lc.run.attach({ adapter_pid: process.pid, budget_usd: 50 });
+    const line = JSON.stringify({ type: 'assistant', message: { id: 'x', model: 'claude-sonnet-5-5', content: [{ type: 'text', text: 'y'.repeat(900) }], usage: { input_tokens: 10, output_tokens: 10, cache_read_input_tokens: 0, cache_creation_input_tokens: 0 } } }) + '\n';
+    const by = {};
+    for (let i = 0; i < 10; i++) {
+      const id = `lw${i}`; by[id] = 1;
+      fs.mkdirSync(`${liveDir}/workers/${id}`, { recursive: true });
+      fs.writeFileSync(`${liveDir}/workers/${id}/stream.jsonl`, line.repeat(Math.ceil(9 * 1024 * 1024 / line.length)));
+      await lc.worker.write({ id, substrate: 'claude-code', pid: process.pid, pid_image: 'node.exe', state: 'running', turns: 1, mid_turn: 1, cost_usd: 0.1, started_at: Date.now() });
+    }
+    await lo.run.setBudget({ budget: { counts_in_flight: false, orchestrator: { counted: true, usd: 0, in_flight_usd: 0 }, in_flight_workers: { usd: 10, by_worker: by, partial: [], unpriced: [] } } });
+  } finally { await lo.close(); await lc.shutdownOwner(); await lc.close(); }
 });
 
 after(() => {
@@ -242,6 +261,22 @@ test('budgets: status, workers, tasks, receipts, memory stats and reads (held --
   });
   report('reads_dead_store', result);
   assertGate(result);
+});
+
+test('budgets: status, agents and receipts over 10 live workers in 9 MB turns each add under 500 ms to the host floor, interleaved, and show the in-flight figure', () => {
+  const result = interleaved({
+    spawnFloor: makeSpawnFloor(),
+    commands: {
+      status: () => timedCli(['status', 'run-live', '--data', liveDir], {}, 0, liveDir),
+      agents: () => timedCli(['agents', 'run-live', '--data', liveDir], {}, 0, liveDir),
+      receipts: () => timedCli(['receipts', 'run-live', '--data', liveDir], {}, 0, liveDir),
+    },
+    n: N,
+  });
+  report('reads_live_streams', result);
+  assertGate(result);
+  const out = spawnCli(['status', 'run-live', '--data', liveDir]).stdout;
+  assert.match(out, /worker lw0: \$1\.00 in flight \(estimate\)/);
 });
 
 test('budgets: transcript, notices and agents (ADR 0036 U1) each add under 500 ms to the host floor, interleaved, on a dead store', () => {

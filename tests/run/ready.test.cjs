@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // The ready gate: what has to be true before a worker row is ever written `running`.
 //
 // Three separate claims, one per contract §5 clause, each with its own way of failing:
@@ -18,6 +19,7 @@ const { createRunManager } = require('../../src/run/index.cjs');
 const { createFakeCore } = require('./fake-core.cjs');
 const { openCore } = require('../../src/core/index.cjs');
 const P = require('../../src/run/process.cjs');
+const G = require('../helpers/proc-gone.cjs'); // "gone" by identity: a bare pid may be handed to another process (ADR 0039)
 
 const fwd = (p) => p.replace(/\\/g, '/');
 const FAKE = fwd(path.join(__dirname, 'fakes', 'fake-claude.cjs'));
@@ -70,7 +72,7 @@ test('an init followed by exit 7 is E_NO_READY carrying exit_code 7, and the row
       assert.ok(Number.isInteger(e.detail.pid) && e.detail.pid > 0);
       assert.equal(typeof e.detail.reason, 'string');
       assert.ok(e.detail.reason.length > 0);
-      assert.equal(P.pidAlive(e.detail.pid), false);
+      // No liveness check on the bare pid: the exit code above is only known from the process's own exit, and the number may be reused.
       return true;
     }
   );
@@ -176,7 +178,8 @@ test('a core that refuses running with E_WORKER_NOT_LIVE still reaches the calle
       (e) => {
         assert.equal(e.code, 'E_NO_READY', 'E_WORKER_NOT_LIVE is the core talking to the manager, not to the caller');
         assert.equal(typeof e.detail.stderr_tail, 'string');
-        assert.match(e.detail.death_established_by, /core-refused-running/);
+        // The refused write holds for the exit event (the child is attached and the event is coming), so the real exit settles it.
+        assert.equal(e.detail.death_established_by, 'exit-event');
         return true;
       }
     );
@@ -195,6 +198,7 @@ test('an init whose mcp_servers lack belay connected is E_NO_READY naming what w
   const sb = sandbox();
   const core = createFakeCore();
   const m = mgr(sb, core, FAKE);
+  const born = G.identifyOnWrite(core); // the worker's identity, taken when its pid row is written, before the launch is refused and the process killed
   process.env.FAKE_MCP = 'failed';
   try {
     await assert.rejects(
@@ -210,7 +214,8 @@ test('an init whose mcp_servers lack belay connected is E_NO_READY naming what w
     const states = core.rowsFor('wm').map((r) => r.state);
     assert.ok(!states.includes('running'), 'a worker whose MCP server did not connect is not running');
     assert.equal(states[states.length - 1], 'dead');
-    assert.equal(P.pidAlive(core.currentWorker('wm').pid), false, 'the worker is killed, not left behind');
+    assert.ok(born.id && born.id.pid === core.currentWorker('wm').pid, 'the worker was identified when its pid row was written');
+    await G.assertGone(born.id, 'the worker is killed, not left behind');
   } finally {
     delete process.env.FAKE_MCP;
     await m.shutdown();
@@ -297,6 +302,7 @@ test('a Codex worker whose adapter never lists tools is E_NO_READY naming the lo
   const sb = sandbox();
   const core = createFakeCore();
   const m = mgr(sb, core, FAKE_CODEX);
+  const born = G.identifyOnWrite(core);
   process.env.FAKE_CODEX_NO_TOOLS_LIST = '1';
   process.env.FAKE_CODEX_HANG = '1';
   try {
@@ -312,7 +318,8 @@ test('a Codex worker whose adapter never lists tools is E_NO_READY naming the lo
     const states = core.rowsFor('cy').map((r) => r.state);
     assert.ok(!states.includes('running'), 'no running row for a worker whose MCP server never answered');
     assert.equal(states[states.length - 1], 'dead');
-    assert.equal(P.pidAlive(core.currentWorker('cy').pid), false, 'the hung worker is killed by its exact pid');
+    assert.ok(born.id && born.id.pid === core.currentWorker('cy').pid, 'the worker was identified when its pid row was written');
+    await G.assertGone(born.id, 'the hung worker is killed by its exact pid');
   } finally {
     delete process.env.FAKE_CODEX_NO_TOOLS_LIST;
     delete process.env.FAKE_CODEX_HANG;
@@ -357,7 +364,7 @@ test('an unreadable user settings file fails the launch with E_ARGS naming the f
   // ADR 0024, build step S2: writeFilesFor passes the worker's own cwd, so settings.json also carries
   // the hygiene block, computed the same way here.
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(sb.data, 'workers', 'wq', 'settings.json'), 'utf8')), {
-    enabledPlugins: {}, ...require('../../src/run/surface.cjs').hygieneSettings(sb.worktree), hooks: require('../../src/run/kill-guard.cjs').hooksBlock(), // plus the kill guard
+    enabledPlugins: {}, ...require('../../src/run/surface.cjs').hygieneSettings(sb.worktree), hooks: { PreToolUse: [...require('../../src/run/guard.cjs').hooksBlock({ push: true }).PreToolUse] }, // the guard hook
   });
   await m2.shutdown();
   await m.shutdown();

@@ -55,7 +55,7 @@ function rule(assigned, fact = '') {
   if (!lease) return '';
   const task = assigned.task || {};
   if (isVerdict(task)) {
-    return `\n\nWhen you are finished, call lease_release with lease_id ${lease} and result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [...] }.${requiredLine(task)}${fact}\n\n${reviewStandard()}`;
+    return `\n\nWhen you are finished, call lease_release with lease_id ${lease} and result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [{ "severity": "blocking|should-fix|note", "title": "...", ... }] }.${requiredLine(task)}${fact}\n\n${reviewStandard()}`;
   }
   const commits = !!(task.worktree && task.worktree.path && !task.worktree.removed_at);
   return `\n\nWhen you are finished, ${commits ? 'commit your work in your worktree, then ' : ''}call lease_release with lease_id ${lease} and a result object (branch, head, tests, findings).${requiredLine(task)}`;

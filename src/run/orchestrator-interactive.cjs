@@ -198,7 +198,7 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
   const { command, prefixArgs } = L.resolveExe(L.claudeExe());
   const fullArgs = [...prefixArgs, ...argv];
   const argvHash = L.writeArgvJson(written.dir, { exe: command, args: fullArgs, cwd: worktree });
-  const env = L.buildEnv(process.env, { substrate: 'claude-code', cwd: worktree, mcpToolTimeoutMs });
+  const env = L.buildEnv(process.env, { substrate: 'claude-code', cwd: worktree, mcpToolTimeoutMs, interactive: true, orchestrator: true });
   // `--setting-sources=` skips the path that turns fullscreen on, so it is forced here, for this session only (workers
   // are headless). An explicit CLAUDE_CODE_NO_FLICKER in belay's own environment wins.
   // buildEnv scrubs the variable (a worker must not inherit it from claude's env), so an explicit value is put back here.
@@ -241,7 +241,7 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
   if (core && core.worker && typeof core.worker.list === 'function') {
     try {
       const WP = require('./wake-pipe.cjs');
-      wakePub = WP.startWakePublisher({ core, runId, notes: !!spec.notes, pipeName: deps.wakePipeName || WP.wakePipeName(dataDir, runId, wakeNonce), pollMs, isHeld: wakeHeld || deps.wakeHeld || (() => false), onRelease: wakeRelease || deps.wakeRelease || null });
+      wakePub = WP.startWakePublisher({ core, runId, notes: !!spec.notes, budgetWake: spec.budgetWake || null, pipeName: deps.wakePipeName || WP.wakePipeName(dataDir, runId, wakeNonce), pollMs, isHeld: wakeHeld || deps.wakeHeld || (() => false), onRelease: wakeRelease || deps.wakeRelease || null });
       await wakePub.listening;
     } catch (e) {
       wakeFailure = `the wake pipe could not be opened (${(e && (e.code || e.message)) || e})`;
@@ -419,7 +419,7 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
   const primary = state.spawnError || state.attachFailure || state.gateFailure || state.stopBy;
   let endedBy;
   if (state.spawnError) endedBy = `claude could not be started: ${state.spawnError}`;
-  else if (state.attachFailure) endedBy = state.attachStage === 'pin' ? `the run's retrieval routing could not be pinned (the attach itself succeeded), so the run did not start: ${state.attachFailure}` : `the run's attach write failed after this process became the store owner: ${state.attachFailure}`;
+  else if (state.attachFailure) endedBy = state.attachStage === 'pin' ? `the run's retrieval routing could not be pinned (the attach itself succeeded), so the run did not start: ${state.attachFailure}. The orchestrator process (pid ${child.pid}) had been started for the attach; belay sent it no prompt (anything typed into it meanwhile was its own turn), and orchestrator.interactive.kill_identity in this receipt records the stop.` : `the run's attach write failed after this process became the store owner: ${state.attachFailure}`;
   else if (state.gateFailure) {
     const g = state.gateFailure;
     endedBy = g.check === 'plugin' ? String(g.failed) : `surface gate failed (${g.check}): ${g.failed || 'check failed'}${g.detail ? `: ${g.detail}` : ''}`;
@@ -436,7 +436,7 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
   const block = {
     pid: child.pid == null ? null : child.pid, session_id: sessionId, model, turns: null, externally_triggered_turns: null,
     exit_code: state.exitCode, exit_signal: state.exitSignal, usage: null, argv_hash: argvHash, ready_ms: null, later_inits: null,
-    killed_after_close: false, surface: null, instructions: I.instructionsFields(instructions),
+    killed_after_close: false, stdin_error: null, surface: null, instructions: I.instructionsFields(instructions),
     permission_mode_requested: permissionMode, permission_mode_effective: actual.permission_mode,
     permission_mode_degraded: actual.permission_mode ? actual.permission_mode !== permissionMode : null,
     claude_code_version: actual.version,
@@ -459,7 +459,7 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
     },
   };
   return {
-    ended_by: endedBy, holds: [], polls: 0, wakes: [], wakes_suppressed: [], wakes_expired: [], wakes_held: [], pauses: [],
+    ended_by: endedBy, holds: [], polls: 0, wakes: [], wakes_suppressed: wakePub ? wakePub.droppedWakes() : [], wakes_expired: [], wakes_held: [], pauses: [],
     interactive_clean: clean, primary_cause: primary ? endedBy : null, orchestrator: block,
   };
 }

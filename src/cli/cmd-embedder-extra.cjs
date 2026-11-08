@@ -21,23 +21,49 @@ const MM = require('../core/memory-menu.cjs');
 
 const seams = { snapshot: null, rename: (a, b) => fs.renameSync(a, b), rm: (p) => fs.rmSync(p, { recursive: true, force: true }) };
 
-const USAGE = 'usage: belay embedder delete <model id> [--json]\n';
+const USAGE = 'usage: belay embedder delete <model> | [--gpu] --model <id> | --reranker <id> [--json]\n  <model>  the full id, or the name the Memory menu shows (an unambiguous label or short name)\n  --gpu    look the model up in the GPU table only, as fetch does\n';
 const fwd = (p) => String(p).replace(/\\/g, '/');
 const fail = (code, message, json = {}) => ({ code, text: `belay embedder: ${message}\n`, json: { error: message, ...json } });
+const usage = (message) => ({ code: 2, text: `belay embedder: ${message}\n\n${USAGE}`, json: { error: message } });
+
+// The one model delete names: positional, or the value of --model or --reranker (fetch's spellings). Returns { id } or a receipt.
+function modelArg(argv) {
+  const out = { names: [], gpu: false, reranker: false };
+  for (let i = 0; i < argv.length; i += 1) {
+    const a = argv[i];
+    if (a === '--gpu') out.gpu = true;
+    else if (a === '--model' || a === '--reranker') {
+      const v = argv[i + 1];
+      if (v === undefined || v.startsWith('-')) return usage(`${a} needs an id`);
+      out.names.push(v); i += 1;
+      if (a === '--reranker') out.reranker = true;
+    } else if (a.startsWith('-')) return usage(`unknown option ${a}`);
+    else out.names.push(a);
+  }
+  if (out.reranker && out.gpu) return usage('--reranker cannot be combined with --gpu');
+  if (out.names.length === 0) return usage('delete needs a model id');
+  if (out.names.length > 1) return usage(`delete takes exactly one model, got ${out.names.length}: ${out.names.map((n) => JSON.stringify(n)).join(', ')}`);
+  return out;
+}
 
 async function deleteModel(ctx, argv) {
-  const ids = argv.filter((a) => !a.startsWith('-'));
-  if (ids.length !== 1 || argv.length !== 1) return fail(2, `delete takes exactly one model id\n\n${USAGE}`);
-  const d = MM.describeForDelete(ids[0]);
-  if (!d) return fail(2, `unknown model ${JSON.stringify(ids[0])}; nothing was removed`);
+  const arg = modelArg(argv);
+  if (arg.code) return arg;
+  const pool = arg.gpu ? require('../core/gguf-models.cjs').GGUF_MODELS
+    : arg.reranker ? require('../core/onnx-rerankers.cjs').ONNX_RERANKER_TABLE
+      : { ...require('../core/models.cjs').MODELS, ...require('../core/onnx-rerankers.cjs').ONNX_RERANKER_TABLE, ...require('../core/gguf-models.cjs').GGUF_MODELS };
+  const hit = require('../core/model-names.cjs').resolveModelName(arg.names[0], pool);
+  if (hit && hit.ambiguous) return fail(2, `${JSON.stringify(arg.names[0])} fits more than one model: ${hit.ambiguous.join(', ')}; give the full id. Nothing was removed`, { candidates: hit.ambiguous });
+  const d = hit ? MM.describeForDelete(hit.id) : null;
+  if (!d) return fail(2, `unknown ${arg.gpu ? 'GPU ' : arg.reranker ? 'CPU reranker ' : ''}model ${JSON.stringify(arg.names[0])}; nothing was removed`);
   const found = C.discover(ctx.cwd);
   const { levers, error } = MM.leversOf(found);
   if (error) return fail(1, `the config's memory block is refused (${error}), so what uses this model cannot be told; fix it first. Nothing was removed`, { model: d.entry.id, removed: false });
-  const live = await MM.liveRunUse(ctx.dataDir || C.dataDirOf(found, ctx), { verify: true, snapshot: seams.snapshot });
+  const live = await MM.liveRunUse(C.dataDirOf(found, ctx), { verify: true, snapshot: seams.snapshot });
   if (!live.ok) return fail(1, 'the store could not be read, so the live runs that may use this model cannot be told. Nothing was removed', { model: d.entry.id, removed: false });
   const by = MM.modelsInUse(levers, live.models)[d.entry.id];
   if (by) {
-    const clear = live.runs.filter((r) => by.some((w) => w.startsWith(`run ${r.id}`)) && r.why !== 'live').map((r) => `${r.id} (${r.why === 'paused' ? 'paused' : `adapter pid ${r.pid} is alive but could not be verified`}): if it is dead, end it with belay stop ${r.id}`);
+    const clear = live.runs.filter((r) => by.some((w) => w.startsWith(`run ${r.id}`)) && r.why !== 'live').map((r) => `${r.id} (${r.why === 'paused' ? 'paused' : `adapter pid ${r.pid} is alive but could not be verified`}): ${r.why === 'paused' ? `if its run process is live, end it with belay stop ${r.id}; if belay stop says "no live run", re-run belay run with that run_id in its spec, which re-attaches the row so its end (or belay stop) releases the model; resume does not release it` : `if it is live, end it with belay stop ${r.id}; if belay stop says "no live run", it is dead`}`);
     return fail(1, `${d.entry.id} is in use by this project's settings or runs (${by.join(', ')}); change them first${clear.length ? `. To clear a stale run: ${clear.join('; ')}` : ''}. Nothing was removed`, { model: d.entry.id, in_use_by: by, removed: false });
   }
   const root = K.cacheRoot();

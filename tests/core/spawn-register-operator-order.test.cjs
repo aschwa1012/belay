@@ -12,6 +12,9 @@ const os = require('node:os');
 const path = require('node:path');
 const { core, deadPid } = require('./helpers.cjs');
 
+// The product derives the boot time from os.uptime(); pin it so the dated records below never depend on how long the host has been up.
+os.uptime = () => 30 * 86400;
+
 const OC = core('operator-check.cjs');
 const SR = core('spawn-register.cjs');
 const Prov = core('spawn-provenance.cjs');
@@ -19,19 +22,14 @@ const { Owner } = core('owner.cjs');
 
 const H = 3600000;
 const NOW = Date.now();
-const BOOT = NOW - 10 * 24 * H; // a fixed boot, so the tests do not depend on the host's real uptime
+const BOOT = SR.bootMs(NOW);
 const PEER = 4242;
 const tcp = () => ({ belayTransport: 'tcp', remotePort: 61000, localPort: 52100 });
 const tableOf = (pid) => async () => `  TCP    127.0.0.1:52100        127.0.0.1:61000        ESTABLISHED     1234\r\n  TCP    127.0.0.1:61000        127.0.0.1:52100        ESTABLISHED     ${pid}\r\n`;
 const snapOf = (o) => new Map(Object.entries(o).map(([pid, v]) => [Number(pid), v]));
 // The owner's own list function, with no store behind it (it names no workers of its own then).
-// (the owner's list does not pass a clock through, so the register read is given the test's now and boot here)
-const spawned = (ctx) => {
-  const list = SR.list;
-  SR.list = (o) => list({ now: NOW, boot: BOOT, ...o });
-  try { return Owner.prototype._spawnedProcesses.call({ store: null, opts: {} }, ctx); } finally { SR.list = list; }
-};
-const check = (shot) => OC.create({ startedAt: NOW, spawned, provenance: (s, o) => Prov.refresh(s, { now: NOW, boot: BOOT, ...o }), deps: { table: tableOf(PEER), snapshot: async () => shot } });
+const spawned = (ctx) => Owner.prototype._spawnedProcesses.call({ store: null, opts: {} }, ctx);
+const check = (shot) => OC.create({ startedAt: NOW, spawned, provenance: (s, o) => Prov.refresh(s, o), deps: { table: tableOf(PEER), snapshot: async () => shot } });
 const tree = (dir) => {
   const out = {};
   const walk = (d) => { for (const n of fs.readdirSync(d)) { const p = path.join(d, n); if (fs.statSync(p).isDirectory()) walk(p); else out[path.relative(dir, p)] = fs.readFileSync(p, 'utf8'); } };
@@ -86,7 +84,7 @@ test('a pre-boot record with no creation time whose pid is now another process r
     const listed = spawned({ snap: shot, persist: false });
     assert.deepStrictEqual(listed.filter((s) => s.pid === process.pid), [], 'not listed as spawned');
     const chain = [{ pid: process.pid, created: NOW - 1000 }, { pid: 11156, created: BOOT + 48000 }];
-    assert.strictEqual(OC.spawnedMatch(chain, listed.concat(Prov.refresh(shot, { now: NOW, boot: BOOT, persist: false }).alive)), null);
+    assert.strictEqual(OC.spawnedMatch(chain, listed.concat(Prov.refresh(shot, { persist: false }).alive)), null);
   });
 });
 
@@ -95,8 +93,7 @@ test('the register read without a snapshot closes a dead record at its last-seen
     const dead = deadPid();
     putRecord(dir, { pid: dead, created: NOW - 3 * H, at: NOW - 3 * H + 500, seen_at: NOW - 2 * H });
     assert.deepStrictEqual(SR.list(), []);
-    // touch skips within one refresh interval, so a stamped process can live two past its stamp: the close is the stamp plus that
-    assert.strictEqual(SR.tombstones().find((t) => t.pid === dead).until, NOW - 2 * H + 2 * SR.SEEN_REFRESH_MS);
+    assert.strictEqual(SR.tombstones().find((t) => t.pid === dead).until, NOW - 2 * H + 2 * SR.SEEN_REFRESH_MS, 'two stamp periods past the stamp');
   });
 });
 
@@ -121,11 +118,10 @@ test('a headless orchestrator whose run process died is covered up to its last s
     putRecord(dir, { pid, kind: 'orchestrator', created: null, spawned_at: s4, at: s4 + 300 });
     const shot = snapOf({ 99001: { ppid: pid, created: s4 + H, image: 'node.exe' } });
     const chain = [{ pid: 99001, created: s4 + H }];
-    const match = () => OC.spawnedMatch(chain, spawned({ snap: shot, persist: false }).concat(Prov.refresh(shot, { now: NOW, boot: BOOT, persist: false }).alive));
-    // never stamped: the window runs from the record's write time for two refresh intervals (60 s), no further
-    assert.strictEqual(match(), null, 'never stamped: an orphan made an hour in is outside the window');
+    const match = () => OC.spawnedMatch(chain, spawned({ snap: shot, persist: false }).concat(Prov.refresh(shot, { persist: false }).alive));
+    assert.strictEqual(match(), null, 'never stamped: the record closes 60 s after it was written, so an orphan made an hour in is outside it');
     const early = snapOf({ 99002: { ppid: pid, created: s4 + 30000, image: 'node.exe' } });
-    assert.ok(OC.spawnedMatch([{ pid: 99002, created: s4 + 30000 }], spawned({ snap: early, persist: false }).concat(Prov.refresh(early, { now: NOW, boot: BOOT, persist: false }).alive)), 'one made within the window is covered');
+    assert.ok(OC.spawnedMatch([{ pid: 99002, created: s4 + 30000 }], spawned({ snap: early, persist: false }).concat(Prov.refresh(early, { persist: false }).alive)), 'one made 30 s in is covered');
     assert.strictEqual(SR.touch(pid, s4 + 3.5 * H), true, 'the run process timer, 3.5 h in');
     assert.ok(match(), 'stamped: the orphan made an hour in is a descendant');
   });

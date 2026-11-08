@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/git-env.cjs'); // isolated git config for every fixture
 // run-end-close.test.cjs — ADR 0029 decisions 1 and 2: run.end closes the ending epoch's worker rows that
 // claim a life over a dead pid, and run.attach's suspect set gains `stopping`. Every store lives under the
 // OS temp dir; every worktree is a temp directory, a real git repo or not.
@@ -13,6 +14,7 @@ const { core, sandbox, cleanup, callerFor, deadPid, sleep } = require('./helpers
 
 const { openCore } = core('index.cjs');
 const { pidAlive } = core('lock.cjs');
+const G = require('../helpers/proc-gone.cjs'); // a child the test holds is gone when its handle says it exited, never by a bare pid (ADR 0039)
 
 const fwd = (p) => String(p).replace(/\\/g, '/');
 const SHA_RE = /^[0-9a-f]{40,64}$/;
@@ -53,7 +55,7 @@ async function teardown(ctx, extraDirs = []) {
 async function deadRunningPid() {
   const child = spawn(process.execPath, ['-e', 'setTimeout(() => {}, 60000)'], { windowsHide: true, stdio: 'ignore' });
   const pid = child.pid;
-  return { pid, kill: async () => { child.kill('SIGKILL'); for (let i = 0; i < 100 && pidAlive(pid); i += 1) await sleep(25); assert.ok(!pidAlive(pid)); } };
+  return { pid, kill: async () => { child.kill('SIGKILL'); assert.ok(await G.childExited(child), `the stand-in worker (pid ${pid}) did not exit`); } };
 }
 
 test('run.end marks a dead-pid worker row in each of starting, running, idle and stopping, with the exact fields', async () => {
@@ -93,7 +95,9 @@ test('run.end marks a dead-pid worker row in each of starting, running, idle and
       const b = before[id];
       assert.strictEqual(w.state, 'dead', id);
       assert.ok(w.seq > b.seq, `${id} got one appended row`);
-      assert.strictEqual(w.death_established_by, `run.end: pid ${b.pid} not alive when the run ended; no adapter wrote its exit`);
+      assert.strictEqual(w.death_established_by, id === 'w-stopping'
+        ? `run.end: a stop was in flight (the row was stopping) and pid ${b.pid} was not alive when the run ended; no adapter wrote the exit that would say how it ended`
+        : `run.end: pid ${b.pid} not alive when the run ended; no adapter wrote its exit`);
       assert.strictEqual(w.exited_at, b.exited_at == null ? w.exited_at : b.exited_at, `${id} exited_at kept when present`);
       assert.ok(Number.isInteger(w.exited_at) && (b.exited_at != null || w.exited_at >= t0 - 1000), `${id} exited_at is set`);
       assert.strictEqual(w.exit_code, b.exit_code, `${id} exit_code untouched`);
@@ -305,9 +309,8 @@ test('a head run.end supplies clears the head_error the row carried, on both pat
 });
 
 // The 2026-10-30 operator lockout: a stopped run left worker pids in the machine-wide spawn register because the adapter that would
-// have unregistered them never saw them exit. run.end, which closes the row, also retires the record it judged (its own worker's),
-// and closes the lifetime two refresh intervals after the last stamp, never before the process could have been alive.
-test("run.end retires the spawn register record of a worker it closes over a dead pid, and leaves a live pid's record", async () => {
+// have unregistered them never saw them exit. run.end, which closes the row, also retires the record, at the last moment it was seen.
+test('run.end retires the spawn register record of a worker it closes over a dead pid, and leaves a live pid\'s record', async () => {
   const reg = require('./helpers.cjs').ownSpawnRegistry();
   const SR = core('spawn-register.cjs');
   const ctx = await setup();
@@ -315,7 +318,7 @@ test("run.end retires the spawn register record of a worker it closes over a dea
   try {
     const { orch } = ctx;
     const dead = deadPid();
-    const t = Date.now() - 300000; // old enough that the stamp plus two refresh intervals is before now
+    const t = Date.now() - 300000; // old enough that the stamp plus two stamp periods is before now
     await orch.worker.write({ id: 'w-gone', substrate: 'claude-code', pid: dead, state: 'starting', worktree: makePlainDir(), started_at: t });
     await orch.worker.write({ id: 'w-up', substrate: 'claude-code', pid: live.pid, state: 'running', worktree: makePlainDir(), started_at: t });
     fs.mkdirSync(reg.dir, { recursive: true });
@@ -323,11 +326,29 @@ test("run.end retires the spawn register record of a worker it closes over a dea
     rec(dead, 'w-gone'); rec(live.pid, 'w-up');
     const ended = await orch.run.end({ exit_reason: 'test end' });
     assert.deepStrictEqual(ended.workers_marked_dead.map((m) => [m.worker_id, m.register_retired]), [['w-gone', true]]);
-    assert.ok(!fs.existsSync(path.join(reg.dir, `${dead}.json`)), "the dead worker's record is gone");
+    assert.ok(!fs.existsSync(path.join(reg.dir, `${dead}.json`)), 'the dead worker\'s record is gone');
     const tomb = SR.tombstones().find((x) => x.pid === dead);
-    assert.strictEqual(tomb.until, t + 20000 + 2 * SR.SEEN_REFRESH_MS, 'closed two refresh intervals after the last stamp, not at the close');
+    assert.strictEqual(tomb.until, t + 20000 + 2 * SR.SEEN_REFRESH_MS, 'closed two stamp periods after the last stamp, not at the close');
     assert.ok(fs.existsSync(path.join(reg.dir, `${live.pid}.json`)), 'a record whose pid still answers is left');
   } finally { await live.kill(); await teardown(ctx); reg.remove(); }
+});
+
+// The same class as the register: a pid that answers is not the worker unless it is the process the row recorded.
+test('run.end closes a row whose pid is held by another process (a different creation time), and leaves one that runs as recorded', async () => {
+  const reg = require('./helpers.cjs').ownSpawnRegistry();
+  const ctx = await setup();
+  try {
+    const { orch } = ctx;
+    const mine = await require('../../src/core/proc-identity.cjs').createdOf(process.pid, { kind: 'test' });
+    assert.ok(mine && Number.isFinite(mine.created), 'this process\'s creation time is readable');
+    const t = Date.now() - 60000;
+    // this process stands for the pid another process now holds; the row recorded a process created long before it
+    await orch.worker.write({ id: 'w-reused', substrate: 'claude-code', pid: process.pid, pid_created: mine.created - 3600000, state: 'starting', worktree: makePlainDir(), started_at: t });
+    await orch.worker.write({ id: 'w-same', substrate: 'claude-code', pid: process.pid, pid_created: mine.created, state: 'starting', worktree: makePlainDir(), started_at: t });
+    const ended = await orch.run.end({ exit_reason: 'test end' });
+    assert.deepStrictEqual(ended.workers_marked_dead.map((m) => m.worker_id), ['w-reused'], 'only the row whose recorded process is not the one under the pid');
+    assert.strictEqual((await orch.worker.get({ worker_id: 'w-same' })).state, 'starting');
+  } finally { await teardown(ctx); reg.remove(); }
 });
 
 test("run.end leaves a spawn register record under a dead worker's pid that names another worker", async () => {
@@ -336,7 +357,7 @@ test("run.end leaves a spawn register record under a dead worker's pid that name
   const ctx = await setup();
   try {
     const dead = deadPid();
-    const t = Date.now() - 300000; // old enough that the stamp plus two refresh intervals is before now
+    const t = Date.now() - 60000;
     await ctx.orch.worker.write({ id: 'w-gone', substrate: 'claude-code', pid: dead, state: 'starting', worktree: makePlainDir(), started_at: t });
     fs.mkdirSync(reg.dir, { recursive: true });
     // the number went to another worker (another run's) after this one's process exited

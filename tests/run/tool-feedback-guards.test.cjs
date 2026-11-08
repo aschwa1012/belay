@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/tmp.cjs'); // a plain `node --test` of this file keeps its temp dirs out of the real temp dir
 // tool-feedback-guards.test.cjs — ADR 0058: the guards of the tool-feedback code, each in isolation, so a mutation of any one fails
 // here rather than surviving: the compaction queue's drops, stop_idle_on_done's idleness checks, worker_last_reply's role and cut,
 // the release evaluation's filters and start guard, and a cancel that lands while a command is being spawned.
@@ -46,7 +47,7 @@ function idleCase(over = {}, tasks = [], onList = null) {
   const stops = [];
   let lists = 0;
   const w = { id: 'w1', turnEnded: true, settled: false, stopRequested: false, parkRequested: null, queue: Promise.resolve(), ...over };
-  const manager = { _worker: (id) => (id === 'w1' ? w : null), stop: async (a) => { stops.push(a); return { worker_id: a.worker_id, graceful: true }; } };
+  const manager = { _worker: (id) => (id === 'w1' ? w : null), stop: async (a) => { if (a.guard && await a.guard()) return null; stops.push(a); return { worker_id: a.worker_id, graceful: true }; } };
   const ctx = { stopIdleOnDone: true, core: { task: { list: async () => { lists += 1; if (onList) onList(w); return { tasks }; } } } };
   return { stops, lists: () => lists, run: () => stopIfIdleDone(manager, ctx, { id: 't1', state: 'done', handoff: { by: 'w1' } }) };
 }

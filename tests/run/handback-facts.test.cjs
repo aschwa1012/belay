@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // handback-facts.test.cjs — a reviewer's first message states, as a fact, belay's own acceptance result for the task it reviews:
 // from that task's latest results, at the head they were judged on, and never an instruction about re-running.
 
@@ -15,7 +16,7 @@ test('a verdict task gets one fact line per reviewed task, with the head and the
   const f = await HB.facts(getter({ w1: { id: 'w1', results: results() } }), assigned);
   assert.strictEqual(f, "\n\nbelay's acceptance checks for w1 passed at abcdef012345 (node --test; files_within_owned).");
   const msg = HB.rule(assigned, f);
-  assert.match(msg, /findings": \[\.\.\.\] \}\.\n\nbelay's acceptance checks for w1 passed/);
+  assert.match(msg, /findings": \[\{ "severity": "blocking\|should-fix\|note", "title": "\.\.\.", \.\.\. \}\] \}\.\n\nbelay's acceptance checks for w1 passed/);
   assert.ok(msg.indexOf("belay's acceptance") < msg.indexOf(HB.reviewStandard().slice(0, 40)), 'before the Review standard');
   assert.ok(!/re-?run|do not run|need not/i.test(f), 'a fact only');
 });

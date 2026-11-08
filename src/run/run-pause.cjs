@@ -20,7 +20,7 @@ function resumeWakeText(by, resumed, left, held) {
   return build(0).slice(0, 220);
 }
 
-function createRunPauseControl({ runId, core, hook, pauseWorker, resumeWorker, stopInFlight, beforeResume, interactive = false }) {
+function createRunPauseControl({ runId, core, hook, pauseWorker, resumeWorker, stopInFlight, beforeResume, afterResume, interactive = false }) {
   let inFlight = null; // { op: 'pause'|'resume', promise }
   // ADR 0037 wave 2 fix: an interactive run has no run-hold, so this process's own memory is the ground truth for
   // "paused" (a stale paused_at carried across a reattach does not count) and the wake publisher's hold.
@@ -40,11 +40,12 @@ function createRunPauseControl({ runId, core, hook, pauseWorker, resumeWorker, s
 
   async function currentRun() { return (await core.run.get()).run; }
 
-  // Every row of this run reading `starting`/`running` with a live pid, any substrate — decision 4.4:
+  // Every row of this run reading `starting`/`running` with a live pid, or `starting` with no pid yet (a spawn or restart before its
+  // launch: its adapter holds the pause until it is up, launch-gate.cjs), any substrate — decision 4.4:
   // only a Claude Code one is actually paused; a Codex one is named `not_paused` with `E_SUBSTRATE`.
   async function liveRows() {
     const { workers } = await core.worker.list({});
-    return workers.filter((w) => w.run_id === runId && (w.state === 'starting' || w.state === 'running') && w.pid_alive === true);
+    return workers.filter((w) => w.run_id === runId && ((w.state === 'starting' && w.pid == null) || ((w.state === 'starting' || w.state === 'running') && w.pid_alive === true)));
   }
   async function pausedRows() {
     const { workers } = await core.worker.list({});
@@ -120,8 +121,27 @@ function createRunPauseControl({ runId, core, hook, pauseWorker, resumeWorker, s
     const alreadyParkedRows = await pausedRows();
     const already_parked = alreadyParkedRows.map((w) => w.id);
 
+    // The two store awaits above yield; the idle rule or the timeout can begin closing the run meanwhile, and
+    // `hook.pause` (what makes the hold read paused) has not run yet. Re-check before and after the row write.
+    const exitedAfterRows = refuseIfExited();
+    if (exitedAfterRows) return exitedAfterRows;
     const pausedAt = Date.now();
     await core.run.setPaused({ paused: true, at: pausedAt, by });
+    const exitedAfterWrite = refuseIfExited();
+    if (exitedAfterWrite) {
+      exitedAfterWrite.catch(() => {}); // held across the undo's await; returned (or replaced) below, so it must not read as unhandled
+      // Undo the row write so a run that is closing does not read paused; an ended run clears its own pause,
+      // so any other failure is named in the refusal: the row may be left paused.
+      try { await core.run.setPaused({ paused: false }); } catch (e) {
+        if (!(e && e.code === 'E_ARGS')) {
+          const left = new Error(`the run (${runId}) is finishing and its pause could not be undone; the row may be left paused: ${(e && e.message) || e}`);
+          left.code = 'E_NOT_FOUND';
+          left.detail = { phase: 'finishing', row_left_paused: true, undo_error: (e && e.code) || null };
+          return Promise.reject(left);
+        }
+      }
+      return exitedAfterWrite;
+    }
     if (interactive) interactivePaused = true; // from here the wake publisher holds its wakes
     const { interrupt, timeout } = await interruptOrchestrator(by);
 
@@ -184,7 +204,7 @@ function createRunPauseControl({ runId, core, hook, pauseWorker, resumeWorker, s
 
     const span_ms = Date.now() - run.paused_at;
     const beyond = (list) => (list.length > 10 ? `${list.slice(0, 10).map((w) => w.worker_id).join(', ')} and ${list.length - 10} more` : list.map((w) => w.worker_id).join(', ') || 'none');
-    const pauser = /embedder-failure [(]/.test(run.paused_by || '') ? `an embedder failure paused this run (${String(run.paused_by).replace(/^[^[]*\[|\]$/g, '')})` : 'the operator paused this run';
+    const pauser = /embedder-failure [(]/.test(run.paused_by || '') ? `an embedder failure paused this run (${String(run.paused_by).replace(/^[^[]*\[|\]$/g, '')})` : (/\[budget [(]/.test(run.paused_by || '') ? `a budget paused this run (${String(run.paused_by).replace(/^[^[]*\[|\]$/g, '')})` : 'the operator paused this run');
     const line = `belay: ${pauser} ${span_ms} ms ago and has been resumed now; resumed [${beyond(workers_resumed)}]; left parked [${beyond(left_parked)}].`;
 
     const result = await resumeOrchestrator(by, line);
@@ -236,7 +256,8 @@ function createRunPauseControl({ runId, core, hook, pauseWorker, resumeWorker, s
     if (inFlight && inFlight.op === 'resume') return inFlight.promise;
     const p = doResume(params);
     inFlight = { op: 'resume', promise: p };
-    p.then(() => { inFlight = null; }, () => { inFlight = null; });
+    const settle = () => { inFlight = null; if (typeof afterResume === 'function') { try { afterResume(); } catch { /* the caller's hook never fails a resume */ } } }; // afterResume: the budget guard checks again once the resume has landed
+    p.then(settle, settle);
     return p;
   }
 

@@ -1,4 +1,5 @@
 'use strict';
+require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // native-memory-auth.test.cjs: who opted in to a worker's native_memory is a fact of the worker row that no later write changes. A run that
 // was refused cannot pass as the run that opted in (its dead row names it as the writer), a run id used again by a later run does not
 // inherit the grant, and a settings rewrite that fails during a denied adoption leaves the refusal in force for the cached worker.
@@ -30,7 +31,7 @@ function sandbox() {
 const coreWith = (levers, base, epochs, runId) => {
   const core = Object.create(base);
   const rows = (epochs || []).map(([seq, ended]) => ({ id: runId, seq, ended_at: ended ? 1 : null }));
-  core.run = { get: async () => ({ run: { id: runId, memory_levers: JSON.stringify(levers) }, epochs: rows }) };
+  core.run = { list: async () => ({ runs: [] }), get: async () => ({ run: { id: runId, memory_levers: JSON.stringify(levers) }, epochs: rows }) };
   return core;
 };
 const make = (sb, core, runId) => createRunManager({ core, dataDir: sb.data, runId, paths: PATHS });

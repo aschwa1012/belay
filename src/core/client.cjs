@@ -12,9 +12,15 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const net = require('node:net');
+const { StringDecoder } = require('node:string_decoder');
 const { err } = require('./errors.cjs');
+const { hinted } = require('./msys-hint.cjs');
 const { pipeName, readOwnerLock, pidAlive, holderReused } = require('./lock.cjs');
 const { WRITE_METHODS, METHODS } = require('./engine.cjs'); // the method table only; nothing here opens a store
+// Roles engine dispatch refuses once their run has ended (audit D42); the run process (operator) is not bound. A worker Core already
+// never elects (index.cjs), so for a worker this is defense in depth for a Client built with elect: true; the rule follows from an
+// ended run refusing every write from a process launched for it.
+const LAUNCHED_FOR_RUN = new Set(['orchestrator', 'worker']);
 
 const VERIFY_OPERATOR_MS = 20000; // the operator check reads two tables of the host (netstat, a process snapshot); each has its own bound of 10 s
 const MAX_LINE_BYTES = 1024 * 1024; // the longest request line an owner reads (owner.cjs); a longer one is refused here, unsent
@@ -125,14 +131,14 @@ class Client {
   }
 
   _notMadeOwner(ended) {
-    return err('E_SHUTDOWN', `run ${ended.id} has already ended; this orchestrator-role process was not made the store owner`, { run_id: ended.id, ended_at: ended.ended_at, data_dir: this.dataDir });
+    return err('E_SHUTDOWN', `run ${ended.id} has already ended; this ${this.opts.caller.role}-role process was not made the store owner`, { run_id: ended.id, ended_at: ended.ended_at, data_dir: this.dataDir });
   }
 
   // The same question as _endedRun, asked of a throwaway copy of the store (invariant 6: a read copies, it never opens the live
   // file), so nothing is started to ask it. A store that does not exist, or a copy that cannot be read (E_BUSY included: a writer that never settles fails open here), answers "not ended".
   async _endedRunBeforeStart() {
     const caller = this.opts.caller;
-    if (!caller || caller.role !== 'orchestrator' || !caller.run_id) return null;
+    if (!caller || !LAUNCHED_FOR_RUN.has(caller.role) || !caller.run_id) return null;
     if (!fs.existsSync(path.join(this.dataDir, 'memory.db'))) return null;
     try {
       const { withCopy } = require('./copy-read.cjs');
@@ -147,7 +153,7 @@ class Client {
 
   _endedRun(owner) {
     const caller = this.opts.caller;
-    if (!caller || caller.role !== 'orchestrator' || !caller.run_id) return null;
+    if (!caller || !LAUNCHED_FOR_RUN.has(caller.role) || !caller.run_id) return null;
     try {
       const row = require('./rows.cjs').current(owner.store, 'run', caller.run_id);
       return row && row.ended_at != null ? { id: caller.run_id, ended_at: row.ended_at } : null;
@@ -182,9 +188,10 @@ class Client {
     const sock = this.sock;
     const p = (async () => {
       let ok = false;
-      try { const r = await this.call('ping', { caller: this.opts.caller, verify_operator: true }, { timeoutMs: VERIFY_OPERATOR_MS }); ok = !!(r && r.operator_verified === true); }
+      let reason = null; let cause = null;
+      try { const r = await this.call('ping', { caller: this.opts.caller, verify_operator: true }, { timeoutMs: VERIFY_OPERATOR_MS }); ok = !!(r && r.operator_verified === true); reason = ok ? null : (r && typeof r.operator_reason === 'string' ? r.operator_reason : null); cause = ok || !r || typeof r.operator_cause !== 'string' ? null : r.operator_cause; }
       catch { ok = false; }
-      if (this.sock === sock) { if (ok) this._opChecked = true; if (this._opVerifying === p) this._opVerifying = null; }
+      if (this.sock === sock) { this._opReason = reason; this._opCause = cause; if (ok) this._opChecked = true; if (this._opVerifying === p) this._opVerifying = null; }
       return ok;
     })();
     this._opVerifying = p;
@@ -198,13 +205,14 @@ class Client {
       this._viaPort = !!target.port; this._opChecked = false; this._opVerifying = null;
       const s = target.port ? net.connect({ host: target.host, port: target.port }) : net.connect(target.pipe);
       let buf = '', settled = false;
+      const dec = new StringDecoder('utf8'); // a multi-byte character can be split across two chunks
       const timer = setTimeout(() => { if (!settled) { settled = true; try { s.unref(); } catch { /* best effort */ } s.destroy(); reject(err('E_TIMEOUT', `connecting to ${this.pipe} took longer than ${timeoutMs} ms`)); } }, timeoutMs);
       timer.unref();
       s.once('connect', () => { if (settled) return; settled = true; clearTimeout(timer); this.sock = s; resolve(); });
       s.once('error', e => { clearTimeout(timer); if (!settled) { settled = true; reject(e); } else this._lost(e); });
       s.on('close', () => { if (settled && this.sock === s) this._lost(new Error('the owner closed the pipe')); });
       s.on('data', d => {
-        buf += d.toString('utf8');
+        buf += dec.write(d);
         let i;
         while ((i = buf.indexOf('\n')) >= 0) {
           const line = buf.slice(0, i);
@@ -216,7 +224,7 @@ class Client {
           if (!p) continue;
           this.pending.delete(msg.id);
           clearTimeout(p.timer);
-          if (msg.error) p.reject(err(msg.error.code || 'E_INTERNAL', msg.error.message || 'the owner returned an error with no message', msg.error.detail));
+          if (msg.error) p.reject(hinted(err(msg.error.code || 'E_INTERNAL', msg.error.message || 'the owner returned an error with no message', msg.error.detail)));
           else p.resolve(msg.result);
         }
       });
@@ -265,7 +273,7 @@ class Client {
   }
 
   _unverified(method) {
-    return err('E_UNBOUND', `${method}: the operator check did not vouch for this connection (the owner could not read the host's connection table or process snapshot, or refused); the read was not made as the anonymous worker, whose answer hides rows the operator may read. Retry; the check is asked again`, { reason: 'operator_check', method, role: 'operator' });
+    return hinted(err('E_UNBOUND', `${method}: the operator check did not vouch for this connection (${this._opReason ? `the owner said: ${this._opReason}` : "the owner could not read the host's connection table or process snapshot, or refused"}); the read was not made as the anonymous worker, whose answer hides rows the operator may read. Retry; the check is asked again`, { reason: 'operator_check', method, role: 'operator', ...(this._opReason ? { operator_reason: this._opReason } : {}), ...(this._opCause ? { operator_cause: this._opCause } : {}) }));
   }
 
   _send(method, params, opts = {}) {
