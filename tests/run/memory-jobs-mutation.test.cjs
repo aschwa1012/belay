@@ -83,7 +83,7 @@ async function hungRunEnd(t, boundMs) {
   return { core, ctx, p, isDone: () => done };
 }
 
-test('run end: the work is bounded at the total minus 500 ms, the give-up record gets the 500 ms, and the give-up names what did not run', async (t) => {
+test('legacy: run end: the work is bounded at the total minus 500 ms, the give-up record gets the 500 ms, and the give-up names what did not run', async (t) => {
   const h = await hungRunEnd(t, 6000);
   t.mock.timers.tick(5499);
   await settle();
@@ -97,7 +97,7 @@ test('run end: the work is bounded at the total minus 500 ms, the give-up record
   assert.deepStrictEqual(h.ctx.runEndError, { where: 'memory-jobs.atRunEnd', code: 'E_TIMEOUT', message: 'gave up', unfinished: ['summary:t1/w1', 'wrapup:task:t1', 'wrapup:run'] });
 });
 
-test('run end: a small total gives the give-up record a quarter of it', async (t) => {
+test('legacy: run end: a small total gives the give-up record a quarter of it', async (t) => {
   const h = await hungRunEnd(t, 1000);
   t.mock.timers.tick(749);
   await settle();
@@ -107,7 +107,7 @@ test('run end: a small total gives the give-up record a quarter of it', async (t
   assert.match(h.core.events.find((e) => e.key === 'run:gave-up').message, /stopped after 750 ms/);
 });
 
-test('run end: a read that fails names the stage, the plain message and E_INTERNAL for an uncoded error', async () => {
+test('legacy: run end: a read that fails names the stage, the plain message and E_INTERNAL for an uncoded error', async () => {
   const core = spyCore({ tasks: { t1: releasedTask() }, fail: { 'task.list': () => new Error('store gone') } });
   const ctx = mkCtx(core, RUN_END);
   const out = await MJ.atRunEnd(ctx);
@@ -123,7 +123,7 @@ test('run end: a read that fails names the stage, the plain message and E_INTERN
   assert.deepStrictEqual(ranOff, { outcome: 'off' });
 });
 
-test('wrap-up: a second turn after the first wrap-up sends nothing, and a failed one is not sent again by a turn', async () => {
+test('legacy: wrap-up: a second turn after the first wrap-up sends nothing, and a failed one is not sent again by a turn', async () => {
   const core = spyCore({ tasks: { t1: releasedTask() }, observations: OBS });
   const ctx = mkCtx(core, lv({ capture: true, observations: true, summaries: 'mechanical', wrapup: true }));
   const w = worker();
@@ -145,7 +145,7 @@ test('wrap-up: a second turn after the first wrap-up sends nothing, and a failed
   assert.strictEqual(methodsOf(bad, 'memory.recordEvent').filter((c) => c.args.kind === 'wrapup').length, sent, 'a turn never retries a failed wrap-up');
 });
 
-test('wrap-up: a task with no handoff, or a verdict that is not text, still gets its wrap-up without a verdict line', async () => {
+test('legacy: wrap-up: a task with no handoff, or a verdict that is not text, still gets its wrap-up without a verdict line', async () => {
   for (const handoff of [undefined, null, { result: { summary: 'x' } }, { result: { verdict: 7 } }]) {
     const core = spyCore({ tasks: { t1: releasedTask({ handoff }) }, observations: OBS });
     const ctx = mkCtx(core, lv({ capture: true, observations: true, wrapup: true }));
@@ -163,7 +163,7 @@ test('wrap-up: a task with no handoff, or a verdict that is not text, still gets
   assert.match(core.events.find((e) => e.kind === 'wrapup').message, /worker-stated verdict: holds/);
 });
 
-test('the summary written into the project carries its own body (version 2) and its project_write event names it', async () => {
+test('legacy: the summary written into the project carries its own body (version 2) and its project_write event names it', async () => {
   const core = spyCore({ tasks: { t1: releasedTask() }, observations: OBS });
   const ctx = mkCtx(core, lv({ capture: true, observations: true, summaries: 'mechanical', project: 'demo', project_writes: true }));
   const w = worker();
@@ -178,7 +178,7 @@ test('the summary written into the project carries its own body (version 2) and 
   assert.match(ev.message, /^wrote m\d+ to project\/demo$/);
 });
 
-test('a failing usage write is an ok 0 usage event with E_INTERNAL for an uncoded error and the turn in its message', async () => {
+test('legacy: a failing usage write is an ok 0 usage event with E_INTERNAL for an uncoded error and the turn in its message', async () => {
   const core = spyCore({ fail: { 'usage.record': () => new Error('disk full') } });
   const ctx = mkCtx(core, lv({ cost_ledger: true }));
   const w = worker({ taskId: null });
@@ -190,7 +190,7 @@ test('a failing usage write is an ok 0 usage event with E_INTERNAL for an uncode
   assert.strictEqual(ev.worker_id, 'w1');
 });
 
-test('a levers read that fails is named on the worker and the turn does nothing', async () => {
+test('legacy: a levers read that fails is named on the worker and the turn does nothing', async () => {
   const core = spyCore({ fail: { 'run.get': () => failing('E_OWNER_LOST', 'no owner') } });
   const ctx = { core, runId: 'r1', shutdownFlags: { closed: false } };
   const w = worker();
@@ -203,7 +203,7 @@ test('a levers read that fails is named on the worker and the turn does nothing'
   assert.deepStrictEqual(out, { outcome: 'off' });
 });
 
-test('a receipt that cannot be written is named on the worker with the plain message', async () => {
+test('legacy: a receipt that cannot be written is named on the worker with the plain message', async () => {
   const core = spyCore({ tasks: { t1: releasedTask() }, observations: OBS, fail: { 'memory.recordEvent': () => failing('E_TIMEOUT', 'ledger down') } });
   const ctx = mkCtx(core, lv({ capture: true, observations: true, summaries: 'mechanical' }));
   const w = worker();
@@ -211,7 +211,7 @@ test('a receipt that cannot be written is named on the worker with the plain mes
   assert.deepStrictEqual(w.lastError, { where: 'memory.recordEvent', code: 'E_TIMEOUT', message: 'ledger down' });
 });
 
-test('a task read that fails on the turn path is named on the worker as memory-jobs.afterTurn', async () => {
+test('legacy: a task read that fails on the turn path is named on the worker as memory-jobs.afterTurn', async () => {
   const core = spyCore({ tasks: { t1: releasedTask() }, fail: { 'task.get': () => failing('E_OWNER_LOST', 'no owner') } });
   const w = worker();
   MJ.afterTurn(w, mkCtx(core, lv({ wrapup: true })), {}); await flush(w);

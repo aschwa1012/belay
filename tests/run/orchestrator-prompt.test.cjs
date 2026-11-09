@@ -1,4 +1,5 @@
 'use strict';
+// Not a legacy test: it tests the prompt templates; legacy levers are set only to render them.
 require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // The orchestrator prompt template (build step S7) names tools by their exact MCP names; an invented
 // name would send a real Opus 5.5 orchestrator at a tool that does not exist.

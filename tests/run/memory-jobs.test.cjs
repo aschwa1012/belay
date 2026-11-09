@@ -94,7 +94,7 @@ const flush = async (w) => { await tick(); await w.memoryQueue; };
 const releasedTask = (over = {}) => ({ id: 't1', spec: 'build the thing', state: 'released', handoff: { result: { summary: 'built it', verdict: 'holds' } }, ...over });
 const OBS = [{ id: 'o1', body: { v: 1, turn: 1, files_read: ['a.cjs'], files_modified: ['b.cjs'], commands: [{ command: 'npm test', exit_code: 0 }], errors: 0 } }];
 
-test('every lever off: a spy core sees zero calls, and no queue is made', async () => {
+test('legacy: every lever off: a spy core sees zero calls, and no queue is made', async () => {
   const core = spyCore({ tasks: { t1: releasedTask() } });
   const ctx = mkCtx(core, lv({}));
   const w = worker();
@@ -106,7 +106,7 @@ test('every lever off: a spy core sees zero calls, and no queue is made', async 
   assert.strictEqual(w.memoryJobs, undefined);
 });
 
-test('levers not yet loaded: one run.get read, then nothing when they are all off', async () => {
+test('legacy: levers not yet loaded: one run.get read, then nothing when they are all off', async () => {
   const core = spyCore({ tasks: { t1: releasedTask() } });
   const ctx = { core, runId: 'r1', shutdownFlags: { closed: false } };
   const w = worker();
@@ -115,7 +115,7 @@ test('levers not yet loaded: one run.get read, then nothing when they are all of
   assert.deepStrictEqual(core.calls.map((c) => c.method), ['run.get']);
 });
 
-test('usage: a delta across turns, a new row per turn, and a fresh delta for a new process', async () => {
+test('legacy: usage: a delta across turns, a new row per turn, and a fresh delta for a new process', async () => {
   const core = spyCore();
   const ctx = mkCtx(core, lv({ cost_ledger: true }));
   const w = worker();
@@ -139,7 +139,7 @@ test('usage: a delta across turns, a new row per turn, and a fresh delta for a n
   assert.strictEqual(core.usageRows.length, 5);
 });
 
-test('usage: a fresh session after a restart writes its own cost, not the row total that carries the earlier sessions (cost_base)', async () => {
+test('legacy: usage: a fresh session after a restart writes its own cost, not the row total that carries the earlier sessions (cost_base)', async () => {
   const core = spyCore();
   const ctx = mkCtx(core, lv({ cost_ledger: true }));
   const w = worker();
@@ -152,7 +152,7 @@ test('usage: a fresh session after a restart writes its own cost, not the row to
   assert.strictEqual(Number(core.usageRows.reduce((n, r) => n + r.cost_usd, 0).toFixed(4)), 1.05, 'the ledger sums to the row cost, nothing twice');
 });
 
-test('usage: a resume of the same session carries its total, so the new process writes only the difference', async () => {
+test('legacy: usage: a resume of the same session carries its total, so the new process writes only the difference', async () => {
   const core = spyCore();
   const ctx = mkCtx(core, lv({ cost_ledger: true }));
   const w = worker();
@@ -164,7 +164,7 @@ test('usage: a resume of the same session carries its total, so the new process 
   assert.deepStrictEqual(core.usageRows.map((r) => r.cost_basis), ['delta-of-cumulative', 'delta-of-cumulative', 'delta-of-cumulative']);
 });
 
-test('usage: a counter that restarts lower after a replace counts its own total, not the carried base again', async () => {
+test('legacy: usage: a counter that restarts lower after a replace counts its own total, not the carried base again', async () => {
   const core = spyCore();
   const ctx = mkCtx(core, lv({ cost_ledger: true }));
   const w = worker();
@@ -176,7 +176,7 @@ test('usage: a counter that restarts lower after a replace counts its own total,
   assert.strictEqual(core.usageRows[2].cost_basis, MJ.NEW_PROCESS);
 });
 
-test('usage: an adopted worker starts from the cost its row recorded, so the ledger does not take it again', async () => {
+test('legacy: usage: an adopted worker starts from the cost its row recorded, so the ledger does not take it again', async () => {
   const core = spyCore();
   const ctx = mkCtx(core, lv({ cost_ledger: true }));
   const w = worker({ turns: 2, costUsd: 0.75, adoptedLedger: { cost: 0.75, turns: 2 }, pid: 300 });
@@ -184,7 +184,7 @@ test('usage: an adopted worker starts from the cost its row recorded, so the led
   assert.deepStrictEqual(core.usageRows.map((r) => [r.turn, Number(r.cost_usd.toFixed(4)), r.cost_basis]), [[3, 0.1, 'delta-of-cumulative']]);
 });
 
-test('usage: a snapshot is taken when the turn ends, so a later turn_end does not change the row', async () => {
+test('legacy: usage: a snapshot is taken when the turn ends, so a later turn_end does not change the row', async () => {
   const core = spyCore();
   const ctx = mkCtx(core, lv({ cost_ledger: true }));
   const w = worker({ turns: 1, costUsd: 0.5 });
@@ -195,7 +195,7 @@ test('usage: a snapshot is taken when the turn ends, so a later turn_end does no
   assert.strictEqual(core.usageRows[0].cost_usd, 0.5);
 });
 
-test('usage: Codex rows carry no dollars and the cached subset moves to cache_read; a first row seen late is a new process', async () => {
+test('legacy: usage: Codex rows carry no dollars and the cached subset moves to cache_read; a first row seen late is a new process', async () => {
   const core = spyCore();
   const ctx = mkCtx(core, lv({ cost_ledger: true }));
   const cx = worker({ id: 'cx', substrate: 'codex', turns: 1, costUsd: 0, lastTurnUsage: { input_tokens: 100, cached_input_tokens: 40, output_tokens: 9 } });
@@ -209,7 +209,7 @@ test('usage: Codex rows carry no dollars and the cached subset moves to cache_re
   assert.strictEqual(core.usageRows[1].cost_usd, 0.2);
 });
 
-test('usage: a refused row (never committed) is an ok:0 event naming the code, and the next row carries the cost the failed one lost', async () => {
+test('legacy: usage: a refused row (never committed) is an ok:0 event naming the code, and the next row carries the cost the failed one lost', async () => {
   let failNext = true;
   const core = spyCore({ fail: { 'usage.record': () => { if (failNext) { failNext = false; return failing('E_ARGS', 'refused'); } return null; } } });
   const ctx = mkCtx(core, lv({ cost_ledger: true }));
@@ -224,7 +224,7 @@ test('usage: a refused row (never committed) is an ok:0 event naming the code, a
   assert.strictEqual(core.usageRows[0].cost_usd, 0.03);
 });
 
-test('usage: a timed-out row that may have committed is not re-sent and its cost is not carried into the next row', async () => {
+test('legacy: usage: a timed-out row that may have committed is not re-sent and its cost is not carried into the next row', async () => {
   let failNext = true;
   const lost = () => Object.assign(failing('E_TIMEOUT', 'owner slow'), { detail: { may_have_committed: true } });
   const core = spyCore({ fail: { 'usage.record': () => { if (failNext) { failNext = false; return lost(); } return null; } } });
@@ -239,7 +239,7 @@ test('usage: a timed-out row that may have committed is not re-sent and its cost
   assert.ok(Math.abs(core.usageRows[0].cost_usd - 0.02) < 1e-9);
 });
 
-test('summary: written once per (task, worker) under concurrent turns, labelled, never the worker\'s words', async () => {
+test('legacy: summary: written once per (task, worker) under concurrent turns, labelled, never the worker\'s words', async () => {
   const core = spyCore({ tasks: { t1: releasedTask() }, observations: OBS });
   const ctx = mkCtx(core, lv({ capture: true, observations: true, summaries: 'mechanical' }));
   const a = worker({ turns: 3 });
@@ -271,7 +271,7 @@ test('summary: written once per (task, worker) under concurrent turns, labelled,
   assert.strictEqual(methodsOf(core, 'memory.store').length, 0);
 });
 
-test('summary: a task still running writes none; a prior ok event from an earlier manager stops a second', async () => {
+test('legacy: summary: a task still running writes none; a prior ok event from an earlier manager stops a second', async () => {
   const running = spyCore({ tasks: { t1: releasedTask({ state: 'assigned' }) } });
   const ctx = mkCtx(running, lv({ capture: true, observations: true, summaries: 'mechanical' }));
   const w = worker();
@@ -284,7 +284,7 @@ test('summary: a task still running writes none; a prior ok event from an earlie
   assert.strictEqual(methodsOf(prior, 'memory.store').length, 0);
 });
 
-test('summary: a store failure is an ok:0 event, the turn trigger does not retry it, the run end does', async () => {
+test('legacy: summary: a store failure is an ok:0 event, the turn trigger does not retry it, the run end does', async () => {
   let down = true;
   const core = spyCore({ tasks: { t1: releasedTask() }, observations: OBS, fail: { 'memory.store': () => (down ? failing('E_TIMEOUT', 'store down') : null) } });
   const ctx = mkCtx(core, lv({ capture: true, observations: true, summaries: 'mechanical' }));
@@ -303,7 +303,7 @@ test('summary: a store failure is an ok:0 event, the turn trigger does not retry
   assert.strictEqual(core.events.filter((e) => e.kind === 'summary' && e.ok === 1).length, 1);
 });
 
-test('summary: an empty, refused or malformed result stores no row and records its class code', async () => {
+test('legacy: summary: an empty, refused or malformed result stores no row and records its class code', async () => {
   for (const [cls, code] of [['empty', 'E_SUMMARY_EMPTY'], ['refused', 'E_SUMMARY_REFUSED'], ['malformed', 'E_SUMMARY_MALFORMED'], ['over_budget', 'E_SUMMARY_OVER_BUDGET']]) {
     const core = spyCore({ tasks: { t1: releasedTask() } });
     const ctx = mkCtx(core, lv({ capture: true, observations: true, summaries: 'mechanical' }), { modules: { summarise: async () => ({ fields: {}, generator: { kind: 'x', version: 1 }, output_class: cls }) } });
@@ -315,7 +315,7 @@ test('summary: an empty, refused or malformed result stores no row and records i
   }
 });
 
-test('project writes: the summary is written once, straight into the project, and no observation is copied', async () => {
+test('legacy: project writes: the summary is written once, straight into the project, and no observation is copied', async () => {
   const core = spyCore({ tasks: { t1: releasedTask() }, observations: OBS });
   core.rows.set('obs9', { id: 'obs9', type: 'observation', title: 'turn 1: modified b.cjs', text: 'obs text', body: { v: 2 } });
   const ctx = mkCtx(core, lv({ capture: true, observations: true, summaries: 'mechanical', project: 'demo', project_writes: true }));
@@ -334,7 +334,7 @@ test('project writes: the summary is written once, straight into the project, an
   assert.ok(writes[0].ok === 1 && writes[0].key === `summary:${writes[0].row_ids[0]}`);
 });
 
-test('project writes: the summary text names its task, worker and run, so two tasks never collapse onto one row', async () => {
+test('legacy: project writes: the summary text names its task, worker and run, so two tasks never collapse onto one row', async () => {
   const texts = [];
   for (const taskId of ['t1', 't2']) {
     const core = spyCore({ tasks: { [taskId]: releasedTask({ id: taskId }) }, observations: [] });
@@ -347,7 +347,7 @@ test('project writes: the summary text names its task, worker and run, so two ta
   assert.notStrictEqual(texts[0], texts[1]);
 });
 
-test('project writes: with no project, or the lever off, the summary goes to the run as before', async () => {
+test('legacy: project writes: with no project, or the lever off, the summary goes to the run as before', async () => {
   for (const over of [{ project_writes: true }, { project: 'demo' }]) {
     const core = spyCore({ tasks: { t1: releasedTask() }, observations: OBS });
     const ctx = mkCtx(core, lv({ capture: true, observations: true, summaries: 'mechanical', ...over }));
@@ -361,7 +361,7 @@ test('project writes: with no project, or the lever off, the summary goes to the
   }
 });
 
-test('promote: when the task ends the rows of the worker are named to memory.promote, once, without the summary lever', async () => {
+test('legacy: promote: when the task ends the rows of the worker are named to memory.promote, once, without the summary lever', async () => {
   const ownRows = [{ id: 'a', written_by: 'worker:w1' }, { id: 'h', written_by: 'harness' }, { id: 'c', written_by: 'worker:w2' }, { id: 'b', written_by: 'worker:w1' }];
   const core = spyCore({ tasks: { t1: releasedTask() }, ownRows });
   const ctx = mkCtx(core, lv({ capture: true, observations: true, project: 'demo', project_writes: true }));
@@ -374,7 +374,7 @@ test('promote: when the task ends the rows of the worker are named to memory.pro
   assert.strictEqual(methodsOf(core, 'memory.list')[0].args.filter.task_id, 't1');
 });
 
-test('promote: a task that has not ended, no rows of the worker, or the lever off, call nothing', async () => {
+test('legacy: promote: a task that has not ended, no rows of the worker, or the lever off, call nothing', async () => {
   const cases = [
     [{ tasks: { t1: { ...releasedTask(), state: 'assigned' } }, ownRows: [{ id: 'a', written_by: 'worker:w1' }] }, { project: 'demo', project_writes: true }],
     [{ tasks: { t1: releasedTask() }, ownRows: [{ id: 'a', written_by: 'harness' }] }, { project: 'demo', project_writes: true }],
@@ -388,7 +388,7 @@ test('promote: a task that has not ended, no rows of the worker, or the lever of
   }
 });
 
-test('promote: a refused promotion is an ok:0 project_write event with its code and is not retried', async () => {
+test('legacy: promote: a refused promotion is an ok:0 project_write event with its code and is not retried', async () => {
   const core = spyCore({ tasks: { t1: releasedTask() }, ownRows: [{ id: 'a', written_by: 'worker:w1' }], fail: { 'memory.promote': 'E_MODEL' } });
   const ctx = mkCtx(core, lv({ capture: true, observations: true, project: 'demo', project_writes: true }));
   const w = worker();
@@ -399,7 +399,7 @@ test('promote: a refused promotion is an ok:0 project_write event with its code 
   assert.deepStrictEqual(evs.map((e) => [e.ok, e.code, e.key]), [[0, 'E_MODEL', 'promote:t1|w1']]);
 });
 
-test('wrap-up: at most 600 bytes, keyed task:<id>, in the event message, once', async () => {
+test('legacy: wrap-up: at most 600 bytes, keyed task:<id>, in the event message, once', async () => {
   const core = spyCore({ tasks: { t1: releasedTask() }, observations: [{ id: 'o', body: { files_modified: Array.from({ length: 40 }, (_, i) => `src/some/long/path/number-${i}.cjs`) } }] });
   const ctx = mkCtx(core, lv({ capture: true, observations: true, summaries: 'mechanical', cost_ledger: true, wrapup: true }));
   const w = worker();
@@ -421,7 +421,7 @@ test('wrap-up: at most 600 bytes, keyed task:<id>, in the event message, once', 
   assert.strictEqual(wu.sha256.length, 64);
 });
 
-test('wrap-up: with the summary lever off it still goes out, without a summary line; E_EXISTS is not an error', async () => {
+test('legacy: wrap-up: with the summary lever off it still goes out, without a summary line; E_EXISTS is not an error', async () => {
   const core = spyCore({ tasks: { t1: releasedTask() } });
   core.events.push({ kind: 'wrapup', key: 'task:t1', ok: 1 });
   const ctx = mkCtx(core, lv({ wrapup: true }));
@@ -436,7 +436,7 @@ test('wrap-up: with the summary lever off it still goes out, without a summary l
   assert.ok(!/summary:/.test(core2.events[0].message));
 });
 
-test('wrap-up: a failed event write is an ok:0 wrapup event with its key', async () => {
+test('legacy: wrap-up: a failed event write is an ok:0 wrapup event with its key', async () => {
   const core = spyCore({ tasks: { t1: releasedTask() } });
   const orig = core.memory.recordEvent;
   let first = true;
@@ -447,7 +447,7 @@ test('wrap-up: a failed event write is an ok:0 wrapup event with its key', async
   assert.ok(ev && ev.ok === 0 && ev.code === 'E_TIMEOUT' && ev.key === 'task:t1');
 });
 
-test('run end: a stopped worker holding a task gets its summary and wrap-up, then the run wrap-up once', async () => {
+test('legacy: run end: a stopped worker holding a task gets its summary and wrap-up, then the run wrap-up once', async () => {
   const tasks = { t1: releasedTask({ state: 'assigned' }), t2: releasedTask({ id: 't2', state: 'done' }) };
   const core = spyCore({ tasks, observations: OBS, workers: [{ id: 'w1', task_id: 't1', state: 'dead' }, { id: 'w2', task_id: 't2', state: 'idle' }] });
   const ctx = mkCtx(core, lv({ capture: true, observations: true, summaries: 'mechanical', wrapup: true }));
@@ -463,7 +463,7 @@ test('run end: a stopped worker holding a task gets its summary and wrap-up, the
   assert.strictEqual(core.events.length, before);
 });
 
-test('run end: bounded; a hung core call is given up on, named, and nothing is thrown or written afterwards', async () => {
+test('legacy: run end: bounded; a hung core call is given up on, named, and nothing is thrown or written afterwards', async () => {
   const core = spyCore({ tasks: { t1: releasedTask() }, observations: OBS, workers: [{ id: 'w1', task_id: 't1', state: 'dead' }, { id: 'w2', task_id: 't1', state: 'dead' }], hang: { 'memory.store': true } });
   const ctx = mkCtx(core, lv({ capture: true, observations: true, summaries: 'mechanical', wrapup: true }), { runEndBoundMs: 600 });
   const t0 = Date.now();
@@ -482,11 +482,11 @@ test('run end: bounded; a hung core call is given up on, named, and nothing is t
   assert.strictEqual(core.calls.length, settled);
 });
 
-test('run end: the default bound is 5,000 ms', () => {
+test('legacy: run end: the default bound is 5,000 ms', () => {
   assert.strictEqual(MJ.RUN_END_BOUND_MS, 5000);
 });
 
-test('run end: a core that throws everywhere never makes atRunEnd throw', async () => {
+test('legacy: run end: a core that throws everywhere never makes atRunEnd throw', async () => {
   const core = spyCore({ tasks: { t1: releasedTask() }, fail: { 'task.list': 'E_OWNER_LOST', 'memory.recordEvent': 'E_OWNER_LOST' } });
   const ctx = mkCtx(core, lv({ summaries: 'mechanical', capture: true, observations: true, wrapup: true, cost_ledger: true }));
   await MJ.atRunEnd(ctx);
@@ -494,7 +494,7 @@ test('run end: a core that throws everywhere never makes atRunEnd throw', async 
   await MJ.atRunEnd(ctx2);
 });
 
-test('after shutdown: afterTurn does nothing, even with every job lever on', async () => {
+test('legacy: after shutdown: afterTurn does nothing, even with every job lever on', async () => {
   const core = spyCore({ tasks: { t1: releasedTask() } });
   const ctx = mkCtx(core, lv({ cost_ledger: true, wrapup: true }));
   ctx.shutdownFlags.closed = true;
@@ -511,7 +511,7 @@ test('after shutdown: afterTurn does nothing, even with every job lever on', asy
   assert.strictEqual(w.lastError.state, 'turn-memory-jobs');
 });
 
-test('a worker with no task still gets usage rows and no summary or wrap-up', async () => {
+test('legacy: a worker with no task still gets usage rows and no summary or wrap-up', async () => {
   const core = spyCore();
   const ctx = mkCtx(core, lv({ capture: true, observations: true, summaries: 'mechanical', cost_ledger: true, wrapup: true }));
   const w = worker({ taskId: null });
@@ -521,7 +521,7 @@ test('a worker with no task still gets usage rows and no summary or wrap-up', as
   assert.deepStrictEqual(core.calls.map((c) => c.method), ['usage.record']);
 });
 
-test('wrap-up: the rendered text carries no clock, so two Date.now values give identical bytes', async () => {
+test('legacy: wrap-up: the rendered text carries no clock, so two Date.now values give identical bytes', async () => {
   const render = async (now) => {
     const real = Date.now;
     Date.now = () => now;
@@ -544,7 +544,7 @@ test('wrap-up: the rendered text carries no clock, so two Date.now values give i
   assert.doesNotMatch(a[0], /\b\d+\s*(ms|s|sec|seconds?|minutes?|min|hours?|h|days?)\s+ago\b|\bago\b|\bjust now\b/i, 'no relative time');
 });
 
-test('a summary row sent before close keeps its event; once the owner is gone the event is not sent', async () => {
+test('legacy: a summary row sent before close keeps its event; once the owner is gone the event is not sent', async () => {
   for (const gone of [false, true]) {
     const core = spyCore({ tasks: { t1: releasedTask() }, observations: OBS });
     const ctx = mkCtx(core, lv({ capture: true, observations: true, summaries: 'mechanical' }));

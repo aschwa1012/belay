@@ -42,7 +42,7 @@ async function listing({ role = 'orchestrator', levers, store = true, runGet, ta
 
 const bytes = (list) => Buffer.byteLength(JSON.stringify(list), 'utf8');
 
-test('lever off: the orchestrator listing is byte-identical to the listing without the tool', async () => {
+test('legacy: lever off: the orchestrator listing is byte-identical to the listing without the tool', async () => {
   const baseline = JSON.stringify(tools.toolsFor('orchestrator'));
   for (const levers of [undefined, OFF]) {
     const r = await listing({ levers });
@@ -52,7 +52,7 @@ test('lever off: the orchestrator listing is byte-identical to the listing witho
   assert.strictEqual(bytes(tools.toolsFor('orchestrator')), 15890, 'the off listing is the 15,890 bytes last measured (15,855 before the description covered a run with no plan, 15,790 before a plan field could be null, 15,760 before the follow_up plan field, 15,773 before the policy description named the escalation and the run plan, 15,648 before the build plan field, 15,507 before the short-check default and what only the check reports, 15,416 before worker_wait became a short check (ADR 0037 amendment 7), 15,412 before re_review joined the directive, 15,330 before the directive policy wording, 15,186 before the policy manager clause, 15,148 before the researcher clause, 14,562 before the task_create policy field, 14,376 before the user-branch merge arguments, 13,841 before task_create trees and batches, 13,784 before the fix_notice wording, 13,803 before task_list stopped naming rev, 13,431 before integrate checks, 13,213 before the queued-evaluation wording, 13,018 before the spec reaches the worker and the integrate view, 14,530 before the wording audit removed the permission tools and the refusal clauses, 14,410 before the integrate force argument, 14,236 before the task_create amend and tree_of, 14,185 before the task_create base, 13,982 before the lean replies, 13,921 before ADR 0060 judged heads, 13,827 before ADR 0060 retries_on_fail, 13,728 before the integration state, 13,360 before the compact task views, 13,321 before the ADR 0059 task_create text, 11,076 before ADR 0054\'s git_read, 11,049 before the ADR 0057 search texts, 9,900 before ADR 0053\'s worktree tools, 9,829 before the paired write/search contract)');
 });
 
-test('lever on: knowledge_ask is listed, last, and the listing is under the orchestrator budget', async () => {
+test('legacy: lever on: knowledge_ask is listed, last, and the listing is under the orchestrator budget', async () => {
   const r = await listing({ levers: ON });
   assert.deepStrictEqual(r.list.map((t) => t.name).slice(-1), ['knowledge_ask']);
   assert.strictEqual(JSON.stringify(r.list), JSON.stringify(tools.toolsFor('orchestrator', { knowledge: true })));
@@ -63,12 +63,12 @@ test('lever on: knowledge_ask is listed, last, and the listing is under the orch
   assert.deepStrictEqual(r.again, r.list, 'a second tools/list answers the same');
 });
 
-test('the run row is read once for any number of listings', async () => {
+test('legacy: the run row is read once for any number of listings', async () => {
   const r = await listing({ levers: ON, tag: 'kl-once' });
   assert.strictEqual(r.reads, 1);
 });
 
-test('a worker never lists knowledge_ask, whatever the lever, and its listing is unchanged', async () => {
+test('legacy: a worker never lists knowledge_ask, whatever the lever, and its listing is unchanged', async () => {
   const r = await listing({ role: 'worker', levers: ON, tag: 'kl-w' });
   assert.strictEqual(JSON.stringify(r.list), JSON.stringify(tools.toolsFor('worker')));
   assert.strictEqual(r.reads, 0, 'a worker adapter reads no lever');
@@ -76,21 +76,21 @@ test('a worker never lists knowledge_ask, whatever the lever, and its listing is
   assert.strictEqual(JSON.stringify(tools.toolsFor('worker', { knowledge: true })), JSON.stringify(tools.toolsFor('worker')));
 });
 
-test('with no store the tool is not listed and nothing is created or read', async () => {
+test('legacy: with no store the tool is not listed and nothing is created or read', async () => {
   const r = await listing({ levers: ON, store: false, tag: 'kl-nostore' });
   assert.ok(!r.list.some((t) => t.name === 'knowledge_ask'));
   assert.strictEqual(r.reads, 0);
   assert.deepStrictEqual(fs.readdirSync(r.data).filter((f) => f !== 'run-get-count.txt'), [], 'the data dir stays empty');
 });
 
-test('a run row that cannot be read leaves the tool out, says so, and asks again next time', async () => {
+test('legacy: a run row that cannot be read leaves the tool out, says so, and asks again next time', async () => {
   const r = await listing({ levers: ON, runGet: 'fail', tag: 'kl-fail' });
   assert.ok(!r.list.some((t) => t.name === 'knowledge_ask'));
   assert.match(r.stderr(), /knowledge_ask is not listed: the run's levers could not be read: fake run\.get failure/);
   assert.strictEqual(r.reads, 2, 'a failed read is not cached');
 });
 
-test('a run row that never answers is given up on inside the bound', { timeout: 20000 }, async () => {
+test('legacy: a run row that never answers is given up on inside the bound', { timeout: 20000 }, async () => {
   const t0 = Date.now();
   const r = await listing({ levers: ON, runGet: 'hang', tag: 'kl-hang' });
   assert.ok(!r.list.some((t) => t.name === 'knowledge_ask'));
@@ -98,7 +98,7 @@ test('a run row that never answers is given up on inside the bound', { timeout: 
   assert.ok(Date.now() - t0 < 15000);
 });
 
-test('once the adapter has attached, the listing and the run manager take the levers from the attach row: no run.get at all', async () => {
+test('legacy: once the adapter has attached, the listing and the run manager take the levers from the attach row: no run.get at all', async () => {
   const data = dataDir('kl-attached');
   const countFile = path.join(data, 'run-get-count.txt');
   const wt = sandboxDir('kl-wt');
@@ -115,7 +115,7 @@ test('once the adapter has attached, the listing and the run manager take the le
   } finally { await a.close(); }
 });
 
-test('knowledge_ask routes to the run manager, and a worker is refused with E_ROLE', async () => {
+test('legacy: knowledge_ask routes to the run manager, and a worker is refused with E_ROLE', async () => {
   const data = dataDir('kl-call');
   const orch = launch({ data, env: { BELAY_FAKE_CORE: FAKE, BELAY_FAKE_LEVERS: ON } });
   const worker = launch({ role: 'worker', workerId: 'w1', data, env: { BELAY_FAKE_CORE: FAKE, BELAY_FAKE_LEVERS: ON } });
@@ -133,7 +133,7 @@ test('knowledge_ask routes to the run manager, and a worker is refused with E_RO
 });
 
 // The knowledge agent reads memory it did not write, so its adapter lists and allows only the memory read tools.
-test('the knowledge agent\'s worker adapter lists and allows only the memory read tools', async (t) => {
+test('legacy: the knowledge agent\'s worker adapter lists and allows only the memory read tools', async (t) => {
   const names = tools.toolsFor('worker', { workerId: 'knowledge-r1' }).map((x) => x.name).sort();
   assert.deepStrictEqual(names, [...tools.KNOWLEDGE_READ_TOOLS].sort());
   for (const n of ['memory_store', 'memory_delete', 'lease_release', 'checkpoint_write', 'task_list']) assert.strictEqual(tools.allows('worker', n, 'knowledge-r1'), false, n);

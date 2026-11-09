@@ -27,7 +27,7 @@ function held() {
 const worker = () => ({ id: 'w-1', taskId: 't-1', turns: 1, substrate: 'claude-code', worktree: null, lastError: null });
 const plan = () => ({ levers: { observations: true }, events: [], dropped: 0, snap: { turn: 1, workerId: 'w-1', taskId: 't-1', substrate: 'claude-code', finalText: 'did the thing' } });
 
-test('a store sent before close still records its event after the flag closes', async () => {
+test('legacy: a store sent before close still records its event after the flag closes', async () => {
   const h = held();
   const ctx = { core: h.core, shutdownFlags: { closed: false, ownerGone: false } };
   const w = worker();
@@ -43,7 +43,7 @@ test('a store sent before close still records its event after the flag closes', 
   assert.deepStrictEqual(h.events[0].row_ids, ['mem-1']);
 });
 
-test('a store that fails after close still records its ok 0 event', async () => {
+test('legacy: a store that fails after close still records its ok 0 event', async () => {
   const h = held();
   h.core.memory.store = async (args) => { h.stores.push(args); throw Object.assign(new Error('write refused'), { code: 'E_BUSY' }); };
   const ctx = { core: h.core, shutdownFlags: { closed: false, ownerGone: false } };
@@ -56,7 +56,7 @@ test('a store that fails after close still records its ok 0 event', async () => 
   assert.strictEqual(h.events[0].code, 'E_BUSY');
 });
 
-test('a job not yet started at close writes neither the row nor the event', async () => {
+test('legacy: a job not yet started at close writes neither the row nor the event', async () => {
   const h = held();
   const ctx = { core: h.core, shutdownFlags: { closed: true, ownerGone: false } };
   const w = worker();
@@ -67,7 +67,7 @@ test('a job not yet started at close writes neither the row nor the event', asyn
   assert.strictEqual(w.lastError.where, 'after-shutdown');
 });
 
-test('once the owner is gone the paired event is not sent and the drop is named', async () => {
+test('legacy: once the owner is gone the paired event is not sent and the drop is named', async () => {
   const h = held();
   const ctx = { core: h.core, shutdownFlags: { closed: false, ownerGone: false } };
   const w = worker();

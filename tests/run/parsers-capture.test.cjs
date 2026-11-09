@@ -34,7 +34,7 @@ const OFF_HASHES = {
   'capture-codex.jsonl': ['codex', 'a894732601a6b92e4c17b3965cee5955841c9eb9fff07b964339bfef87e6e07c'],
 };
 
-test('capture off (default, false, or an empty options object) leaves every fixture identical to the base parser', () => {
+test('legacy: capture off (default, false, or an empty options object) leaves every fixture identical to the base parser', () => {
   const realNow = Date.now;
   Date.now = () => 1;
   try {
@@ -48,7 +48,7 @@ test('capture off (default, false, or an empty options object) leaves every fixt
   }
 });
 
-test('capture off adds no capture field to any tool event and keeps no state', () => {
+test('legacy: capture off adds no capture field to any tool event and keeps no state', () => {
   const p = createParser('claude-code');
   assert.strictEqual(p.capture, null);
   const ev = run('claude-code', lines('capture-claude.jsonl'));
@@ -57,7 +57,7 @@ test('capture off adds no capture field to any tool event and keeps no state', (
   }
 });
 
-test('capture on changes only the added fields: the rest of every event is the same', () => {
+test('legacy: capture on changes only the added fields: the rest of every event is the same', () => {
   for (const [f, [sub]] of Object.entries(OFF_HASHES)) {
     const off = run(sub, lines(f));
     const on = run(sub, lines(f), { capture: true, redact: ident });
@@ -77,7 +77,7 @@ test('capture on changes only the added fields: the rest of every event is the s
 const results = (ev) => ev.filter((e) => e.kind === 'tool_result');
 const uses = (ev) => ev.filter((e) => e.kind === 'tool_use');
 
-test('Claude Code: ids, command, no-error exit 0, reported exit code, files', () => {
+test('legacy: Claude Code: ids, command, no-error exit 0, reported exit code, files', () => {
   const ev = run('claude-code', lines('capture-claude.jsonl'), { capture: true, redact: ident });
   const u = uses(ev);
   const r = results(ev);
@@ -102,7 +102,7 @@ test('Claude Code: ids, command, no-error exit 0, reported exit code, files', ()
   assert.ok(Buffer.byteLength(r[4].head) <= CF.MAX_BYTES && Buffer.byteLength(r[4].tail) <= CF.MAX_BYTES);
 });
 
-test('Claude Code: a result for an unseen id still parses', () => {
+test('legacy: Claude Code: a result for an unseen id still parses', () => {
   const ev = run('claude-code', [lines('capture-claude.jsonl')[1]], { capture: true, redact: ident });
   const r = results(ev)[0];
   assert.strictEqual(r.tool, null);
@@ -110,7 +110,7 @@ test('Claude Code: a result for an unseen id still parses', () => {
   assert.strictEqual(r.exit_code, null);
 });
 
-test('Codex: item id, command, reported exit code, null when absent, patch paths', () => {
+test('legacy: Codex: item id, command, reported exit code, null when absent, patch paths', () => {
   const ev = run('codex', lines('capture-codex.jsonl'), { capture: true, redact: ident });
   const u = uses(ev);
   const r = results(ev);
@@ -124,7 +124,7 @@ test('Codex: item id, command, reported exit code, null when absent, patch paths
   assert.deepStrictEqual(r[3].files, ['src/a.js', 'src/b.js']);
 });
 
-test('head and tail stay within 3 lines and 300 bytes each, on character boundaries', () => {
+test('legacy: head and tail stay within 3 lines and 300 bytes each, on character boundaries', () => {
   const text = Array.from({ length: 10 }, (_, i) => '\u00e9'.repeat(200) + i).join('\n');
   const { head, tail } = CF.headTail(text, ident);
   for (const part of [head, tail]) {
@@ -136,7 +136,7 @@ test('head and tail stay within 3 lines and 300 bytes each, on character boundar
   assert.ok(tail.endsWith('9'));
 });
 
-test('capture state does not grow: a result releases its call', () => {
+test('legacy: capture state does not grow: a result releases its call', () => {
   const p = createParser('claude-code', { capture: true, redact: ident });
   for (const l of lines('capture-claude.jsonl')) p.pushLine(l);
   assert.deepStrictEqual([...p.capture.calls.keys()], ['toolu_orphan']);
@@ -146,7 +146,7 @@ test('capture state does not grow: a result releases its call', () => {
 const secret = 'sk' + '-ant-' + 'a'.repeat(40);
 const haveRedact = fs.existsSync(path.join(__dirname, '../../src/core/redact.cjs'));
 
-test('head, tail and command are redacted before they leave the parser', { skip: haveRedact ? false : 'src/core/redact.cjs is not present yet' }, () => {
+test('legacy: head, tail and command are redacted before they leave the parser', { skip: haveRedact ? false : 'src/core/redact.cjs is not present yet' }, () => {
   const out = 'line one ' + secret + '\n' + 'x\n'.repeat(6) + 'last ' + secret;
   const ls = [
     JSON.stringify({ type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 't1', name: 'Bash', input: { command: 'curl -H "x: ' + secret + '"' } }] } }),
@@ -159,12 +159,12 @@ test('head, tail and command are redacted before they leave the parser', { skip:
   assert.strictEqual(results(ev)[0].redaction, 'applied');
 });
 
-test('a redactor that throws is not swallowed', () => {
+test('legacy: a redactor that throws is not swallowed', () => {
   const ls = [lines('capture-claude.jsonl')[1]];
   assert.throws(() => run('claude-code', ls, { capture: true, redact: () => { throw new Error('boom'); } }), /boom/);
 });
 
-test('Codex: a failed command (nonzero exit or status failed) is an error under capture, and only under capture', () => {
+test('legacy: Codex: a failed command (nonzero exit or status failed) is an error under capture, and only under capture', () => {
   const ls = lines('capture-codex.jsonl');
   const on = results(run('codex', ls, { capture: true, redact: ident }));
   assert.deepStrictEqual(on.map((r) => r.is_error), [false, true, false, false]);
@@ -176,7 +176,7 @@ test('Codex: a failed command (nonzero exit or status failed) is an error under 
 
 // No recorded Codex stream in this repository carries a file_change item, so the fixture follows the item schema
 // of `codex exec --json`: { id, type: 'file_change', changes: [{ path, kind }], status }.
-test('Codex: file_change items become tool_use and tool_result with their files under capture, and stay raw when off', () => {
+test('legacy: Codex: file_change items become tool_use and tool_result with their files under capture, and stay raw when off', () => {
   const ls = lines('capture-codex-filechange.jsonl');
   const ev = run('codex', ls, { capture: true, redact: ident });
   const u = uses(ev);
@@ -195,7 +195,7 @@ test('Codex: file_change items become tool_use and tool_result with their files 
   assert.deepStrictEqual(both.map((e) => e.kind), ['tool_use', 'tool_result']);
 });
 
-test('Claude Code: a top-level tool_use_result applies to a single tool_result block, not to each of several', () => {
+test('legacy: Claude Code: a top-level tool_use_result applies to a single tool_result block, not to each of several', () => {
   const tu = (id, p) => ({ type: 'tool_use', id, name: 'Read', input: { file_path: p } });
   const trs = (id) => ({ type: 'tool_result', tool_use_id: id, content: 'x' });
   const ls = [
@@ -206,13 +206,13 @@ test('Claude Code: a top-level tool_use_result applies to a single tool_result b
   assert.deepStrictEqual(r.map((e) => e.files), [['one.txt'], ['two.txt']]);
 });
 
-test('a redactor that does not return { text } withholds head, tail and command instead of leaking or crashing', () => {
+test('legacy: a redactor that does not return { text } withholds head, tail and command instead of leaking or crashing', () => {
   const ev = run('claude-code', lines('capture-claude.jsonl'), { capture: true, redact: (t) => t });
   assert.ok(uses(ev).every((e) => e.command === null));
   assert.ok(results(ev).every((e) => e.head === null && e.tail === null && e.redaction === 'unavailable'));
 });
 
-test('capture state is cleared at turn end: a call interrupted without a result does not leak', () => {
+test('legacy: capture state is cleared at turn end: a call interrupted without a result does not leak', () => {
   const p = createParser('claude-code', { capture: true, redact: ident });
   p.pushLine(JSON.stringify({ type: 'assistant', message: { id: 'm1', content: [{ type: 'tool_use', id: 'lost', name: 'Bash', input: { command: 'x' } }] } }));
   assert.deepStrictEqual([...p.capture.calls.keys()], ['lost']);

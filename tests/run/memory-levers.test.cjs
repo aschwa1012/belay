@@ -1,4 +1,5 @@
 'use strict';
+// Not a legacy test: it tests the lever parser and its cache for every lever, legacy ones included.
 require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-levers.test.cjs — ADR 0041 decision 1: the defaults, the block parser, and leversFor's one cached read.
 

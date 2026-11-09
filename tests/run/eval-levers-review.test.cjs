@@ -1,4 +1,5 @@
 'use strict';
+// Not a legacy test: it tests the eval-only levers; observations is set only to build a run row.
 require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // eval-levers-review.test.cjs: the review fixes for the two eval-only levers (native_memory, handback_question). Another run's
 // native_memory is never adopted into a run that did not opt in, a stored lever that cannot be read refuses the spawn, the hand-back

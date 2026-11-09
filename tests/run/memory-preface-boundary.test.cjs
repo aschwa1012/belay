@@ -82,7 +82,7 @@ async function scenario(core, rows, fn) {
   }
 }
 
-test('bottleRowIds counts a row only as a line of a user message', () => {
+test('legacy: bottleRowIds counts a row only as a line of a user message', () => {
   const text = [
     'BEGIN', 'user: the task',
     '  INDEX',
@@ -99,7 +99,7 @@ test('bottleRowIds counts a row only as a line of a user message', () => {
   assert.deepStrictEqual([...bottleRowIds(null)], []);
 });
 
-test('a dropped row whose syntax is retained in assistant prose is still shown again', async () => {
+test('legacy: a dropped row whose syntax is retained in assistant prose is still shown again', async () => {
   const rows = ['mem-a'];
   const core = memoryCore({ first_message_index: true, bottle: true, bottle_bytes: 12000 }, rows);
   await scenario(core, rows, async (m, recv) => {
@@ -115,7 +115,7 @@ test('a dropped row whose syntax is retained in assistant prose is still shown a
   });
 });
 
-test('a replace whose receipts could not be read for once holds nothing of the old conversation: the next resume is shown the rows again', async () => {
+test('legacy: a replace whose receipts could not be read for once holds nothing of the old conversation: the next resume is shown the rows again', async () => {
   const rows = ['mem-a', 'mem-b'];
   const core = memoryCore({ first_message_index: true, bottle: true }, rows);
   await scenario(core, rows, async (m, recv) => {
@@ -139,7 +139,7 @@ test('a replace whose receipts could not be read for once holds nothing of the o
   });
 });
 
-test('a process that adopts the worker after a replace finds the same boundary in the store', async () => {
+test('legacy: a process that adopts the worker after a replace finds the same boundary in the store', async () => {
   const rows = ['mem-a'];
   const core = memoryCore({ first_message_index: true, bottle: true, bottle_bytes: 12000 }, rows);
   await scenario(core, rows, async (m) => {
@@ -165,7 +165,7 @@ test('a process that adopts the worker after a replace finds the same boundary i
 // The boundary is control state, so a lost or damaged receipt must show rows again and never withhold one.
 const indexCalls = (core) => core.calls.filter((c) => c.method === 'memory.index');
 
-test('a replacement whose boundary receipt could not be written makes the next resume show every row, and the resume writes the boundary', async () => {
+test('legacy: a replacement whose boundary receipt could not be written makes the next resume show every row, and the resume writes the boundary', async () => {
   const rows = ['mem-a'];
   const core = memoryCore({ first_message_index: true, bottle: true, bottle_bytes: 12000 }, rows);
   await scenario(core, rows, async (m, recv) => {
@@ -191,7 +191,7 @@ test('a replacement whose boundary receipt could not be written makes the next r
   });
 });
 
-test('a boundary write that fails once is tried again, so the next resume still reads the store', async () => {
+test('legacy: a boundary write that fails once is tried again, so the next resume still reads the store', async () => {
   const rows = ['mem-a'];
   const core = memoryCore({ first_message_index: true, bottle: true, bottle_bytes: 12000 }, rows);
   await scenario(core, rows, async (m) => {
@@ -207,7 +207,7 @@ test('a boundary write that fails once is tried again, so the next resume still 
   });
 });
 
-test('redaction of a receipt\'s message cannot alter the boundary', async () => {
+test('legacy: redaction of a receipt\'s message cannot alter the boundary', async () => {
   const { redact } = require('../../src/core/redact.cjs');
   const rows = ['mem-a'];
   const core = memoryCore({ first_message_index: true, bottle: true, bottle_bytes: 12000 }, rows);
@@ -228,7 +228,7 @@ test('redaction of a receipt\'s message cannot alter the boundary', async () => 
   });
 });
 
-test('a boundary key that cannot be read is a boundary with nothing carried', async () => {
+test('legacy: a boundary key that cannot be read is a boundary with nothing carried', async () => {
   const rows = ['mem-a'];
   const core = memoryCore({ first_message_index: true, bottle: true, bottle_bytes: 12000 }, rows);
   await scenario(core, rows, async (m) => {
@@ -241,7 +241,7 @@ test('a boundary key that cannot be read is a boundary with nothing carried', as
   });
 });
 
-test('a process that adopts the worker after a lost boundary write still shows every row, and its repair clears the loss', async () => {
+test('legacy: a process that adopts the worker after a lost boundary write still shows every row, and its repair clears the loss', async () => {
   const rows = ['mem-a'];
   const core = memoryCore({ first_message_index: true, bottle: true, bottle_bytes: 12000 }, rows);
   await scenario(core, rows, async (m, recv) => {

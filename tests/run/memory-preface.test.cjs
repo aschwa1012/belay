@@ -1,4 +1,5 @@
 'use strict';
+// Not a legacy test: it tests the first-message index (an open question) and the byte-for-byte first message; the legacy levers it sets are incidental.
 require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-preface.test.cjs — ADR 0042 decisions 2 and 3: the first message's memory index, inject-once on a
 // relaunch, and the rule that with the levers off the first message is today's, byte for byte. The run

@@ -150,7 +150,7 @@ test('legacy: a manager handed its levers makes no core call at shutdown when no
   assert.strictEqual(core.calls.filter((c) => c.method === 'run.get').length, 1);
 });
 
-test('levers on is observably different (the identity test would notice): an observation store and an event appear', async () => {
+test('legacy: levers on is observably different (the identity test would notice): an observation store and an event appear', async () => {
   const core = memoryCore({ levers: { capture: true, observations: true }, resumeLineText: RL });
   const got = await runScript(core);
   assert.deepStrictEqual(got.stdin, [`${RL}\n\none${PROCESS_LINE}${handback()}`, 'two'], 'the bytes on stdin do not change either way');
@@ -158,7 +158,7 @@ test('levers on is observably different (the identity test would notice): an obs
   assert.strictEqual(core.events.filter((e) => e.kind === 'observation').length, 2);
 });
 
-test('the default levers (turn_rows off) store nothing for a turn: the same script makes no memory.store call', async () => {
+test('legacy: the default levers (turn_rows off) store nothing for a turn: the same script makes no memory.store call', async () => {
   const sb = sandbox();
   const core = createFakeCore({ runId: 'run-fake', resumeLineText: RL });
   const m = createRunManager({ core, dataDir: sb.data, runId: 'run-fake', memoryLevers: { ...DEFAULTS }, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });

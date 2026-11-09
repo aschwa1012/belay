@@ -88,7 +88,7 @@ function stalled(op, state, target) {
 for (const notes of [false, true]) {
   const targets = ['task.list', 'worker.list', 'memory.events', ...(notes ? ['sweep.verdicts'] : [])];
   for (const target of targets) {
-    test(`a run-end job cut by the fast close (notes ${notes ? 'on' : 'off'}) while ${target} stalls writes nothing once the owner is shut down, and elects no stray owner`, async () => {
+    test(`legacy: a run-end job cut by the fast close (notes ${notes ? 'on' : 'off'}) while ${target} stalls writes nothing once the owner is shut down, and elects no stray owner`, async () => {
       const { dir, op } = await setup(notes);
       const state = { calls: [], shutDown: false, reached: null };
       const atStall = new Promise((r) => { state.reached = r; });
@@ -122,7 +122,7 @@ for (const notes of [false, true]) {
   }
 }
 
-test('a Core that has shut its owner down refuses a write instead of electing a stray owner, and says which call', async () => {
+test('legacy: a Core that has shut its owner down refuses a write instead of electing a stray owner, and says which call', async () => {
   const { dir, op } = await setup(false);
   try {
     await op.shutdownOwner();
@@ -149,7 +149,7 @@ test('a Core that has shut its owner down refuses a write instead of electing a 
   }
 });
 
-test('gatedCore works over the real, frozen harness view: calls pass until the gate is set, then are refused E_TIMEOUT', async () => {
+test('legacy: gatedCore works over the real, frozen harness view: calls pass until the gate is set, then are refused E_TIMEOUT', async () => {
   const { gatedCore } = require('../../src/run/gated-core.cjs');
   const { dir, op } = await setup(false);
   try {

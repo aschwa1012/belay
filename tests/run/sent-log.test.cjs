@@ -29,7 +29,7 @@ function worker(dir) {
   return { id: 'w1', taskId: 't1', dir, streamPath: fwd(path.join(dir, 'stream.jsonl')) };
 }
 
-test('lever off or levers unread: nothing is read, written or created', () => {
+test('legacy: lever off or levers unread: nothing is read, written or created', () => {
   const dir = tmp();
   try {
     const w = worker(dir);
@@ -42,7 +42,7 @@ test('lever off or levers unread: nothing is read, written or created', () => {
   } finally { cleanup(dir); }
 });
 
-test('on: one line per message with seq, turn, kind and text; turn counts the results the stream holds', () => {
+test('legacy: on: one line per message with seq, turn, kind and text; turn counts the results the stream holds', () => {
   const dir = tmp();
   try {
     const w = worker(dir);
@@ -68,7 +68,7 @@ test('on: one line per message with seq, turn, kind and text; turn counts the re
   } finally { cleanup(dir); }
 });
 
-test('a relaunch or an adopted worker continues the numbering from the file', () => {
+test('legacy: a relaunch or an adopted worker continues the numbering from the file', () => {
   const dir = tmp();
   try {
     const ctx = ctxOn();
@@ -79,7 +79,7 @@ test('a relaunch or an adopted worker continues the numbering from the file', ()
   } finally { cleanup(dir); }
 });
 
-test('text is redacted before it is written; a redactor that answers wrongly writes nothing and is named', () => {
+test('legacy: text is redacted before it is written; a redactor that answers wrongly writes nothing and is named', () => {
   const dir = tmp();
   try {
     const w = worker(dir);
@@ -95,7 +95,7 @@ test('text is redacted before it is written; a redactor that answers wrongly wri
   } finally { cleanup(dir); }
 });
 
-test('a failed append never throws; it lands on lastError and flush records it as a bottle event with ok 0', async () => {
+test('legacy: a failed append never throws; it lands on lastError and flush records it as a bottle event with ok 0', async () => {
   const dir = tmp();
   try {
     const w = worker(dir);
@@ -138,7 +138,7 @@ async function withManager(levers, fn) {
   }
 }
 
-test('manager, lever off: a spawn and a message create no sent.jsonl', async () => {
+test('legacy: manager, lever off: a spawn and a message create no sent.jsonl', async () => {
   for (const levers of [null, { bottle: false, capture: true }]) {
     await withManager(levers, async (m, sb) => {
       await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'the spec', worker_id: 'w1' });
@@ -150,7 +150,7 @@ test('manager, lever off: a spawn and a message create no sent.jsonl', async () 
   }
 });
 
-test('manager, lever on: the task, then a message, each on the turn it starts, with the secret redacted', async () => {
+test('legacy: manager, lever on: the task, then a message, each on the turn it starts, with the secret redacted', async () => {
   await withManager({ bottle: true }, async (m, sb) => {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'build the thing', worker_id: 'w1' });
     await m._waitTurn('w1', 8000);
@@ -164,7 +164,7 @@ test('manager, lever on: the task, then a message, each on the turn it starts, w
   });
 });
 
-test('the harness /compact is recorded as kind compact, and the bottle shows it as generated, never as the orchestrator', () => {
+test('legacy: the harness /compact is recorded as kind compact, and the bottle shows it as generated, never as the orchestrator', () => {
   const dir = tmp();
   try {
     const w = worker(dir);
@@ -180,7 +180,7 @@ test('the harness /compact is recorded as kind compact, and the bottle shows it 
   } finally { cleanup(dir); }
 });
 
-test('the harness compaction\'s own /compact write is recorded in the sent log as kind compact', async () => {
+test('legacy: the harness compaction\'s own /compact write is recorded in the sent log as kind compact', async () => {
   const CP = require('../../src/run/compaction.cjs');
   const dir = tmp();
   try {

@@ -1,4 +1,5 @@
 'use strict';
+// Not a legacy test: it tests how a run records any memory block.
 // run-memory-levers.test.cjs — ADR 0041 decision 1: run.attach records the memory levers (JSON text) and the
 // project on the run row, refuses bad values, and carries both forward across a reattach.
 
