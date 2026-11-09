@@ -95,7 +95,7 @@ test('a non-read throw while the step is rechecked stays an exception', async ()
     await e.orch.task.create({ spec: 'w', acceptance: PASS, policy: { build: { worker: 'b1' }, ...REST } });
     await e.worker('b1');
     let n = 0;
-    const bug = { ...e.h, task: { ...e.h.task, list: async (a) => { const r = await e.h.task.list(a); return ++n === 2 ? { tasks: Object.assign(r.tasks.slice(), { filter() { throw new Error('bug in due'); } }) } : r; } } };
+    const bug = { ...e.h, task: { ...e.h.task, list: async (a) => { const r = await e.h.task.list(a); return ++n === 3 ? { tasks: Object.assign(r.tasks.slice(), { filter() { throw new Error('bug in due'); } }) } : r; } } };
     const out = await e.exec({}, bug).tick();
     assert.deepStrictEqual(out.steps.map((s) => [s.step, s.outcome]), [['build', 'exception']]);
     assert.match(stepRows(e)[0].error, /bug in due/);

@@ -172,7 +172,7 @@ function redOf(rf, planFor) {
   if (!m) return null;
   const claim = rf.steps.find((s) => MERGE_FIX_STEPS.has(s.step) && s.trigger_id === newest.id && !reopened(s));
   const fix = claim && /^task:/.test(claim.row_ref || '') ? rf.byId.get(claim.row_ref.slice(5)) : null;
-  if (claim && claim.outcome === 'done' && (!fix || fix.state === 'cancelled')) return null;
+  if (claim && (claim.outcome === 'done' || claim.outcome === 'superseded') && (!fix || fix.state === 'cancelled')) return null;
   return { integration: newest, root: m.root.id };
 }
 
@@ -184,7 +184,7 @@ function waitingIds(rf, policyFor) {
 // The newest fix task a merge-side step (fix_conflict, fix_checks) made for the work, once it is done: the work is merged again after it. null while it is
 // still being worked, or when no such step finished.
 function mergeFixOf(rf, rootId) {
-  const s = rf.steps.filter((k) => MERGE_FIX_STEPS.has(k.step) && k.outcome === 'done' && /^task:/.test(k.row_ref || '') && k.task_id && rootIdOf(rf, k.task_id) === rootId).pop();
+  const s = rf.steps.filter((k) => MERGE_FIX_STEPS.has(k.step) && (k.outcome === 'done' || k.outcome === 'superseded') && /^task:/.test(k.row_ref || '') && k.task_id && rootIdOf(rf, k.task_id) === rootId).pop();
   const f = s ? rf.byId.get(s.row_ref.slice(5)) : null;
   return f && f.state === 'done' ? f : null;
 }
@@ -196,7 +196,7 @@ function noCommit(x) {
   if (r.uncommitted === true) return `uncommitted changes (${(r.uncommitted_paths || []).slice(0, 3).join(', ')})`;
   return null;
 }
-const commitFixOf = (rf, x) => { const s = rf.steps.filter((k) => k.step === 'fix_commit' && k.task_id === x.id && k.outcome === 'done' && /^task:/.test(k.row_ref || '')).pop(); return s ? rf.byId.get(s.row_ref.slice(5)) : null; };
+const commitFixOf = (rf, x) => { const s = rf.steps.filter((k) => k.step === 'fix_commit' && k.task_id === x.id && (k.outcome === 'done' || k.outcome === 'superseded') && /^task:/.test(k.row_ref || '')).pop(); return s ? rf.byId.get(s.row_ref.slice(5)) : null; };
 // Review and merge of such a work wait until its commit fix is done.
 const commitHeld = (x, rf) => !!noCommit(x) && !(commitFixOf(rf, x) && commitFixOf(rf, x).state === 'done');
 // -> { step: 'fix_commit', worker, spec } | { cap: true, ... } | null; taken once per work (the fix task is the round, a `repairs` row).

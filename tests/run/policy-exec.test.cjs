@@ -127,11 +127,11 @@ test('re_review: a review of the fix that already exists is the orchestrator\'s,
   const W = work('W', { state: 'pending', review_id: 'R', rounds_left: 1 });
   const F = task('F1', { state: 'done', repairs: 'W', acted_by: 'policy', depends_on: ['W'], handoff: by('b1'), results: rel(), answers: ['R'] });
   const mine = task('RX', { state: 'open', depends_on: ['F1'], acceptance: { verdict: true } });
-  // the review appears after the pass read the list: the claim is taken, then the fresh read finds it
+  // the review appears after the pass read the list: the halt check before the claim is the third read; the claim is taken, then the fresh read finds it
   const s = store({ tasks: [W, review('R', 'W'), F] });
   const list = s.core.task.list;
   let n = 0;
-  s.core.task.list = async (a) => { const r = await list(a); n += 1; if (n <= 2) return r; return { tasks: [...r.tasks, mine] }; };
+  s.core.task.list = async (a) => { const r = await list(a); n += 1; if (n <= 3) return r; return { tasks: [...r.tasks, mine] }; };
   const reads = s.core.policyAs;
   s.core.policyAs = (seq) => { const v = reads(seq); return Object.freeze({ ...v, task: { ...v.task, list: s.core.task.list } }); };
   const out = await s.exec().tick();
@@ -215,6 +215,36 @@ test('halt: a step that fails halts the task for the rest of the pass', async ()
   s.script.fix = async () => { throw err('E_PRECONDITION', 'no'); };
   const out = await s.exec().tick();
   assert.deepStrictEqual(out.steps.map((x) => [x.step, x.outcome]), [['fix', 'exception']], 'the re_review on the same task is not taken');
+});
+
+test('halt: a halt recorded on another task while the pass runs stops the step of that task that was due when the pass began', async () => {
+  const W = work('W', refuted('RW'), { written_at: 50 });
+  const V = work('V', refuted('RV'), { written_at: 60 });
+  const s = store({ tasks: [W, review('RW', 'W'), V, review('RV', 'V')], workers: [idle('b1'), idle('rv')] });
+  s.script.fix = async (a) => {
+    if (a.review_id === 'RW') s.rows.push({ seq: 500, run_id: RUN, task_id: 'V', step: 're_review', trigger_table: 'task', trigger_id: 'Z', trigger_seq: 1, outcome: 'exception', error: 'boom', policy_rev: 1, at: 60, finished_at: 61 }); // an exception recorded by someone else mid-pass
+    return { id: `F-${a.review_id}`, seq: 900 };
+  };
+  const out = await s.exec().tick();
+  assert.deepStrictEqual(out.steps.filter((x) => x.step === 'fix').map((x) => x.task_id), ['W'], 'V is halted: no fix is claimed for it');
+});
+
+test('halt: a halt that fails to be re-read before a claim leaves the pass going on the halts it has', async () => {
+  const s = refutedWork();
+  const list = s.core.policy.list; let n = 0;
+  s.core.policy.list = async (a) => { n += 1; if (n === 2) throw err('E_STORE', 'read failed'); return list(a); }; // the 2nd read is the halt re-read before the claim
+  const out = await s.exec().tick();
+  assert.deepStrictEqual(out.steps.map((x) => [x.step, x.outcome]), [['fix', 'done']]);
+});
+
+test('halt: a halt recorded between the halt re-read and the claim skips the step as not now, and writes nothing', async () => {
+  const s = refutedWork();
+  const claim = s.core.policy.claim;
+  s.core.policy.claim = async (a) => { const r = await claim(a); s.rows.push({ seq: 500, run_id: RUN, task_id: 'W', step: 're_review', trigger_table: 'task', trigger_id: 'Z', trigger_seq: 1, outcome: 'exception', error: 'boom', policy_rev: 1, at: 60, finished_at: 61 }); return r; };
+  const out = await s.exec().tick();
+  assert.deepStrictEqual(out.steps.map((x) => [x.step, x.outcome]), [['fix', 'skipped']]);
+  assert.match(s.row(1).error, /^E_NOT_NOW: W was halted/);
+  assert.strictEqual(s.calls.filter((c) => c.m === 'task.fixFromReview').length, 0);
 });
 
 test('restart between claim and effect: the claim left started is finished as an exception, its effect is not repeated, and it is not claimed again', async () => {
