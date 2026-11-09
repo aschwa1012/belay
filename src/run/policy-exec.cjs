@@ -73,7 +73,7 @@ function due(snap) {
     if (isReviewTask(x)) { // a reviewer that released with no verdict is asked again (once)
       const pr = rf && x.state === 'released' ? planOf(x, byId) : null;
       const a = pr ? RF.action(x, pr.plan, rf) : null;
-      if (a && a.step) out.push({ step: a.step, task_id: x.id, trigger: tref(x), policy_rev: pr.rev, worker: a.worker, prompt: a.prompt, ...(pr.plan.review ? { review: pr.plan.review } : {}) });
+      if (a && a.step) out.push({ step: a.step, task_id: x.id, trigger: tref(x), policy_rev: pr.rev, worker: a.worker, prompt: a.prompt, root_id: PW.rootOf(byId.get((Array.isArray(x.depends_on) ? x.depends_on : [])[0]) || x, byId).id, ...(pr.plan.review ? { review: pr.plan.review } : {}) });
       const wk = byId.get((Array.isArray(x.depends_on) ? x.depends_on : [])[0]); // a reviewer the plan gave this review died: relaunched once, like a builder (policy-relaunch.cjs)
       const wp = wk && planOf(wk, byId);
       const rr = wp ? require('./policy-relaunch.cjs').due(x, wp.plan, wp.rev, snap, PW.rootOf(wk, byId).id) : null;
@@ -199,17 +199,19 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
   // After the claim and just before the step's first write: the run is not paused or ended, and the step is still due on fresh rows at the plan
   // revision it was claimed at (the pass's snapshot can be minutes old after an integrate). -> a reason to skip, or null.
   const seen = { run: null, tasks: [] }; // the run row and the task rows stillDue read, for the budget rule
+  // A store read that threw is marked, so the pass retakes the step; any other throw in here is a bug and stays an exception.
+  const rd = async (f) => { try { return await f(); } catch (e) { if (e && typeof e === 'object') e.stillDueRead = true; throw e; } };
   async function stillDue(c, seq) {
-    const run = (await g.run.get({})).run;
+    const run = (await rd(() => g.run.get({}))).run;
     seen.run = run;
     if (!run || run.ended_at != null) return 'the run has ended after the step was claimed';
     if (run.paused_at != null) return 'E_PAUSED: the run was paused after the step was claimed; the claim is reopened and the step retaken after the resume';
-    const tasks = await read(g.task.list, 'tasks', []);
+    const tasks = await rd(() => read(g.task.list, 'tasks', []));
     seen.tasks = tasks;
-    const integrations = c.step === 'integrate' || c.trigger.table === 'integration' ? await read(g.integration.list, 'integrations', []) : [];
-    const rl = c.step === 'relaunch' ? { steps: (await read(g.policy.list, 'rows', [])).filter((r) => !(r.step === 'relaunch' && r.outcome === 'started' && r.trigger_table === c.trigger.table && r.trigger_id === c.trigger.id && Number(r.trigger_seq) === c.trigger.seq)), workers: await read(g.worker.list, 'workers', []) } : {}; // this claim is not a used relaunch
-    const roundSteps = (await read(g.policy.list, 'rows', [])).filter((r) => r.seq !== seq); // the rounds read the step log, without this step's own claim
-    const same = due({ runId, tasks, integrations, roundSteps, ...rl, ...(await extras(tasks, run)), ...(dataDir ? { isKilled: (w) => KM.isKilled(dataDir, w.id, w.pid, w.pid_created) } : {}) }).find((d) => keyOf(d.step, d.trigger) === keyOf(c.step, c.trigger));
+    const integrations = c.step === 'integrate' || c.trigger.table === 'integration' ? await rd(() => read(g.integration.list, 'integrations', [])) : [];
+    const rl = c.step === 'relaunch' ? { steps: (await rd(() => read(g.policy.list, 'rows', []))).filter((r) => !(r.step === 'relaunch' && r.outcome === 'started' && r.trigger_table === c.trigger.table && r.trigger_id === c.trigger.id && Number(r.trigger_seq) === c.trigger.seq)), workers: await rd(() => read(g.worker.list, 'workers', [])) } : {}; // this claim is not a used relaunch
+    const roundSteps = (await rd(() => read(g.policy.list, 'rows', []))).filter((r) => r.seq !== seq); // the rounds read the step log, without this step's own claim
+    const same = due({ runId, tasks, integrations, roundSteps, ...rl, ...(await rd(() => extras(tasks, run))), ...(dataDir ? { isKilled: (w) => KM.isKilled(dataDir, w.id, w.pid, w.pid_created) } : {}) }).find((d) => keyOf(d.step, d.trigger) === keyOf(c.step, c.trigger));
     if (!same) return `E_NOT_NOW: the plan or the facts changed after the claim: ${c.step} on ${c.trigger.table}:${c.trigger.id} is no longer due; the claim is reopened and the step retaken if it is due again`;
     if ((same.policy_rev ?? null) !== (c.policy_rev ?? null)) return `E_NOT_NOW: the plan moved from rev ${c.policy_rev} to rev ${same.policy_rev} after the claim; the claim is reopened and the step retaken`;
     return null;
@@ -249,7 +251,7 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
     async function finishStep() {
     let res;
     try {
-      const why = await stillDue(c, row.seq).catch((e) => `E_NOT_NOW: the facts could not be read after the claim (${errText(e)}); the claim is reopened and the step retaken`);
+      const why = await stillDue(c, row.seq).catch((e) => { if (!(e && e.stillDueRead)) throw e; return `E_NOT_NOW: the facts could not be read after the claim (${errText(e)}); the claim is reopened and the step retaken`; });
       const over = why ? null : await budgetRefusal(c);
       res = why ? { outcome: 'skipped', error: why } : over ? { outcome: c.step === 'relaunch' ? 'skipped' : 'exception', error: over } : await STEPS.run(c, { core: stepCore, runId, assign: assignFor(stepCore), spawn: spawnFor ? spawnFor(stepCore) : null, restart: restartWorker, restartOnce: (step) => restartOnce(step, row.seq), stop: stopWorker, dataDir });
     } catch (e) { res = { outcome: 'exception', error: errText(e) }; }

@@ -16,9 +16,9 @@ const errText = (e) => `${(e && e.code) || 'E_INTERNAL'}: ${String((e && e.messa
 // Code one, and a restart still in flight is waited for (the claim is reopened), never answered with a second worker in the same tree.
 // -> { worker } (ready) | { fresh: { tree, agent_type, id } } (to be started WITH the task: giveTask) | { res } (the step's end).
 // `treeTask`: the task whose tree a fresh worker starts in.
-async function readyWorker(c, env, treeTask, role = 'builder') {
+async function readyWorker(c, env, treeTask, role = 'builder', label = role) { // `label`: what the worker is called in the step's error
   const S = steps();
-  const why = await S.unavailable(env, c.worker, role);
+  const why = await S.unavailable(env, c.worker, label);
   if (!why) return { worker: c.worker };
   const ws = ((await env.core.worker.list({})) || {}).workers || [];
   const w = ws.find((x) => x.id === c.worker);
@@ -37,7 +37,7 @@ async function readyWorker(c, env, treeTask, role = 'builder') {
     try {
       const rec = await env.restart(c.worker);
       if (rec && rec.relaunch_in_flight === true) return { res: { outcome: 'skipped', error: `E_NOT_NOW: ${c.worker} is being restarted and is not up yet; the step is taken again once it is` } };
-      const still = await S.unavailable(env, c.worker, role);
+      const still = await S.unavailable(env, c.worker, label);
       if (!still) return { worker: c.worker };
       tried.push(`restarted, but ${still}`);
     } catch (e) {
@@ -48,7 +48,7 @@ async function readyWorker(c, env, treeTask, role = 'builder') {
   const spec = role === 'refuter' ? c.review : c.build;
   const spawn = spec && spec.spawn ? spec.spawn : null;
   const wt = spawn && env.spawn && w.substrate !== 'codex' ? ((await env.core.task.get({ task_id: treeTask })) || {}).worktree : null;
-  if (!wt || !wt.path || wt.removed_at) return { res: S.exception(`${tried.join('; ')}; and ${w.substrate === 'codex' ? 'a Codex worker is not replaced by a Claude Code one' : !spawn ? `the plan has no ${role === 'refuter' ? 'review' : 'build'} spawn to start another` : !env.spawn ? 'this run has no spawn path' : `${treeTask} has no belay worktree to start a coder in`}`) };
+  if (!wt || !wt.path || wt.removed_at) return { res: S.exception(`${tried.join('; ')}; and ${w.substrate === 'codex' ? 'a Codex worker is not replaced by a Claude Code one' : !spawn ? `the plan has no ${role === 'refuter' ? 'review' : 'build'} spawn to start another` : !env.spawn ? 'this run has no spawn path' : `${treeTask} has no belay worktree to start a ${role === 'refuter' ? 'reviewer' : 'coder'} in`}`) };
   return { fresh: { tree: wt.path, agent_type: spawn.agent_type, id: `${role === 'refuter' ? 'rev' : 'bld'}-${require('node:crypto').randomUUID().slice(0, 8)}` } };
 }
 
@@ -86,7 +86,7 @@ async function reassign(c, env) {
   const cur = await env.core.task.get({ task_id: c.task_id });
   if (!cur || cur.state !== 'released' || !cur.handoff) return { outcome: 'skipped', error: `${c.task_id} is no longer a released hand-back` };
   if (c.step === 'reask') {
-    const b = await readyWorker(c, env, (Array.isArray(cur.depends_on) ? cur.depends_on[0] : null) || c.task_id, 'refuter'); // a reviewer already dead is brought back, or a fresh one of review.spawn, in the judged work's tree
+    const b = await readyWorker(c, env, (Array.isArray(cur.depends_on) ? cur.depends_on[0] : null) || c.task_id, 'refuter', 'reviewer'); // a reviewer already dead is brought back, or a fresh one of review.spawn, in the judged work's tree
     if (b.res) return b.res;
     const prompt = b.fresh ? `belay: you are a fresh reviewer: the reviewer ${c.worker} is gone, and its hand-back of review ${c.task_id} carried no verdict. Judge the work and release the review with your verdict.` : c.prompt;
     return giveTask(c, env, b, { taskId: c.task_id, ref: `task:${c.task_id}`, prompt, pausedOk: true });

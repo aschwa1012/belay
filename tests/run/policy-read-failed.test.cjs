@@ -9,6 +9,7 @@ const { deadPid } = require('../core/helpers.cjs');
 const { guarded } = require('../core/worktree-helpers.cjs');
 const { validateSpawnArgs } = require('../../src/run/spawn-args.cjs');
 const PW = require('../../src/run/policy-wakes.cjs');
+const { due } = require('../../src/run/policy-exec.cjs');
 const { env, stepRows, workDone, REST, PASS } = require('./policy-review-env.cjs');
 
 const test = guarded(nodeTest);
@@ -18,15 +19,15 @@ const revive = (e) => async (id) => { await e.orch.worker.write({ id, substrate:
 const holder = (e, id) => e.raw('SELECT holder FROM lease WHERE task_id = ? ORDER BY seq DESC LIMIT 1', id)[0].holder;
 
 // A review rv-1 released with no verdict, then rv-1 dies.
-async function noVerdictThenDead(e) {
-  const { work, tree } = await workDone(e, SPAWNING);
+async function noVerdictThenDead(e, plan = SPAWNING) {
+  const { work, tree } = await workDone(e, plan);
   const review = await e.orch.task.create({ spec: 'review', depends_on: [work.id], acceptance: { verdict: true } });
   const w = await e.worker('rv-1', tree);
   const a = await e.orch.task.assign({ task_id: review.id, worker_id: 'rv-1' });
   await w.lease.release({ lease_id: a.new_lease.id, reason: 'done', result: { summary: 'I looked at it' } });
   await e.h.task.evaluate({ task_id: review.id, worktree: tree, trigger: 'release' });
   await die(e, 'rv-1');
-  return { review, tree };
+  return { review, tree, work };
 }
 const reasks = (out) => out.steps.filter((s) => s.step === 'reask').map((s) => [s.step, s.outcome]);
 
@@ -85,5 +86,38 @@ test('a run read that fails after the claim reopens the step, not an exception',
     const out = await e.exec({}, flaky).tick();
     assert.deepStrictEqual(out.steps.map((s) => [s.step, s.outcome]), [['build', 'skipped']]);
     assert.match(stepRows(e)[0].error, /^E_NOT_NOW: the facts could not be read/);
+  } finally { await e.close(); }
+});
+
+test('a non-read throw while the step is rechecked stays an exception', async () => {
+  const e = await env('stilldue-bug');
+  try {
+    await e.orch.task.create({ spec: 'w', acceptance: PASS, policy: { build: { worker: 'b1' }, ...REST } });
+    await e.worker('b1');
+    let n = 0;
+    const bug = { ...e.h, task: { ...e.h.task, list: async (a) => { const r = await e.h.task.list(a); return ++n === 2 ? { tasks: Object.assign(r.tasks.slice(), { filter() { throw new Error('bug in due'); } }) } : r; } } };
+    const out = await e.exec({}, bug).tick();
+    assert.deepStrictEqual(out.steps.map((s) => [s.step, s.outcome]), [['build', 'exception']]);
+    assert.match(stepRows(e)[0].error, /bug in due/);
+  } finally { await e.close(); }
+});
+
+test('the fresh reviewer a reask starts is retired with the work, like the one a re_review starts', async () => {
+  const e = await env('reask-retire');
+  try {
+    const { review, work, tree } = await noVerdictThenDead(e, { build: SPAWNING.build, review: SPAWNING.review, fix: "builder", re_review: "refuter" });
+    const workId = work.id;
+    const cand = due({ runId: 'test-run', tasks: (await e.h.task.list({})).tasks, integrations: [], steps: [], rounds: { caps: { max: 2, hard: null } }, failures: [] }).find((c) => c.step === 'reask');
+    assert.strictEqual(cand.root_id, workId, 'the candidate names the work whose end retires the reviewer');
+    const stopped = [];
+    const spawnFor = () => async (a) => { await e.worker(a.worker_id, a.worktree); await e.orch.task.assign({ task_id: a.task_id, worker_id: a.worker_id }); return { id: a.worker_id }; };
+    const x = e.exec({ restartWorker: async () => { throw Object.assign(new Error('gone'), { code: 'E_NOT_FOUND' }); }, spawnFor, stopWorker: async (id) => { stopped.push(id); } });
+    assert.deepStrictEqual(reasks(await x.tick()), [['reask', 'done']]);
+    const fresh = holder(e, review.id);
+    const l = e.raw('SELECT id FROM lease WHERE task_id = ? ORDER BY seq DESC LIMIT 1', review.id)[0];
+    await (await e.worker(fresh)).lease.release({ lease_id: l.id, reason: 'done', result: { verdict: 'holds', summary: 'ok', findings: [] } });
+    await e.h.task.evaluate({ task_id: review.id, worktree: tree, trigger: 'release' });
+    await x.tick();
+    assert.deepStrictEqual(stopped, [fresh]);
   } finally { await e.close(); }
 });
