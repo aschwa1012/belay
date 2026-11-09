@@ -259,7 +259,7 @@ test('an integrate skipped because another integration was merging is taken once
     write(wt.path, 'a.txt', 'a\n'); commit(wt.path, `task ${t.id}`);
     const { work } = await judged(e, 'g', 'holds', { work: t, tree: wt.path });
     let calls = 0;
-    const merging = wrap(e.h, { integration: (i) => ({ ...i, list: async (a) => { calls++; const r = await i.list(a); return calls === 2 ? { integrations: [{ id: 'other', run_id: RUN, state: 'merging', task_ids: ['x'] }] } : r; } }) });
+    const merging = wrap(e.h, { integration: (i) => ({ ...i, list: async (a) => { calls++; const r = await i.list(a); return calls === 3 ? { integrations: [{ id: 'other', run_id: RUN, state: 'merging', task_ids: ['x'] }] } : r; } }) });
     assert.deepStrictEqual((await e.exec({}, merging).tick()).steps.map((s) => [s.step, s.outcome]), [['integrate', 'skipped']]);
     const second = await e.exec().tick();
     assert.deepStrictEqual(second.steps.map((s) => [s.step, s.outcome]), [['integrate', 'done']]);

@@ -27,6 +27,7 @@ const parse = (v) => { if (v && typeof v === 'object') return v; try { const p =
 const errText = (e) => `${(e && e.code) || 'E_INTERNAL'}: ${String((e && e.message) || e).replace(/[\x00-\x1f\x7f]+/g, ' ').slice(0, 800)}`;
 const keyOf = (step, t) => `${step}|${t.table}|${t.id}|${t.seq}`;
 const isRelease = (t) => !!(t && t.results && t.results.trigger === 'release');
+const RESTART_GRACE_MS = 90000; // a restart claim younger than this may still be coming up: no other worker is started for its step
 const MAX_PARALLEL_BUILDS = 4; // the default cap on builds in flight when the run states none (the standing four-writers rule)
 const SENDS = new Set(['build', 'review', 'fix', 're_review', 'relaunch', ...RF.SENDING]); // the steps that send a worker work (the budget rule); integrate and follow_up send none
 const leftOver0 = STEPS.leftOver; // a review a paused step made and did not hand over (never leased, never evaluated: policy-steps-run.cjs)
@@ -196,6 +197,12 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
     return out;
   }
 
+  // The halted task ids as the store holds them now: the policy rows, tasks, integrations and plan revisions read again and the exceptions derived from them.
+  async function haltedNow(run) {
+    const [st, tk, ig] = [await read(g.policy.list, 'rows', []), await read(g.task.list, 'tasks', []), await read(g.integration.list, 'integrations', [])];
+    return PW.haltedIds(PW.derive({ runId, tasks: tk, integrations: ig, steps: st, revisions: await PW.readRevisions(g.policy, runId, tk), ...(await extras(tk, run)) }), tk);
+  }
+
   // After the claim and just before the step's first write: the run is not paused or ended, and the step is still due on fresh rows at the plan
   // revision it was claimed at (the pass's snapshot can be minutes old after an integrate). -> a reason to skip, or null.
   const seen = { run: null, tasks: [] }; // the run row and the task rows stillDue read, for the budget rule
@@ -212,6 +219,7 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
     const rl = c.step === 'relaunch' ? { steps: (await rd(() => read(g.policy.list, 'rows', []))).filter((r) => !(r.step === 'relaunch' && r.outcome === 'started' && r.trigger_table === c.trigger.table && r.trigger_id === c.trigger.id && Number(r.trigger_seq) === c.trigger.seq)), workers: await rd(() => read(g.worker.list, 'workers', [])) } : {}; // this claim is not a used relaunch
     const roundSteps = (await rd(() => read(g.policy.list, 'rows', []))).filter((r) => r.seq !== seq); // the rounds read the step log, without this step's own claim
     const same = due({ runId, tasks, integrations, roundSteps, ...rl, ...(await rd(() => extras(tasks, run))), ...(dataDir ? { isKilled: (w) => KM.isKilled(dataDir, w.id, w.pid, w.pid_created) } : {}) }).find((d) => keyOf(d.step, d.trigger) === keyOf(c.step, c.trigger));
+    if (same && (await rd(() => haltedNow(run))).has(c.task_id)) return `E_NOT_NOW: ${c.task_id} was halted after the step was claimed; the claim is reopened and the step retaken if the halt is lifted`;
     if (!same) return `E_NOT_NOW: the plan or the facts changed after the claim: ${c.step} on ${c.trigger.table}:${c.trigger.id} is no longer due; the claim is reopened and the step retaken if it is due again`;
     if ((same.policy_rev ?? null) !== (c.policy_rev ?? null)) return `E_NOT_NOW: the plan moved from rev ${c.policy_rev} to rev ${same.policy_rev} after the claim; the claim is reopened and the step retaken`;
     return null;
@@ -225,12 +233,13 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
   };
 
   // The restart of a dead worker for a step, once: a claim of its own (step `restart`, the dead worker and the step's trigger as its key), finished at once. -> true for
-  // the first caller, false for every later one, across reopened claims and adapter lives.
+  // the first caller; false for every later one, across reopened claims and adapter lives; 'recent' for a later one while the first claim is younger than
+  // RESTART_GRACE_MS (a slow restart may still be coming up: no other worker is started for the step yet).
   async function restartOnce(step, seq) {
     const me = await ownId();
     const t = step.trigger;
     const { row, existing } = await g.policy.claim({ claimant_pid: me.pid, ...(me.created != null ? { claimant_created: String(me.created) } : {}), step: 'restart', trigger: { table: 'worker', id: `${step.worker}|${step.step}|${t.table}:${t.id}:${t.seq}` }, task_id: step.task_id, worker_id: step.worker });
-    if (existing) return false;
+    if (existing) return Number.isFinite(row.at) && Date.now() - row.at < RESTART_GRACE_MS ? 'recent' : false;
     try { await g.policy.finish({ seq: row.seq, outcome: 'done', row_ref: `worker:${step.worker}` }); } catch (e) { log(`policy restart ${row.seq}: ${errText(e)}`); }
     return true;
   }
@@ -297,6 +306,8 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
       if (halted.has(c.task_id) || claimed.has(keyOf(c.step, c.trigger))) continue;
       const now = (await g.run.get({})).run; // a pause that began during this pass stops the next claim
       if (!now || now.ended_at != null || now.paused_at != null) { out.held = now && now.ended_at == null ? 'paused' : 'ended'; break; }
+      try { for (const id of await haltedNow(run)) halted.add(id); } catch (e) { log(`policy halt re-read: ${errText(e)}`); } // a read that fails leaves the halts the pass already has
+      if (halted.has(c.task_id)) continue;
       const res = await take(c, out.steps);
       claimed.add(keyOf(c.step, c.trigger));
       if (res && res.outcome === 'exception' && !/^E_BUDGET/.test(res.error || '')) for (const id of PW.haltScope(c.task_id, tasks)) halted.add(id);

@@ -108,3 +108,33 @@ test('a superseded merge-fix claim still answers its integration: the fix is fou
   assert.strictEqual(sup({ ...out, lease: null, acted_by: 'policy', trigger: { table: 'integration', id: 'I', seq: 30 } }, 'lease:GONE').answered, true, 'by the stamped trigger');
   assert.strictEqual(sup({ ...out, lease: { id: 'OTHER' } }, 'lease:L1').cap, true, 'a lease no fix of this work holds answers nothing');
 });
+
+test('a merge fix the orchestrator assigned first ends superseded naming its task, so the integration stays answered after the fix is handed back and the retry follows with no E2', async () => {
+  const e = await M.env({ label: 'answered-superseded', attach: { max_fix_rounds: 1 } });
+  try {
+    const repo = makeRepo(e.dir);
+    await e.orch.run.attach({ adapter_pid: process.pid, project_dir: repo, max_fix_rounds: 1 });
+    const work = async (label, text) => {
+      const t = await e.orch.task.create({ spec: `${label} edits a.txt`, acceptance: M.PASS, policy: M.PLAN });
+      const wt = (await e.op.task.worktreeCreate({ task_id: t.id, repo })).worktree.path;
+      write(wt, 'a.txt', text); commit(wt, `task ${t.id}`);
+      assert.strictEqual((await M.handBack(e, `build-${label}`, t, undefined, wt)).state, 'done');
+      await M.reviewed(e, t, label, 'holds');
+      return { t, wt };
+    };
+    await work('a', 'from a\n'); const b = await work('b', 'from b\n');
+    await e.tick(); // a merges, b conflicts
+    // The orchestrator assigns the fix to the builder at the very moment the step does: the step's assign finds its lease and ends superseded.
+    const first = e.exec({ assignFor: (stepCore) => async (a) => { await e.orch.task.assign({ task_id: a.task_id, worker_id: a.worker_id }); return stepCore.task.assign(a); } });
+    const out = await first.tick();
+    const step = out.steps.find((s) => s.step === 'fix_conflict');
+    const [fix] = M.fixesOf(e, b.t.id);
+    assert.deepStrictEqual([step.outcome, step.row_ref], ['superseded', `task:${fix.id}`], 'the claim names the task it made, not the lease');
+    write(b.wt, 'a.txt', 'from a\n'); commit(b.wt, 'resolve');
+    assert.strictEqual((await handBackFix(e, fix.id)).state, 'done'); // the lease is released: only the claim's row_ref says which fix it was
+    const wakes = await e.poll();
+    assert.deepStrictEqual(wakes.filter((w) => w.exception), [], 'no E2 for the conflict the fix answers');
+    assert.deepStrictEqual(names(await e.tick()).map((s) => [s[0], s[2]]), [['integrate', 'done']], 'the retry follows');
+    assert.strictEqual((await M.rowOf(e, b.t.id)).integration.state, 'merged');
+  } finally { await e.close(); }
+});

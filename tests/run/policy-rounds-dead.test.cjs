@@ -39,6 +39,8 @@ async function redThenDead(e) {
   await e.orch.worker.write({ id: 'b1', state: 'dead', pid, exit_code: 1, death_established_by: 'exit-event' });
   return { t, wt, pid };
 }
+// Runs `f` with the clock 5 minutes on: a restart claim is then older than its grace.
+const later = async (f) => { const real = Date.now; Date.now = () => real() + 300000; try { return await f(); } finally { Date.now = real; } };
 const holder = (e, id) => e.raw('SELECT holder FROM lease WHERE task_id = ? ORDER BY seq DESC LIMIT 1', id)[0].holder;
 const fixSteps = () => (out) => out.steps.filter((s) => s.step === 'fix_eval').map((s) => [s.step, s.outcome]);
 
@@ -263,9 +265,11 @@ test('a restart is made once per step across reopened claims: a slow launch reop
     assert.deepStrictEqual((await x.tick()).steps.filter((s) => s.step === 'fix_eval').map((s) => s.outcome), ['skipped'], 'the first tick: the launch is in flight, the claim is reopened');
     assert.deepStrictEqual(calls, ['b1']);
     assert.deepStrictEqual(spawned, [], 'no second worker while it is in flight');
-    const second = await x.tick();
-    assert.deepStrictEqual(calls, ['b1'], 'the second tick starts no second restart');
-    assert.deepStrictEqual(fixSteps()(second), [['fix_eval', 'done']], 'it goes on to a fresh coder');
+    assert.deepStrictEqual(fixSteps()(await x.tick()), [['fix_eval', 'skipped']], 'the restart is under a minute old: the step waits');
+    assert.deepStrictEqual(spawned, [], 'no fresh coder yet');
+    const third = await later(() => x.tick());
+    assert.deepStrictEqual(calls, ['b1'], 'the later tick starts no second restart');
+    assert.deepStrictEqual(fixSteps()(third), [['fix_eval', 'done']], 'it goes on to a fresh coder');
     assert.match(holder(e, t.id), /^bld-/);
     assert.strictEqual(stepRows(e).filter((s) => s.step === 'restart').length, 1, 'the one attempt is on record');
   } finally { await e.close(); }
@@ -278,9 +282,25 @@ test('with no spawn path the second pass ends the step in the exception, still w
     const calls = [];
     const x = e.exec({ restartWorker: async (id) => { calls.push(id); return { relaunch_in_flight: true }; } });
     await x.tick();
-    const second = await x.tick();
+    const second = await later(() => x.tick());
     assert.deepStrictEqual(calls, ['b1']);
     assert.deepStrictEqual(fixSteps()(second), [['fix_eval', 'exception']]);
     assert.match(stepRows(e).find((s) => s.step === 'fix_eval').error, /already restarted once for this step/);
+  } finally { await e.close(); }
+});
+
+test('a builder restarted a moment ago whose restart is not up yet is not replaced by a fresh coder: the step waits (E_NOT_NOW)', async () => {
+  const e = await env('dead-slow-restart');
+  try {
+    const { t } = await redThenDead(e);
+    const spawned = []; let restarts = 0;
+    const x = e.exec({ restartWorker: async () => { restarts++; return { relaunch_in_flight: true }; }, spawnFor: fakeSpawn(e, spawned) });
+    await x.tick();
+    const out = await x.tick();
+    assert.strictEqual(restarts, 1, 'restarted once');
+    assert.deepStrictEqual(spawned, [], 'no fresh worker for the same step');
+    assert.match(stepRows(e).filter((s) => s.step === 'fix_eval').pop().error, /^E_NOT_NOW/);
+    assert.strictEqual(out.steps.length, 1);
+    assert.notStrictEqual(holder(e, t.id), undefined);
   } finally { await e.close(); }
 });
