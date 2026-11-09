@@ -31,7 +31,9 @@ async function readyWorker(c, env, treeTask, role = 'builder') {
   const tried = [why];
   // One restart per step across reopened claims (a slow launch returns relaunch_in_flight and the step is taken again): the attempt is a claim of its own
   // (policy-exec.cjs restartOnce), so a second pass does not start another while an outage keeps the first from coming up. After it: a fresh worker, or the exception.
-  const again = env.restart && env.restartOnce ? !(await env.restartOnce(c)) : false;
+  const once = env.restart && env.restartOnce ? await env.restartOnce(c) : true;
+  if (once === 'recent') return { res: { outcome: 'skipped', error: `E_NOT_NOW: ${c.worker} was restarted a moment ago and may not be up yet; the step is taken again shortly` } };
+  const again = !once;
   if (again) tried.push(`${c.worker} was already restarted once for this step`);
   if (env.restart && !again) {
     try {
@@ -62,7 +64,6 @@ async function giveTask(c, env, b, { taskId, ref, prompt = null, pausedOk = fals
   if (!b.fresh) {
     const r = await S.handOver(env, { task_id: taskId, worker_id: b.worker, ...(prompt ? { prompt } : {}) }, ref, pausedOk);
     if (r.outcome === 'done' && !written) { const l = await lease(); if (l) r.row_ref = `lease:${l.id}`; } // the row the step wrote is the lease
-    if (r.outcome === 'superseded' && written) r.row_ref = ref; // a task the step made and the orchestrator assigned first: the claim names the task, which outlives the lease (policy-rounds.cjs mergeAction finds the fix by it)
     return b.worker !== c.worker ? { ...r, worker_id: b.worker } : r;
   }
   let row;
@@ -127,7 +128,9 @@ async function mergeFix(c, env) {
   });
   const ref = `task:${made.id}`;
   if (made.fix_notice) return S.exception(`fix_notice: ${made.fix_notice}`, ref); // past max_fix_rounds since the pass read it: the fix stays unassigned
-  return giveTask(c, env, b, { taskId: made.id, ref, written: true });
+  const r = await giveTask(c, env, b, { taskId: made.id, ref, written: true });
+  // A fix the orchestrator assigned first ends superseded naming the lease; the claim names the task it made instead, which outlives the lease (policy-rounds.cjs mergeAction finds the fix by it).
+  return r.outcome === 'superseded' ? { ...r, row_ref: ref } : r;
 }
 
 // A pass on a retry, recorded: the row that carries the fact.

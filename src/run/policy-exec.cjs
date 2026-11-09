@@ -27,6 +27,7 @@ const parse = (v) => { if (v && typeof v === 'object') return v; try { const p =
 const errText = (e) => `${(e && e.code) || 'E_INTERNAL'}: ${String((e && e.message) || e).replace(/[\x00-\x1f\x7f]+/g, ' ').slice(0, 800)}`;
 const keyOf = (step, t) => `${step}|${t.table}|${t.id}|${t.seq}`;
 const isRelease = (t) => !!(t && t.results && t.results.trigger === 'release');
+const RESTART_GRACE_MS = 90000; // a restart claim younger than this may still be coming up: no other worker is started for its step
 const MAX_PARALLEL_BUILDS = 4; // the default cap on builds in flight when the run states none (the standing four-writers rule)
 const SENDS = new Set(['build', 'review', 'fix', 're_review', 'relaunch', ...RF.SENDING]); // the steps that send a worker work (the budget rule); integrate and follow_up send none
 const leftOver0 = STEPS.leftOver; // a review a paused step made and did not hand over (never leased, never evaluated: policy-steps-run.cjs)
@@ -223,14 +224,16 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
   };
 
   // The restart of a dead worker for a step, once: a claim of its own (step `restart`, the dead worker and the step's trigger as its key), finished at once. -> true for
-  // the first caller, false for every later one, across reopened claims and adapter lives.
+  // the first caller; false for every later one, across reopened claims and adapter lives; 'recent' for a later one while the first claim is younger than
+  // RESTART_GRACE_MS (a slow restart may still be coming up: no other worker is started for the step yet).
   async function restartOnce(step, seq) {
     const me = await ownId();
     const t = step.trigger;
     const { row, existing } = await g.policy.claim({ claimant_pid: me.pid, ...(me.created != null ? { claimant_created: String(me.created) } : {}), step: 'restart', trigger: { table: 'worker', id: `${step.worker}|${step.step}|${t.table}:${t.id}:${t.seq}` }, task_id: step.task_id, worker_id: step.worker });
-    if (existing) return false;
-    try { await g.policy.finish({ seq: row.seq, outcome: 'done', row_ref: `worker:${step.worker}` }); } catch (e) { log(`policy restart ${row.seq}: ${errText(e)}`); }
-    return true;
+    if (existing) return Number.isFinite(row.at) && Date.now() - row.at < RESTART_GRACE_MS ? 'recent' : false;
+    try { return true; } finally { // the claim is finished however this ends: a throw leaves no claim started
+      try { await g.policy.finish({ seq: row.seq, outcome: 'done', row_ref: `worker:${step.worker}` }); } catch (e) { log(`policy restart ${row.seq}: ${errText(e)}`); }
+    }
   }
 
   async function take(c0, taken) {
@@ -286,6 +289,10 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
     const integrations = await read(g.integration.list, 'integrations', []);
     const revisions = await PW.readRevisions(g.policy, runId, tasks); // an amend lifts a halt, and the fixes' creation order (policy-wakes derive)
     const ex = await extras(tasks, run);
+    const haltedNow = async () => { // the halt state as it stands now: a halt recorded since the pass began (an exception, an amend) counts before the next claim
+      const [st, tk, ig] = [await read(g.policy.list, 'rows', []), await read(g.task.list, 'tasks', []), await read(g.integration.list, 'integrations', [])];
+      return PW.haltedIds(PW.derive({ runId, tasks: tk, integrations: ig, steps: st, revisions: await PW.readRevisions(g.policy, runId, tk), ...(await extras(tk, run)) }), tk);
+    };
     const halted = PW.haltedIds(PW.derive({ runId, tasks, integrations, steps, revisions, ...ex }), tasks);
     const claimed = new Set(steps.filter((s) => !(s.outcome === 'skipped' && /^E_(PAUSED|NOT_NOW)/.test(s.error || ''))).map((s) => keyOf(s.step, { table: s.trigger_table, id: s.trigger_id, seq: Number(s.trigger_seq) || 0 })));
     const workers = require('./policy-relaunch.cjs').mayNeed(tasks.filter((t) => t.run_id === runId), steps, runId, (t) => PW.rootOf(t, new Map(tasks.map((r) => [r.id, r])))) && g.worker && g.worker.list ? await read(g.worker.list, 'workers', []) : undefined; // worker rows only while a task a builder may have left open exists
@@ -295,6 +302,8 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
       if (halted.has(c.task_id) || claimed.has(keyOf(c.step, c.trigger))) continue;
       const now = (await g.run.get({})).run; // a pause that began during this pass stops the next claim
       if (!now || now.ended_at != null || now.paused_at != null) { out.held = now && now.ended_at == null ? 'paused' : 'ended'; break; }
+      for (const id of await haltedNow()) halted.add(id);
+      if (halted.has(c.task_id)) continue;
       const res = await take(c, out.steps);
       claimed.add(keyOf(c.step, c.trigger));
       if (res && res.outcome === 'exception' && !/^E_BUDGET/.test(res.error || '')) for (const id of PW.haltScope(c.task_id, tasks)) halted.add(id);
