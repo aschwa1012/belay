@@ -214,6 +214,7 @@ function rowOf(w, state, { runId, adapterPid }) {
 function receiptFields(w, state) {
   const f = { cache_read_tokens: w.cacheReadTokens, cache_creation_tokens: w.cacheCreationTokens, tool_calls: w.toolCalls };
   if (w.initModel != null) f.model = w.initModel;
+  if (w.modelFallback) f.model_fallback = w.modelFallback;
   if (w.baseSha != null) { f.base_sha = w.baseSha; f.base_error = null; }
   else if (w.baseError != null) f.base_error = w.baseError;
   if (state === 'starting' || state === 'running') { f.head_sha = null; f.head_error = null; }
@@ -383,7 +384,8 @@ function attach(w, child, ctx) {
         if (e.model) w.initModel = e.model; // W2-3: what init reported, never the requested string
         if (!e.repeat && !w.readyAt) w.readyAt = e.at;
         for (const r of w.readyWaiters.splice(0)) r(e);
-      } else if (e.kind === 'bg_task') BG.noteBgTask(w, e); // ADR 0023 amendment 1 decision 1
+      } else if (e.kind === 'model_fallback') w.modelFallback = require('../core/model-switch.cjs').shape(e); // the substrate moved this session to another model
+      else if (e.kind === 'bg_task') BG.noteBgTask(w, e); // ADR 0023 amendment 1 decision 1
       else if (e.kind === 'tool_use') noteToolUse(w, e);
       else if (e.kind === 'tool_result') noteToolResult(w, e);
       else if (e.kind === 'assistant_text') {

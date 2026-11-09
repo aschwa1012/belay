@@ -322,6 +322,9 @@ const MIGRATIONS = [
   'ALTER TABLE policy_step ADD COLUMN claimant_created TEXT',
   // ADR 0074 amendment 4: the cap on a plan's builds in flight (null: belay's default, 4).
   'ALTER TABLE run ADD COLUMN max_parallel_builds INTEGER',
+  // The substrate moved the session to another model (model-switch.cjs): JSON text { at, from, to, trigger, scope, category }; null until it does.
+  'ALTER TABLE worker ADD COLUMN model_fallback TEXT',
+  'ALTER TABLE run ADD COLUMN orch_model_fallback TEXT',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot

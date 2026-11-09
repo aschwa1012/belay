@@ -48,6 +48,8 @@ function renderText(receipt) {
     if (r.budget) lines.push(`budget: ${require('../core/run-budget.cjs').textOf(r.budget)}`);
     if (r.paused_at != null && r.ended_at == null) lines.push(`run paused at ${new Date(r.paused_at).toISOString()} by ${r.paused_by}${/embedder-failure [(]/.test(r.paused_by || '') ? ` (an embedder failure, on_embedder_failure required: fix the embedder and belay resume, or choose: belay resume ${r.id} --embedder keyword | --embedder off, which also saves the choice; belay settings memory.on_embedder_failure keyword | off saves it for later runs; or leave it paused)` : ''}`);
   }
+  if (receipt.run && receipt.run.orch_model_fallback) lines.push(require('../core/model-switch.cjs').line('orchestrator', receipt.run.orch_model_fallback));
+  for (const w of receipt.workers || []) if (w.model_fallback) lines.push(require('../core/model-switch.cjs').line(`worker ${w.id}`, w.model_fallback));
   lines.push(...require('../core/status-plans.cjs').lines(receipt)); // ADR 0071 decision 5
   lines.push(...require('../core/policy-log.cjs').statusLines(receipt)); // 0.4.0: the newest policy steps, facts only
   for (const w of receipt.workers || []) { // a turn that has not ended: an estimate from the worker's stream, apart from the reported cost

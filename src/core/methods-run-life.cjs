@@ -37,10 +37,23 @@ async function setEmbedderMode(E, caller, args) {
   return row;
 }
 
+// The substrate moved the orchestrator's session to another model: written to the run row when it happens (not only at run.end), so a reader of a live run sees it.
+// `orch_model` follows the new model; run.end's usage replaces both with the run's own accumulator. A fact only; nothing is decided or refused.
+async function setModelFallback(E, caller, args) {
+  const fb = require('./model-switch.cjs').shape(args);
+  if (!fb || !fb.to) throw err('E_ARGS', 'run.setModelFallback needs the model the session moved to (to)');
+  const prev = rows.current(E.store, 'run', caller.run_id);
+  if (!prev) throw err('E_NOT_FOUND', `no run row exists for ${caller.run_id}`, { run_id: caller.run_id });
+  if (prev.ended_at != null) throw err('E_ARGS', `run ${caller.run_id} has already ended`, { run_id: caller.run_id, ended_at: prev.ended_at });
+  const row = M().appendRun(E, { ...prev, orch_model: fb.to, orch_model_fallback: fb }, E.writtenBy(caller));
+  E.noteWrite();
+  return row;
+}
+
 // Build step W2-3 (S4b): the orchestrator's usage, as typed. `orch_model` is a string, the rest numbers;
 // a null or absent field is left to the row (null on a crashed run). A usage problem never stops a run ending (amendment 1, SF2): an invalid field is dropped and named in `invalid_usage` on the result.
 const USAGE_FIELDS = { orch_model: 'string', orch_input_tokens: 'number', orch_output_tokens: 'number',
-  orch_cache_read_tokens: 'number', orch_cache_creation_tokens: 'number', orch_cost_usd: 'number', orch_turns: 'number' };
+  orch_cache_read_tokens: 'number', orch_cache_creation_tokens: 'number', orch_cost_usd: 'number', orch_turns: 'number', orch_model_fallback: 'object' };
 function usageColumns(usage) {
   const out = {};
   const invalid = [];
@@ -90,4 +103,4 @@ async function end(E, caller, args) {
   const out = { ...row, workers_marked_dead: workersMarkedDead, heads_filled: headsFilled };
   return invalid.length ? { ...out, invalid_usage: invalid } : out;
 }
-module.exports = { setPaused, setEmbedderMode, end, usageColumns };
+module.exports = { setPaused, setEmbedderMode, setModelFallback, end, usageColumns };

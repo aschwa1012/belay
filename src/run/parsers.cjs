@@ -254,6 +254,11 @@ class Parser {
 
     // ADR 0007 decision 3 (build 12, `compact_at_tokens`): the substrate's own compaction boundary. Only a
     // lever-on worker acts on it (compaction.cjs); a stream without one is unchanged.
+    // Claude Code moved the session to another model after a safeguard refusal; later assistant messages and inits name the new one.
+    if (j.type === 'system' && j.subtype === 'model_refusal_fallback') {
+      return [this.ev('model_fallback', { from: j.original_model || null, to: j.fallback_model || null, trigger: j.trigger || null, scope: j.scope || null, category: j.api_refusal_category || null }, rawType)];
+    }
+
     if (j.type === 'system' && j.subtype === 'compact_boundary') {
       const m = j.compact_metadata || {};
       const num = (x) => (typeof x === 'number' ? x : null);

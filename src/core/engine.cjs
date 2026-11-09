@@ -136,6 +136,7 @@ const METHODS = {
   // identity), and it is read back through the ordinary run row.
   'run.setPaused': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: run.setPaused },
   'run.setEmbedderMode': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: run.setEmbedderMode },
+  'run.setModelFallback': { roles: ['operator'], kind: 'write', fn: run.setModelFallback },
   'run.assertNotPaused': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./paused-run.cjs', 'assertNotPaused') },
   'run.setBudget': { roles: ['operator'], kind: 'write', fn: lazy('./run-budget.cjs', 'setBudget') },
   // The run's retrieval routing, resolved once (with the GPU probe) and recorded on its row; the run process calls it after run.attach.
