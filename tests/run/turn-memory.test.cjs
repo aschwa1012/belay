@@ -16,6 +16,7 @@ const path = require('node:path');
 
 const { openCore } = require('../../src/core/index.cjs');
 const { createRunManager } = require('../../src/run/index.cjs');
+const TURN_ROWS = { ...require('../../src/run/memory-levers.cjs').DEFAULTS, turn_rows: true }; // legacy: the turn row exists only with this lever
 
 const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').split(path.sep).join('/');
 const USER_SETTINGS = path.join(__dirname, 'fixtures', 'user-settings.json');
@@ -36,7 +37,7 @@ async function until(fn, ms) {
   return false;
 }
 
-test('turn memory (r-f1): the waiter resolves and the row lands before a slow memory.store completes, and the row still appears', async () => {
+test('legacy: turn memory (r-f1): the waiter resolves and the row lands before a slow memory.store completes, and the row still appears', async () => {
   const { sb, dataDir, wt } = sandbox('f1');
   const runId = 'run-f1';
   let core, m;
@@ -45,7 +46,7 @@ test('turn memory (r-f1): the waiter resolves and the row lands before a slow me
     await core.run.attach({ adapter_pid: process.pid });
     const calls = [], stored = [];
     core.memory.store = async (a) => { calls.push(Date.now()); await sleep(3000, true); stored.push(a); return { id: 'stub' }; };
-    m = createRunManager({ core, dataDir, runId, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: USER_SETTINGS } });
+    m = createRunManager({ core, dataDir, runId, memoryLevers: TURN_ROWS, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: USER_SETTINGS } });
     const t0 = Date.now();
     await m.spawn({ substrate: 'claude-code', worktree: wt, prompt: 'one', worker_id: 'w1' });
     await m._waitTurn('w1', 8000);
@@ -66,7 +67,7 @@ test('turn memory (r-f1): the waiter resolves and the row lands before a slow me
   }
 });
 
-test('turn memory (r-f2): shutdown with a store in flight completes within its bound and elects no owner afterwards', async () => {
+test('legacy: turn memory (r-f2): shutdown with a store in flight completes within its bound and elects no owner afterwards', async () => {
   const { sb, dataDir, wt } = sandbox('f2');
   const runId = 'run-f2';
   let core, m;
@@ -76,7 +77,7 @@ test('turn memory (r-f2): shutdown with a store in flight completes within its b
     await core.run.attach({ adapter_pid: process.pid });
     const calls = [];
     core.memory.store = async () => { calls.push(Date.now()); await sleep(30000, true); return { id: 'stub' }; };
-    m = createRunManager({ core, dataDir, runId, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: USER_SETTINGS } });
+    m = createRunManager({ core, dataDir, runId, memoryLevers: TURN_ROWS, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: USER_SETTINGS } });
     await m.spawn({ substrate: 'claude-code', worktree: wt, prompt: 'one', worker_id: 'w1' });
     await m._waitTurn('w1', 8000);
     assert.ok(await until(() => calls.length === 1, 3000), 'the memory write never started');
@@ -103,7 +104,7 @@ async function twoTurns(tag, storeStub, hold = {}) {
   const core = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: runId, pid: process.pid } });
   await core.run.attach({ adapter_pid: process.pid });
   core.memory.store = storeStub;
-  const m = createRunManager({ core, dataDir, runId, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: USER_SETTINGS } });
+  const m = createRunManager({ core, dataDir, runId, memoryLevers: TURN_ROWS, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: USER_SETTINGS } });
   hold.m = m;
   await m.spawn({ substrate: 'claude-code', worktree: wt, prompt: 'one', worker_id: 'w1' });
   await m._waitTurn('w1', 8000);
@@ -146,11 +147,11 @@ async function droppedAfterShutdown(tag, stopDelayMs) {
   }
 }
 
-test('turn memory (r-f3): a write queued before shutdown but started after it is dropped, and elects no owner', () => droppedAfterShutdown('f3', 0));
+test('legacy: turn memory (r-f3): a write queued before shutdown but started after it is dropped, and elects no owner', () => droppedAfterShutdown('f3', 0));
 
-test('turn memory (r-f3): the drop holds when the graceful stop is slow (row writes stalled 3,000 ms)', () => droppedAfterShutdown('f3s', 3000));
+test('legacy: turn memory (r-f3): the drop holds when the graceful stop is slow (row writes stalled 3,000 ms)', () => droppedAfterShutdown('f3s', 3000));
 
-test('turn memory (r-f4): a worker\'s memory writes land in turn order even when the first is slow', async () => {
+test('legacy: turn memory (r-f4): a worker\'s memory writes land in turn order even when the first is slow', async () => {
   const done = [];
   let ctx;
   try {

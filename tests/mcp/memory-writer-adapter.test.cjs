@@ -14,7 +14,7 @@ const FAKE_CLAUDE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
 const USER_SETTINGS = `${ROOT}/tests/run/fixtures/user-settings.json`;
 const { openCore } = require('../../src/core/index.cjs');
 
-test('a tool write is the orchestrator and the run manager turn row is the harness; a forged argument changes nothing', { timeout: 90000 }, async (t) => {
+test('legacy: a tool write is the orchestrator and the run manager turn row is the harness; a forged argument changes nothing', { timeout: 90000 }, async (t) => {
   const data = sandboxDir('memory-writer');
   const worktree = `${data}/wt`;
   fs.mkdirSync(worktree, { recursive: true });
@@ -22,6 +22,7 @@ test('a tool write is the orchestrator and the run manager turn row is the harne
     role: 'orchestrator', data, fake: false, noEmbed: true,
     env: {
       BELAY_FAKE_CORE: `${ROOT}/tests/mcp/fake-core-writer.cjs`,
+      BELAY_TEST_TURN_ROWS: '1',
       BELAY_FAKE_PATHS: JSON.stringify({ claudeExe: FAKE_CLAUDE, codexExe: FAKE_CLAUDE, userSettings: USER_SETTINGS }),
     },
   });
