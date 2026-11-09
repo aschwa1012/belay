@@ -99,3 +99,60 @@ test('a run that ends with the orchestrator switched records it on the run row',
     assert.match(out, /orchestrator: model switched: opus-5-5 -> opus-4-8 \(refusal fallback\)/);
   } finally { await releaseCore(core); cleanup(fwd(d)); }
 });
+
+const SWITCH = { at: 1794000000000, from: 'claude-opus-5-5', to: 'claude-opus-4-8', trigger: 'refusal', scope: 'session', category: 'cyber' };
+
+test('a live run shows the orchestrator switch in status and agents before it ends, and an ended run refuses the write', async () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-model-fb-live-'));
+  const data = `${fwd(d)}/.belay`;
+  const core = await openCore({ dataDir: data, caller: { role: 'orchestrator', run_id: 'run-live', pid: process.pid } });
+  try {
+    await core.run.attach({ adapter_pid: process.pid });
+    await assert.rejects(core.run.setModelFallback({ from: 'a' }), /to/);
+    const row = await core.run.setModelFallback(SWITCH);
+    assert.equal(row.ended_at, null);
+    assert.equal(row.orch_model, 'claude-opus-4-8');
+    assert.equal(row.orch_model_fallback.from, 'claude-opus-5-5');
+    const cli = (...a) => spawnSync(process.execPath, [CLI, ...a, '--data', data], { encoding: 'utf8', windowsHide: true }).stdout;
+    assert.match(cli('status', 'run-live'), /orchestrator: model switched: opus-5-5 -> opus-4-8 \(refusal fallback\)/);
+    assert.match(cli('agents', 'run-live'), /model switched: opus-5-5 -> opus-4-8 \(refusal fallback\)/);
+    await core.run.end({ exit_reason: 'done' });
+    await assert.rejects(core.run.setModelFallback(SWITCH), /already ended/);
+  } finally { await releaseCore(core); cleanup(fwd(d)); }
+});
+
+test('a failed run-row write is logged and never throws into the orchestrator loop', async () => {
+  const { noteOrchestratorFallback } = require('../../src/run/model-fallback-note.cjs');
+  const logged = [];
+  await noteOrchestratorFallback({ run: { setModelFallback: async () => { throw new Error('owner gone'); } } }, SWITCH, (m) => logged.push(m));
+  await noteOrchestratorFallback({ run: { setModelFallback: () => { throw new Error('sync boom'); } } }, SWITCH, (m) => logged.push(m));
+  assert.equal(logged.length, 2);
+  assert.match(logged[0], /owner gone/);
+});
+
+test('belay run writes the orchestrator switch to the run row while the run is still open', () => {
+  const d = fwd(fs.mkdtempSync(path.join(os.tmpdir(), 'belay-model-fb-run2-')));
+  const wt = `${d}/wt`;
+  fs.mkdirSync(wt, { recursive: true });
+  fs.writeFileSync(`${d}/prompt.txt`, 'one turn, then the run ends\n');
+  fs.writeFileSync(`${d}/spec.json`, JSON.stringify({ on_embedder_failure: 'continue', worktree: wt, prompt_file: `${d}/prompt.txt`, run_id: 'run-fb-live', orchestrator_dir: `${d}/orch`, poll_ms: 500, startup_timeout_ms: 20000 }));
+  try {
+    const r = spawnSync(process.execPath, [CLI, 'run', `${d}/spec.json`, '--data', `${d}/.belay`, '--json'], {
+      encoding: 'utf8', windowsHide: true, timeout: 90000,
+      env: { ...process.env, BELAY_CLAUDE_EXE: FAKE, FAKE_MODEL: 'fake-orch-a', FAKE_MODEL_FALLBACK: 'fake-orch-b' },
+    });
+    assert.equal(r.status, 0, r.stderr);
+    const tmp = fwd(fs.mkdtempSync(path.join(os.tmpdir(), 'belay-model-fb-copy-')));
+    try {
+      for (const sfx of ['', '-wal', '-shm']) if (fs.existsSync(`${d}/.belay/memory.db${sfx}`)) fs.copyFileSync(`${d}/.belay/memory.db${sfx}`, `${tmp}/memory.db${sfx}`);
+      const { DatabaseSync } = require('node:sqlite');
+      const db = new DatabaseSync(`${tmp}/memory.db`);
+      try {
+        const open = db.prepare('SELECT orch_model, orch_model_fallback FROM run WHERE id = ? AND ended_at IS NULL AND orch_model_fallback IS NOT NULL').all('run-fb-live');
+        assert.equal(open.length, 1, 'no still-open run row carried the switch');
+        assert.equal(open[0].orch_model, 'fake-orch-b');
+        assert.equal(JSON.parse(open[0].orch_model_fallback).from, 'fake-orch-a');
+      } finally { db.close(); }
+    } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
+  } finally { cleanup(d); }
+});

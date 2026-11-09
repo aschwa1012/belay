@@ -15,7 +15,7 @@ const LA = require('./live-as.cjs'); // a pid with the creation time the row rec
 const { WORKER_STATES, SUBSTRATES } = require('./schema.cjs');
 const { parseRunRow } = require('./pause-parks.cjs');
 
-const { setPaused, setEmbedderMode, end } = require('./methods-run-life.cjs'); // split out; re-exported below
+const { setPaused, setEmbedderMode, setModelFallback, end } = require('./methods-run-life.cjs'); // split out; re-exported below
 const { appendDead } = require('./lease-holder-dead.cjs'); // ADR 0026 amendment 1 (proposed)
 
 const { EFFORT_LEVELS } = require('./effort-levels.cjs');
@@ -457,4 +457,4 @@ async function forgetWorker(E, caller, args) {
   };
 }
 
-module.exports = { appendRun, lifePids, LIFE_CLAIMING_STATES, attach, end, getRun, listRuns, writeWorker, getWorker, listWorkers, forgetWorker, decorate, setPaused, setEmbedderMode, appendRunRow: appendRun };
+module.exports = { appendRun, lifePids, LIFE_CLAIMING_STATES, attach, end, getRun, listRuns, writeWorker, getWorker, listWorkers, forgetWorker, decorate, setPaused, setEmbedderMode, setModelFallback, appendRunRow: appendRun };
