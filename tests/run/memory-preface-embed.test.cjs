@@ -372,3 +372,16 @@ test('a plan-spawned worker: the orchestrator never calls worker_spawn with memo
     assert.match(m._worker('bld-1').firstMessage, /INDEX from task,q:1,q:2/);
   });
 });
+
+test('an index embed that timed out never refuses the spawn, even under required: the worker starts, and the receipt names the time-out', async () => {
+  const timedOut = async () => ({ queries: [{ label: 'task', ok: false, ms: 6003, code: 'E_EMBED_BOUND', message: 'the share passed', timed_out: true, embedder: false }, okQuery('q:1', 40)], on_embedder_failure: 'required', embed_ms: 6043 });
+  await withManager(timedOut, async (m, sb, core, events) => {
+    await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w1', task_id: 't1' });
+    assert.ok(!m._worker('w1').launchFailed);
+    assert.ok(m._worker('w1').pid, 'the worker was launched');
+    assert.match(m._worker('w1').firstMessage, /INDEX a/);
+    const d = JSON.parse(events[0].message);
+    assert.deepStrictEqual(d.queries, [{ label: 'task', ms: 6003, ok: false, timed_out: true, code: 'E_EMBED_BOUND' }, { label: 'q:1', ms: 40, ok: true }]);
+    assert.strictEqual(events[0].ok, 1);
+  });
+});
