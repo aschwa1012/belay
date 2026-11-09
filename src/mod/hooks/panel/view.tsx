@@ -3,7 +3,7 @@
 
 import type { BelayAwaitingNote, BelayEntry, BelayMemoryNotice, BelayPanelSettle, BelayPanelSnap } from '../../types/index'
 import {
-  bandLines, cacheSegs, ctxSegs, isBusy, isLive, markSeg, money, runLine, TONE,
+  bandLines, cacheSegs, ctxSegs, isBusy, isLive, markSeg, money, rowName, runLine, TONE,
   memoryTitleSegs, memoryFallbackSegs, staleLine, type Seg,
 } from './model'
 import { CONFIRM_MS, confirmLine, heldCount, heldDetail, heldLine, reviewLine, reviewProject, REASON_MAX, runningReview, SETTLE_ACTIONS, settleConfirm, settleEntryView, settledActive, shortId } from './held'
@@ -299,7 +299,7 @@ export function Fallback(c: Ctx) {
   const tasks = taskSegs(snap, cols)
   const lines: Seg[][] = [runLine(snap, now), ...(tasks.length ? [tasks] : [])] // the run line carries the cost
   for (const a of snap.agents) {
-    lines.push([markSeg(a.state, snap.settings.marks), { t: ` ${a.id} ${shortModel(a.model)} · ` }, ...ctxSegs(a, snap.settings), { t: ' · ' },
+    lines.push([markSeg(a.state, snap.settings.marks), { t: ` ${rowName(a)} ${shortModel(a.model)} · ` }, ...ctxSegs(a, snap.settings), { t: ' · ' },
       ...cacheSegs(a, snap.settings, snap.fetchedAt, now), { t: ` · ${money(a.costUsd)}` }, { t: a.task ? ` · ${a.task.id}` : '', dim: true }])
   }
   if (snap.memoryNotice) lines.push(memoryFallbackSegs(snap.memoryNotice))

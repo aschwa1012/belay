@@ -3,6 +3,7 @@
 // Every refusal here happens before any row is written or any file created.
 
 const fs = require('node:fs');
+const path = require('node:path');
 const L = require('./launch.cjs');
 const { fail } = require('./errors.cjs');
 const { isJobId } = require('../core/job-ids.cjs');
@@ -75,4 +76,20 @@ async function discardUnstarted(workers, w, dirExisted) {
   if (!dirExisted) { try { fs.rmSync(w.dir, { recursive: true, force: true }); } catch { /* the original error is the one to report */ } }
 }
 
-module.exports = { checkWorkerId, checkIdFree, discardUnstarted, validateSpawnArgs, checkMemoryQueries, QUERIES_MAX, QUERY_BYTES_MAX };
+// The id a spawn gets when the caller names none: `<agent type or worker>-<n>`, n the lowest number no worker row (any run, any state, compared without case),
+// no live record of this run and no worker directory holds. Ids are one namespace per data dir (the directory and the row key), so the number is store-wide, not per
+// run. The directory is made here, atomically (a plain mkdir fails when it exists): two spawns, in this process or in another run's, can never take one number.
+// The caller owns the empty directory it returns and removes it if the spawn dies before a row exists.
+async function freshWorkerId(core, dataDir, agentType, takenHere) {
+  const prefix = agentType || 'worker';
+  const used = new Set(((await core.worker.list({ states: WORKER_STATES })).workers || []).map((r) => String(r.id).toLowerCase()));
+  fs.mkdirSync(path.dirname(L.workerDir(dataDir, prefix)), { recursive: true });
+  for (let n = 1; ; n++) {
+    const id = `${prefix}-${n}`;
+    if (used.has(id) || takenHere(id)) continue;
+    try { fs.mkdirSync(L.workerDir(dataDir, id)); } catch (e) { if (e && e.code === 'EEXIST') continue; throw e; }
+    return id;
+  }
+}
+
+module.exports = { freshWorkerId, checkWorkerId, checkIdFree, discardUnstarted, validateSpawnArgs, checkMemoryQueries, QUERIES_MAX, QUERY_BYTES_MAX };

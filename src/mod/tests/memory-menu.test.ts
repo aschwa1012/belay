@@ -154,7 +154,7 @@ describe('the Profiles tab', () => {
     await m.ui.press({ key: 'set:memory.profile:gpu-rerank' })
     await m.ui.press({ key: 'set:memory.profile:gpu-rerank' })
     await later(m.wd, 1500)
-    expect(m.wd.toasts).toContain(`belay: memory.profile set to gpu-rerank (was "cpu-fast"); run r-live-1 keeps its profile, next run only, a spec overrides it`)
+    expect(m.wd.toasts).toContain(`belay: memory.profile set to gpu-rerank (was "cpu-fast"); live runs keep their profile; next run only, a spec overrides it`)
     for (const t of m.wd.toasts) expect(t.length).toBeLessThanOrEqual(110)
   })
 

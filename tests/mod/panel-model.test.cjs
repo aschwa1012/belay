@@ -264,5 +264,5 @@ test('rowName: a bare uuid id reads as its role and six characters; any other id
 test('confirmLine: says a paused run does not hold the review; says nothing otherwise', () => {
   const h = { count: 2, byProject: { acme: 2 } };
   assert.ok(!M.confirmLine(h, 'acme').includes('paused'));
-  assert.ok(M.confirmLine(h, 'acme', true).includes('the run is paused; the review is not held by it'));
+  assert.ok(M.confirmLine(h, 'acme', true).includes('the watched run is paused; the review does not wait for it'));
 });
