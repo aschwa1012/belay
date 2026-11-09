@@ -9,6 +9,7 @@
 // the record exactly as write-row.cjs names its own.
 
 const MC = require('./memory-capture.cjs');
+const RECENT_TURNS = 10; // the same count continuity.resumeDoc reads of tagged rows
 
 // Runs the turn's own checkpoint and memory write, or, once `ctx.shutdownFlags.closed` is set, neither —
 // recording the drop instead. Returns the checkpoint id (or null), exactly as the inline block did.
@@ -66,6 +67,11 @@ async function writeTurnRow(w, ctx, text, turn, checkpointId, endedAt) {
 // lifecycle.cjs's shutdown awaits every queue for at most 5,000 ms before it closes the core.
 function queueMemory(w, e, ctx, memoryTextMax, checkpointId) {
   const text = (e.text || w.lastAssistantText || '').slice(0, memoryTextMax);
+  if (text) { // the worker's own last turns, for a restart's resume document when turn rows are off (restart.cjs); bounded like the rows it replaces
+    const ring = w.recentTurns || (w.recentTurns = []);
+    ring.push({ turn: w.turns, text: text.replace(/\s+/g, ' ').slice(0, 160) });
+    if (ring.length > RECENT_TURNS) ring.shift();
+  }
   const plan = MC.plan(w, e, ctx); // null with the capture and job levers off: then the turn row (turn_rows) is the only write
   if ((!text && !plan) || (ctx.shutdownFlags && ctx.shutdownFlags.closed)) return;
   if (plan && ctx.memoryLevers && ctx.memoryLevers.cost_ledger) require('./usage-early.cjs').start(w, ctx, plan.snap); // the usage row does not wait behind this turn's embeds

@@ -32,3 +32,28 @@ test('no turn row is written by default, with levers or without', async () => {
 test('turn_rows true writes the turn row', async () => {
   assert.deepStrictEqual(await turn({ ...DEFAULTS, turn_rows: true }), ['turn']);
 });
+
+test('a replace restart with turn_rows off still carries the last turns, from the worker\'s own record; with it on the rows stand', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { restartFirstText } = require('../../src/run/restart.cjs');
+  for (const rows of [false, true]) {
+    const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-turnrows-'));
+    try {
+      const levers = { ...DEFAULTS, turn_rows: rows };
+      const ctx = { core: { memory: { store: async () => ({ id: 'm' }) } }, shutdownFlags: { closed: false }, memoryLevers: levers };
+      const w = { id: 'w1', taskId: 't1', dir, turns: 0, costUsd: 0, lastTurnUsage: null, streamPath: dir.split(path.sep).join('/') + '/stream.jsonl' };
+      for (const text of ['first turn text', 'the last turn text']) {
+        w.turns += 1; w.lastAssistantText = text;
+        TR.queueMemory(w, { kind: 'turn_end', text }, ctx, 4000, null);
+      }
+      await w.memoryQueue;
+      const core = { continuity: { resumeDoc: async () => ({ text: '# resume\n' }), resumeLine: async () => ({ text: 'LINE' }) } };
+      await restartFirstText(w, 'replace', { core, ctx: { ...ctx, core } });
+      const md = fs.readFileSync(path.join(dir, 'resume.md'), 'utf8');
+      assert.strictEqual(md.includes('turn 2: the last turn text'), !rows, `turn_rows ${rows}`);
+      assert.strictEqual(md.includes('turn 1: first turn text'), !rows);
+    } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+  }
+});

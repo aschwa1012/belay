@@ -95,7 +95,12 @@ async function restartFirstText(w, branch, { core, ctx, hold }) {
   if (!bottled) {
     try {
       const doc = await core.continuity.resumeDoc(key);
-      if (doc && doc.text) fs.writeFileSync(L.fwd(path.join(w.dir, 'resume.md')), doc.text);
+      if (doc && doc.text) {
+        // With turn rows off the document's rows section is empty; the worker's own last turns, kept from its stream, stand in.
+        const recent = !(lv && lv.turn_rows) && Array.isArray(w.recentTurns) && w.recentTurns.length
+          ? ['', '', `## recent turns of ${w.id} (from its own stream)`, ...w.recentTurns.map((t) => `- [${w.id}] turn ${t.turn}: ${t.text}`), ''].join('\n') : '';
+        fs.writeFileSync(L.fwd(path.join(w.dir, 'resume.md')), doc.text + recent);
+      }
     } catch (e) {
       w.lastError = { where: 'continuity.resumeDoc', code: e && e.code, message: e && e.message };
     }
