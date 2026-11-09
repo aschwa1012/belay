@@ -101,6 +101,7 @@ function one(E, caller, args, own, runTop) {
   }
 
   const plan = require('./policy-plan.cjs').forCreate(rows.current(E.store, 'run', caller.run_id), args, { repairs, follows_up: own.follows_up, acceptance }); // ADR 0071: checked before the append, so a refused plan writes nothing
+  const planNotice = repairs && plan.policy && plan.policy.build ? 'the plan does not build a task that repairs another, so policy.build is not used: assign it with task_assign. The policy stated here replaces the plan of the work for this fix: name re_review and fix in it if it should be re-reviewed and sent back on a failed check; it is merged with its work under the plan of the work' : null; // the build gate is `!repairs` (policy-exec.cjs)
   const t = Date.now();
   const budget = require('./run-budget.cjs').taskLimit(E, caller, args); // dollar limit, checked before the append; null when none (the run process is told after the write: run-budget noteRows)
   const row = rows.append(E.store, 'task', {
@@ -108,7 +109,7 @@ function one(E, caller, args, own, runTop) {
     results: null, depends_on: deps, repairs, ...plan, ...(tree ? { worktree: tree } : {}), ...(own.answers ? { answers: own.answers } : {}), ...(own.follows_up ? { follows_up: own.follows_up } : {}), ...(args.base != null ? { base: require('./methods-worktree.cjs').baseArg(args.base) } : {}),
   }, E.writtenBy(caller), t);
   E.noteWrite();
-  return overlaps.length || fixNotice ? { ...row, ...(overlaps.length ? { overlaps } : {}), ...(fixNotice ? { fix_notice: fixNotice } : {}) } : row;
+  return overlaps.length || fixNotice || planNotice ? { ...row, ...(overlaps.length ? { overlaps } : {}), ...(fixNotice ? { fix_notice: fixNotice } : {}), ...(planNotice ? { plan_notice: planNotice } : {}) } : row;
 }
 
 module.exports = { one };
