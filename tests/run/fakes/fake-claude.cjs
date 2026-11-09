@@ -32,6 +32,8 @@ if (process.env.FAKE_SPAWN_SCRIPT) {
   require('node:child_process').spawn(process.execPath, [process.env.FAKE_SPAWN_SCRIPT], { windowsHide: true, stdio: 'ignore' }).unref();
 }
 
+// FAKE_FAIL_RESUME=1: a launch with --resume ends at once with the error Claude Code gives for a session it cannot find.
+if (process.env.FAKE_FAIL_RESUME === '1' && process.argv.includes('--resume')) { process.stderr.write('No conversation found with session ID: ' + process.argv[process.argv.indexOf('--resume') + 1] + String.fromCharCode(10)); process.exit(1); }
 const SESSION = process.env.FAKE_SESSION_ID || 'fake-session-0000-0000-0000-000000000001';
 const EXTRA_INIT = process.env.FAKE_EXTRA_INIT === '1'; // simulate an inbound cross-session turn
 // 5b-2: the unsolicited turn's own init lands right after the answer it rides in on; its own

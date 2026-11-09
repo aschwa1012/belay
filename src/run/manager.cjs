@@ -320,10 +320,10 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     try { return await p; } finally { if (adopting.get(workerId) === p) adopting.delete(workerId); }
   }
 
-  // Shared by `restart` and by `resume` (pause.cjs): `firstTextOverride(branch)` replaces
-  // `restartFirstText`'s own text when given; `appendMessage` follows two newlines; `awaitFirstTurn: false`
-  // returns once the relaunch's `running` row lands, before its first turn ends.
-  async function doRestart(w, { firstTextOverride = null, appendMessage = null, awaitFirstTurn = true, first_turn_timeout_ms = 180000, onFirstText = null, skipDeadPidKill = false } = {}) {
+  // Shared by `restart` and by `resume` (pause.cjs): `firstTextOverride(branch)` replaces `restartFirstText`'s own text when given; `appendMessage` follows
+  // two newlines; `awaitFirstTurn: false` returns once the relaunch's `running` row lands. `forceReplace`: why (resume-fallback.cjs).
+  const doRestart = require('./resume-fallback.cjs').withFallback((w, o) => restartBranch(w, o));
+  async function restartBranch(w, { forceReplace = null, firstTextOverride = null, appendMessage = null, awaitFirstTurn = true, first_turn_timeout_ms = 180000, onFirstText = null, skipDeadPidKill = false } = {}) {
     const worker_id = w.id;
     const old_pid = w.pid;
     RG.refuseIfRelaunching(w, 'restart'); // a Codex message's relaunch owns the window; this one waits its turn
@@ -336,7 +336,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     // ADR 0026 amendment 2 (proposed): from here until launch() has moved w.launches, a death of this worker keeps its lease.
     const { d, hold, firstText } = await RG.relaunching(w, writeRow, async () => {
       await w.queue; // the life before's rows land first (a death meanwhile keeps the lease: relaunch-guard.cjs)
-      const d = decideBranch(w); const hold = await holdForLaunch(w, core); // the task's files are held for this run, or nothing is touched; a death-released lease is granted back or reported
+      const d = decideBranch(w, forceReplace); const hold = await holdForLaunch(w, core); // the task's files are held for this run, or nothing is touched; a death-released lease is granted back or reported
       W.settleHeld(w, ctx, 'pid-check-on-restart'); await w.queue; // a held death gets its dead row, and every row of the life before lands, before the relaunch
       if (w.child && P.pidAlive(w.pid)) await doStop(w, 'graceful', 10000);
       // Fix round, should-fix finding: `skipDeadPidKill` (resume, pause.cjs) skips this branch — a park's own

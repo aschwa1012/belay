@@ -250,7 +250,7 @@ test('legacy: manager: a replace restart delivers the bottle with the task and t
     assert.deepStrictEqual(core.events.filter((e) => e.kind === 'bottle'), [], 'a resume builds no bottle');
     assert.ok(!fs.existsSync(path.join(sb.dir('w1'), 'resume.md')));
 
-    m._worker('w1').lastEventAt = Date.now() - 60 * 60 * 1000;
+    m._worker('w1').sessionId = null; // no session to resume: the replace branch (age no longer decides it)
     const r2 = await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 });
     assert.strictEqual(r2.branch, 'replace');
     const md = fs.readFileSync(path.join(sb.dir('w1'), 'resume.md'), 'utf8');
@@ -273,7 +273,7 @@ test('legacy: manager, lever off: a replace restart writes the resumeDoc text an
   await withManager({ bottle: false }, async (m, core, sb) => {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'build the widget', worker_id: 'w1', task_id: 't1' });
     await m._waitTurn('w1', 8000);
-    m._worker('w1').lastEventAt = Date.now() - 60 * 60 * 1000;
+    m._worker('w1').sessionId = null; // no session to resume: the replace branch (age no longer decides it)
     const r = await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 });
     assert.strictEqual(r.branch, 'replace');
     assert.match(fs.readFileSync(path.join(sb.dir('w1'), 'resume.md'), 'utf8'), /^# resume/);
