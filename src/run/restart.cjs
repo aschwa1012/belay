@@ -13,14 +13,16 @@ const CLAUDE_RESUME_WINDOW_MS = 55 * 60 * 1000; // ADR 0001 §6/§7: 1 h cache, 
 const CODEX_RESUME_WINDOW_MS = 25 * 60 * 1000; // ~30 min server-side window, 5 min of margin
 const now = () => Date.now();
 
-// Contract §5 branch rule. `reason` states the numbers it decided on.
-function decideBranch(w) {
+// Contract §5 branch rule: a session or thread id that exists is resumed, whatever its age. The window is only how long the prompt cache lives, and it must be
+// repaid either way, so it informs the receipt (`cache_cold`) and decides nothing. `replace` is for no session id, or for `forceReplace`: the resume itself failed
+// (resume-fallback.cjs), its reason in the string. `reason` states the numbers it decided on.
+function decideBranch(w, forceReplace = null) {
   const window_ms = w.substrate === 'codex' ? CODEX_RESUME_WINDOW_MS : CLAUDE_RESUME_WINDOW_MS;
   const age_ms = w.lastEventAt ? now() - w.lastEventAt : null;
+  if (forceReplace) return { branch: 'replace', reason: forceReplace, age_ms, window_ms };
   if (!w.sessionId) return { branch: 'replace', reason: 'no session or thread id is known for this worker', age_ms, window_ms };
-  if (age_ms === null) return { branch: 'replace', reason: 'no event has ever been seen, so there is no age to compare with the window', age_ms, window_ms };
-  if (age_ms <= window_ms) return { branch: 'resume', reason: `last event ${age_ms} ms ago, inside the ${window_ms} ms ${w.substrate} window`, age_ms, window_ms };
-  return { branch: 'replace', reason: `last event ${age_ms} ms ago, outside the ${window_ms} ms ${w.substrate} window`, age_ms, window_ms };
+  const cold = age_ms !== null && age_ms > window_ms;
+  return { branch: 'resume', reason: `a ${w.substrate} session is known; last event ${age_ms === null ? 'never seen' : `${age_ms} ms ago`}${cold ? `, past the ${window_ms} ms cache window: the cache is likely cold and is written again` : `, inside the ${window_ms} ms cache window`}`, age_ms, window_ms, cache_cold: cold };
 }
 
 const OBS_MAX = 200; // observations fetched for a bottle: the newest turns matter most, and the page is bounded

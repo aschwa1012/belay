@@ -27,7 +27,7 @@ const parse = (v) => { if (v && typeof v === 'object') return v; try { const p =
 const errText = (e) => `${(e && e.code) || 'E_INTERNAL'}: ${String((e && e.message) || e).replace(/[\x00-\x1f\x7f]+/g, ' ').slice(0, 800)}`;
 const keyOf = (step, t) => `${step}|${t.table}|${t.id}|${t.seq}`;
 const isRelease = (t) => !!(t && t.results && t.results.trigger === 'release');
-const RESTART_GRACE_MS = 90000; // a restart claim younger than this may still be coming up: no other worker is started for its step
+const RESTART_GRACE_MS = 150000; // a restart claim younger than this may still be coming up: no other worker is started for its step
 const MAX_PARALLEL_BUILDS = 4; // the default cap on builds in flight when the run states none (the standing four-writers rule)
 const SENDS = new Set(['build', 'review', 'fix', 're_review', 'relaunch', ...RF.SENDING]); // the steps that send a worker work (the budget rule); integrate and follow_up send none
 const leftOver0 = STEPS.leftOver; // a review a paused step made and did not hand over (never leased, never evaluated: policy-steps-run.cjs)
