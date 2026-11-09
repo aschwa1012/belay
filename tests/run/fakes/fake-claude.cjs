@@ -167,7 +167,7 @@ let cumOut = 0;
 // build step W2-3: the fake follows the real binary's receipt fields. system/init names the model the session
 // actually started with (FAKE_MODEL); every turn does FAKE_TOOL_USES tool_use/tool_result pairs (default 1);
 // the closing result carries per-turn cache tokens in usage and a modelUsage block, in the shapes of
-// tests/run/fixtures/claude-stream.jsonl. total_cost_usd is session-cumulative and survives a --resume, so
+// tests/run/fixtures/claude-stream.jsonl. total_cost_usd is per process (a resumed process starts again at zero), so
 // FAKE_COST_BASE seeds the running total the way a resumed session inherits it.
 let MODEL = process.env.FAKE_MODEL || 'fake-claude-model-1';
 // FAKE_MODEL_FALLBACK=<model>: the first answer is refused by a safeguard and the session moves to that model, as Claude Code's `model_refusal_fallback` event does; later inits name it.

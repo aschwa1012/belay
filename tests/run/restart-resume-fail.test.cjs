@@ -66,3 +66,26 @@ test('resumeFailure: the kill check is asked of the worker, and a kill returns n
   assert.match(resumeFailure(w, e, {}, () => false), /the resume failed \(r\)/);
   assert.strictEqual(resumeFailure(w, e, {}, (x) => x === w), null);
 });
+
+test('a resumed process reports its own total from zero: the row keeps the cost so far and only grows', async (t) => {
+  const { m, core, worktree } = await rig(t, 'run-rf-cost');
+  const w = await started(m, worktree);
+  w.costUsd = 0.03; // what the first process left on the row
+  const costs = []; const write = core.worker.write.bind(core.worker);
+  core.worker.write = async (row) => { if (row.id === 'w1') costs.push(row.cost_usd); return write(row); };
+  await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 20000 });
+  assert.ok(Math.abs(w.costUsd - 0.031) < 1e-9, `the new process reported 0.001 on top of 0.03, got ${w.costUsd}`);
+  assert.ok(costs.every((c) => c >= 0.03), `no row written lower than the cost so far: ${costs}`);
+});
+
+test('a failed resume that reports $0 does not lower the row, and the replacement adds to it', async (t) => {
+  const { m, core, worktree } = await rig(t, 'run-rf-cost0');
+  const w = await started(m, worktree);
+  w.costUsd = 0.03;
+  process.env.FAKE_FAIL_RESUME = '1'; process.env.FAKE_FAIL_RESUME_RESULT = '1';
+  const costs = []; const write = core.worker.write.bind(core.worker);
+  core.worker.write = async (row) => { if (row.id === 'w1') costs.push(row.cost_usd); return write(row); };
+  await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 20000 });
+  assert.ok(costs.every((c) => c >= 0.03), `no row written lower than the cost so far: ${costs}`);
+  assert.ok(w.costUsd >= 0.03);
+});

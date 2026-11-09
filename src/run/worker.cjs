@@ -392,7 +392,7 @@ function attach(w, child, ctx) {
         w.lastAssistantText = e.text;
         if (e.context_tokens != null) w.contextTokens = e.context_tokens;
         if (e.five_minute_cache_write) w.fiveMinuteCacheWrites += 1;
-      } else if (e.kind === 'turn_end' && !w.readyAt) {
+      } else if (e.kind === 'turn_end' && e.is_error && !w.readyAt) {
         w.lastError = { where: 'turn', detail: 'a result arrived before the ready event; a process that never became ready has no turns' };
       } else if (e.kind === 'turn_end') { // fix round, worker.cjs:317: pendingTurnEnd, cleared by onTurnEnd (settle() reads it)
         w.pendingTurnEnd = e; w.queue = w.queue.then(() => onTurnEnd(w, e, ctx)).catch(() => {});

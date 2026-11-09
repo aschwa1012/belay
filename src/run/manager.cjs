@@ -135,7 +135,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     w.settledState = null; // the last process's end; a restatement of this one's row must never carry it
     w.exitedAt = null;
     w.turnEnded = false;
-    w.readyAt = null;
+    w.readyAt = null; w.costBase = w.costUsd; // total_cost_usd is per process (Claude Code 2.1.321), a resume's too: each launch starts on the row's cost so far, so the row only grows
     w.parkRequested = null; w.paused = null; w.staleSince = null; w.bgTasks = new Map(); w.controlWaiters.clear(); w.pendingTurnEnd = null; // 6e-4/6e-6: fresh
     // The adapter log is shared across a worker's launches: rotate it if large (review B1), then remember
     // where it ended, so a previous process's tools/list never passes this one's ready check.
@@ -351,7 +351,6 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       firstText = (await MP.relaunch(w, ctx, firstText, { fresh: d.branch === 'replace', message: appendMessage })) + leaseNote(hold); // ADR 0042 decision 3: minus the rows already shown, only where that conversation still holds them
       if (d.branch === 'replace') {
         w.sessionId = null;
-        w.costBase = w.costUsd; // a fresh session's total_cost_usd starts at zero: what the earlier sessions reported stays in the row
         w.parser = createParser(w.substrate, MP.parserOpts(ctx));
       }
       if (onFirstText) onFirstText(firstText); if (!skipDeadPidKill) await LG.refuseIfPaused(ctx.core, ctx.runId, w, { restart: true }); // a run pause landing during the awaits above; a resume (skipDeadPidKill) runs while the run is still paused
