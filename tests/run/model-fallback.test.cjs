@@ -105,7 +105,7 @@ const SWITCH = { at: 1794000000000, from: 'claude-opus-5-5', to: 'claude-opus-4-
 test('a live run shows the orchestrator switch in status and agents before it ends, and an ended run refuses the write', async () => {
   const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-model-fb-live-'));
   const data = `${fwd(d)}/.belay`;
-  const core = await openCore({ dataDir: data, caller: { role: 'orchestrator', run_id: 'run-live', pid: process.pid } });
+  const core = await openCore({ dataDir: data, caller: { role: 'operator', run_id: 'run-live', pid: process.pid } });
   try {
     await core.run.attach({ adapter_pid: process.pid });
     await assert.rejects(core.run.setModelFallback({ from: 'a' }), /to/);
@@ -113,6 +113,8 @@ test('a live run shows the orchestrator switch in status and agents before it en
     assert.equal(row.ended_at, null);
     assert.equal(row.orch_model, 'claude-opus-4-8');
     assert.equal(row.orch_model_fallback.from, 'claude-opus-5-5');
+    const again = await core.run.attach({ adapter_pid: process.pid });
+    assert.equal(again.run.orch_model_fallback.to, 'claude-opus-4-8', 'a re-attach of the same life keeps the switch');
     const cli = (...a) => spawnSync(process.execPath, [CLI, ...a, '--data', data], { encoding: 'utf8', windowsHide: true }).stdout;
     assert.match(cli('status', 'run-live'), /orchestrator: model switched: opus-5-5 -> opus-4-8 \(refusal fallback\)/);
     assert.match(cli('agents', 'run-live'), /model switched: opus-5-5 -> opus-4-8 \(refusal fallback\)/);
