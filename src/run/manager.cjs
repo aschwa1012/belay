@@ -135,7 +135,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     w.settledState = null; // the last process's end; a restatement of this one's row must never carry it
     w.exitedAt = null;
     w.turnEnded = false;
-    w.readyAt = null; w.stderrLaunch = ''; require('./cost-carry.cjs').arm(w); // this launch's own stderr; its first cost report decides whether the session total carried (cost-carry.cjs)
+    w.readyAt = null; w.stderrLaunch = ''; require('./cost-carry.cjs').arm(w, root); // this launch's own stderr; its first cost report decides whether the session total carried (cost-carry.cjs)
     w.parkRequested = null; w.paused = null; w.staleSince = null; w.bgTasks = new Map(); w.controlWaiters.clear(); w.pendingTurnEnd = null; // 6e-4/6e-6: fresh
     // The adapter log is shared across a worker's launches: rotate it if large (review B1), then remember
     // where it ended, so a previous process's tools/list never passes this one's ready check.

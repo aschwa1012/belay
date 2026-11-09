@@ -6,8 +6,11 @@
 // reset on a replace, a fresh session). It is the worker row's `cost_saved`, so an adopting adapter and a park resume have it.
 // A new process's reports R are relative to `saved`: the row grows by R - saved, from the cost at its launch, so it never falls.
 // Guard: a first report below `saved` means the model is wrong for this version; the process is then counted from zero (R whole) and the
-// worker's lastError says so, so it is visible and never double counts silently. A graceful exit whose code belay did not see (a pid-poll
-// settle) saves nothing here, so the next resume counts from the older total and the row can overcount by the difference.
+// worker's lastError says so, so it is visible and never double counts silently.
+// Unknown exit: when an adapter dies its workers see stdin close and exit cleanly (saving the total), but the adopting adapter finds only a
+// dead pid. If the previous process's exit code is unknown, it had reported a cost, and no operator kill mark names it, the next process's first
+// report R starts from the larger of `saved` and that process's last total, when that total is not above R. Exact when it did exit cleanly; if it
+// was in fact killed this can only undercount, by at most the gap between the two.
 
 const EPS = 1e-9;
 
@@ -23,8 +26,12 @@ function savedOf(w) {
 }
 
 // At every launch.
-function arm(w) {
-  w.costSaved = savedOf(w); w.costGraceful = false;
+function arm(w, dataDir) {
+  w.costSaved = savedOf(w);
+  const last = Math.max(0, (w.costUsd || 0) - (w.costBase || 0));
+  const unknownExit = w.exitCode == null && w.exitSignal == null && last > w.costSaved + EPS && !(dataDir && w.id && require('../core/kill-mark.cjs').isKilledLoose(dataDir, w.id, w.pid, w.pidCreated));
+  w.costUnknown = unknownExit ? last : null;
+  w.costGraceful = false;
   w.costRowAtLaunch = w.costUsd || 0;
   w.costDecided = false;
 }
@@ -33,10 +40,11 @@ function arm(w) {
 function total(w, reported) {
   if (w.costDecided === false) {
     w.costDecided = true;
-    const saved = w.costSaved || 0;
-    if (reported < saved - EPS) {
+    const saved0 = w.costSaved || 0;
+    const saved = w.costUnknown != null && w.costUnknown <= reported + EPS ? w.costUnknown : saved0; // see the unknown-exit note above
+    if (reported < saved0 - EPS) {
       w.costBase = w.costRowAtLaunch;
-      w.lastError = { where: 'cost', detail: `the first cost report ${reported} is below the total saved at the last graceful exit ${saved}; this process is counted from zero` };
+      w.lastError = { where: 'cost', detail: `the first cost report ${reported} is below the total saved at the last graceful exit ${saved0}; this process is counted from zero` };
     } else w.costBase = w.costRowAtLaunch - saved;
   }
   return (w.costBase || 0) + reported;
