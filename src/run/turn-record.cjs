@@ -66,7 +66,7 @@ async function writeTurnRow(w, ctx, text, turn, checkpointId, endedAt) {
 // lifecycle.cjs's shutdown awaits every queue for at most 5,000 ms before it closes the core.
 function queueMemory(w, e, ctx, memoryTextMax, checkpointId) {
   const text = (e.text || w.lastAssistantText || '').slice(0, memoryTextMax);
-  const plan = MC.plan(w, e, ctx); // null with the capture and job levers off: then the turn row is the only write
+  const plan = MC.plan(w, e, ctx); // null with the capture and job levers off: then the turn row (turn_rows) is the only write
   if ((!text && !plan) || (ctx.shutdownFlags && ctx.shutdownFlags.closed)) return;
   if (plan && ctx.memoryLevers && ctx.memoryLevers.cost_ledger) require('./usage-early.cjs').start(w, ctx, plan.snap); // the usage row does not wait behind this turn's embeds
   const turn = w.turns;
@@ -74,8 +74,9 @@ function queueMemory(w, e, ctx, memoryTextMax, checkpointId) {
   w.memoryQueue = (w.memoryQueue || Promise.resolve()).then(async () => {
     if (ctx.shutdownFlags && ctx.shutdownFlags.closed) { w.lastError = { where: 'after-shutdown', state: 'turn-memory' }; return; }
     let turnRowId = null;
-    // With observations on, the observation is the turn's only row (ADR 0044 decision 1): no turn row is written.
-    if (text && !(plan && plan.levers.observations)) {
+    // A turn row is written only when the turn_rows lever is on. With observations on, the observation is the turn's only row (ADR 0044 decision 1).
+    const rows = !!(ctx.memoryLevers && ctx.memoryLevers.turn_rows);
+    if (rows && text && !(plan && plan.levers.observations)) {
       const row = await writeTurnRow(w, ctx, text, turn, checkpointId, endedAt);
       turnRowId = (row && row.id) || null;
     }
@@ -83,7 +84,7 @@ function queueMemory(w, e, ctx, memoryTextMax, checkpointId) {
     const obs = await MC.finish(w, e, ctx, plan, { checkpointId, turnRowId }); // the observation, then the jobs (ADR 0041 decisions 3, 7)
     // Safety net: a turn is never left with no row. If the observation did not land (its failure is already an ok 0
     // event), the turn row is written exactly as the lever-off path writes it.
-    if (plan.levers.observations && !obs) await writeTurnRow(w, ctx, text, turn, checkpointId, endedAt);
+    if (rows && plan.levers.observations && !obs) await writeTurnRow(w, ctx, text, turn, checkpointId, endedAt);
   });
 }
 
