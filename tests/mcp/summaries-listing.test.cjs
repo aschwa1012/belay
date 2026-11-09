@@ -52,7 +52,7 @@ test('a worker lists memory_summaries in a notes run only, and the route and the
 
 test('over the wire: the notes lever in the run row lists the tool, once, and no lever does not', async () => {
   const on = await listing(JSON.stringify({ notes: true, project: 'p' }));
-  assert.deepStrictEqual(on, tools.toolsFor('orchestrator', { notes: true }));
+  assert.deepStrictEqual(on, tools.toolsFor('orchestrator', { notes: true, queries: true }), 'the index follows notes, so worker_spawn lists memory_queries too');
   const off = await listing(JSON.stringify({ rules: true }));
   assert.deepStrictEqual(off, tools.toolsFor('orchestrator'));
   const none = await listing(undefined);
@@ -61,7 +61,7 @@ test('over the wire: the notes lever in the run row lists the tool, once, and no
   assert.deepStrictEqual(w, tools.toolsFor('worker'), 'a worker adapter without --notes lists the ordinary tools');
 });
 
-test('every combination, measured on the module and on the wire, is inside its budget; lever off is byte-identical to before', async () => {
+test('every combination, measured on the module and on the wire, is inside its budget; notes off is byte-identical to before', async () => {
   const run = async (levers, role = 'orchestrator', extra = []) => {
     const data = sandboxDir('sl2');
     fs.writeFileSync(`${data}/memory.db`, '');
@@ -74,9 +74,9 @@ test('every combination, measured on the module and on the wire, is inside its b
     ['worker, notes off', tools.toolsFor('worker'), await run(undefined, 'worker'), 'worker'],
     ['worker, notes on', tools.toolsFor('worker', { notes: true }), await run(N, 'worker', ['--notes']), 'worker'],
     ['orchestrator, notes off', tools.toolsFor('orchestrator'), await run(undefined), 'orchestrator'],
-    ['orchestrator, notes on', tools.toolsFor('orchestrator', { notes: true }), await run(N), 'orchestrator'],
+    ['orchestrator, notes on (the index follows notes: memory_queries listed)', tools.toolsFor('orchestrator', { notes: true, queries: true }), await run(N), 'orchestrator'],
     ['orchestrator, knowledge_ask', tools.toolsFor('orchestrator', { knowledge: true }), await run(JSON.stringify({ knowledge_agent: true })), 'orchestrator'],
-    ['orchestrator, notes on and knowledge_ask', tools.toolsFor('orchestrator', { notes: true, knowledge: true }), await run(NK), 'orchestrator'],
+    ['orchestrator, notes on and knowledge_ask', tools.toolsFor('orchestrator', { notes: true, knowledge: true, queries: true }), await run(NK), 'orchestrator'],
     ['orchestrator, permission channel on (--permission-prompt)', tools.toolsFor('orchestrator', { permissions: true }), await run(undefined, 'orchestrator', ['--permission-prompt']), 'orchestrator'],
   ];
   for (const [name, mod, wire, role] of rows) {
