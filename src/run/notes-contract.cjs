@@ -45,7 +45,8 @@ const fill = (template, lv, subjects) => {
 // Appended to a worker's opening message; '' with the lever off.
 // With the notes sink on, one more line asks for `memory_ids` (the core requires it then).
 const withIds = (lv) => (lv.notes_sink && lv.notes_sink !== 'off' ? '\n' + read('notes-memory-ids.md') : '');
-const contract = (lv, subjects) => (lv && lv.notes ? fill(read('notes-contract.md'), lv, subjects) + withIds(lv) : '');
+const READING_GAP = '\n\n'; // between the reading part and the writing part
+const contract = (lv, subjects) => (lv && lv.notes ? read('notes-read.md') + READING_GAP + fill(read('notes-contract.md'), lv, subjects) + withIds(lv) : ''); // the reading part first (when and how to search), then the writing part
 // Eval-only (`handback_question`): with notes off, the same end-of-task question as a short request, with no note contract and no
 // `notes` field. '' unless the lever is on and notes are off, so with notes on the question is delivered once, inside the contract.
 const handback = (lv) => (lv && lv.handback_question && !lv.notes ? read('handback-question.md').split('{{question}}').join(question(lv)) : '');
