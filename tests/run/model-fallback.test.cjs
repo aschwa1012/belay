@@ -158,3 +158,16 @@ test('belay run writes the orchestrator switch to the run row while the run is s
     } finally { fs.rmSync(tmp, { recursive: true, force: true }); }
   } finally { cleanup(d); }
 });
+
+test('a revived run (its earlier life lapsed) does not inherit the dead session switch', async () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-model-fb-lapsed-'));
+  const core = await openCore({ dataDir: `${fwd(d)}/.belay`, caller: { role: 'operator', run_id: 'run-lapse', pid: process.pid } });
+  try {
+    await core.run.attach({ adapter_pid: 2147480000 }); // a pid that is not alive: the life lapses
+    await core.run.setModelFallback(SWITCH);
+    const r = await core.run.attach({ adapter_pid: process.pid });
+    assert.notEqual(r.run.revived_epoch, null, 'the attach revived the lapsed run');
+    assert.equal(r.run.orch_model_fallback, null);
+    assert.equal(r.run.orch_model, null);
+  } finally { await releaseCore(core); cleanup(fwd(d)); }
+});

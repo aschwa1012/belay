@@ -241,7 +241,7 @@ async function attach(E, caller, args) {
     cross_run_merge: crossGiven ? (args.cross_run_merge === null ? null : Number(args.cross_run_merge)) : (carryPause ? prev.cross_run_merge : null), // same carry rule
     budget_usd: require('./run-budget.cjs').attachLimit(args, prev, carryPause), // dollar limit; a raised limit survives a re-attach of the same life
     budget: carryPause ? prev.budget : null,
-    orch_model_fallback: carryPause ? prev.orch_model_fallback : null, orch_model: carryPause && prev.orch_model_fallback ? prev.orch_model : null, // a live switch survives a re-attach of the same life
+    orch_model_fallback: carryPause && !lapsed ? prev.orch_model_fallback : null, orch_model: carryPause && !lapsed && prev.orch_model_fallback ? prev.orch_model : null, // a live switch survives a re-attach of the same life, never a revived run's fresh session
     policy_default: policyGiven ? policyDefault : (carryPause ? prev.policy_default : null), // same carry rule
     harness: require('./run-harness.cjs').record(harnessGiven ? args.harness : null, carryPause ? prev.harness : null), // ADR 0082: the build that wrote this epoch's row, never a caller's word
     retrieval_routing: carryPause ? prev.retrieval_routing : null, // pinned for the run's life; a re-run over an ended row pins again
