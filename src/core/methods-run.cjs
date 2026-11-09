@@ -15,7 +15,7 @@ const LA = require('./live-as.cjs'); // a pid with the creation time the row rec
 const { WORKER_STATES, SUBSTRATES } = require('./schema.cjs');
 const { parseRunRow } = require('./pause-parks.cjs');
 
-const { setPaused, setEmbedderMode, end } = require('./methods-run-life.cjs'); // split out; re-exported below
+const { setPaused, setEmbedderMode, setModelFallback, end } = require('./methods-run-life.cjs'); // split out; re-exported below
 const { appendDead } = require('./lease-holder-dead.cjs'); // ADR 0026 amendment 1 (proposed)
 
 const { EFFORT_LEVELS } = require('./effort-levels.cjs');
@@ -241,6 +241,7 @@ async function attach(E, caller, args) {
     cross_run_merge: crossGiven ? (args.cross_run_merge === null ? null : Number(args.cross_run_merge)) : (carryPause ? prev.cross_run_merge : null), // same carry rule
     budget_usd: require('./run-budget.cjs').attachLimit(args, prev, carryPause), // dollar limit; a raised limit survives a re-attach of the same life
     budget: carryPause ? prev.budget : null,
+    orch_model_fallback: carryPause && !lapsed ? prev.orch_model_fallback : null, orch_model: carryPause && !lapsed && prev.orch_model_fallback ? prev.orch_model : null, // a live switch survives a re-attach of the same life, never a revived run's fresh session
     policy_default: policyGiven ? policyDefault : (carryPause ? prev.policy_default : null), // same carry rule
     harness: require('./run-harness.cjs').record(harnessGiven ? args.harness : null, carryPause ? prev.harness : null), // ADR 0082: the build that wrote this epoch's row, never a caller's word
     retrieval_routing: carryPause ? prev.retrieval_routing : null, // pinned for the run's life; a re-run over an ended row pins again
@@ -457,4 +458,4 @@ async function forgetWorker(E, caller, args) {
   };
 }
 
-module.exports = { appendRun, lifePids, LIFE_CLAIMING_STATES, attach, end, getRun, listRuns, writeWorker, getWorker, listWorkers, forgetWorker, decorate, setPaused, setEmbedderMode, appendRunRow: appendRun };
+module.exports = { appendRun, lifePids, LIFE_CLAIMING_STATES, attach, end, getRun, listRuns, writeWorker, getWorker, listWorkers, forgetWorker, decorate, setPaused, setEmbedderMode, setModelFallback, appendRunRow: appendRun };

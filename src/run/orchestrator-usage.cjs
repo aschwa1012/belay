@@ -8,10 +8,13 @@
 const n = (x) => (typeof x === 'number' && Number.isFinite(x) ? x : 0);
 
 function createUsage() {
-  const s = { model: null, input: 0, output: 0, cacheRead: 0, cacheCreation: 0, cost: 0, turns: 0 };
+  const s = { fallback: null, model: null, input: 0, output: 0, cacheRead: 0, cacheCreation: 0, cost: 0, turns: 0 };
   return {
     onInit(ev) {
       if (ev && ev.model) s.model = ev.model;
+    },
+    onModelFallback(ev) {
+      s.fallback = require('../core/model-switch.cjs').shape(ev); // the latest switch; the model above follows the next init
     },
     onTurnEnd(ev) {
       const u = (ev && ev.usage) || {};
@@ -27,6 +30,7 @@ function createUsage() {
         orch_model: s.model, orch_input_tokens: s.input, orch_output_tokens: s.output,
         orch_cache_read_tokens: s.cacheRead, orch_cache_creation_tokens: s.cacheCreation,
         orch_cost_usd: s.cost, orch_turns: s.turns,
+        ...(s.fallback ? { orch_model_fallback: s.fallback } : {}),
       };
     },
   };

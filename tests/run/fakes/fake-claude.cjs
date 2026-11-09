@@ -166,7 +166,9 @@ let cumOut = 0;
 // the closing result carries per-turn cache tokens in usage and a modelUsage block, in the shapes of
 // tests/run/fixtures/claude-stream.jsonl. total_cost_usd is session-cumulative and survives a --resume, so
 // FAKE_COST_BASE seeds the running total the way a resumed session inherits it.
-const MODEL = process.env.FAKE_MODEL || 'fake-claude-model-1';
+let MODEL = process.env.FAKE_MODEL || 'fake-claude-model-1';
+// FAKE_MODEL_FALLBACK=<model>: the first answer is refused by a safeguard and the session moves to that model, as Claude Code's `model_refusal_fallback` event does; later inits name it.
+let fellBack = false;
 const TOOL_USES = Number(process.env.FAKE_TOOL_USES || 1);
 const TURN_IN = 100; // result.usage is per turn, as the real binary reports it; modelUsage and total_cost_usd are session-cumulative
 const TURN_OUT = 20;
@@ -254,6 +256,12 @@ function answer(text, uuid) {
   cumOut += 20;
   cumCost += 0.001;
   say(initEvent());
+  if (process.env.FAKE_MODEL_FALLBACK && !fellBack) {
+    fellBack = true;
+    say({ type: 'system', subtype: 'model_refusal_fallback', trigger: 'refusal', direction: 'retry', scope: 'session', original_model: MODEL, fallback_model: process.env.FAKE_MODEL_FALLBACK, api_refusal_category: 'cyber', retracted_message_uuids: [], session_id: SESSION });
+    MODEL = process.env.FAKE_MODEL_FALLBACK;
+    say(initEvent());
+  }
   if (BG_TASK) {
     const taskId = 'bgtask_' + (++bgSeq);
     say({ type: 'system', subtype: 'task_started', task_id: taskId, tool_use_id: 'tu_bg_' + taskId, description: BG_CMD, is_backgrounded: true, task_type: 'local_bash', session_id: SESSION });
