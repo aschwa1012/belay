@@ -14,9 +14,9 @@ const { spawnSync } = require('node:child_process');
 const ROOT = path.resolve(__dirname, '..', '..').split(path.sep).join('/');
 const CLI = `${ROOT}/src/cli/belay.cjs`;
 const FAKE_CLAUDE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
-const TITLE = 'Notes are on, but no project is set, so this run keeps no notes';
-const TITLE_NO_RUN = 'Notes are on, but no project is set, so no notes are kept';
-const LINE = '"memory": { "project": "<name>" }';
+const TITLE = 'Notes are off: redaction is disabled';
+const TITLE_NO_RUN = 'Notes are off: redaction is disabled'; // redaction off and no project is the only no-notes case left with no project
+const LINE = '"memory": { "redact": true }';
 const fwd = (p) => String(p).split(path.sep).join('/');
 
 function project(config) {
@@ -76,7 +76,7 @@ test('run: the notice is printed once on stderr when there is no project, and th
   try {
     assert.strictEqual(r.status, 0, r.stderr);
     assert.strictEqual(count(r.stderr, TITLE), 1, r.stderr);
-    assert.ok(r.stderr.includes(LINE));
+    assert.ok(r.stderr.includes('Remove "redact": false'));
     assert.strictEqual(r.stdout.includes(TITLE_NO_RUN), false, 'the receipt on stdout is unchanged');
   } finally { cleanup(dir); }
 });

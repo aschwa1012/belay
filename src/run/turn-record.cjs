@@ -69,7 +69,7 @@ function queueMemory(w, e, ctx, memoryTextMax, checkpointId) {
   const text = (e.text || w.lastAssistantText || '').slice(0, memoryTextMax);
   if (text) { // the worker's own last turns, for a restart's resume document when turn rows are off (restart.cjs); bounded like the rows it replaces
     const ring = w.recentTurns || (w.recentTurns = []);
-    ring.push({ turn: w.turns, text: text.replace(/\s+/g, ' ').slice(0, 160) });
+    ring.push({ turn: w.turns, task: w.taskId || null, text: text.replace(/\s+/g, ' ').slice(0, 160) });
     if (ring.length > RECENT_TURNS) ring.shift();
   }
   const plan = MC.plan(w, e, ctx); // null with the capture and job levers off: then the turn row (turn_rows) is the only write
@@ -88,8 +88,8 @@ function queueMemory(w, e, ctx, memoryTextMax, checkpointId) {
     }
     if (!plan) return;
     const obs = await MC.finish(w, e, ctx, plan, { checkpointId, turnRowId }); // the observation, then the jobs (ADR 0041 decisions 3, 7)
-    // Safety net: a turn is never left with no row. If the observation did not land (its failure is already an ok 0
-    // event), the turn row is written exactly as the lever-off path writes it.
+    // Safety net, with turn_rows on: a turn is never left with no row. If the observation did not land (its failure is already an ok 0
+    // event), the turn row is written exactly as the lever-off path writes it. With turn_rows off no turn row is written.
     if (rows && plan.levers.observations && !obs) await writeTurnRow(w, ctx, text, turn, checkpointId, endedAt);
   });
 }

@@ -83,6 +83,7 @@ async function writeBottle(w, ctx, core, lv) {
 
 const TAIL_BYTES = 262144; // the stream's tail read for a restart's recent turns
 const RECENT_TURNS = 10, TURN_CHARS = 160; // the bounds of the rows section this stands in for
+const RECENT_BYTES = 1024; // and the section's own cap, on top of the document's 4,096 bytes: resume.md stays under 5,120 bytes
 // The final text of the worker's last turns: the `result` events at the tail of its stream file, oldest first. Without a stream file, or with
 // none readable, the turns the manager kept in memory. Reading is bounded to the tail; a first line cut by the bound is dropped.
 function recentTurns(w) {
@@ -100,7 +101,22 @@ function recentTurns(w) {
       if (out.length) return out.slice(-RECENT_TURNS);
     } finally { fs.closeSync(fd); }
   } catch { /* no stream file: the in-memory record below */ }
-  return Array.isArray(w.recentTurns) ? w.recentTurns.map((t) => `turn ${t.turn}: ${t.text}`) : [];
+  return Array.isArray(w.recentTurns) ? w.recentTurns.map((t) => t.text) : [];
+}
+
+// The section appended to the resume document: the newest turns that fit RECENT_BYTES, oldest first. A reused worker's tail can hold the
+// turns of a task before this one, which the stream does not tag; the heading says so.
+function recentSection(w, turns) {
+  const head = ['', '', `## recent turns of ${w.id} (from its own stream; a reused worker's earlier task may show)`].join('\n');
+  const keep = [];
+  let bytes = Buffer.byteLength(head) + 1;
+  for (const t of turns.slice().reverse()) {
+    const line = `- [${w.id}] ${t}`;
+    bytes += Buffer.byteLength(line) + 1;
+    if (bytes > RECENT_BYTES) break;
+    keep.unshift(line);
+  }
+  return keep.length ? [head, ...keep, ''].join('\n') : '';
 }
 
 // `ctx` is optional: without it (or with `memory.bottle` off) the replace branch is exactly what it was.
@@ -120,7 +136,7 @@ async function restartFirstText(w, branch, { core, ctx, hold }) {
       if (doc && doc.text) {
         // With turn rows off the document's rows section is empty; the worker's own last turns, read from the tail of its stream file, stand in.
         const turns = lv && lv.turn_rows ? [] : recentTurns(w);
-        const recent = turns.length ? ['', '', `## recent turns of ${w.id} (from its own stream)`, ...turns.map((t) => `- [${w.id}] ${t}`), ''].join('\n') : '';
+        const recent = recentSection(w, turns);
         fs.writeFileSync(L.fwd(path.join(w.dir, 'resume.md')), doc.text + recent);
       }
     } catch (e) {

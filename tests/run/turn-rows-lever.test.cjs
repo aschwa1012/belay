@@ -52,8 +52,8 @@ test('a replace restart with turn_rows off still carries the last turns, from th
       const core = { continuity: { resumeDoc: async () => ({ text: '# resume\n' }), resumeLine: async () => ({ text: 'LINE' }) } };
       await restartFirstText(w, 'replace', { core, ctx: { ...ctx, core } });
       const md = fs.readFileSync(path.join(dir, 'resume.md'), 'utf8');
-      assert.strictEqual(md.includes('turn 2: the last turn text'), !rows, `turn_rows ${rows}`);
-      assert.strictEqual(md.includes('turn 1: first turn text'), !rows);
+      assert.strictEqual(md.includes('- [w1] the last turn text'), !rows, `turn_rows ${rows}`);
+      assert.strictEqual(md.includes('- [w1] first turn text'), !rows);
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   }
 });
@@ -74,8 +74,9 @@ test('a restart in a new adapter process (no in-memory turns) reads the last tur
     await restartFirstText(w, 'replace', { core, ctx: { core, memoryLevers: { ...DEFAULTS } } });
     const md = fs.readFileSync(path.join(dir, 'resume.md'), 'utf8');
     const got = md.split('\n').filter((l) => l.startsWith('- [w1] '));
-    assert.strictEqual(got.length, 10, 'the last ten turns');
-    assert.ok(got[9].startsWith('- [w1] answer 14 ') && got[0].startsWith('- [w1] answer 5 '));
+    assert.ok(got.length >= 4 && got.length <= 10, 'the newest turns that fit the section cap');
+    assert.ok(got[got.length - 1].startsWith('- [w1] answer 14 '), 'the newest turn is kept, oldest first');
     assert.ok(got.every((l) => l.length <= 160 + '- [w1] '.length), 'each clipped to 160 characters');
+    assert.ok(Buffer.byteLength(md) - Buffer.byteLength('# resume\n') <= 1024, 'the section is within its own 1,024 byte cap, on top of the document');
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });

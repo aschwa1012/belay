@@ -113,3 +113,20 @@ test('belay init writes memory.project from the git remote and says where it cam
     assert.doesNotMatch(text.stdout, /notes project/, 'a kept config is not touched and names no new project');
   } finally { done(r); }
 });
+
+test('a folder name with nothing a project key can hold still gets a valid key: transliterated, or a hash of the folder path', () => {
+  const accent = repo('Caf\u00e9 Pr\u00f6jekt', null);
+  const symbols = repo('___', null);
+  const cyrillic = repo('\u043f\u0440\u043e\u0435\u043a\u0442', null);
+  try {
+    assert.strictEqual(D.derive(accent.dir).name, 'cafe-projekt');
+    for (const r of [symbols, cyrillic]) {
+      const got = D.derive(r.dir);
+      assert.match(got.name, /^project-[0-9a-f]{8}$/, got.source);
+      assert.ok(parseMemoryBlock({ project: got.name }).value, 'a valid key');
+      assert.match(got.source, /hash of the folder path/);
+    }
+    assert.notStrictEqual(D.derive(symbols.dir).name, D.derive(cyrillic.dir).name);
+    assert.strictEqual(parseLevers({}, { projectDir: symbols.dir }).memory_levers.notes, true, 'notes stay on');
+  } finally { done(accent); done(symbols); done(cyrillic); }
+});
