@@ -12,7 +12,7 @@ let X;
 const LATER = 'r-xw-later';
 before(async () => {
   X = await setup('r-xw', { held_breaker_share: 1 }); // a small project: the share would otherwise cap the run at one withheld note
-  await X.call('run.attach', callerFor('orchestrator', { run_id: LATER }), { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true }) });
+  await X.call('run.attach', callerFor('orchestrator', { run_id: LATER }), { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true, index_min_relevance: 0, index_max_notes: 20 }) });
 });
 after(() => X.cleanup());
 

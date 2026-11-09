@@ -21,7 +21,7 @@ async function fixture(levers) {
   const store = new Store(`${dir}/memory.db`, { stamp: true });
   const E = new Engine({ dataDir: dir, store, getEmbedder: null, owner: null, establishedBy: 'test' });
   const harness = { role: 'orchestrator', run_id: 'pf-run', pid: process.pid, channel: 'harness' };
-  await E.handle('run.attach', { caller: { role: 'orchestrator', run_id: 'pf-run', pid: process.pid }, adapter_pid: process.pid, project: 'pf', memory_levers: JSON.stringify({ project: 'pf', notes: true, ...levers }) });
+  await E.handle('run.attach', { caller: { role: 'orchestrator', run_id: 'pf-run', pid: process.pid }, adapter_pid: process.pid, project: 'pf', memory_levers: JSON.stringify({ project: 'pf', notes: true, index_min_relevance: 0, index_max_notes: 20, ...levers }) });
   const mk = (title) => store.storeIn({
     namespace: 'project/pf', worker_id: 'w1', type: 'note', text: `${title} withholdcase`, title,
     body: { kind: 'lesson', basis: 'inferred', evidence: [], applies_to: [], subjects: [], model: 'm', state: 'live', seen_in: [], seen_total: 0, reported_wrong: [] },
@@ -37,7 +37,7 @@ async function fixture(levers) {
     recordEvent: async (a) => a,
     index: (a) => E.handle('memory.index', { caller: harness, ...a }), // what the manager's harness core does
   } };
-  const ctx = { core, runId: 'pf-run', memoryLevers: { first_message_index: true, index_bytes: 1200, project: 'pf', notes: true } };
+  const ctx = { core, runId: 'pf-run', memoryLevers: { first_message_index: true, index_bytes: 1200, project: 'pf', notes: true, index_min_relevance: 0, index_max_notes: 20 } };
   return { dir, store, ctx, plain, held, dup, E, harness };
 }
 

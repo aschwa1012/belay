@@ -25,7 +25,7 @@ before(async () => {
   dir = sandbox();
   store = new Store(`${dir}/memory.db`, { stamp: true });
   E = new Engine({ dataDir: dir, store, getEmbedder: null, owner: null, establishedBy: 'test' });
-  const lv = { project: 'acme', notes: true };
+  const lv = { project: 'acme', notes: true, index_min_relevance: 0, index_max_notes: 20 };
   const levers = { on: lv, trust: { ...lv, notes_trust_wording: true }, over: { ...lv, notes_overflow_line: true }, off: { project: 'acme', notes: false } };
   for (const k of Object.keys(RUNS)) await call(k, 'run.attach', { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify(levers[k]) });
 });
@@ -360,7 +360,7 @@ test('the frame keeps the security-reviewed phrases in both wordings', () => {
 });
 
 test('tasks of another project do not count in N', async () => {
-  const attach = (run, project) => E.handle('run.attach', { caller: callerFor('orchestrator', { run_id: run }), adapter_pid: process.pid, project, memory_levers: JSON.stringify({ project, notes: true }) });
+  const attach = (run, project) => E.handle('run.attach', { caller: callerFor('orchestrator', { run_id: run }), adapter_pid: process.pid, project, memory_levers: JSON.stringify({ project, notes: true, index_min_relevance: 0, index_max_notes: 20 }) });
   await attach('rn-solo', 'solo'); await attach('rn-foreign', 'elsewhere');
   const solo = callerFor('orchestrator', { run_id: 'rn-solo' }), foreign = callerFor('orchestrator', { run_id: 'rn-foreign' });
   const f = 'src/scoped.cjs';

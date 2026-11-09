@@ -30,7 +30,7 @@ function cleanup(dir) {
 
 // One run of the CLI against a sandbox. Returns { status, out, orchDir }.
 // The receipt's levers without the memory fields: notes are on by default now, and these tests are about the other levers.
-const lessMemory = (l) => { const o = { ...l }; for (const k of ['memory_levers', 'memory_sources', 'memory_project']) delete o[k]; o.substituted = { ...o.substituted }; for (const k of ['memory_report_line', 'memory_use', 'memory_outcome']) delete o.substituted[k]; return o; };
+const lessMemory = (l) => { const o = { ...l }; for (const k of ['memory_levers', 'memory_sources', 'memory_project']) delete o[k]; o.substituted = { ...o.substituted }; for (const k of ['memory_report_line', 'memory_use', 'memory_outcome', 'memory_queries_line']) delete o.substituted[k]; return o; };
 
 function go(prompt, specExtra, envExtra = {}) {
   const dir = fwd(fs.mkdtempSync(path.join(os.tmpdir(), 'belay-run-levers-')));
