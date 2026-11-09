@@ -130,3 +130,13 @@ test('a folder name with nothing a project key can hold still gets a valid key: 
     assert.strictEqual(parseLevers({}, { projectDir: symbols.dir }).memory_levers.notes, true, 'notes stay on');
   } finally { done(accent); done(symbols); done(cyrillic); }
 });
+
+test('on Windows the hashed key is the same for a path written with either drive-letter case', { skip: process.platform !== 'win32' }, () => {
+  const r = repo('___', null);
+  try {
+    const a = D.derive(r.dir).name;
+    const flipped = r.dir[0] === r.dir[0].toLowerCase() ? r.dir[0].toUpperCase() + r.dir.slice(1) : r.dir[0].toLowerCase() + r.dir.slice(1);
+    assert.notStrictEqual(flipped, r.dir);
+    assert.strictEqual(D.derive(flipped).name, a);
+  } finally { done(r); }
+});

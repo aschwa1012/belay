@@ -55,7 +55,9 @@ function derive(dir) {
   const fromFolder = fit(folder);
   if (fromFolder) return { name: fromFolder, source: `folder name ${folder}` };
   // A folder name with nothing a project key may hold (only symbols, or letters with no ASCII form): a name from a hash of the folder path.
-  const name = 'project-' + crypto.createHash('sha256').update(top.split(path.sep).join('/')).digest('hex').slice(0, 8);
+  const slashed = top.split(path.sep).join('/');
+  const key = process.platform === 'win32' ? slashed.toLowerCase() : slashed; // a Windows path is the same folder in either case (C: and c:)
+  const name = 'project-' + crypto.createHash('sha256').update(key).digest('hex').slice(0, 8);
   return { name, source: `hash of the folder path ${top.split(path.sep).join('/')} (the folder name ${folder} has no usable characters)` };
 }
 
