@@ -17,7 +17,7 @@ function resumeFailure(w, e, opts) {
 // `inner(w, opts)`: the restart on one branch; opts.forceReplace names why the branch is replace. `settleDead(w)` writes the row a deferred death left unwritten.
 const withFallback = (inner, settleDead) => async (w, opts = {}) => {
   const eligible = !opts.skipDeadPidKill && !opts.forceReplace;
-  w.deferDead = eligible; w.deadDeferred = false;
+  w.deferDead = eligible; w.deferFrom = w.launches; w.deadDeferred = false; // only a process launched from here on is deferred: the life before this restart still gets its dead row
   try { return await inner(w, opts); } catch (e) {
     w.deferDead = false;
     const why = resumeFailure(w, e, opts);
