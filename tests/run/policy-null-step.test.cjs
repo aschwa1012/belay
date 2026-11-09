@@ -83,6 +83,7 @@ test('E1 build: a null-build task whose planned dependency merged is told to the
   assert.match(PW.textOf(got[0]), /field build\. The plan has no build step for this\. Halted\.$/);
   assert.deepStrictEqual(ex([dep, { ...mine, depends_on: [] }]), [], 'no dependencies: the orchestrator made it knowing it is its own');
   assert.deepStrictEqual(ex([{ ...dep, integration: null }, mine]), [], 'the dependency is not merged yet');
+  assert.deepStrictEqual(ex([{ ...dep, integration: { state: 'merged', passed: false } }, mine]), [], 'merged with failed checks: not landed, its re-merge comes first');
   assert.deepStrictEqual(ex([dep, { ...mine, lease: { id: 'L', expired: false } }]), [], 'already leased');
   assert.deepStrictEqual(ex([dep, work('P', SHIPPED_PLAN, { depends_on: ['D'] })]), [], 'a shipped build is belay\'s');
 });

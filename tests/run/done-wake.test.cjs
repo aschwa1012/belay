@@ -34,7 +34,7 @@ test('not done, clause by clause', () => {
   assert.strictEqual(doneOf(snap({ integrations: [merged(), merged({ id: 'i2', seq: 30, state: 'conflict', passed: null })] })), null, '3: the newest integration is not a clean merge');
   assert.strictEqual(doneOf(snap({ integrations: [] })), null, '3: nothing merged at all');
   assert.strictEqual(doneOf(snap({ steps: [{ run_id: RUN, seq: 5, step: 'integrate', outcome: 'started' }] })), null, '4: a step in flight');
-  assert.strictEqual(doneOf(snap(), [{ exception: 'E8', task_id: 'A', lifted: false }]), null, '4: a halted task');
+  assert.strictEqual(doneOf(snap({ tasks: [work('A'), review('R-A', 'A'), { ...work('B'), state: 'open' }] }), [{ exception: 'E8', task_id: 'B', lifted: false }]), null, '4: a halted task still open');
   assert.strictEqual(doneOf(snap({ tasks: [{ ...work('A'), policy: null }, review('R-A', 'A')] })), null, 'no planned work: a run with no plan is never "done" by belay');
   assert.strictEqual(doneOf(snap({ tasks: [work('A'), review('R-A', 'A'), { ...work('X'), state: 'cancelled', integration: null }] })) && true, true, 'a cancelled task does not count');
 });
@@ -102,4 +102,18 @@ test('should-fix findings left on a follow-up\'s own review are named in the don
   assert.ok(d, 'done');
   assert.deepStrictEqual(d.should_fix_left, ['F'], 'A\'s findings were followed up by F; F\'s own were left');
   assert.match(d.text, /Should-fix findings left on 1 task \(see its review\)\./);
+});
+
+test('a halt on a finished task does not hold the done wake back, and the wake names it; a halt on work still open does', () => {
+  const E1 = [{ exception: 'E1', task_id: 'A', field: 're_review', lifted: false }];
+  const d = doneOf(snap(), E1);
+  assert.ok(d, 'every task is done, reviewed and merged: the halt on A holds nothing back');
+  assert.match(d.text, /1 (finished task still halted by an unlifted exception|halt unlifted)\./);
+  assert.ok(Buffer.byteLength(d.text) <= PW.WAKE_TEXT_MAX);
+  const open = snap({ tasks: [work('A'), review('R-A', 'A'), work('B', { state: 'open' })] });
+  assert.strictEqual(doneOf(open, [{ exception: 'E1', task_id: 'B', lifted: false }]), null, 'work still open: no done wake');
+  assert.strictEqual(doneOf(open, E1), null, 'and a halt elsewhere does not make it done');
+  assert.strictEqual(doneOf(snap(), [{ exception: 'E1', task_id: 'A', field: 'review', lifted: false }]), null, 'a missing review is work the plan never did: it holds');
+  assert.strictEqual(doneOf(snap(), [{ exception: 'E8', task_id: 'A', field: 'fix', lifted: false }]), null, 'a failed step holds');
+  assert.strictEqual(doneOf(snap({ steps: [{ run_id: RUN, seq: 5, step: 'integrate', outcome: 'started' }] }), E1), null, 'a step in flight still holds it back');
 });

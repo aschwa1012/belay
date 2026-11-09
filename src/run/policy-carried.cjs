@@ -5,7 +5,7 @@
 // is not halted. due() is the executor's own gate, called here as it is, so the wake and the executor cannot disagree. The idle close does not
 // use it: it names every open task, because it is the net under this predicate and under the executor.
 
-const { due } = require('./policy-exec.cjs');
+const { due, mergedOk } = require('./policy-exec.cjs');
 const RF = require('./policy-rounds.cjs');
 const PW = require('./policy-wakes.cjs');
 const ROUNDS = new Set([...RF.ROUND_STEPS, ...RF.MERGE_FIX_STEPS, ...RF.RERUN_STEPS, 'reask']); // the steps of a fix round
@@ -18,7 +18,7 @@ const openOf = (tasks, runId) => mine(tasks, runId).filter((t) => t.state === 'o
 // it, or a task not yet terminal rooted at it, its review or a fix round), merged. This differs from the plan's build gate (policy-exec.cjs due,
 // depReady) on purpose: a done, unmerged dependency nothing of the plan will move (an integrate on_hold with no review to lead to it) is ready
 // by done, as the core's assign reads it, because only the orchestrator can move it.
-const depReady = (u, byId, carried) => !!u && u.state === 'done' && (!carried.has(u.id) || !(PW.policyOf(u, byId) || {}).integrate || !!(u.integration && u.integration.state === 'merged'));
+const depReady = (u, byId, carried) => !!u && u.state === 'done' && (!carried.has(u.id) || !(PW.policyOf(u, byId) || {}).integrate || mergedOk(u));
 const ready = (t, byId, carried = new Set()) => (Array.isArray(t.depends_on) ? t.depends_on : []).every((d) => depReady(byId.get(d), byId, carried));
 
 // The open, ready tasks of the run that no policy step names: neither due nor claimed and still in flight, and not halted.
