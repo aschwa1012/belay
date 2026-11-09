@@ -59,13 +59,17 @@ test('restart of a Claude Code worker whose last event is hours old resumes its 
 });
 
 test('a resume that does not come up falls back to a fresh conversation once, with the reason recorded', async (t) => {
-  const { m, worktree } = await rig(t, 'run-ra-fall');
+  const { m, core, worktree } = await rig(t, 'run-ra-fall');
   await m.spawn({ substrate: 'claude-code', worktree, prompt: 'hello', worker_id: 'w1' });
   await m._waitTurn('w1', 20000);
   const w = m._worker('w1');
   const launches = w.launches;
   process.env.FAKE_FAIL_RESUME = '1';
+  const states = []; const write = core.worker.write.bind(core.worker);
+  core.worker.write = async (row) => { if (row.id === 'w1') states.push(row.state); return write(row); };
   const r = await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 20000 });
+  assert.strictEqual(states.includes('dead'), false, 'no dead row between the attempts: no death wake for a relaunch');
+  assert.strictEqual(r.cache_cold, false, 'the receipt carries cache_cold');
   assert.strictEqual(r.branch, 'replace');
   assert.match(r.reason, /the resume failed .*replaced with a fresh conversation/);
   assert.strictEqual(w.launches, launches + 2, 'the failed resume and the one replacement, no more');
@@ -100,4 +104,18 @@ test('Codex: an old thread is resumed, and a thread the server no longer has fal
   assert.strictEqual(r.branch, 'replace');
   assert.match(r.reason, /the resume failed/);
   assert.strictEqual(w.launches, launches + 2);
+});
+
+test('withFallback: a failed resume with no second launch writes the deferred dead row; a failed second attempt carries the first one reason', async () => {
+  const { withFallback } = require('../../src/run/resume-fallback.cjs');
+  const noReady = (branch) => Object.assign(new Error('no ready'), { code: 'E_NO_READY', detail: { branch, reason: 'exited' } });
+  let dead = 0;
+  const refused = withFallback(async (w) => { w.deadDeferred = true; throw Object.assign(new Error('refused'), { code: 'E_PRECONDITION', detail: {} }); }, async () => { dead += 1; });
+  await assert.rejects(refused({}, {}), /refused/);
+  assert.strictEqual(dead, 1, 'no second launch followed: the dead row is written');
+  const calls = [];
+  const twice = withFallback(async (w, o) => { calls.push(o.forceReplace || 'resume'); w.deadDeferred = true; throw noReady(o.forceReplace ? 'replace' : 'resume'); }, async () => { dead += 1; });
+  await assert.rejects(twice({}, {}), (e) => /the resume failed \(exited\)/.test(e.detail.resume_failed));
+  assert.strictEqual(calls.length, 2, 'once more, never a third');
+  assert.strictEqual(dead, 1, 'a second launch followed: nothing deferred is written here');
 });

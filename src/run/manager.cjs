@@ -322,7 +322,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
   // Shared by `restart` and by `resume` (pause.cjs): `firstTextOverride(branch)` replaces `restartFirstText`'s own text when given; `appendMessage` follows
   // two newlines; `awaitFirstTurn: false` returns once the relaunch's `running` row lands. `forceReplace`: why (resume-fallback.cjs).
-  const doRestart = require('./resume-fallback.cjs').withFallback((w, o) => restartBranch(w, o));
+  const doRestart = require('./resume-fallback.cjs').withFallback((w, o) => restartBranch(w, o), (w) => writeRow(w, 'dead'));
   async function restartBranch(w, { forceReplace = null, firstTextOverride = null, appendMessage = null, awaitFirstTurn = true, first_turn_timeout_ms = 180000, onFirstText = null, skipDeadPidKill = false } = {}) {
     const worker_id = w.id;
     const old_pid = w.pid;
@@ -390,7 +390,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const turn = awaitFirstTurn ? await W.waitTurn(w, first_turn_timeout_ms) : null;
     await w.queue;
     return {
-      worker_id, branch: d.branch, reason: d.reason, old_pid, new_pid: w.pid,
+      worker_id, branch: d.branch, reason: d.reason, cache_cold: d.cache_cold === true, old_pid, new_pid: w.pid,
       session_id: w.sessionId, checkpoint_id: (turn && turn.checkpoint_id) || w.lastCheckpointId,
       first_turn_usage: turn ? turn.usage : null, first_turn_timed_out: awaitFirstTurn ? turn === null : null,
       permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions), // F4
