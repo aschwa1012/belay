@@ -10,6 +10,7 @@ const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
 const { Store } = core('store.cjs');
 const { Engine } = core('engine.cjs');
 const L = core('memory-levers.cjs');
+const NANO = require('../../src/core/retrieval-profiles.cjs').NANO; // the model the relevance bar was measured on
 
 let dir, store, E, n = 0;
 const RUN = 'rn-bar', RUN_OFF = 'rn-bar-off';
@@ -34,11 +35,11 @@ before(async () => {
 });
 after(() => { store.close(); cleanup(dir); });
 
-function note(space, title, vec, subjects = []) {
+function note(space, title, vec, subjects = [], model = NANO) {
   const r = store.storeIn({
     namespace: space, worker_id: 'w1', type: 'note', text: title, title,
     body: { kind: 'lesson', basis: 'inferred', evidence: [], applies_to: [], subjects, model: 'm', state: 'live', seen_in: [], seen_total: 0, reported_wrong: [] },
-    embedding: vec, embedding_model: 'm', embedding_revision: 'r', dim: 3, run_id: 'old-run', task_id: null, source: 'model', written_by: 'worker:w1',
+    embedding: vec, embedding_model: model, embedding_revision: 'r', dim: 3, run_id: 'old-run', task_id: null, source: 'model', written_by: 'worker:w1',
   });
   store.db.prepare('UPDATE memory_entries SET created_at = ? WHERE id = ?').run(1000 + n++, r.id);
   return r.id;
@@ -62,7 +63,7 @@ test('a note under the bar is not listed; one at or over it is; the receipt logs
   const near = note(space, 'quokka habits near the task', [1, 0, 0]);
   const far = note(space, 'unrelated gadget claim', [0, 1, 0]);
   const mid = note(space, 'a middling claim', [0.3, 0.954, 0]); // cosine about 0.30
-  const r = await index({ namespaces: [space], query_embedding: Q, embedding_model: 'm' });
+  const r = await index({ namespaces: [space], query_embedding: Q, embedding_model: NANO });
   assert.deepStrictEqual(r.row_ids, [near]);
   assert.deepStrictEqual(r.bar.listed, [{ id: near, cos: 1, why: 'cos' }]);
   assert.strictEqual(r.bar.cut_by_floor, 2);
@@ -77,7 +78,7 @@ test('a note that matches the task by subject is listed under the bar, whatever 
   const space = fresh();
   const fact = note(space, 'the widget cache rule', [0, 1, 0], ['widget cache']);
   note(space, 'unrelated gadget claim', [0, 0, 1]);
-  const r = await index({ namespaces: [space], query: 'fix the widget cache', query_embedding: Q, embedding_model: 'm' });
+  const r = await index({ namespaces: [space], query: 'fix the widget cache', query_embedding: Q, embedding_model: NANO });
   assert.deepStrictEqual(r.row_ids, [fact]);
   assert.strictEqual(r.bar.listed[0].why, 'subject');
 });
@@ -85,7 +86,7 @@ test('a note that matches the task by subject is listed under the bar, whatever 
 test('at most index_max_notes are listed, the rest counted as cut by the cap', async () => {
   const space = fresh();
   for (let i = 0; i < 7; i++) note(space, `quokka claim ${i}`, [1, 0, 0]);
-  const r = await index({ namespaces: [space], query_embedding: Q, embedding_model: 'm' });
+  const r = await index({ namespaces: [space], query_embedding: Q, embedding_model: NANO });
   assert.strictEqual(r.row_ids.length, 5);
   assert.strictEqual(r.bar.cut_by_cap, 2);
   assert.strictEqual(r.bar.cut_by_floor, 0);
@@ -95,7 +96,7 @@ test('index_min_relevance 0 turns the bar off: rank order up to the cap, with or
   const space = fresh();
   note(space, 'plain claim a', [0, 1, 0]);
   note(space, 'plain claim b', [0, 0, 1]);
-  const r = await index({ namespaces: [space], query_embedding: Q, embedding_model: 'm' }, RUN_OFF);
+  const r = await index({ namespaces: [space], query_embedding: Q, embedding_model: NANO }, RUN_OFF);
   assert.strictEqual(r.row_ids.length, 2);
   assert.strictEqual(r.bar.by, 'off');
 });
@@ -114,8 +115,47 @@ test('notes in scope and none passing: none_passed is set with the count; no not
   const space = fresh();
   note(space, 'unrelated gadget claim', [0, 1, 0]);
   note(space, 'another unrelated claim', [0, 0, 1]);
-  const none = await index({ namespaces: [space], query_embedding: Q, embedding_model: 'm' });
+  const none = await index({ namespaces: [space], query_embedding: Q, embedding_model: NANO });
   assert.deepStrictEqual([none.row_ids, none.bytes, none.none_passed, none.considered], [[], 0, true, 2]);
-  const empty = await index({ namespaces: [fresh()], query_embedding: Q, embedding_model: 'm' });
+  const empty = await index({ namespaces: [fresh()], query_embedding: Q, embedding_model: NANO });
   assert.strictEqual(empty.none_passed === undefined || empty.none_passed === false, true);
+});
+
+test('the nano gate is the namespace\'s stored embedding model, not the caller\'s routing: notes embedded with another model list facts only, naming the model', async () => {
+  const space = fresh();
+  const fact = note(space, 'the widget cache rule', [0, 1, 0], ['widget cache'], 'heavy-model-x');
+  note(space, 'quokka claim', [1, 0, 0], [], 'heavy-model-x');
+  const r = await index({ namespaces: [space], query: 'fix the widget cache' }); // keyword only: the heavy vectors cannot be compared with a nano query
+  assert.deepStrictEqual(r.row_ids, [fact]);
+  assert.strictEqual(r.bar.by, 'facts_only');
+  assert.match(r.bar.reason, /embedded with heavy-model-x/);
+  // and notes stored under nano use the cosine whoever asks
+  const space2 = fresh();
+  const near = note(space2, 'near the task', [1, 0, 0]);
+  const again = await index({ namespaces: [space2], query_embedding: Q, embedding_model: NANO });
+  assert.deepStrictEqual(again.row_ids, [near]);
+  assert.strictEqual(again.bar.by, 'cosine_or_facts');
+});
+
+test('a common subject does not admit a note: "data" on a quarter of the notes is no fact, but a single-note subject, two matched subjects and a hyphenated subject are', async () => {
+  const space = fresh();
+  const common = [];
+  for (let i = 0; i < 6; i++) common.push(note(space, `data claim ${i}`, [0, 1, 0], ['data']));
+  const rare = note(space, 'the parser claim', [0, 0, 1], ['cli-parsing']);
+  const two = note(space, 'a two subject claim', [0, 0, 1], ['data', 'uploads']);
+  for (let i = 0; i < 17; i++) note(space, `filler ${i}`, [0, 1, 0], []);
+  const r = await index({ namespaces: [space], query: 'parsing cli data uploads' });
+  assert.ok(r.row_ids.includes(rare), 'the hyphenated subject matches per part and is specific');
+  assert.ok(r.row_ids.includes(two), 'two distinct subjects match');
+  assert.strictEqual(common.filter((id) => r.row_ids.includes(id)).length, 0, '"data" alone is on 7 of 25 notes: not specific');
+  assert.ok(r.bar.cut_by_floor >= 6);
+});
+
+test('under the default bar a held or refuted note is not listed, whatever its cosine', async () => {
+  const space = fresh();
+  const ok = note(space, 'a live claim near the task', [1, 0, 0]);
+  const refuted = note(space, 'a refuted claim near the task', [1, 0, 0]);
+  store.db.prepare("UPDATE memory_entries SET status = 'refuted' WHERE id = ?").run(refuted);
+  const r = await index({ namespaces: [space], query_embedding: Q, embedding_model: NANO });
+  assert.deepStrictEqual(r.row_ids, [ok]);
 });

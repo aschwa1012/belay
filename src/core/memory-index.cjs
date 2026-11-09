@@ -171,7 +171,7 @@ async function indexBlock(E, caller, args = {}) {
   const owned = task && Array.isArray(task.files_owned) ? task.files_owned.filter((f) => typeof f === 'string').map(norm).filter(Boolean) : [];
   // ADR 0047 decision 6: a run with the notes lever on lists notes only, ranked for the task, in a one-line frame.
   const lv = runLevers(E, caller);
-  if (lv && lv.notes === true) return require('./memory-index-notes.cjs').index(E, caller, { o, task, owned, args, lv, norm, projectOf, sha256, nano: ST.isNano(ST.tierFor(E, caller)) });
+  if (lv && lv.notes === true) return require('./memory-index-notes.cjs').index(E, caller, { o, task, owned, args, lv, norm, projectOf, sha256, nanoModel: ST.NANO_TIER.embedder });
   let namespaces = o.namespaces;
   if (!namespaces) {
     const project = projectOf(E, caller.run_id);

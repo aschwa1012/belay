@@ -135,7 +135,19 @@ function subjectMatches(subject, prep, norm) {
   }
   if (PATHLIKE.test(s) && norm) s = norm(s);
   s = s.toLowerCase();
-  return [...s].length >= 3 && hasEdged(prep.lower, s, /\p{L}$/u.test(s));
+  if ([...s].length >= 3 && hasEdged(prep.lower, s, /\p{L}$/u.test(s))) return true;
+  // A hyphenated subject (cli-parsing) also matches when each of its parts is a word of the task, since the task's words are split on the hyphen.
+  if (/^[^\s/\\._:]+$/.test(s) && s.includes('-')) {
+    const parts = s.split('-').filter(Boolean);
+    return parts.length > 1 && parts.every((p) => ([...p].length < 2 ? false : [...p].length < 4 ? prep.words.has(p) : formsOf(p).some((f) => prep.words.has(f))));
+  }
+  return false;
+}
+// The distinct subjects of a note that the task text names.
+function subjectsMatched(subjects, text, norm) {
+  if (!text || !Array.isArray(subjects)) return [];
+  const prep = typeof text === 'string' ? prepareText(text) : text;
+  return [...new Set(subjects.filter((x) => typeof x === 'string'))].filter((s) => subjectMatches(s, prep, norm));
 }
 function subjectHits(subjects, text, norm) {
   if (!text || !Array.isArray(subjects)) return 0;
@@ -269,9 +281,21 @@ async function index(E, caller, c) {
   // (keyword-only), only the path and subject facts qualify, and the receipt says so.
   const minRel = typeof lv.index_min_relevance === 'number' ? lv.index_min_relevance : 0.4;
   const maxNotes = Number.isInteger(lv.index_max_notes) ? lv.index_max_notes : 5;
-  const nano = c.nano !== false; // the caller says whether the tier is nano, the one the bar was measured on
+  // The cosine comes from the vectors stored under the namespace, so the gate is the namespace's own embedding model: the bar was measured on nano.
+  const models = namespaces.map((ns) => E.store.db.prepare('SELECT embedding_model FROM namespace_models WHERE namespace = ?').get(ns)).filter(Boolean).map((m) => m.embedding_model);
+  const nano = models.length === 0 || models.every((m) => m === c.nanoModel);
   const useCos = nano && sel.info && sel.info.semantic_contributed === true && sel.cos.size > 0;
-  const why = (x) => (minRel === 0 ? 'rank' : useCos && x.cosine !== null && x.cosine >= minRel ? 'cos' : x.ps > 0 ? 'path' : x.hits > 0 ? 'subject' : null); // index_min_relevance 0 turns the bar off: rank order, up to the cap
+  // A path match always admits. A subject match admits when two distinct subjects of the note match, or the one that does is not common: on a single
+  // note, or on fewer than 20% of the project's live notes (a cheap idf; a word like "data" on a quarter of the notes names no task in particular).
+  const subjFreq = new Map();
+  for (const r of E.store.db.prepare(`SELECT json_extract(e.body, '$.subjects') AS sj FROM memory_entries e WHERE e.namespace IN (${marks(namespaces)}) AND e.type = 'note'`).all(...namespaces)
+    .filter(Boolean)) for (const s of new Set((parseJson(r.sj) || []).filter((x) => typeof x === 'string').map((x) => oneLine(x).toLowerCase()))) subjFreq.set(s, (subjFreq.get(s) || 0) + 1);
+  const specific = (s) => { const f = subjFreq.get(oneLine(s).toLowerCase()) || 0; return f <= 1 || f < 0.2 * pool.length; };
+  for (const x of ranked) {
+    const m = x.hits > 0 ? subjectsMatched(x.r.b && x.r.b.subjects, prep, norm) : [];
+    x.subjOk = m.length >= 2 || m.some(specific);
+  }
+  const why = (x) => (minRel === 0 ? 'rank' : useCos && x.cosine !== null && x.cosine >= minRel ? 'cos' : x.ps > 0 ? 'path' : x.subjOk ? 'subject' : null); // index_min_relevance 0 turns the bar off: rank order, up to the cap
   const passing = ranked.filter((x) => why(x) !== null);
   const shown = passing.slice(0, maxNotes);
   const cutByFloor = ranked.length - passing.length, cutByCap = passing.length - shown.length;
@@ -279,7 +303,7 @@ async function index(E, caller, c) {
   const barInfo = {
     bar: {
       min_relevance: minRel, max_notes: maxNotes, by: minRel === 0 ? 'off' : useCos ? 'cosine_or_facts' : 'facts_only',
-      ...(useCos || minRel === 0 ? {} : { reason: !nano ? 'the embedder is not the one the relevance bar was measured on' : 'no vector list ranked the notes (keyword only)' }),
+      ...(useCos || minRel === 0 ? {} : { reason: !nano ? `the notes are embedded with ${[...new Set(models)].join(', ')}, not the model the relevance bar was measured on (${c.nanoModel})` : 'no vector list ranked the notes (keyword only)' }),
       listed: shown.map((x) => ({ id: x.r.id, cos: x.cosine === null ? null : Math.round(x.cosine * 1000) / 1000, why: why(x) })),
       cut_by_floor: cutByFloor, cut_by_cap: cutByCap, best_cut_cos: bestCut === null ? null : Math.round(bestCut * 1000) / 1000,
     },
