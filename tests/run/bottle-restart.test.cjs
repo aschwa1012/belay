@@ -65,13 +65,13 @@ const resumeMd = (dir) => fs.readFileSync(path.join(dir, 'resume.md'), 'utf8');
 const names = (core) => core.calls.map((c) => c[0]);
 const TAIL = 'This is a fresh session replacing an interrupted one. Read resume.md in your worker directory, then continue.' + require('../../src/run/task-body.cjs').PROCESS_LINE;
 
-test('lever off: resume.md is the resumeDoc text byte for byte, the text is unchanged, no bottle call is made', async () => {
+test('lever off: resume.md is the resumeDoc text followed by the recent turns of the stream, the text is unchanged, no bottle call is made', async () => {
   for (const ctx of [undefined, { runId: 'r', memoryLevers: { ...DEFAULTS } }, { runId: 'r', memoryLevers: { ...DEFAULTS, observations: true } }]) {
     const { dir, w } = workerDir();
     try {
       const core = stubCore();
       const text = await restartFirstText(w, 'replace', { core, ctx: ctx && { ...ctx, core } });
-      assert.strictEqual(resumeMd(dir), DOC);
+      assert.ok(resumeMd(dir).startsWith(DOC), 'the resumeDoc text byte for byte, then the recent turns from the stream (turn_rows off)');
       assert.strictEqual(text, `LINE\n\n${TAIL}`);
       assert.deepStrictEqual(names(core), ['resumeDoc', 'resumeLine']);
       assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['resume.md', 'sent.jsonl', 'stream.jsonl']);
@@ -180,7 +180,7 @@ test('over budget with nothing droppable falls back with over_budget set', async
   try {
     const core = stubCore();
     await restartFirstText(w, 'replace', { core, ctx: ctxWith(core, { bottle_bytes: 40 }) });
-    assert.strictEqual(resumeMd(dir), DOC);
+    assert.ok(resumeMd(dir).startsWith(DOC), 'the resumeDoc text, then the recent turns from the stream (turn_rows off)');
     assert.strictEqual(core.events[0].ok, 0);
     assert.strictEqual(core.events[0].code, 'E_OVER_BUDGET');
     assert.strictEqual(core.events[0].over_budget, 1);

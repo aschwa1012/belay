@@ -28,6 +28,9 @@ function cleanup(dir) {
 }
 
 // One run of the CLI against a sandbox. Returns { status, out, orchDir }.
+// The receipt's levers without the memory fields: notes are on by default now, and these tests are about the other levers.
+const lessMemory = (l) => { const o = { ...l }; for (const k of ['memory_levers', 'memory_sources', 'memory_project']) delete o[k]; o.substituted = { ...o.substituted }; for (const k of ['memory_report_line', 'memory_use', 'memory_outcome']) delete o.substituted[k]; return o; };
+
 function go(prompt, specExtra, envExtra = {}) {
   const dir = fwd(fs.mkdtempSync(path.join(os.tmpdir(), 'belay-run-levers-')));
   fs.mkdirSync(`${dir}/wt`);
@@ -97,7 +100,7 @@ test('run: bad max_fix_rounds and fix_cutoff exit 2 before anything is created; 
   const ok = go('hi\n', { max_fix_rounds: 0, fix_cutoff: 'cap-only' });
   try {
     assert.strictEqual(ok.status, 0, ok.stderr.slice(-600));
-    assert.deepStrictEqual(JSON.parse(ok.stdout).levers, { max_fix_rounds: 0, max_follow_ups: 1, fix_cutoff: 'cap-only', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', policy_default: SHIPPED_PLAN, policy_source: 'belay default', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 0, fix_cutoff_rule: 0 } });
+    assert.deepStrictEqual(lessMemory(JSON.parse(ok.stdout).levers), { max_fix_rounds: 0, max_follow_ups: 1, fix_cutoff: 'cap-only', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', policy_default: SHIPPED_PLAN, policy_source: 'belay default', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 0, fix_cutoff_rule: 0 } });
   } finally { cleanup(ok.dir); }
 });
 
@@ -115,7 +118,7 @@ test('run: the orchestrator receives the prompt with both placeholders substitut
     const text = fs.readFileSync(`${b.orchDir}/prompt.txt`, 'utf8');
     assert.ok(text.startsWith('cap 2 rounds. You may stop fix rounds before the fix-round limit'), text);
     assert.ok(!text.includes('{{'), 'no placeholder is left');
-    assert.deepStrictEqual(JSON.parse(b.stdout).levers, { max_fix_rounds: 2, max_follow_ups: 1, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', policy_default: SHIPPED_PLAN, policy_source: 'belay default', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 2, fix_cutoff_rule: 1 } });
+    assert.deepStrictEqual(lessMemory(JSON.parse(b.stdout).levers), { max_fix_rounds: 2, max_follow_ups: 1, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', policy_default: SHIPPED_PLAN, policy_source: 'belay default', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 2, fix_cutoff_rule: 1 } });
     assert.match(text, /The run has no time bound\./, 'timeout_ms defaults to 0');
   } finally { cleanup(b.dir); }
 
@@ -132,7 +135,7 @@ test('run: the receipt carries levers and review_rounds (this run\'s verdict tas
   try {
     assert.strictEqual(a.status, 0, a.stderr.slice(-600));
     const rc = JSON.parse(a.stdout);
-    assert.deepStrictEqual(rc.levers, { max_fix_rounds: 1, max_follow_ups: 1, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', policy_default: SHIPPED_PLAN, policy_source: 'belay default', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 0, fix_cutoff_rule: 0 } });
+    assert.deepStrictEqual(lessMemory(rc.levers), { max_fix_rounds: 1, max_follow_ups: 1, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', policy_default: SHIPPED_PLAN, policy_source: 'belay default', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 0, fix_cutoff_rule: 0 } });
     assert.strictEqual(rc.review_rounds, 2, 'two review tasks of this run; the work task and the other run\'s review are not counted');
     assert.strictEqual(rc.review_rounds_reason, null);
     assert.strictEqual(JSON.parse(fs.readFileSync(`${a.orchDir}/run.json`, 'utf8')).review_rounds, 2, 'run.json agrees');
@@ -141,7 +144,7 @@ test('run: the receipt carries levers and review_rounds (this run\'s verdict tas
   const t = go('hi\n', {}, { BELAY_FAKE_CORE: FAKE_TASKS, FAKE_TASKS_MODE: 'reject', NO_JSON: '1' });
   try {
     assert.strictEqual(t.status, 0, t.stderr.slice(-600));
-    assert.match(t.stdout, /levers: max_fix_rounds 2, max_follow_ups 1, fix_hard_cap 5 \(default, no run timeout\), fix_cutoff orchestrator, on_embedder_failure keyword; review_rounds: unknown \(task\.list failed: .*PROBE/);
+    assert.match(t.stdout, /levers: max_fix_rounds 2, max_follow_ups 1, fix_hard_cap 5 \(default, no run timeout\), fix_cutoff orchestrator, on_embedder_failure keyword[^]*; review_rounds: unknown \(task\.list failed: .*PROBE/);
   } finally { cleanup(t.dir); }
 
   const r = go('hi\n', {}, { BELAY_FAKE_CORE: FAKE_TASKS, FAKE_TASKS_MODE: 'reject' });
@@ -178,7 +181,7 @@ test('template: the shipped orchestrator prompt has both placeholders and the fo
   assert.match(text, /belay appends the Review standard and the verdict hand-back rule to the reviewer's first message; do not repeat them/);
   assert.ok(!/verbatim, in the reviewer's prompt/.test(text), 'the orchestrator is not asked to copy it');
   assert.match(text, /answer carries a\s+`fix_notice` with the count/);
-  assert.match(text, /A failed acceptance check is not a fix round/); // ADR 0058: worded beside fix_from_review
+  assert.match(text, /\(`fix_eval`, `fix_run`\), counts against the fix-round limit like a fix task/); // the executor counts these steps (policy-rounds.cjs), worded beside fix_from_review
   assert.ok(!/\bland\b/.test(text), 'no "land" wording');
   const done = substituteLevers(text, { max_fix_rounds: 2, fix_cutoff: 'orchestrator' }, 0);
   assert.ok(!done.text.includes('{{'), 'substitution leaves no placeholder');
@@ -303,11 +306,12 @@ test('run: a bad memory block exits 2 before anything is created; a good one run
   try {
     assert.strictEqual(plain.status, 0, plain.stderr.slice(-600));
     const rc = JSON.parse(plain.stdout);
-    assert.ok(!('memory_levers' in rc.levers), 'a default block leaves the receipt as it was');
+    assert.strictEqual(rc.levers.memory_levers.notes, true, 'no block: notes are on with a derived project');
+    assert.deepStrictEqual([rc.levers.memory_project.derived, rc.levers.memory_levers.turn_rows], [true, false]);
     const row = runRow(plain);
-    assert.strictEqual(row.memory_levers, null);
-    assert.strictEqual(row.project, null);
-    assert.strictEqual(adapterArgs(plain)[adapterArgs(plain).indexOf('--worktree') + 1], `${plain.dir}/wt`, 'with every lever off the adapter still gets the worktree (ADR 0054)');
+    assert.strictEqual(row.project, rc.levers.memory_project.name);
+    assert.strictEqual(JSON.parse(row.memory_levers).notes, true);
+    assert.strictEqual(adapterArgs(plain)[adapterArgs(plain).indexOf('--worktree') + 1], `${plain.dir}/wt`, 'with the default levers the adapter still gets the worktree (ADR 0054)');
   } finally { cleanup(plain.dir); }
   const ka = go('hi\n', { memory: { knowledge_agent: true } });
   try {

@@ -59,10 +59,24 @@ test('headless: a stage that throws, or a child that survived its kill, never tu
 
 test('headless: with notes off the stages are not even asked, and the receipt has no close_stages', async () => {
   const mod = { closeStages: async () => assert.fail('no stage with notes off') };
-  const { res, dir } = await headless({}, mod);
+  const { res, dir } = await headless({ memory: { notes: false } }, mod);
   try {
     assert.strictEqual(res.code, 0);
     assert.ok(!('close_stages' in res.json));
+  } finally { cleanup(dir); }
+});
+
+test('headless: a run that names no memory block has notes on with a derived project, so the stages are asked', async () => {
+  const seen = [];
+  const mod = { closeStages: async (a) => { seen.push({ notes: a.levers.notes, project: a.levers.project, auto: a.levers.archive_review_auto }); return { scrub: null, review: null }; } };
+  const { res, dir } = await headless({}, mod);
+  try {
+    assert.strictEqual(res.code, 0, res.json.ended_by);
+    assert.strictEqual(seen.length, 1, 'the close stages run for a default run');
+    assert.deepStrictEqual([seen[0].notes, typeof seen[0].project, seen[0].auto], [true, 'string', false]);
+    assert.strictEqual(res.json.levers.memory_project.derived, true);
+    assert.strictEqual(res.json.levers.memory_project.name, seen[0].project);
+    assert.strictEqual(currentRunRow(`${dir}/.belay`, res.json.run_id).project, seen[0].project, 'the run row records the project');
   } finally { cleanup(dir); }
 });
 

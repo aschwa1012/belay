@@ -18,7 +18,7 @@ const { memoryCore } = require('./fake-memory.cjs');
 const { cleanup } = require('../core/helpers.cjs');
 
 const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(/\\/g, '/');
-const ON = { capture: true, observations: true };
+const ON = { capture: true, observations: true, turn_rows: true }; // turn_rows: the safety-net turn row of a failed observation is written only when the lever is on
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function sandbox() {
@@ -186,7 +186,7 @@ test('two turns give two observations, each with only its own events', async () 
   }, { FAKE_TOOL_USES: '3' });
 });
 
-test('a failed observation store is an ok 0 event with the code, is not retried, and the turn row is written as the lever-off path writes it', async () => {
+test('legacy: a failed observation store is an ok 0 event with the code, is not retried, and the turn row is written as the lever-off path writes it', async () => {
   const core = memoryCore({ levers: ON, failStore: 'observation' });
   await run(core, async (m, sb) => {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
@@ -233,8 +233,8 @@ test('a turn with no assistant text still gets its observation', async () => {
   assert.strictEqual(core.stores[0].turn, 4);
 });
 
-test('the jobs after a turn get the turn events and the observation id, only when a job lever is on', async () => {
-  for (const [levers, expectCalls] of [[ON, 0], [{ ...ON, summaries: 'mechanical' }, 1], [{ capture: true, cost_ledger: true }, 1]]) {
+test('legacy: the jobs after a turn get the turn events and the observation id, only when a job lever is on', async () => {
+  for (const [levers, expectCalls] of [[ON, 0], [{ ...ON, summaries: 'mechanical' }, 1], [{ capture: true, cost_ledger: true, turn_rows: true }, 1]]) {
     const seen = [];
     const core = memoryCore({ levers });
     await run(core, async (m, sb) => {
