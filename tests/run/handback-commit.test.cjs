@@ -238,11 +238,87 @@ test('through the run manager: a Codex hand-back is committed by belay, evaluate
   } finally { await x.e.close(); }
 });
 
-test('through the run manager: a commit that cannot be made is recorded and the evaluation says the work is uncommitted', async () => {
+test('through the run manager: a commit that cannot be made is recorded, nothing is judged as if it were committed, and the task stays released', async () => {
   const x = await managed('hc-managed-lock', { lock: true });
   try {
     assert.strictEqual(git(x.wt.path, 'rev-parse', 'HEAD'), x.base);
-    assert.deepStrictEqual([x.row.handoff.commit.made, x.row.handoff.committed_by, /index\.lock/.test(x.row.handoff.commit.error)], [false, undefined, true]);
-    assert.strictEqual(x.row.results.head_sha, x.base, 'judged at the real head, which is the base');
+    assert.deepStrictEqual([x.row.state, x.row.handoff.commit.made, x.row.handoff.committed_by, /index\.lock/.test(x.row.handoff.commit.error)], ['released', false, undefined, true]);
+    assert.strictEqual(x.row.results, null, 'no evaluation ran');
   } finally { await x.e.close(); }
+});
+
+test('a path that looks like a secret is never committed: the commit is refused with the paths named, and nothing is staged', async () => {
+  const r = await released('hc-secret');
+  try {
+    write(r.tree, 'src/mod.txt', 'two\n'); write(r.tree, '.env', 'KEY=1\n'); write(r.tree, 'cfg/server.pem', 'x\n'); write(r.tree, 'id_rsa_work', 'x\n');
+    await r.release();
+    const got = await r.handBack();
+    assert.strictEqual(got.made, false);
+    for (const n of ['.env', 'cfg/server.pem', 'id_rsa_work']) assert.ok(got.error.includes(n), got.error);
+    assert.ok(!got.error.includes('src/mod.txt'));
+    assert.strictEqual(git(r.tree, 'rev-parse', 'HEAD'), r.base);
+    assert.strictEqual(git(r.tree, 'diff', '--cached', '--name-only'), '', 'nothing was staged');
+    assert.strictEqual((await r.row()).handoff.committed_by, undefined);
+    assert.deepStrictEqual(HC.secretsIn(['a/.env.local', 'credentials.json', 'id_rsa', 'ok.txt', 'envelope.txt', 'a.keyboard']), ['a/.env.local', 'credentials.json', 'id_rsa']);
+  } finally { await r.e.close(); }
+});
+
+test('every committed path is on the commit record', async () => {
+  const r = await released('hc-paths');
+  try {
+    for (let i = 0; i < 5; i += 1) write(r.tree, `src/n${i}.txt`, 'x\n');
+    write(r.tree, 'src/mod.txt', 'two\n'); fs.unlinkSync(path.join(r.tree, 'src/gone.txt'));
+    await r.release();
+    const got = await r.handBack();
+    assert.deepStrictEqual([...got.paths].sort(), ['src/gone.txt', 'src/mod.txt', 'src/n0.txt', 'src/n1.txt', 'src/n2.txt', 'src/n3.txt', 'src/n4.txt']);
+    assert.deepStrictEqual([...(await r.row()).handoff.commit.paths].sort(), [...got.paths].sort());
+    assert.strictEqual(got.files, got.paths.length);
+  } finally { await r.e.close(); }
+});
+
+const within = (p, ms) => { let h; return Promise.race([p, new Promise((_, rej) => { h = setTimeout(() => rej(new Error(`did not end in ${ms} ms`)), ms); })]).finally(() => clearTimeout(h)); };
+async function hung(r) {
+  const hook = git(r.tree, 'rev-parse', '--path-format=absolute', '--git-path', 'hooks/pre-commit');
+  fs.mkdirSync(path.dirname(hook), { recursive: true });
+  fs.writeFileSync(hook, '#!/bin/sh\nsleep 60\n', { mode: 0o755 });
+  write(r.tree, 'src/mod.txt', 'two\n');
+  await r.release();
+}
+
+test('a stop ends a hung commit hook by its child handle, and the commit is recorded as failed', async () => {
+  const r = await released('hc-cancel');
+  try {
+    await hung(r);
+    const job = HC.newJob();
+    const p = HC.commitFor(r.w, await r.row(), job);
+    const t0 = Date.now();
+    for (const end = Date.now() + 20000; !(job.child && job.child.pid && job.cancelled === null && Date.now() - t0 > 1500) && Date.now() < end;) await new Promise((res) => setTimeout(res, 25));
+    await job.cancel('stop');
+    const got = await within(p, 20000);
+    assert.strictEqual(got.made, false);
+    assert.match(got.error, /^git commit failed/);
+    assert.ok(Date.now() - t0 < 30000, 'ended long before the hook\'s 60 s');
+    assert.strictEqual(git(r.tree, 'rev-parse', 'HEAD'), r.base);
+  } finally { await r.e.close(); }
+});
+
+test('one bound covers the whole hand-back commit: a hung hook ends at the bound with an error', async () => {
+  const r = await released('hc-bound');
+  try {
+    await hung(r);
+    const t0 = Date.now();
+    const got = await HC.commitFor(r.w, await r.row(), HC.newJob(3000));
+    assert.strictEqual(got.made, false);
+    assert.match(got.error, /^git commit failed: timed out/);
+    assert.ok(Date.now() - t0 < 30000);
+    assert.strictEqual(git(r.tree, 'rev-parse', 'HEAD'), r.base);
+  } finally { await r.e.close(); }
+});
+
+test('a lifecycle stop cancels the commit in flight through the release evaluation', () => {
+  const RE = require('../../src/run/release-eval.cjs');
+  const calls = [];
+  const w = { evaluation: { task_ids: ['t'], next: 0, ctx: { core: {} }, signalCancel: () => {}, cancelCommit: (by) => { calls.push(by); return Promise.resolve(); } } };
+  RE.cancelEvaluation(w, 'stop');
+  assert.deepStrictEqual(calls, ['stop']);
 });

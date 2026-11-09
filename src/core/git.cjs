@@ -25,13 +25,13 @@ const fwd = (p) => String(p).split('\\').join('/');
 const HARDENED = new Set(['status', 'diff']);
 // `register` is the spawn-register kind of the call (null: none). Every git call the core makes runs in a worker's or an integration
 // tree, whose config and hooks are a worker's code, so it is a check process.
-async function run(cwd, args, { timeoutMs = GIT_TIMEOUT_MS, env = null, register = 'check' } = {}) { // env: extra variables, e.g. a temporary GIT_INDEX_FILE
+async function run(cwd, args, { timeoutMs = GIT_TIMEOUT_MS, env = null, register = 'check', onChild = null } = {}) { // env: extra variables, e.g. a temporary GIT_INDEX_FILE
   const argv = ['git', ...args];
   // Every call also runs with no fsmonitor program and no untracked cache, so a global core.fsmonitor=true starts no daemon that outlives the call (invariant 2) and no cache file is written (ADR 0065 amendment 3). `argv` in the result stays as asked.
   const safe = !env && HARDENED.has(args[0]);
   const r = safe
     ? await safeGit(args[0] === 'diff' ? ['diff', '--no-ext-diff', '--no-textconv', ...args.slice(1)] : args, cwd, timeoutMs, { tail: LIST_TAIL, lineEndings: true, register })
-    : await runCommand(['git', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', ...args], cwd, timeoutMs, { env: { ...gitEnv(), ...(env || {}) }, tail: LIST_TAIL, register });
+    : await runCommand(['git', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', ...args], cwd, timeoutMs, { env: { ...gitEnv(), ...(env || {}) }, tail: LIST_TAIL, register, ...(onChild ? { onChild } : {}) });
   return {
     ok: r.executable && r.exit_code === 0 && !r.timed_out && !r.truncated, exit_code: r.exit_code, timed_out: r.timed_out,
     stdout: r.stdout, stderr: (r.stderr || r.spawn_error || '').trim().slice(0, 800), stderr_tail: (r.stderr || '').trim().slice(-800), argv, cwd: fwd(cwd),
