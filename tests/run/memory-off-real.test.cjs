@@ -54,7 +54,7 @@ async function withRun(script, check) {
 
 const turnRows = async (core) => (await core.memory.list({ namespace: 'run/test-run', view: 'full', order: 'oldest', limit: 50 })).rows;
 
-test('levers off on the real store: the rows and events are those of the lever-off path, written_by and the worker apart', { timeout: 60000 }, () => withRun(async ({ m, wt }) => {
+test('legacy: levers off on the real store: the rows and events are those of the lever-off path, written_by and the worker apart', { timeout: 60000 }, () => withRun(async ({ m, wt }) => {
   await m.spawn({ substrate: 'claude-code', worktree: wt, prompt: 'one', worker_id: 'w1' });
   await m._waitTurn('w1', 8000);
   await m.message({ worker_id: 'w1', text: 'two' });
@@ -73,7 +73,7 @@ test('levers off on the real store: the rows and events are those of the lever-o
   assert.deepStrictEqual(events.events, [], 'no memory_event with every lever off');
 }));
 
-test('a turn row carries the task of the lease its worker held at the turn\'s end: spawned with it, or given it later by assign', { timeout: 60000 }, () => withRun(async ({ core, m, wt }) => {
+test('legacy: a turn row carries the task of the lease its worker held at the turn\'s end: spawned with it, or given it later by assign', { timeout: 60000 }, () => withRun(async ({ core, m, wt }) => {
   const t1 = await core.task.create({ spec: 'first' });
   const t2 = await core.task.create({ spec: 'second' });
   await m.spawn({ substrate: 'claude-code', worktree: wt, prompt: 'one', worker_id: 'w1', task_id: t1.id });

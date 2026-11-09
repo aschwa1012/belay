@@ -57,3 +57,25 @@ test('a replace restart with turn_rows off still carries the last turns, from th
     } finally { fs.rmSync(dir, { recursive: true, force: true }); }
   }
 });
+
+test('a restart in a new adapter process (no in-memory turns) reads the last turns from the tail of the stream file, bounded', async () => {
+  const fs = require('node:fs');
+  const os = require('node:os');
+  const path = require('node:path');
+  const { restartFirstText } = require('../../src/run/restart.cjs');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-turnrows-'));
+  try {
+    const streamPath = dir.split(path.sep).join('/') + '/stream.jsonl';
+    const lines = [JSON.stringify({ type: 'system', subtype: 'init', pad: 'x'.repeat(300000) })];
+    for (let i = 1; i <= 14; i += 1) lines.push(JSON.stringify({ type: 'result', result: `answer ${i} ${'y'.repeat(400)}` }));
+    fs.writeFileSync(streamPath, lines.join('\n') + '\n');
+    const w = { id: 'w1', taskId: 't1', dir, streamPath };
+    const core = { continuity: { resumeDoc: async () => ({ text: '# resume\n' }), resumeLine: async () => ({ text: 'LINE' }) } };
+    await restartFirstText(w, 'replace', { core, ctx: { core, memoryLevers: { ...DEFAULTS } } });
+    const md = fs.readFileSync(path.join(dir, 'resume.md'), 'utf8');
+    const got = md.split('\n').filter((l) => l.startsWith('- [w1] '));
+    assert.strictEqual(got.length, 10, 'the last ten turns');
+    assert.ok(got[9].startsWith('- [w1] answer 14 ') && got[0].startsWith('- [w1] answer 5 '));
+    assert.ok(got.every((l) => l.length <= 160 + '- [w1] '.length), 'each clipped to 160 characters');
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});

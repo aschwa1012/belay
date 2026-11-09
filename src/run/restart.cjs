@@ -81,6 +81,28 @@ async function writeBottle(w, ctx, core, lv) {
   return true;
 }
 
+const TAIL_BYTES = 262144; // the stream's tail read for a restart's recent turns
+const RECENT_TURNS = 10, TURN_CHARS = 160; // the bounds of the rows section this stands in for
+// The final text of the worker's last turns: the `result` events at the tail of its stream file, oldest first. Without a stream file, or with
+// none readable, the turns the manager kept in memory. Reading is bounded to the tail; a first line cut by the bound is dropped.
+function recentTurns(w) {
+  const clip = (t) => String(t).replace(/\s+/g, ' ').trim().slice(0, TURN_CHARS);
+  try {
+    const fd = fs.openSync(w.streamPath, 'r');
+    try {
+      const size = fs.fstatSync(fd).size, len = Math.min(size, TAIL_BYTES), buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, size - len);
+      const lines = buf.toString('utf8').split('\n');
+      if (size > len) lines.shift();
+      lines.pop(); // a last line without its newline may be half written
+      const out = [];
+      for (const l of lines) { try { const e = JSON.parse(l); if (e && e.type === 'result' && typeof e.result === 'string' && e.result.trim()) out.push(clip(e.result)); } catch { /* a damaged line is skipped */ } }
+      if (out.length) return out.slice(-RECENT_TURNS);
+    } finally { fs.closeSync(fd); }
+  } catch { /* no stream file: the in-memory record below */ }
+  return Array.isArray(w.recentTurns) ? w.recentTurns.map((t) => `turn ${t.turn}: ${t.text}`) : [];
+}
+
 // `ctx` is optional: without it (or with `memory.bottle` off) the replace branch is exactly what it was.
 async function restartFirstText(w, branch, { core, ctx, hold }) {
   if (branch === 'resume') {
@@ -96,9 +118,9 @@ async function restartFirstText(w, branch, { core, ctx, hold }) {
     try {
       const doc = await core.continuity.resumeDoc(key);
       if (doc && doc.text) {
-        // With turn rows off the document's rows section is empty; the worker's own last turns, kept from its stream, stand in.
-        const recent = !(lv && lv.turn_rows) && Array.isArray(w.recentTurns) && w.recentTurns.length
-          ? ['', '', `## recent turns of ${w.id} (from its own stream)`, ...w.recentTurns.map((t) => `- [${w.id}] turn ${t.turn}: ${t.text}`), ''].join('\n') : '';
+        // With turn rows off the document's rows section is empty; the worker's own last turns, read from the tail of its stream file, stand in.
+        const turns = lv && lv.turn_rows ? [] : recentTurns(w);
+        const recent = turns.length ? ['', '', `## recent turns of ${w.id} (from its own stream)`, ...turns.map((t) => `- [${w.id}] ${t}`), ''].join('\n') : '';
         fs.writeFileSync(L.fwd(path.join(w.dir, 'resume.md')), doc.text + recent);
       }
     } catch (e) {

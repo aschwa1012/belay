@@ -131,7 +131,7 @@ test('run: the orchestrator receives the prompt with both placeholders substitut
 });
 
 test('run: the receipt carries levers and review_rounds (this run\'s verdict tasks only); a failed read is null with its reason', () => {
-  const a = go('hi\n', { max_fix_rounds: 1, memory: { notes: false } /* the fake core has no memory store: not about notes */ }, { BELAY_FAKE_CORE: FAKE_TASKS, FAKE_TASKS_MODE: 'reviews' });
+  const a = go('hi\n', { max_fix_rounds: 1 }, { BELAY_FAKE_CORE: FAKE_TASKS, FAKE_TASKS_MODE: 'reviews' });
   try {
     assert.strictEqual(a.status, 0, a.stderr.slice(-600));
     const rc = JSON.parse(a.stdout);
@@ -141,13 +141,13 @@ test('run: the receipt carries levers and review_rounds (this run\'s verdict tas
     assert.strictEqual(JSON.parse(fs.readFileSync(`${a.orchDir}/run.json`, 'utf8')).review_rounds, 2, 'run.json agrees');
   } finally { cleanup(a.dir); }
 
-  const t = go('hi\n', { memory: { notes: false } }, { BELAY_FAKE_CORE: FAKE_TASKS, FAKE_TASKS_MODE: 'reject', NO_JSON: '1' });
+  const t = go('hi\n', {}, { BELAY_FAKE_CORE: FAKE_TASKS, FAKE_TASKS_MODE: 'reject', NO_JSON: '1' });
   try {
     assert.strictEqual(t.status, 0, t.stderr.slice(-600));
     assert.match(t.stdout, /levers: max_fix_rounds 2, max_follow_ups 1, fix_hard_cap 5 \(default, no run timeout\), fix_cutoff orchestrator, on_embedder_failure keyword[^]*; review_rounds: unknown \(task\.list failed: .*PROBE/);
   } finally { cleanup(t.dir); }
 
-  const r = go('hi\n', { memory: { notes: false } }, { BELAY_FAKE_CORE: FAKE_TASKS, FAKE_TASKS_MODE: 'reject' });
+  const r = go('hi\n', {}, { BELAY_FAKE_CORE: FAKE_TASKS, FAKE_TASKS_MODE: 'reject' });
   try {
     const rc = JSON.parse(r.stdout);
     assert.strictEqual(rc.review_rounds, null);
