@@ -40,7 +40,7 @@ async function setEmbedderMode(E, caller, args) {
 // Build step W2-3 (S4b): the orchestrator's usage, as typed. `orch_model` is a string, the rest numbers;
 // a null or absent field is left to the row (null on a crashed run). A usage problem never stops a run ending (amendment 1, SF2): an invalid field is dropped and named in `invalid_usage` on the result.
 const USAGE_FIELDS = { orch_model: 'string', orch_input_tokens: 'number', orch_output_tokens: 'number',
-  orch_cache_read_tokens: 'number', orch_cache_creation_tokens: 'number', orch_cost_usd: 'number', orch_turns: 'number' };
+  orch_cache_read_tokens: 'number', orch_cache_creation_tokens: 'number', orch_cost_usd: 'number', orch_turns: 'number', orch_model_fallback: 'object' };
 function usageColumns(usage) {
   const out = {};
   const invalid = [];

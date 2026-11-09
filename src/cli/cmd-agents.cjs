@@ -170,6 +170,7 @@ function orchestratorRow(run, streamPath, now = Date.now()) {
     cost_usd: rowCost != null ? rowCost : total,
     cost_source: rowCost != null ? ORCH_ROW_COST : (total != null ? ORCH_STREAM_COST : null),
     pid: nn(run.orchestrator_pid), permission_mode: null, claude_code_version: null, // the run row records neither
+    ...(run.orch_model_fallback ? { model_fallback: run.orch_model_fallback } : {}),
     ...D.orchestratorDisplay(run, scan, now), task: null, cache: D.cacheOf(scan, now),
     stream_path: streamPath, stream_exists: scan.exists, stream_error: scan.error, result_ts_ms: scan.result_ts_ms,
   };
@@ -240,6 +241,7 @@ function workerRow(w, tasksById, dataDir, { now, pending, leaseTaskOf = new Map(
     task: D.currentTask(w, tasksById, leaseTaskOf),
     pid: nn(w.pid), started_at_ms: nn(w.started_at), exited_at_ms: nn(w.exited_at), permission_mode: nn(w.permission_mode_effective), permission_mode_is: 'effective', claude_code_version: nn(w.claude_code_version),
     model: w.model != null ? w.model : ctx.model_seen, model_seen: ctx.model_seen, effort: nn(w.effort_requested), effort_is: 'requested',
+    ...(w.model_fallback ? { model_fallback: w.model_fallback } : {}),
     state: nn(w.state), context_tokens: ctx.context_tokens, context_window: ctx.context_window, context_pct: ctx.context_pct,
     window_source: ctx.context_window != null ? 'own result line' : null,
     cost_estimated: !!w.cost_source, cost_usd: rowCost, cost_source: rowCost == null ? null : 'worker row cost_usd', ...estimatedCost(w, rowCost), ...require('../core/inflight-cost.cjs').workerFigures(inFlight, w),
@@ -304,6 +306,7 @@ function renderText(rc) {
     const task = a.task ? `${P.v(a.task.id, 40)}${a.task.title ? ` ${P.v(a.task.title, 40)}` : ''}` : '-';
     const head = `${P.v(a.id, 40)}  role ${P.v(a.role, 20)}  model ${P.v(a.model, 40)}  effort ${P.v(a.effort, 10)}  state ${P.v(a.state, 12)}  display ${P.v(a.display_state, 12)}`;
     lines.push(...P.wrapLine('', head));
+    if (a.model_fallback) lines.push(...P.wrapLine('  ', require('../core/model-switch.cjs').line('', a.model_fallback)));
     lines.push(...P.wrapLine('  ', `task ${task}  cache ${D.cacheText(a.cache)}`));
     const cost = a.cost_usd == null ? (a.cost_note ? `cost not priced (${P.v(a.cost_note, 80)})` : 'cost not recorded') : `cost ${P.money(a.cost_usd)} (${a.cost_source})`;
     const estNote = a.cost_estimate_empty ? ' (not estimated: stream tail over 16 MB)' : a.cost_estimated ? ` + ${a.cost_estimated_usd == null ? 'not priced' : P.money(a.cost_estimated_usd)} estimated (${a.cost_estimated_source}${a.cost_estimate_truncated ? ', truncated' : ''}) = ${P.money(a.cost_combined_usd)}` : '';

@@ -319,6 +319,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     // an already-ready run on the second init's own mcp_servers. Every ready event past the first —
     // repeat or not — is counted rather than acted on.
     if (ev.kind === 'ready') usage.onInit(ev);
+    if (ev.kind === 'model_fallback') usage.onModelFallback(ev);
     if (ev.kind === 'ready' && !state.finishing) {
       if (ev.repeat || state.readyGateStarted) {
         state.laterInits += 1;

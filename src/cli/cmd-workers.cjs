@@ -41,6 +41,7 @@ function renderText(workers) {
   const line = vals => vals.map((v, i) => String(v).padEnd(widths[i])).join('  ');
   const lines = [line(COLUMNS)];
   for (const w of workers) lines.push(line(COLUMNS.map(c => cell(w, c))));
+  for (const w of workers) if (w.model_fallback) lines.push(require('../core/model-switch.cjs').line(`worker ${w.id}`, w.model_fallback));
   lines.push('');
   return lines.join('\n');
 }
