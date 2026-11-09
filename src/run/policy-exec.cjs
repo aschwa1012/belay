@@ -208,9 +208,9 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
   const seen = { run: null, tasks: [] }; // the run row and the task rows stillDue read, for the budget rule
   // A store read that threw is marked, so the pass retakes the step; any other throw in here is a bug and stays an exception.
   const rd = async (f, name) => { try { return await f(); } catch (e) { if (e && typeof e === 'object') e.stillDueRead = name; throw e; } };
-  // A read that keeps failing reopens the same claim each pass: after this many in a row, or this long since the first, it is one exception (E8) that names the read.
-  const readFails = new Map(); // keyOf(step, trigger) -> { n, since }
-  const READ_FAIL_MAX = 5, READ_FAIL_MS = 180000;
+  // A read that keeps failing reopens the same claim each pass: after this many in a row it is one exception (E8) that names the read.
+  const readFails = new Map(); // keyOf(step, trigger) -> consecutive failures
+  const READ_FAIL_MAX = 5;
   async function stillDue(c, seq) {
     const run = (await rd(() => g.run.get({}), 'run.get')).run;
     seen.run = run;
@@ -266,8 +266,8 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
       const rk = keyOf(c.step, c.trigger);
       const why = await stillDue(c, row.seq).then((w) => { readFails.delete(rk); return w; }, (e) => {
         if (!(e && e.stillDueRead)) throw e;
-        const f = readFails.get(rk) || { n: 0, since: Date.now() }; f.n += 1; readFails.set(rk, f);
-        if (f.n >= READ_FAIL_MAX || Date.now() - f.since >= READ_FAIL_MS) { readFails.delete(rk); throw Object.assign(new Error(`the ${e.stillDueRead} read failed ${f.n} times in a row over ${Math.round((Date.now() - f.since) / 1000)} s after the claim: ${errText(e)}`), { code: 'E_READ_FAILED' }); }
+        const n = (readFails.get(rk) || 0) + 1; readFails.set(rk, n);
+        if (n >= READ_FAIL_MAX) { readFails.delete(rk); throw Object.assign(new Error(`the ${e.stillDueRead} read failed ${n} times in a row after the claim: ${errText(e)}`), { code: 'E_READ_FAILED' }); }
         return `E_NOT_NOW: the facts could not be read after the claim (${errText(e)}); the claim is reopened and the step retaken`;
       });
       const over = why ? null : await budgetRefusal(c);
@@ -309,7 +309,9 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
     const halted = PW.haltedIds(PW.derive({ runId, tasks, integrations, steps, revisions, ...ex }), tasks);
     const claimed = new Set(steps.filter((s) => !(s.outcome === 'skipped' && /^E_(PAUSED|NOT_NOW)/.test(s.error || ''))).map((s) => keyOf(s.step, { table: s.trigger_table, id: s.trigger_id, seq: Number(s.trigger_seq) || 0 })));
     const workers = require('./policy-relaunch.cjs').mayNeed(tasks.filter((t) => t.run_id === runId), steps, runId, (t) => PW.rootOf(t, new Map(tasks.map((r) => [r.id, r])))) && g.worker && g.worker.list ? await read(g.worker.list, 'workers', []) : undefined; // worker rows only while a task a builder may have left open exists
-    for (const c of due({ runId, tasks, integrations, steps, workers, ...ex, ...(dataDir ? { isKilled: (w) => KM.isKilled(dataDir, w.id, w.pid, w.pid_created) } : {}), maxBuilds: Number.isInteger(run.max_parallel_builds) && run.max_parallel_builds > 0 ? run.max_parallel_builds : MAX_PARALLEL_BUILDS })) {
+    const dueNow = due({ runId, tasks, integrations, steps, workers, ...ex, ...(dataDir ? { isKilled: (w) => KM.isKilled(dataDir, w.id, w.pid, w.pid_created) } : {}), maxBuilds: Number.isInteger(run.max_parallel_builds) && run.max_parallel_builds > 0 ? run.max_parallel_builds : MAX_PARALLEL_BUILDS });
+    if (readFails.size) { const keys = new Set(dueNow.map((d) => keyOf(d.step, d.trigger))); for (const k of readFails.keys()) if (!keys.has(k)) readFails.delete(k); } // a claim no longer due has no count
+    for (const c of dueNow) {
       if (stopped()) break;
       if (c.capped) continue; // max_parallel_builds: the task waits for a slot, no exception (ADR 0074 amendment 4)
       if (halted.has(c.task_id) || claimed.has(keyOf(c.step, c.trigger))) continue;

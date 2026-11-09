@@ -137,3 +137,19 @@ test('a read that keeps failing after the claim is reopened four times, then one
     assert.match(last.error, /^E_READ_FAILED: the task\.list read failed 5 times in a row/);
   } finally { await e.close(); }
 });
+
+test('a recheck that reads again resets the count: four failures, one good read, four more failures is no exception', async () => {
+  const e = await env('stilldue-read-reset');
+  try {
+    await e.orch.task.create({ spec: 'w', acceptance: PASS, policy: { build: { worker: 'b1' }, ...REST } });
+    await e.worker('b1');
+    let n = 0; let r = 0; let mode = 'fail';
+    const flaky = { ...e.h,
+      task: { ...e.h.task, list: async (a) => { if (++n === 3 && mode === 'fail') throw Object.assign(new Error('store busy'), { code: 'E_BUSY' }); return e.h.task.list(a); } },
+      run: { ...e.h.run, get: async (a) => { const x = await e.h.run.get(a); return ++r === 3 && mode === 'pause' ? { run: { ...x.run, paused_at: 1 } } : x; } } }; // the recheck reads, and the run is paused: skipped, not a failed read
+    const x = e.exec({}, flaky);
+    const outcomes = [];
+    for (const m of ['fail', 'fail', 'fail', 'fail', 'pause', 'fail', 'fail', 'fail', 'fail']) { mode = m; n = 0; r = 0; outcomes.push((await x.tick()).steps.map((s) => s.outcome)[0]); }
+    assert.deepStrictEqual(outcomes, Array(9).fill('skipped'));
+  } finally { await e.close(); }
+});
