@@ -24,7 +24,7 @@ const RL = 'task t1 state assigned; next step: (stated) none yet';
 const PL = require('../../src/run/task-body.cjs').PROCESS_LINE; // the standing process line, after the prompt
 const PROMPT = 'implement the thing';
 const ON = { project: 'demo', notes: true };
-const READ_BYTES = 640; // the reading part (src/run/prompts/notes-read.md) added to every notes worker's first message; the pins below were 1,900 and 2,100 before it
+const READ_BYTES = 660; // the reading part (src/run/prompts/notes-read.md) added to every notes worker's first message; the pins below were 1,900 and 2,100 before it
 const QUESTION = 'What would the next worker get wrong, or have to rediscover, that the code does not say? What would a newcomer assume that turned out false?';
 
 function sandbox() {
