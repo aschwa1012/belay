@@ -151,8 +151,8 @@ test('resultLine: a receipt, a refusal with belay\'s own words, and an unparseab
   const scope = "; next run only, a spec overrides it";
   assert.strictEqual(M.resultLine(set, 0, receipt, ''), `belay: memory.profile set to gpu-rerank (was "cpu-fast")${scope}`);
   assert.strictEqual(M.resultLine(set, 0, receipt, '', { liveRuns: [] }), `belay: memory.profile set to gpu-rerank (was "cpu-fast")${scope}`);
-  assert.strictEqual(M.resultLine(set, 0, receipt, '', { liveRuns: ['r-1', 'r-2'] }), `belay: memory.profile set to gpu-rerank (was "cpu-fast"); live runs keep their profile; next run only, a spec overrides it`);
-  assert.strictEqual(M.resultLine({ kind: 'set', key: 'memory.profile_cpu', value: 'cpu-fast' }, 0, JSON.stringify({ key: 'memory.profile_cpu', old: { value: 'cpu-rerank' } }), '', { liveRuns: ['r-1'] }), `belay: memory.profile_cpu set to cpu-fast (was "cpu-rerank"); live runs keep their profile; next run only, a spec overrides it`);
+  assert.strictEqual(M.resultLine(set, 0, receipt, '', { liveRuns: ['r-1', 'r-2'] }), `belay: memory.profile set to gpu-rerank (was "cpu-fast"); live runs keep theirs; next run only, spec overrides`);
+  assert.strictEqual(M.resultLine({ kind: 'set', key: 'memory.profile_cpu', value: 'cpu-fast' }, 0, JSON.stringify({ key: 'memory.profile_cpu', old: { value: 'cpu-rerank' } }), '', { liveRuns: ['r-1'] }), `belay: memory.profile_cpu set to cpu-fast (was "cpu-rerank"); live runs keep theirs; next run only, spec overrides`);
   assert.strictEqual(M.resultLine({ kind: 'set', key: 'memory.rerank_depth', value: '40' }, 0, JSON.stringify({ key: 'memory.rerank_depth', old: { value: 50 } }), '', { liveRuns: ['r-1'] }), 'belay: memory.rerank_depth set to 40 (was 50)', 'a key that is not a profile carries no profile note');
   assert.strictEqual(M.resultLine(set, 2, JSON.stringify({ error: 'bad value' }), ''), 'belay: memory.profile was not written: bad value');
   assert.strictEqual(M.resultLine(set, 1, 'not json\nsecond', ''), 'belay: memory.profile was not written: not json');
@@ -188,11 +188,11 @@ test('settings writes keep belay settings\' own validation: a refused value writ
 test('the profile toast is one short line: the scope is worded to fit', async () => {
   const { loadPanelModule: load } = require('./load-ts.cjs');
   const Mem = await load('memory');
-  const set = { kind: 'set', key: 'memory.profile_cpu', value: 'cpu-rerank-light' };
-  const out = JSON.stringify({ key: 'memory.profile_cpu', old: { value: 'cpu-fast' } });
+  const set = { kind: 'set', key: 'memory.profile', value: 'gpu-rerank' };
+  const out = JSON.stringify({ key: 'memory.profile', old: { value: 'cpu-fast' } });
   const none = Mem.resultLine(set, 0, out, '', { liveRuns: [] });
   assert.ok(none.length <= 110, none);
   const live = Mem.resultLine(set, 0, out, '', { liveRuns: ['r-live-1'] });
-  assert.ok(live.length <= 140, live);
-  assert.ok(live.includes('live runs keep their profile') && live.includes('next run only'));
+  assert.ok(live.length <= 110, live);
+  assert.ok(live.includes('live runs keep theirs') && live.includes('next run only'));
 });

@@ -235,7 +235,7 @@ function profileScope(key: string, m: BelayMenu | null): string {
   const live = m ? m.liveRuns : []
   const over = 'a spec overrides it'
   if (!live.length) return `; next run only, ${over}`
-  return `; live runs keep their profile; next run only, ${over}`
+  return `; live runs keep theirs; next run only, spec overrides`
 }
 
 // What a finished command says, as one toast line: a settings receipt (`old -> new`), an embedder receipt, or the refusal's first line.
