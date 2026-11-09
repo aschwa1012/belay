@@ -228,14 +228,14 @@ export function probeLine(m: BelayMenu): string {
   return embedLine(m, h)
 }
 
-// A profile setting is the config's default for the NEXT run: a live run keeps the profile it started with, and a run spec's own memory.profile overrides the config.
+// The toast is one line and the terminal cuts it off, so the scope is worded short. A profile setting is the config's default for the NEXT run: a live run keeps the profile it started with, and a run spec's own memory.profile overrides the config.
 export const PROFILE_KEYS = ['memory.profile', 'memory.profile_cpu']
 function profileScope(key: string, m: BelayMenu | null): string {
   if (key !== 'memory.profile' && key !== 'memory.profile_cpu') return ''
   const live = m ? m.liveRuns : []
-  const over = `a spec's ${key} overrides it`
-  if (!live.length) return `; applies to the next run, and ${over}`
-  return `; live ${live.length === 1 ? `run ${live[0]} keeps the profile it started with` : `runs ${live.join(', ')} keep the profiles they started with`}, this applies to the next run, and ${over}`
+  const over = 'a spec overrides it'
+  if (!live.length) return `; next run only, ${over}`
+  return `; ${live.length === 1 ? `run ${live[0]} keeps its profile` : `runs ${live.join(', ')} keep theirs`}, next run only, ${over}`
 }
 
 // What a finished command says, as one toast line: a settings receipt (`old -> new`), an embedder receipt, or the refusal's first line.

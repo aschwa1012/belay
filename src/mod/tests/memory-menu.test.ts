@@ -143,7 +143,7 @@ describe('the Profiles tab', () => {
     await m.ui.press({ key: 'set:memory.profile:gpu-rerank' })
     await later(m.wd, 1500)
     expect(m.wd.menuWrites[0]!.slice(m.wd.menuWrites[0]!.indexOf('settings'), m.wd.menuWrites[0]!.indexOf('settings') + 3)).toEqual(['settings', 'memory.profile', 'gpu-rerank'])
-    expect(m.wd.toasts).toContain(`belay: memory.profile set to gpu-rerank (was "cpu-fast"); applies to the next run, and a spec's memory.profile overrides it`)
+    expect(m.wd.toasts).toContain(`belay: memory.profile set to gpu-rerank (was "cpu-fast"); next run only, a spec overrides it`)
     await later(m.wd, 11000)
     expect(m.wd.menuReads.length).toBeGreaterThan(reads)
     expect(await m.text()).not.toContain('press the same button again')
@@ -154,7 +154,8 @@ describe('the Profiles tab', () => {
     await m.ui.press({ key: 'set:memory.profile:gpu-rerank' })
     await m.ui.press({ key: 'set:memory.profile:gpu-rerank' })
     await later(m.wd, 1500)
-    expect(m.wd.toasts).toContain(`belay: memory.profile set to gpu-rerank (was "cpu-fast"); live run r-live-1 keeps the profile it started with, this applies to the next run, and a spec's memory.profile overrides it`)
+    expect(m.wd.toasts).toContain(`belay: memory.profile set to gpu-rerank (was "cpu-fast"); run r-live-1 keeps its profile, next run only, a spec overrides it`)
+    for (const t of m.wd.toasts) expect(t.length).toBeLessThanOrEqual(110)
   })
 
   test('another press cancels the confirm, so the same button asks again', async ($, on) => {

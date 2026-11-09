@@ -126,9 +126,10 @@ export function heldDetail(h: BelayHeld, now?: number): string {
   return `oldest ${h.oldestAgeRuns} run${h.oldestAgeRuns === 1 ? '' : 's'}${names.length ? ` · ${names.join(', ')}` : ''}${w}`
 }
 
-export function confirmLine(h: BelayHeld, project: string): string {
+// A paused run does not hold an archive review back, so the confirm says so rather than leave the pause to suggest otherwise.
+export function confirmLine(h: BelayHeld, project: string, paused = false): string {
   const cost = REVIEW_COST_ESTIMATE_USD === null ? 'cost: measured after first run' : `estimated cost $${REVIEW_COST_ESTIMATE_USD.toFixed(2)}`
-  return `${h.byProject[project] ?? h.count} note${(h.byProject[project] ?? h.count) === 1 ? '' : 's'} held in ${project} · dispatch the Opus archive reviewer? ${cost}`
+  return `${h.byProject[project] ?? h.count} note${(h.byProject[project] ?? h.count) === 1 ? '' : 's'} held in ${project} · dispatch the Opus archive reviewer? ${cost}${paused ? ' · the run is paused; the review is not held by it' : ''}`
 }
 
 // ---- the operator's settle of a note the archive review left undecided ------------------------------
