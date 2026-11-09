@@ -366,7 +366,8 @@ function createPolicyWatcher({ core, runId, enabled = false, dataDir = null }) {
     const ints = core.integration && core.integration.list ? await core.integration.list({}).then((r) => (r && r.integrations) || [], () => { readFailed = true; return []; }) : [];
     const steps = core.policy && core.policy.list ? await core.policy.list({}).then((r) => (r && r.rows) || [], () => { readFailed = true; return []; }) : [];
     const failures = await RF.readFailures(core, runId);
-    const run = core.run && core.run.get ? await core.run.get({}).then((r) => (r && r.run) || null, () => null) : null; // the fix caps the rounds are counted against
+    let runFailed = false;
+    const run = core.run && core.run.get ? await core.run.get({}).then((r) => (r && r.run) || null, () => { runFailed = true; return null; }) : null; // the fix caps the rounds are counted against; a failed read is unknown caps, not the default
     const revisions = await readRevisions(core.policy, runId, tasks);
     // The executor lists a relaunch from the worker rows of a dead builder (and the kill mark of an operator's own kill); the stall predicate asks due() the
     // same question, so it needs the same rows. Read only while a task a builder may have left open exists, as the executor does.
@@ -374,7 +375,7 @@ function createPolicyWatcher({ core, runId, enabled = false, dataDir = null }) {
     const RLN = require('./policy-relaunch.cjs'), byId = new Map(tasks.map((t) => [t.id, t]));
     if (core.worker && core.worker.list && RLN.mayNeed(tasks.filter((t) => t.run_id === runId), steps, runId, (t) => rootOf(t, byId))) workers = await core.worker.list({}).then((r) => (r && r.workers) || [], () => { readFailed = true; return undefined; });
     const KM = require('../core/kill-mark.cjs');
-    return { runId, tasks, integrations: ints, steps, failures, rounds: { caps: RF.capsOf(run) }, ...(workers ? { workers } : {}), ...(workers && dataDir ? { isKilled: (w) => KM.isKilled(dataDir, w.id, w.pid, w.pid_created) } : {}), ...(revisions ? { revisions } : {}), ...(readFailed ? { readFailed } : {}) };
+    return { runId, tasks, integrations: ints, steps, failures, rounds: { caps: runFailed ? { max: null, hard: null } : RF.capsOf(run) }, ...(workers ? { workers } : {}), ...(workers && dataDir ? { isKilled: (w) => KM.isKilled(dataDir, w.id, w.pid, w.pid_created) } : {}), ...(revisions ? { revisions } : {}), ...(readFailed || runFailed ? { readFailed: true } : {}) };
   }
   async function poll(seen) {
     if (!enabled && !(seen && seen.policyArmed)) { lastSnap = null; return []; }

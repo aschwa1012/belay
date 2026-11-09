@@ -73,7 +73,7 @@ function due(snap) {
     if (isReviewTask(x)) { // a reviewer that released with no verdict is asked again (once)
       const pr = rf && x.state === 'released' ? planOf(x, byId) : null;
       const a = pr ? RF.action(x, pr.plan, rf) : null;
-      if (a && a.step) out.push({ step: a.step, task_id: x.id, trigger: tref(x), policy_rev: pr.rev, worker: a.worker, prompt: a.prompt });
+      if (a && a.step) out.push({ step: a.step, task_id: x.id, trigger: tref(x), policy_rev: pr.rev, worker: a.worker, prompt: a.prompt, ...(pr.plan.review ? { review: pr.plan.review } : {}) });
       const wk = byId.get((Array.isArray(x.depends_on) ? x.depends_on : [])[0]); // a reviewer the plan gave this review died: relaunched once, like a builder (policy-relaunch.cjs)
       const wp = wk && planOf(wk, byId);
       const rr = wp ? require('./policy-relaunch.cjs').due(x, wp.plan, wp.rev, snap, PW.rootOf(wk, byId).id) : null;
@@ -249,7 +249,7 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
     async function finishStep() {
     let res;
     try {
-      const why = await stillDue(c, row.seq);
+      const why = await stillDue(c, row.seq).catch((e) => `E_NOT_NOW: the facts could not be read after the claim (${errText(e)}); the claim is reopened and the step retaken`);
       const over = why ? null : await budgetRefusal(c);
       res = why ? { outcome: 'skipped', error: why } : over ? { outcome: c.step === 'relaunch' ? 'skipped' : 'exception', error: over } : await STEPS.run(c, { core: stepCore, runId, assign: assignFor(stepCore), spawn: spawnFor ? spawnFor(stepCore) : null, restart: restartWorker, restartOnce: (step) => restartOnce(step, row.seq), stop: stopWorker, dataDir });
     } catch (e) { res = { outcome: 'exception', error: errText(e) }; }

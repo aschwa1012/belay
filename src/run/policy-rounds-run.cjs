@@ -86,9 +86,10 @@ async function reassign(c, env) {
   const cur = await env.core.task.get({ task_id: c.task_id });
   if (!cur || cur.state !== 'released' || !cur.handoff) return { outcome: 'skipped', error: `${c.task_id} is no longer a released hand-back` };
   if (c.step === 'reask') {
-    const why = await S.unavailable(env, c.worker, 'reviewer');
-    if (why) return S.exception(why);
-    return giveTask(c, env, { worker: c.worker }, { taskId: c.task_id, ref: `task:${c.task_id}`, prompt: c.prompt, pausedOk: true });
+    const b = await readyWorker(c, env, (Array.isArray(cur.depends_on) ? cur.depends_on[0] : null) || c.task_id, 'refuter'); // a reviewer already dead is brought back, or a fresh one of review.spawn, in the judged work's tree
+    if (b.res) return b.res;
+    const prompt = b.fresh ? `belay: you are a fresh reviewer: the reviewer ${c.worker} is gone, and its hand-back of review ${c.task_id} carried no verdict. Judge the work and release the review with your verdict.` : c.prompt;
+    return giveTask(c, env, b, { taskId: c.task_id, ref: `task:${c.task_id}`, prompt, pausedOk: true });
   }
   const b = await readyWorker(c, env, c.task_id);
   if (b.res) return b.res;
