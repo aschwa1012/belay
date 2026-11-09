@@ -18,7 +18,7 @@ const MAX_ITEMS = 10;
 const MAX_BATCH_TREES = 4;
 const MARGIN_MS = 5000; // the least a further tree is assumed to need before its add is started
 const TOOL_BUDGET_MS = 120000 - 10000; // the adapter's default MCP tool timeout less 10 s
-const FIELDS = ['spec', 'acceptance', 'files_owned', 'depends_on', 'repairs', 'base', 'tree_of', 'id', 'worktree', 'budget_usd', 'policy'];
+const FIELDS = ['spec', 'acceptance', 'files_owned', 'depends_on', 'repairs', 'base', 'tree_of', 'id', 'worktree', 'budget_usd', 'policy', 'memory_queries'];
 
 // A test seam, honoured only when BELAY_TEST_SEAMS=1: afterTree is awaited after each tree is made (index, record), before the next
 // tree and before the transaction; now is the clock; budgetMs replaces the call's time budget.

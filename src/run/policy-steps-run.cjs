@@ -59,7 +59,7 @@ async function reReview(c, env) {
   const prompt = b.fresh ? await require('./fresh-reviewer.cjs').promptFor(env.core, { spec: `You refuted it in ${c.review_id};` }) : null; // a reviewer who did not refute it is told who did, and what was found
   const made = await env.core.task.create({
     spec: `Re-review ${c.task_id} after fix ${c.fix_id}. You refuted it in ${c.review_id}; judge whether the fix answers your findings.${refuted && refuted.spec ? `\n\n${refuted.spec}` : ''}`,
-    acceptance: { verdict: true }, depends_on: [c.fix_id],
+    acceptance: { verdict: true }, depends_on: [c.fix_id], ...(fixRow.memory_queries && fixRow.memory_queries.length ? { memory_queries: fixRow.memory_queries } : {}),
   });
   const ref = `task:${made.id}`;
   if (made.existing === true) return { outcome: made.superseded === true ? 'superseded' : 'done', row_ref: ref }; // a review of the fix stands: it is not assigned again
@@ -104,7 +104,7 @@ async function review(c, env) {
     spec: `Review ${c.task_id}: judge whether its work meets its acceptance.${work.spec ? `
 
 ${work.spec}` : ''}`,
-    acceptance: { verdict: true }, depends_on: [c.task_id],
+    acceptance: { verdict: true }, depends_on: [c.task_id], ...(work.memory_queries && work.memory_queries.length ? { memory_queries: work.memory_queries } : {}), // the work's search lines
   });
   const ref = `task:${made.id}`;
   if (made !== left && made.existing === true) return { outcome: made.superseded === true ? 'superseded' : 'done', row_ref: ref }; // a review of the work stands: it is not assigned or spawned for again

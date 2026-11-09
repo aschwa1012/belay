@@ -46,6 +46,7 @@ function one(E, caller, args, own, runTop) {
     throw err('E_ARGS', 'task.repairs must be the id of the work task this fix task repairs');
   }
   const repairs = args.repairs == null ? null : args.repairs;
+  const queries = require('./memory-queries.cjs').check(args.memory_queries, 'task', (code, msg, d) => { throw err(code, msg, d); });
   const id = args.id || rows.newId();
   if (rows.current(E.store, 'task', id)) throw err('E_ARGS', `a task with id ${id} already exists in this store; choose another id, leave id out for a generated one, or pass amend: true to revise its acceptance`, { task_id: id });
   if (args.tree_of != null && own.worktree) throw err('E_ARGS', 'task.create tree_of: this task already inherits a tree');
@@ -102,11 +103,13 @@ function one(E, caller, args, own, runTop) {
 
   const plan = require('./policy-plan.cjs').forCreate(rows.current(E.store, 'run', caller.run_id), args, { repairs, follows_up: own.follows_up, acceptance }); // ADR 0071: checked before the append, so a refused plan writes nothing
   const planNotice = repairs && plan.policy && plan.policy.build ? 'the plan does not build a task that repairs another, so policy.build is not used: assign it with task_assign. The policy stated here replaces the plan of the work for this fix: name re_review and fix in it if it should be re-reviewed and sent back on a failed check; it is merged with its work under the plan of the work' : null; // the build gate is `!repairs` (policy-exec.cjs)
+  // A fix task with no lines of its own carries the lines of the work it repairs.
+  const lines = queries.length ? queries : (repairs && (rows.current(E.store, 'task', repairs) || {}).memory_queries) || null;
   const t = Date.now();
   const budget = require('./run-budget.cjs').taskLimit(E, caller, args); // dollar limit, checked before the append; null when none (the run process is told after the write: run-budget noteRows)
   const row = rows.append(E.store, 'task', {
     id, run_id: caller.run_id, spec: args.spec, acceptance, files_owned: filesOwned, state: 'open', ...(budget ? { budget_usd: budget } : {}),
-    results: null, depends_on: deps, repairs, ...plan, ...(tree ? { worktree: tree } : {}), ...(own.answers ? { answers: own.answers } : {}), ...(own.follows_up ? { follows_up: own.follows_up } : {}), ...(args.base != null ? { base: require('./methods-worktree.cjs').baseArg(args.base) } : {}),
+    results: null, depends_on: deps, repairs, ...(lines && lines.length ? { memory_queries: lines } : {}), ...plan, ...(tree ? { worktree: tree } : {}), ...(own.answers ? { answers: own.answers } : {}), ...(own.follows_up ? { follows_up: own.follows_up } : {}), ...(args.base != null ? { base: require('./methods-worktree.cjs').baseArg(args.base) } : {}),
   }, E.writtenBy(caller), t);
   E.noteWrite();
   return overlaps.length || fixNotice || planNotice ? { ...row, ...(overlaps.length ? { overlaps } : {}), ...(fixNotice ? { fix_notice: fixNotice } : {}), ...(planNotice ? { plan_notice: planNotice } : {}) } : row;

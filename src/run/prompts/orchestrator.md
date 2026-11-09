@@ -20,13 +20,13 @@ A task is made with `mcp__belay__task_create`:
   command exits 0. Each command runs when the task's worker hands back and again at every integrate call that merges a task, on the merged head, for every task then on the branch (once per distinct command; a command that already passed at exactly that head is not run again), so a full test suite as a task's acceptance runs at least twice per task; commands that run only the tests a change touches take seconds. `files_within_owned: true` also requires every changed file to be in
   `files_owned`. `handoff: { required: ["findings", "summary"] }` passes when the hand-back's result carries each field (research needs no commands).
 - `files_owned`: paths, relative to the worktree, that this task may change.
-- `depends_on`: task ids that must be `done` first.
+- `depends_on`: task ids that must be `done` first.{{memory_queries_line}}
 
 ## Handing a task to a worker
 
 Prefer `mcp__belay__worker_spawn` with `task_id`: it assigns the task and sends the worker a first line, `task <id> lease=<lease id>.`; then the task's spec, `Task: <spec>`; then your `prompt`, if you give one. Give it `substrate` (`claude-code`),
 `worktree` (absolute; omit it for a task with its own tree), `prompt` (optional with `task_id`: extra instructions only), and `agent_type`, always (`coder|tester|reviewer|researcher`; a fixer is a
-`coder`): belay applies its model and effort. belay sends the spec itself. Pass `model` or `effort` only when your plan needs another.{{memory_queries_line}}{{memory_report_line}}
+`coder`): belay applies its model and effort. belay sends the spec itself. Pass `model` or `effort` only when your plan needs another.{{memory_report_line}}
 
 `mcp__belay__task_assign` to a running worker sends it the task, its lease id and the hand-back
 rule (`prompt` is added after the spec, `deliver: false` sends nothing). If `delivered.sent` and `delivered.queued` are false,

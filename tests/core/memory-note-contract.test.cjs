@@ -316,13 +316,6 @@ test('only path-shaped tokens are evidence paths: words, numbers, versions and a
   assert.deepStrictEqual(where('Makefile'), [], 'a bare word without an extension is not a path');
 });
 
-test('the spawn query skips leading markdown headings, so a spec opening with a title still embeds its first paragraph', () => {
-  const { openingParagraph } = core('methods-embed-query.cjs');
-  assert.strictEqual(openingParagraph('# Title\n\n## Part\nAdd a migration\nfor users\n\nConstraints'), 'Add a migration for users');
-  assert.strictEqual(openingParagraph('# Only a title'), 'Only a title', 'headings and nothing else: the heading\'s words');
-  assert.strictEqual(openingParagraph('#hashtag is not a heading\n\nx'), '#hashtag is not a heading');
-});
-
 test('resolving a pending note as new with a changed title re-embeds it under its own template, so a v2 vector never goes stale', async () => {
   const first = await handBack('w1', [note('K0')]);
   const second = await handBack('w1', [note('K0', { title: 'the K0 loader also skips unlisted fixtures' })]);

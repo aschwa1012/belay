@@ -79,6 +79,7 @@ const ORCHESTRATOR = [
       depends_on: strs('Task ids that must be done before this one can be assigned'),
       repairs: str('A fix task: the id of the work task it repairs; past max_fix_rounds the answer carries fix_notice'),
       base: str('Diff base'),
+      memory_queries: strs('2 to 4 short search lines (max 160 bytes each): the commands, files, symbols or behaviours the work touches'),
       budget_usd: { type: 'number', description: 'USD limit; needs the ledger' },
       policy: POLICY_PROPERTY,
       tree_of: str('Work in that task\'s worktree (a conflict fix)'),
