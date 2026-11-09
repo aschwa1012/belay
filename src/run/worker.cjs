@@ -315,7 +315,7 @@ async function onTurnEnd(w, e, ctx) {
   }
   w.outputTokens += n(u.output_tokens);
   if (w.substrate === 'claude-code') {
-    if (typeof e.cost_usd === 'number') w.costUsd = (w.costBase || 0) + e.cost_usd; // the session's cumulative total, on top of what earlier sessions reported
+    if (typeof e.cost_usd === 'number') w.costUsd = require('./cost-carry.cjs').total(w, e.cost_usd); // the session's cumulative total, on top of what earlier sessions reported
     w.iterationsLastTurn = typeof e.num_turns === 'number' ? e.num_turns : null;
   }
   w.lastTurnUsage = e.usage;
@@ -415,6 +415,7 @@ function attach(w, child, ctx) {
   child.stdout.on('end', () => ingest(parser.flush()));
   child.stderr.on('data', (d) => {
     w.stderr = (w.stderr + d.toString('utf8')).slice(-STDERR_TAIL_MAX);
+    w.stderrLaunch = ((w.stderrLaunch || '') + d.toString('utf8')).slice(-STDERR_TAIL_MAX);
     try {
       fs.appendFileSync(w.stderrPath, d);
     } catch { /* the in-memory tail is the receipt of last resort */ }

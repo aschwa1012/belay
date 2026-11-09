@@ -10,7 +10,7 @@
 // -> the failure's reason when the error is a resume that never reached ready, else null.
 // What happened to a resume that exited by itself before ready: its exit code and the first line of its stderr, redacted and bounded.
 function exitedWhy(d) {
-  const line = String(d.stderr_tail || '').split(/\r?\n/).map((l) => l.trim()).find(Boolean) || '';
+  const line = String(d.launch_stderr || '').split(/\r?\n/).map((l) => l.trim()).find(Boolean) || '';
   const text = line ? require('../core/redact.cjs').redact(line).text.slice(0, 200) : '';
   return `the process exited before it was ready${d.exit_code != null ? ` (exit code ${d.exit_code})` : ''}${text ? `: ${text}` : ''}`;
 }

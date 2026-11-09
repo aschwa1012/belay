@@ -135,7 +135,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     w.settledState = null; // the last process's end; a restatement of this one's row must never carry it
     w.exitedAt = null;
     w.turnEnded = false;
-    w.readyAt = null; w.costBase = w.costUsd; // total_cost_usd is per process (Claude Code 2.1.321), a resume's too: each launch starts on the row's cost so far, so the row only grows
+    w.readyAt = null; w.stderrLaunch = ''; require('./cost-carry.cjs').arm(w); // this launch's own stderr; its first cost report decides whether the session total carried (cost-carry.cjs)
     w.parkRequested = null; w.paused = null; w.staleSince = null; w.bgTasks = new Map(); w.controlWaiters.clear(); w.pendingTurnEnd = null; // 6e-4/6e-6: fresh
     // The adapter log is shared across a worker's launches: rotate it if large (review B1), then remember
     // where it ended, so a previous process's tools/list never passes this one's ready check.
@@ -322,7 +322,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
   // Shared by `restart` and by `resume` (pause.cjs): `firstTextOverride(branch)` replaces `restartFirstText`'s own text when given; `appendMessage` follows
   // two newlines; `awaitFirstTurn: false` returns once the relaunch's `running` row lands. `forceReplace`: why (resume-fallback.cjs).
-  const doRestart = require('./resume-fallback.cjs').withFallback((w, o) => restartBranch(w, o), (w) => writeRow(w, 'dead'), (w) => require('../core/kill-mark.cjs').isKilled(root, w.id, w.pid, w.pidCreated));
+  const doRestart = require('./resume-fallback.cjs').withFallback((w, o) => restartBranch(w, o), (w) => writeRow(w, 'dead'), (w) => require('../core/kill-mark.cjs').isKilledLoose(root, w.id, w.pid, w.pidCreated));
   async function restartBranch(w, { forceReplace = null, firstTextOverride = null, appendMessage = null, awaitFirstTurn = true, first_turn_timeout_ms = 180000, onFirstText = null, skipDeadPidKill = false } = {}) {
     const worker_id = w.id;
     const old_pid = w.pid;
@@ -351,6 +351,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       firstText = (await MP.relaunch(w, ctx, firstText, { fresh: d.branch === 'replace', message: appendMessage })) + leaseNote(hold); // ADR 0042 decision 3: minus the rows already shown, only where that conversation still holds them
       if (d.branch === 'replace') {
         w.sessionId = null;
+        w.costBase = w.costUsd; // a fresh session's total starts at zero: what the earlier sessions reported stays in the row
         w.parser = createParser(w.substrate, MP.parserOpts(ctx));
       }
       if (onFirstText) onFirstText(firstText); if (!skipDeadPidKill) await LG.refuseIfPaused(ctx.core, ctx.runId, w, { restart: true }); // a run pause landing during the awaits above; a resume (skipDeadPidKill) runs while the run is still paused
@@ -375,7 +376,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       const t0 = now();
       const ready = await W.waitReady(w, 60000);
       if (!ready) {
-        await failNoReady(w, 'the relaunched worker produced no ready event inside the startup window', { branch: d.branch, exited_before_ready: !!w.settled });
+        await failNoReady(w, 'the relaunched worker produced no ready event inside the startup window', { branch: d.branch, exited_before_ready: !!w.settled, launch_stderr: w.stderrLaunch });
       }
       const v = await verifyReady(w, ready, t0 + 60000);
       if (!v.ok) await failNoReady(w, v.reason, { branch: d.branch });

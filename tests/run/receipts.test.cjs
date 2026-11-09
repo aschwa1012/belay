@@ -112,12 +112,12 @@ test('receipts: cost is set from the latest cumulative total, not summed, across
     assert.ok(before, 'two turns never landed on the row');
     assert.ok(Math.abs(before.cost_usd - 0.002) < 1e-9, `cost after two turns ${before.cost_usd}`);
     await m.stop({ worker_id: 'w-r2', mode: 'kill', timeout_ms: 8000 });
-    // A resumed process reports its own total from zero (0.001); the row adds it to the 0.002 so far.
-    const r = await m.restart({ worker_id: 'w-r2', first_turn_timeout_ms: 8000 });
+    // A resumed session inherits the running total: its next result reports 0.002 + 0.001.
+    const r = await withEnv({ FAKE_COST_BASE: '0.002' }, () => m.restart({ worker_id: 'w-r2', first_turn_timeout_ms: 8000 }));
     assert.strictEqual(r.branch, 'resume', r.reason);
     const after = await pollUntil(async () => { const x = await core.worker.get({ worker_id: 'w-r2' }); return x.turns === 3 && x.state === 'running' ? x : null; }, 5000);
     assert.ok(after, 'the resumed turn never landed on the row');
-    assert.ok(Math.abs(after.cost_usd - 0.003) < 1e-9, `cost after the resume is the cost so far plus the new process's total, 0.003: ${after.cost_usd}`);
+    assert.ok(Math.abs(after.cost_usd - 0.003) < 1e-9, `cost after the resume is the latest cumulative 0.003, not a sum: ${after.cost_usd}`);
   } finally { await m.shutdown(); await releaseCore(core); cleanup(sb.data); }
 });
 
