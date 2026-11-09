@@ -197,6 +197,12 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
     return out;
   }
 
+  // The halted task ids as the store holds them now: the policy rows, tasks, integrations and plan revisions read again and the exceptions derived from them.
+  async function haltedNow(run) {
+    const [st, tk, ig] = [await read(g.policy.list, 'rows', []), await read(g.task.list, 'tasks', []), await read(g.integration.list, 'integrations', [])];
+    return PW.haltedIds(PW.derive({ runId, tasks: tk, integrations: ig, steps: st, revisions: await PW.readRevisions(g.policy, runId, tk), ...(await extras(tk, run)) }), tk);
+  }
+
   // After the claim and just before the step's first write: the run is not paused or ended, and the step is still due on fresh rows at the plan
   // revision it was claimed at (the pass's snapshot can be minutes old after an integrate). -> a reason to skip, or null.
   const seen = { run: null, tasks: [] }; // the run row and the task rows stillDue read, for the budget rule
@@ -211,6 +217,7 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
     const rl = c.step === 'relaunch' ? { steps: (await read(g.policy.list, 'rows', [])).filter((r) => !(r.step === 'relaunch' && r.outcome === 'started' && r.trigger_table === c.trigger.table && r.trigger_id === c.trigger.id && Number(r.trigger_seq) === c.trigger.seq)), workers: await read(g.worker.list, 'workers', []) } : {}; // this claim is not a used relaunch
     const roundSteps = (await read(g.policy.list, 'rows', [])).filter((r) => r.seq !== seq); // the rounds read the step log, without this step's own claim
     const same = due({ runId, tasks, integrations, roundSteps, ...rl, ...(await extras(tasks, run)), ...(dataDir ? { isKilled: (w) => KM.isKilled(dataDir, w.id, w.pid, w.pid_created) } : {}) }).find((d) => keyOf(d.step, d.trigger) === keyOf(c.step, c.trigger));
+    if (same && (await haltedNow(run)).has(c.task_id)) return `E_NOT_NOW: ${c.task_id} was halted after the step was claimed; the claim is reopened and the step retaken if the halt is lifted`;
     if (!same) return `E_NOT_NOW: the plan or the facts changed after the claim: ${c.step} on ${c.trigger.table}:${c.trigger.id} is no longer due; the claim is reopened and the step retaken if it is due again`;
     if ((same.policy_rev ?? null) !== (c.policy_rev ?? null)) return `E_NOT_NOW: the plan moved from rev ${c.policy_rev} to rev ${same.policy_rev} after the claim; the claim is reopened and the step retaken`;
     return null;
@@ -231,9 +238,8 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
     const t = step.trigger;
     const { row, existing } = await g.policy.claim({ claimant_pid: me.pid, ...(me.created != null ? { claimant_created: String(me.created) } : {}), step: 'restart', trigger: { table: 'worker', id: `${step.worker}|${step.step}|${t.table}:${t.id}:${t.seq}` }, task_id: step.task_id, worker_id: step.worker });
     if (existing) return Number.isFinite(row.at) && Date.now() - row.at < RESTART_GRACE_MS ? 'recent' : false;
-    try { return true; } finally { // the claim is finished however this ends: a throw leaves no claim started
-      try { await g.policy.finish({ seq: row.seq, outcome: 'done', row_ref: `worker:${step.worker}` }); } catch (e) { log(`policy restart ${row.seq}: ${errText(e)}`); }
-    }
+    try { await g.policy.finish({ seq: row.seq, outcome: 'done', row_ref: `worker:${step.worker}` }); } catch (e) { log(`policy restart ${row.seq}: ${errText(e)}`); }
+    return true;
   }
 
   async function take(c0, taken) {
@@ -289,10 +295,6 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
     const integrations = await read(g.integration.list, 'integrations', []);
     const revisions = await PW.readRevisions(g.policy, runId, tasks); // an amend lifts a halt, and the fixes' creation order (policy-wakes derive)
     const ex = await extras(tasks, run);
-    const haltedNow = async () => { // the halt state as it stands now: a halt recorded since the pass began (an exception, an amend) counts before the next claim
-      const [st, tk, ig] = [await read(g.policy.list, 'rows', []), await read(g.task.list, 'tasks', []), await read(g.integration.list, 'integrations', [])];
-      return PW.haltedIds(PW.derive({ runId, tasks: tk, integrations: ig, steps: st, revisions: await PW.readRevisions(g.policy, runId, tk), ...(await extras(tk, run)) }), tk);
-    };
     const halted = PW.haltedIds(PW.derive({ runId, tasks, integrations, steps, revisions, ...ex }), tasks);
     const claimed = new Set(steps.filter((s) => !(s.outcome === 'skipped' && /^E_(PAUSED|NOT_NOW)/.test(s.error || ''))).map((s) => keyOf(s.step, { table: s.trigger_table, id: s.trigger_id, seq: Number(s.trigger_seq) || 0 })));
     const workers = require('./policy-relaunch.cjs').mayNeed(tasks.filter((t) => t.run_id === runId), steps, runId, (t) => PW.rootOf(t, new Map(tasks.map((r) => [r.id, r])))) && g.worker && g.worker.list ? await read(g.worker.list, 'workers', []) : undefined; // worker rows only while a task a builder may have left open exists
@@ -302,7 +304,7 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
       if (halted.has(c.task_id) || claimed.has(keyOf(c.step, c.trigger))) continue;
       const now = (await g.run.get({})).run; // a pause that began during this pass stops the next claim
       if (!now || now.ended_at != null || now.paused_at != null) { out.held = now && now.ended_at == null ? 'paused' : 'ended'; break; }
-      for (const id of await haltedNow()) halted.add(id);
+      try { for (const id of await haltedNow(run)) halted.add(id); } catch (e) { log(`policy halt re-read: ${errText(e)}`); } // a read that fails leaves the halts the pass already has
       if (halted.has(c.task_id)) continue;
       const res = await take(c, out.steps);
       claimed.add(keyOf(c.step, c.trigger));
