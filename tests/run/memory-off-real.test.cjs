@@ -5,6 +5,7 @@ require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch nev
 // leaves are compared by column with what the lever-off path wrote before ADR 0044: written_by differs, and the turn row
 // now names the worker that took the turn, its number and the task of the lease it held (it read as the orchestrator's,
 // with no task and no turn). The only stand-in is a fixed vector on each store, so no embedding model is needed.
+// The turn row is written only with the turn_rows lever, so these tests turn it on; the default writes none (turn-rows-lever.test.cjs).
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -39,7 +40,7 @@ async function withRun(script, check) {
     const view = Object.create(h, { memory: { value: { ...h.memory, store: (a) => h.memory.store({ ...a, embedding: [1, 0], embedding_model: 'fixed', dim: 2 }) } } });
     const wt = path.join(dir, 'wt');
     fs.mkdirSync(wt, { recursive: true });
-    const m = createRunManager({ core: view, dataDir: dir, runId: 'test-run', paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
+    const m = createRunManager({ core: view, dataDir: dir, runId: 'test-run', memoryLevers: { ...require('../../src/run/memory-levers.cjs').DEFAULTS, turn_rows: true }, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
     let made;
     try { made = await script({ core, m, wt: wt.split(path.sep).join('/') }); } finally { try { await m.shutdown(); } catch { /* best effort */ } }
     await check({ core, made });
@@ -53,7 +54,7 @@ async function withRun(script, check) {
 
 const turnRows = async (core) => (await core.memory.list({ namespace: 'run/test-run', view: 'full', order: 'oldest', limit: 50 })).rows;
 
-test('levers off on the real store: the rows and events are those of the lever-off path, written_by and the worker apart', { timeout: 60000 }, () => withRun(async ({ m, wt }) => {
+test('legacy: levers off on the real store: the rows and events are those of the lever-off path, written_by and the worker apart', { timeout: 60000 }, () => withRun(async ({ m, wt }) => {
   await m.spawn({ substrate: 'claude-code', worktree: wt, prompt: 'one', worker_id: 'w1' });
   await m._waitTurn('w1', 8000);
   await m.message({ worker_id: 'w1', text: 'two' });
@@ -72,7 +73,7 @@ test('levers off on the real store: the rows and events are those of the lever-o
   assert.deepStrictEqual(events.events, [], 'no memory_event with every lever off');
 }));
 
-test('a turn row carries the task of the lease its worker held at the turn\'s end: spawned with it, or given it later by assign', { timeout: 60000 }, () => withRun(async ({ core, m, wt }) => {
+test('legacy: a turn row carries the task of the lease its worker held at the turn\'s end: spawned with it, or given it later by assign', { timeout: 60000 }, () => withRun(async ({ core, m, wt }) => {
   const t1 = await core.task.create({ spec: 'first' });
   const t2 = await core.task.create({ spec: 'second' });
   await m.spawn({ substrate: 'claude-code', worktree: wt, prompt: 'one', worker_id: 'w1', task_id: t1.id });

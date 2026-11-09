@@ -132,7 +132,7 @@ async function attach(E, caller, args) {
   const identity = await LA.prepare(rows.currentAll(E.store, 'worker').filter((w) => w.run_id === runId && ATTACH_SUSPECT.has(w.state)).map((w) => ({ pid: w.pid, created: w.pid_created })));
   const t = Date.now();
   let prev = rows.current(E.store, 'run', runId);
-  // ADR 0041: the project is named by the spec and never derived, and it is named once. The run row's project column (what a caller's reach and the
+  // ADR 0041: the project is named by the spec, or derived by `belay run` before the call (ADR 0041 amendment), and it is named once. The run row's project column (what a caller's reach and the
   // `project` alias resolve through) and the resolved levers' project must be the same name, else the orchestrator would write to one project while its
   // levers describe another. Refused here, with nothing written.
   if (resolvedLevers !== null) {

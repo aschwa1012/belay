@@ -55,8 +55,11 @@ async function run(ctx) {
 
   let created = false;
   let outsideNote = null;
+  let project = null;
   if (!existed) {
     const seed = seedConfig(override, writeDir);
+    project = require('./default-project.cjs').derive(writeDir); // ADR 0041 amendment: read from the local git config, else the folder name
+    if (project) seed.memory = { project: project.name };
     if (seed.outside) outsideNote = `--data ${override} cannot be the config's data_dir (${seed.outside}), so the config keeps data_dir ${JSON.stringify(seed.data_dir)}; pass --data ${override} on each command that should use it`;
     delete seed.outside;
     const body = JSON.stringify(seed, null, 2) + '\n';
@@ -87,6 +90,7 @@ async function run(ctx) {
     parse_error: found.parse_error || null,
     data_dir: dataDir,
     data_dir_created: !dataDirExisted,
+    ...(created && project ? { project: project.name, project_source: project.source } : {}),
     ...(outsideNote ? { note: outsideNote } : {}),
   };
 
@@ -98,6 +102,7 @@ async function run(ctx) {
       : `kept ${configPath} (${bytes} bytes); it already existed and was not touched`,
     payload.data_dir_created ? `created ${dataDir}` : `data dir already present at ${dataDir}`,
   ];
+  if (payload.project) lines.push(`notes project ${payload.project} (from ${payload.project_source}); change it with: belay settings memory.project <name>`);
   if (found.parse_error) lines.push(`warning: ${found.parse_error}`);
   if (outsideNote) lines.push(`note: ${outsideNote}`);
   lines.push('');

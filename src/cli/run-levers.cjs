@@ -26,7 +26,7 @@ const MEMORY_REPORT_LINE = ' If a note is wrong, out of date or contradicted by 
 const PERMISSION_LINE = '- Answer permission requests (`mcp__belay__permission_list`, `mcp__belay__permission_decide`) only when the request is inside the plan.\n';
 // ADR 0047 amendment (2026-10-22), decision 7: in a notes run the orchestrator's memory bullet says four things, and a run outcome is a summary. The
 // template keeps the text a run without notes always had, between {{memory_use}} ... {{/memory_use}} (and {{memory_outcome}} ... {{/memory_outcome}}); a run
-// with notes replaces the span, a run without drops only the markers, so its prompt is byte for byte what it was.
+// with notes replaces the span, a run without drops only the markers (the base text of each span is what a run with notes off is told: search, and no store).
 const MEMORY_USE_NOTES = [
   "- Use belay's notes yourself.",
   '  - Search before you plan: before you create any task, call `mcp__belay__memory_search` with a `query` on the brief\'s subject and no namespace (it searches the',
@@ -36,7 +36,7 @@ const MEMORY_USE_NOTES = [
   '  - Record your decisions and the outcome with `namespace: "summary"` (a `title` and `text`); they are found on demand with `mcp__belay__memory_summaries`.',
   '  - Never tell a worker to write memory with `memory_store`: what it learns that is worth keeping goes in the `notes` of its `lease_release`.',
 ].join('\n');
-const MEMORY_OUTCOME_NOTES = 'record the outcome with `namespace: "summary"`';
+const MEMORY_OUTCOME_NOTES = 'record the outcome with `namespace: "summary"`, ';
 const MEMORY_VERIFY_RULE = ' Use `mcp__belay__memory_verify` only with a receipt.'; // a notes run's orchestrator has no memory_verify
 const MEMORY_QUERIES_LINE = ' Also give 1 to 3 `memory_queries`: task lines (each under 160 bytes) naming the situations the worker will be in, such as "add a migration" or "dedupe email addresses", not the finding you expect it to make.';
 
@@ -118,6 +118,16 @@ function evalKeys(spec) {
 
 // Returns { max_fix_rounds, fix_cutoff, on_embedder_failure, fix_hard_cap, fix_hard_cap_source[, compact_at_tokens] } or { error }. `compact_at_tokens` (ADR 0007 decision 3,
 // null by default) is present only when set, so a run without it has the receipt it always had.
+// { name, source } when this run's project is to be derived, else null. Needs `opts.projectDir` (a prompt check or a test that gives none derives nothing).
+function deriveProject(spec, merged, opts) {
+  if (!opts.projectDir || !merged.sources || spec.memory === null) return null;
+  if (spec.memory === undefined && opts.config && opts.config.memory === null) return null;
+  const b = merged.block;
+  if (b !== undefined && (typeof b !== 'object' || b === null || Array.isArray(b))) return null;
+  if (b && (Object.prototype.hasOwnProperty.call(b, 'project') || b.notes === false || b.redact === false)) return null;
+  return require('./default-project.cjs').derive(opts.projectDir);
+}
+
 function parseLevers(spec, opts = {}) {
   let maxFixRounds = DEFAULT_MAX_FIX_ROUNDS;
   if (spec.max_fix_rounds !== undefined) {
@@ -202,6 +212,13 @@ function parseLevers(spec, opts = {}) {
   const shapeOk = spec.memory === undefined || spec.memory === null || (typeof spec.memory === 'object' && !Array.isArray(spec.memory)); // a bad block is refused as it is alone, never folded into an object by an eval key
   const merged = mergeMemory(ev.fold && shapeOk ? { ...(spec.memory || {}), ...ev.fold } : spec.memory, spec.memory === null ? null : opts.config) // `memory: null` inherits no config, eval keys or not;
   if (merged.error) return { error: merged.error };
+  // ADR 0041 amendment (ADR 0088): a run that names no project and has not turned notes off takes one from the project folder (the git remote, else
+  // the folder name). An explicit setting always wins: a project, `notes: false`, `redact: false`, `memory: null`, or a config whose memory is null.
+  const derived = deriveProject(spec, merged, opts);
+  if (derived) {
+    merged.block = { ...(merged.block || {}), project: derived.name };
+    merged.sources.project = `derived: ${derived.source}`;
+  }
   const mem = ML.parseMemoryBlock(merged.block);
   if (mem.error) return { error: merged.fromConfig ? `${mem.error} (memory defaults come from ${opts.config.path}, the spec's own memory block over them)` : mem.error };
   if (mem.value.native_memory !== null) { // the spawn's own check, here at spec load, so a bad folder refuses the run before anything launches
@@ -229,6 +246,7 @@ function parseLevers(spec, opts = {}) {
       Object.defineProperty(out, 'rules_text', { value: text, enumerable: false }); // not part of the receipt
     }
   }
+  if (derived) out.memory_project = { name: derived.name, source: derived.source, derived: true }; // the receipt names the project and where it came from
   // Notes default on but need a project: say so when there is none. Not enumerable, so the receipt is unchanged; `belay run` prints it.
   // An explicit `memory: null` is silent, whether the spec says it or the config file does (an inherited one, unless the spec's own block overrides it).
   const off = spec.memory === null || (spec.memory === undefined && !!opts.config && opts.config.memory === null);
@@ -252,7 +270,7 @@ function attachMemory(levers) {
 
 // The receipt line's suffix, empty for a default block.
 function memoryText(levers) {
-  return (levers && levers.memory_levers ? `; memory_levers: ${JSON.stringify(levers.memory_levers)}` : '') + (levers && levers.memory_dropped ? `; config levers dropped by notes false: ${levers.memory_dropped.join(', ')}` : '');
+  return (levers && levers.memory_project ? `; project ${levers.memory_project.name} (derived from ${levers.memory_project.source})` : '') + (levers && levers.memory_levers ? `; memory_levers: ${JSON.stringify(levers.memory_levers)}` : '') + (levers && levers.memory_dropped ? `; config levers dropped by notes false: ${levers.memory_dropped.join(', ')}` : '');
 }
 
 const TRAILING_EOL = /\r?\n$/;

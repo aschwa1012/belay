@@ -172,7 +172,7 @@ test('init --data outside the repository keeps the default data_dir in the confi
   const outside = `${sandbox()}/store`;
   const r = await require('../../src/cli/cmd-init.cjs').run({ argv: [], cwd: dir, dataDir: outside, dataDirGiven: true, json: true });
   assert.strictEqual(r.code, 0);
-  assert.deepStrictEqual(JSON.parse(fs.readFileSync(`${dir}/${C.CONFIG_NAME}`, 'utf8')), { data_dir: '.belay' });
+  assert.strictEqual(JSON.parse(fs.readFileSync(`${dir}/${C.CONFIG_NAME}`, 'utf8')).data_dir, '.belay'); // init also writes memory.project (default-project.test.cjs)
   assert.match(r.json.note, /--data .* on each command/);
   assert.ok(fs.existsSync(outside), 'the store the operator asked for was created');
 });
@@ -227,12 +227,12 @@ test('belay config (the summary) shows a refused data_dir in text and json', () 
 test('init --data the repository root itself, or through a junction that leaves it, is not written into the config', async () => {
   const dir = project(sandbox());
   const r = await require('../../src/cli/cmd-init.cjs').run({ argv: [], cwd: dir, dataDir: dir, dataDirGiven: true, json: true });
-  assert.deepStrictEqual(JSON.parse(fs.readFileSync(`${dir}/${C.CONFIG_NAME}`, 'utf8')), { data_dir: '.belay' });
+  assert.strictEqual(JSON.parse(fs.readFileSync(`${dir}/${C.CONFIG_NAME}`, 'utf8')).data_dir, '.belay'); // init also writes memory.project (default-project.test.cjs)
   assert.ok(r.json.note && !/outside the repository/.test(r.json.note), r.json.note);
   const d2 = project(sandbox());
   const out = sandbox();
   fs.symlinkSync(out, `${d2}/link`, 'junction');
   await require('../../src/cli/cmd-init.cjs').run({ argv: [], cwd: d2, dataDir: `${d2}/link/x`, dataDirGiven: true, json: true });
-  assert.deepStrictEqual(JSON.parse(fs.readFileSync(`${d2}/${C.CONFIG_NAME}`, 'utf8')), { data_dir: '.belay' });
+  assert.strictEqual(JSON.parse(fs.readFileSync(`${d2}/${C.CONFIG_NAME}`, 'utf8')).data_dir, '.belay'); // init also writes memory.project (default-project.test.cjs)
   fs.rmdirSync(`${d2}/link`);
 });

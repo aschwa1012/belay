@@ -92,6 +92,8 @@ async function run(ctx) {
   require('../run/exe-discovery.cjs').exportConfigured(found, C.effective); // config claude_exe/codex_exe reach every child
   // The orchestrator is always Claude Code: a missing executable exits 1 (a host prerequisite, like the embedder) before any file is created.
   try { require('../run/exe-discovery.cjs').exeFor('claude'); } catch (e) { return { code: 1, text: `belay run: ${e.message}\n`, json: { error: e.message } }; }
+  if (parsed.levers.memory_project && !ctx.json) process.stderr.write(`belay: notes project ${parsed.levers.memory_project.name} (derived from ${parsed.levers.memory_project.source}); set memory.project to change it
+`); // the run's own choice of name, said once
   if (parsed.levers.memory_notice && !ctx.json) process.stderr.write(`${require('../core/memory-notice.cjs').noticeLines(parsed.levers.memory_notice, 'belay: ').join('\n')}\n`); // once, before anything launches; under --json stderr carries failure receipts, so the notice stays out of it
   if (parsed.promptWarnings.length && !ctx.json) process.stderr.write(`${parsed.promptWarnings.map((w) => `belay: warning: ${w.message}`).join('\n')}\n`); // once; under --json the receipt's prompt_warnings carries it
   const dataDir = C.dataDirOf(found, ctx);

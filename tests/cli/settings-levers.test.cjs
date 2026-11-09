@@ -43,7 +43,7 @@ test('settings: every memory lever is listed as memory.<key> with its default, d
     const mem = r.out.settings.filter((s) => s.key.startsWith('memory.'));
     assert.deepStrictEqual(mem.map((s) => s.key), Object.keys(ML.DEFAULTS).filter((k) => !ML.EVAL_ONLY.includes(k)).map((k) => `memory.${k}`));
     for (const s of mem) {
-      assert.strictEqual(s.value, ML.DEFAULTS[s.key.slice(7)], s.key);
+      assert.strictEqual(s.value, s.key === 'memory.notes' ? true : ML.DEFAULTS[s.key.slice(7)], s.key); // notes are on by default: a run derives its project
       assert.deepStrictEqual(s.default, ML.DEFAULTS[s.key.slice(7)], s.key);
       assert.strictEqual(s.source, 'default');
       assert.ok(s.type, `${s.key} names its type`);
@@ -163,16 +163,17 @@ test('run spec: the config memory block is the default and the spec overrides it
   } finally { cleanup(sb.dir); }
 });
 
-test('run spec: with no config memory block nothing changes; a block that fails validation is refused naming the file', () => {
+test('run spec: with no config memory block only the derived project is added; a block that fails validation is refused naming the file', () => {
   const none = runSandbox(null, {});
   const noMem = runSandbox({ mod: { pane: 'docked' } }, {});
-  const bad = runSandbox({ memory: { notes: true } }, {});
+  const bad = runSandbox({ memory: { notes: true, redact: false } }, {});
   const rescued = runSandbox({ memory: { notes: true } }, { memory: { project: 'acme' } });
   try {
     for (const sb of [none, noMem]) {
       const p = parseSpec(sb.specPath, sb.dir);
-      assert.strictEqual(p.levers.memory_levers, undefined);
-      assert.strictEqual(p.levers.memory_sources, undefined);
+      assert.strictEqual(typeof p.levers.memory_levers.project, 'string', 'no project is set, so the run derives one');
+      assert.match(p.levers.memory_sources.project, /^derived: /);
+      assert.deepStrictEqual(Object.entries(p.levers.memory_sources).filter(([, v]) => v !== 'default').map(([k]) => k), ['project'], 'the project is the only lever that is not a default');
     }
     const b = parseSpec(bad.specPath, bad.dir);
     assert.match(b.error, /memory\.notes needs memory\.project/);

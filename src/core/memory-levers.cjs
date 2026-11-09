@@ -19,6 +19,7 @@ const DEFAULTS = Object.freeze({
   project: null,
   project_writes: false,
   cost_ledger: false,
+  turn_rows: false, // the harness writes a turn row (the worker's last text of each turn) only when true; notes do not read them
   first_message_index: false,
   index_bytes: 1200,
   bottle: false,
@@ -72,7 +73,7 @@ const DEFAULTS = Object.freeze({
 });
 
 const BOOLEAN_KEYS = ['redact', 'rules', 'capture', 'observations', 'project_writes', 'cost_ledger',
-  'first_message_index', 'bottle', 'wrapup', 'knowledge_agent', 'notes', 'notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording', 'archive_review_auto'];
+  'turn_rows', 'first_message_index', 'bottle', 'wrapup', 'knowledge_agent', 'notes', 'notes_reflection', 'notes_lesson_question', 'notes_overflow_line', 'notes_trust_wording', 'archive_review_auto'];
 const MODEL_RE = /^claude-(haiku|sonnet|opus)-5-5$/; // a Claude 5.5 model id: the only models the roster allows (ADR 0021 amendments 5 and 6)
 const SUMMARIES = ['off', 'mechanical'];
 const SCRUB_ACTIONS = ['off', 'propose', 'apply'];
@@ -127,15 +128,15 @@ function routingCpuProblem(r) {
   return null;
 }
 
-// `notes` resolves on by default (0.3.0) but notes live in the project namespace, so a run that did not say `notes` has them only when it
-// has a project and keeps redaction on. The project is never derived (ADR 0041): a user turns notes on in practice by setting
-// memory.project. An explicit `notes` is taken as given, and refused below when it cannot work.
+// `notes` resolves on by default but notes live in the project namespace, so a run that did not say `notes` has them only when it
+// has a project and keeps redaction on. `belay init` and `belay run` supply the project when none is set (ADR 0041 amendment, ADR 0088);
+// this file only reads the block it is given. An explicit `notes` is taken as given, and refused below when it cannot work.
 function resolveNotes(v, given) {
   if (given) return v.notes;
   return v.project !== null && v.redact !== false;
 }
 
-// The levers of a run that gave no memory block: every default (notes off, there being no project).
+// The levers of a run that gave no memory block: every default (notes off here, there being no project in the block; `belay run` fills one in).
 function defaultLevers() { return { ...DEFAULTS }; }
 
 function boundedInt(v, max) {
