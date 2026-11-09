@@ -207,19 +207,22 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
   // revision it was claimed at (the pass's snapshot can be minutes old after an integrate). -> a reason to skip, or null.
   const seen = { run: null, tasks: [] }; // the run row and the task rows stillDue read, for the budget rule
   // A store read that threw is marked, so the pass retakes the step; any other throw in here is a bug and stays an exception.
-  const rd = async (f) => { try { return await f(); } catch (e) { if (e && typeof e === 'object') e.stillDueRead = true; throw e; } };
+  const rd = async (f, name) => { try { return await f(); } catch (e) { if (e && typeof e === 'object') e.stillDueRead = name; throw e; } };
+  // A read that keeps failing reopens the same claim each pass: after this many in a row it is one exception (E8) that names the read.
+  const readFails = new Map(); // keyOf(step, trigger) -> consecutive failures
+  const READ_FAIL_MAX = 5;
   async function stillDue(c, seq) {
-    const run = (await rd(() => g.run.get({}))).run;
+    const run = (await rd(() => g.run.get({}), 'run.get')).run;
     seen.run = run;
     if (!run || run.ended_at != null) return 'the run has ended after the step was claimed';
     if (run.paused_at != null) return 'E_PAUSED: the run was paused after the step was claimed; the claim is reopened and the step retaken after the resume';
-    const tasks = await rd(() => read(g.task.list, 'tasks', []));
+    const tasks = await rd(() => read(g.task.list, 'tasks', []), 'task.list');
     seen.tasks = tasks;
-    const integrations = c.step === 'integrate' || c.trigger.table === 'integration' ? await rd(() => read(g.integration.list, 'integrations', [])) : [];
-    const rl = c.step === 'relaunch' ? { steps: (await rd(() => read(g.policy.list, 'rows', []))).filter((r) => !(r.step === 'relaunch' && r.outcome === 'started' && r.trigger_table === c.trigger.table && r.trigger_id === c.trigger.id && Number(r.trigger_seq) === c.trigger.seq)), workers: await rd(() => read(g.worker.list, 'workers', [])) } : {}; // this claim is not a used relaunch
-    const roundSteps = (await rd(() => read(g.policy.list, 'rows', []))).filter((r) => r.seq !== seq); // the rounds read the step log, without this step's own claim
-    const same = due({ runId, tasks, integrations, roundSteps, ...rl, ...(await rd(() => extras(tasks, run))), ...(dataDir ? { isKilled: (w) => KM.isKilled(dataDir, w.id, w.pid, w.pid_created) } : {}) }).find((d) => keyOf(d.step, d.trigger) === keyOf(c.step, c.trigger));
-    if (same && (await rd(() => haltedNow(run))).has(c.task_id)) return `E_NOT_NOW: ${c.task_id} was halted after the step was claimed; the claim is reopened and the step retaken if the halt is lifted`;
+    const integrations = c.step === 'integrate' || c.trigger.table === 'integration' ? await rd(() => read(g.integration.list, 'integrations', []), 'integration.list') : [];
+    const rl = c.step === 'relaunch' ? { steps: (await rd(() => read(g.policy.list, 'rows', []), 'policy.list')).filter((r) => !(r.step === 'relaunch' && r.outcome === 'started' && r.trigger_table === c.trigger.table && r.trigger_id === c.trigger.id && Number(r.trigger_seq) === c.trigger.seq)), workers: await rd(() => read(g.worker.list, 'workers', []), 'worker.list') } : {}; // this claim is not a used relaunch
+    const roundSteps = (await rd(() => read(g.policy.list, 'rows', []), 'policy.list')).filter((r) => r.seq !== seq); // the rounds read the step log, without this step's own claim
+    const same = due({ runId, tasks, integrations, roundSteps, ...rl, ...(await rd(() => extras(tasks, run), 'run.get or failures')), ...(dataDir ? { isKilled: (w) => KM.isKilled(dataDir, w.id, w.pid, w.pid_created) } : {}) }).find((d) => keyOf(d.step, d.trigger) === keyOf(c.step, c.trigger));
+    if (same && (await rd(() => haltedNow(run), 'task.list or policy.list')).has(c.task_id)) return `E_NOT_NOW: ${c.task_id} was halted after the step was claimed; the claim is reopened and the step retaken if the halt is lifted`;
     if (!same) return `E_NOT_NOW: the plan or the facts changed after the claim: ${c.step} on ${c.trigger.table}:${c.trigger.id} is no longer due; the claim is reopened and the step retaken if it is due again`;
     if ((same.policy_rev ?? null) !== (c.policy_rev ?? null)) return `E_NOT_NOW: the plan moved from rev ${c.policy_rev} to rev ${same.policy_rev} after the claim; the claim is reopened and the step retaken`;
     return null;
@@ -260,7 +263,13 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
     async function finishStep() {
     let res;
     try {
-      const why = await stillDue(c, row.seq).catch((e) => { if (!(e && e.stillDueRead)) throw e; return `E_NOT_NOW: the facts could not be read after the claim (${errText(e)}); the claim is reopened and the step retaken`; });
+      const rk = keyOf(c.step, c.trigger);
+      const why = await stillDue(c, row.seq).then((w) => { readFails.delete(rk); return w; }, (e) => {
+        if (!(e && e.stillDueRead)) throw e;
+        const n = (readFails.get(rk) || 0) + 1; readFails.set(rk, n);
+        if (n >= READ_FAIL_MAX) { readFails.delete(rk); throw Object.assign(new Error(`the ${e.stillDueRead} read failed ${n} times in a row after the claim: ${errText(e)}`), { code: 'E_READ_FAILED' }); }
+        return `E_NOT_NOW: the facts could not be read after the claim (${errText(e)}); the claim is reopened and the step retaken`;
+      });
       const over = why ? null : await budgetRefusal(c);
       res = why ? { outcome: 'skipped', error: why } : over ? { outcome: c.step === 'relaunch' ? 'skipped' : 'exception', error: over } : await STEPS.run(c, { core: stepCore, runId, assign: assignFor(stepCore), spawn: spawnFor ? spawnFor(stepCore) : null, restart: restartWorker, restartOnce: (step) => restartOnce(step, row.seq), stop: stopWorker, dataDir });
     } catch (e) { res = { outcome: 'exception', error: errText(e) }; }
@@ -300,7 +309,9 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
     const halted = PW.haltedIds(PW.derive({ runId, tasks, integrations, steps, revisions, ...ex }), tasks);
     const claimed = new Set(steps.filter((s) => !(s.outcome === 'skipped' && /^E_(PAUSED|NOT_NOW)/.test(s.error || ''))).map((s) => keyOf(s.step, { table: s.trigger_table, id: s.trigger_id, seq: Number(s.trigger_seq) || 0 })));
     const workers = require('./policy-relaunch.cjs').mayNeed(tasks.filter((t) => t.run_id === runId), steps, runId, (t) => PW.rootOf(t, new Map(tasks.map((r) => [r.id, r])))) && g.worker && g.worker.list ? await read(g.worker.list, 'workers', []) : undefined; // worker rows only while a task a builder may have left open exists
-    for (const c of due({ runId, tasks, integrations, steps, workers, ...ex, ...(dataDir ? { isKilled: (w) => KM.isKilled(dataDir, w.id, w.pid, w.pid_created) } : {}), maxBuilds: Number.isInteger(run.max_parallel_builds) && run.max_parallel_builds > 0 ? run.max_parallel_builds : MAX_PARALLEL_BUILDS })) {
+    const dueNow = due({ runId, tasks, integrations, steps, workers, ...ex, ...(dataDir ? { isKilled: (w) => KM.isKilled(dataDir, w.id, w.pid, w.pid_created) } : {}), maxBuilds: Number.isInteger(run.max_parallel_builds) && run.max_parallel_builds > 0 ? run.max_parallel_builds : MAX_PARALLEL_BUILDS });
+    if (readFails.size) { const keys = new Set(dueNow.map((d) => keyOf(d.step, d.trigger))); for (const k of readFails.keys()) if (!keys.has(k)) readFails.delete(k); } // a claim no longer due has no count
+    for (const c of dueNow) {
       if (stopped()) break;
       if (c.capped) continue; // max_parallel_builds: the task waits for a slot, no exception (ADR 0074 amendment 4)
       if (halted.has(c.task_id) || claimed.has(keyOf(c.step, c.trigger))) continue;
