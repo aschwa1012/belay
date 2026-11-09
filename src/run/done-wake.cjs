@@ -52,17 +52,22 @@ function doneOf(snap, exceptions = []) {
   const own = `belay/integrate/${runId}`;
   const newest = (snap.integrations || []).filter((i) => i.run_id === runId && i.into_branch === own).reduce((a, b) => (!a || Number(b.seq) > Number(a.seq) ? b : a), null);
   if (integrates && (!newest || !['merged', 'evaluated'].includes(newest.state) || newest.passed === false)) return null; // evaluated: merged, then its checks ran on the head
-  if (PW.haltedIds(exceptions, all).size) return null;
+  // A halt on a finished task (done or cancelled) holds nothing back when it is an E1 for a step the finished work does not need (a missing re_review, fix or build:
+  // the work was judged and merged by its own steps, checked above). The other halts name a failure, or an absent review or integrate (work the plan never did): they hold it.
+  const finishedE1 = (e) => { const t = byId.get(e.task_id); return e.exception === 'E1' && !['review', 'integrate'].includes(e.field) && !!t && (t.state === 'done' || t.state === 'cancelled'); };
+  const skipped = exceptions.filter((e) => finishedE1(e) && PW.haltedIds([e], all).size);
+  if (PW.haltedIds(exceptions.filter((e) => !finishedE1(e)), all).size) return null;
+  const finished = { size: skipped.length };
   if (due({ runId, tasks: all, integrations: snap.integrations || [], steps: snap.steps || [], rounds: snap.rounds, failures: snap.failures }).length) return null;
   if ((snap.steps || []).some((s) => s.run_id === runId && s.outcome === 'started')) return null;
   const n = work.length;
   // Should-fix findings a held review left with no follow-up (the run's max_follow_ups was reached, or the plan has no follow_up): named, not waking.
   const left = tasks.filter((t) => !isReview(t) && !t.repairs && PW.policyOf(t, byId)).filter((t) => { /* the work and its follow-ups */ const R = byId.get(t.review && t.review.review_id); const f = R ? require('./review-wake.cjs').reviewOf(R) : null; return f && f.should_fix.n > 0 && !answeredBy(all, R); }).map((t) => t.id);
-  const note = left.length ? ` Should-fix findings left on ${left.length} task${left.length === 1 ? ' (see its review)' : 's (see their reviews)'}.` : '';
+  const note = (left.length ? ` Should-fix findings left on ${left.length} task${left.length === 1 ? ' (see its review)' : 's (see their reviews)'}.` : '') + (finished.size ? ` ${finished.size} finished task${finished.size === 1 ? '' : 's'} still halted by an unlifted exception.` : '');
   const where = !integrates ? 'done and reviewed; the plan merges nothing' : `done, reviewed and merged into ${own} at ${short(newest.head_sha)}, ${newest.passed === true ? 'checks passed' : 'checks not run on the merged head'}`;
   const text = `belay: implementation done: ${n} planned task${n === 1 ? '' : 's'} ${where}.${note} Decide whether you are done.`;
   const key = integrates ? `${newest.id}@${newest.seq}` : `tasks@${Math.max(...tasks.map((t) => Number(t.seq) || 0))}`;
-  const fallback = `belay: implementation done: ${n} planned tasks${integrates ? ` merged at ${short(newest.head_sha)}, checks ${newest.passed === true ? 'passed' : 'not run'}` : ''}.${left.length ? ` Should-fix left on ${left.length}.` : ''}`;
+  const fallback = `belay: implementation done: ${n} planned tasks${integrates ? ` merged at ${short(newest.head_sha)}, checks ${newest.passed === true ? 'passed' : 'not run'}` : ''}.${left.length ? ` Should-fix left on ${left.length}.` : ''}${finished.size ? ` ${finished.size} halt${finished.size === 1 ? '' : 's'} unlifted.` : ''}`;
   return { key, text: Buffer.byteLength(text) <= WAKE_TEXT_MAX ? text : fallback, n, should_fix_left: left, checks: integrates ? (newest.passed === true ? 'passed' : 'not_run') : 'none' };
 }
 

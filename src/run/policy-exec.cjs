@@ -43,6 +43,7 @@ function planOf(task, byId) {
 }
 const handBy = (t) => (t && t.handoff && typeof t.handoff.by === 'string' ? t.handoff.by : null);
 const merged = (t) => !!(t.integration && t.integration.state === 'merged');
+const mergedOk = (d) => merged(d) && d.integration.passed !== false && d.integration.checks_passed !== false; // landed, and its integration's checks did not fail (the build gate's test; policy-carried.cjs reads it too)
 
 // -> the steps due on these rows, in row order (the trigger's seq, then the step's name). `snap`: { runId, tasks (task.list rows),
 // integrations, steps, maxBuilds, rounds ({ caps }: the failures policy-rounds.cjs carries as rounds are read only when it is given), failures }. Pure: no store, no clock. A candidate: { step, task_id, trigger, policy_rev, worker (the named builder or refuter), ... }.
@@ -59,7 +60,6 @@ function due(snap) {
   // orchestrator is woken for the death and decides). `snap.maxBuilds` caps the builds in flight: leased work tasks of the run; past it a
   // build is still listed, `capped: true`, so a reader sees the task is carried by the plan and the executor takes it once a slot frees.
   const built = new Set((snap.steps || []).filter((s) => s.run_id === runId && s.step === 'build' && (s.outcome === 'done' || s.outcome === 'started' || s.outcome === 'superseded')).map((s) => s.task_id));
-  const mergedOk = (d) => merged(d) && d.integration.passed !== false && d.integration.checks_passed !== false; // landed, and its integration's checks did not fail
   const depReady = (d) => !!d && d.state === 'done' && (!(PW.policyOf(d, byId) || {}).integrate || mergedOk(d));
   const rf = snap.rounds ? RF.ctxOf({ runId, now: snap.now, tasks: all, steps: snap.roundSteps || snap.steps, failures: snap.failures, caps: snap.rounds.caps, integrations: snap.integrations }) : null; // failures the plan carries as rounds (policy-rounds.cjs)
   let slots = Number.isInteger(snap.maxBuilds) ? snap.maxBuilds - tasks.filter((t) => !isReviewTask(t) && t.lease && !t.lease.expired && t.state !== 'done').length : Infinity;
@@ -356,4 +356,4 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
   return { settle: () => Promise.all([...pending]), tick, close, arm: () => { armed = true; }, isArmed: () => armed, pass, due };
 }
 
-module.exports = { createPolicyExecutor, due, planOf, keyOf, MAX_PARALLEL_BUILDS };
+module.exports = { createPolicyExecutor, due, planOf, keyOf, mergedOk, MAX_PARALLEL_BUILDS };
