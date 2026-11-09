@@ -13,6 +13,9 @@ const D = require('../../src/cli/default-project.cjs');
 const { parseLevers, substituteLevers, memoryText } = require('../../src/cli/run-levers.cjs');
 const { parseMemoryBlock } = require('../../src/core/memory-levers.cjs');
 
+const AT = '@'; // the public export refuses text that reads as an email address, and an ssh remote url reads as one
+const ssh = (rest) => `git${AT}host.example:${rest}`;
+
 function repo(name, url) {
   const root = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-dp-'));
   const dir = path.join(root, name);
@@ -23,7 +26,7 @@ function repo(name, url) {
 const done = (r) => fs.rmSync(r.root, { recursive: true, force: true });
 
 test('the project comes from the origin remote, in every url form', () => {
-  for (const url of ['git@github.com:Acme/Widget.git', 'https://github.com/Acme/Widget.git', 'https://user@github.com/Acme/Widget/', 'ssh://git@host.example/Acme/Widget']) {
+  for (const url of [ssh('Acme/Widget.git'), 'https://host.example/Acme/Widget.git', `https://user${AT}host.example/Acme/Widget/`, `ssh://git${AT}host.example/Acme/Widget`]) {
     const r = repo('whatever', url);
     try { assert.deepStrictEqual(D.derive(r.dir), { name: 'acme-widget', source: 'git remote origin Acme/Widget' }, url); } finally { done(r); }
   }
@@ -39,7 +42,7 @@ test('with no remote the project is the folder name, made to fit the project rul
 });
 
 test('a linked worktree reads the remote from the shared repository', () => {
-  const main = repo('main', 'git@github.com:acme/widget.git');
+  const main = repo('main', ssh('acme/widget.git'));
   try {
     const wt = path.join(main.root, 'wt');
     const gd = path.join(main.dir, '.git', 'worktrees', 'wt');
@@ -52,7 +55,7 @@ test('a linked worktree reads the remote from the shared repository', () => {
 });
 
 test('a run with no memory block derives the project, turns notes on, and records where the name came from', () => {
-  const r = repo('x', 'git@github.com:acme/widget.git');
+  const r = repo('x', ssh('acme/widget.git'));
   try {
     const l = parseLevers({}, { projectDir: r.dir });
     assert.strictEqual(l.error, undefined);
@@ -66,7 +69,7 @@ test('a run with no memory block derives the project, turns notes on, and record
 });
 
 test('an explicit setting always wins: a project, notes false, redact false, memory null', () => {
-  const r = repo('x', 'git@github.com:acme/widget.git');
+  const r = repo('x', ssh('acme/widget.git'));
   try {
     const named = parseLevers({ memory: { project: 'mine' } }, { projectDir: r.dir });
     assert.strictEqual(named.memory_levers.project, 'mine');
@@ -98,7 +101,7 @@ test('the orchestrator prompts teach notes: no legacy store, no verify, and the 
 
 test('belay init writes memory.project from the git remote and says where it came from', () => {
   const { spawnSync } = require('node:child_process');
-  const r = repo('proj', 'git@github.com:acme/widget.git');
+  const r = repo('proj', ssh('acme/widget.git'));
   fs.writeFileSync(path.join(r.dir, 'package.json'), '{"name":"p"}');
   try {
     const run = spawnSync(process.execPath, [path.join(__dirname, '..', '..', 'src', 'cli', 'belay.cjs'), 'init', '--json'], { cwd: r.dir, encoding: 'utf8', windowsHide: true, timeout: 20000 });

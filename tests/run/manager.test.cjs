@@ -11,6 +11,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { createRunManager } = require('../../src/run/index.cjs');
+const TURN_ROWS = { ...require('../../src/run/memory-levers.cjs').DEFAULTS, turn_rows: true }; // the turn row is written only when this lever is on
 const { createFakeCore } = require('./fake-core.cjs');
 const { cleanup } = require('../core/helpers.cjs');
 const P = require('../../src/run/process.cjs');
@@ -33,9 +34,9 @@ function sandbox() {
   return { data: d.replace(/\\/g, '/'), worktree: path.join(d, 'wt').replace(/\\/g, '/') };
 }
 
-function mgr(sb, core, exe = FAKE) {
+function mgr(sb, core, exe = FAKE, memoryLevers = null) {
   return createRunManager({
-    core, dataDir: sb.data, runId: 'run-test',
+    core, dataDir: sb.data, runId: 'run-test', memoryLevers,
     paths: { claudeExe: exe, codexExe: exe, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') },
   });
 }
@@ -110,7 +111,7 @@ test('spawn returns the row only after ready, and every artefact is on disk', as
 test('a turn writes a harness checkpoint with a tool digest and stores the final text', async () => {
   const sb = sandbox();
   const core = createFakeCore();
-  const m = mgr(sb, core);
+  const m = mgr(sb, core, FAKE, TURN_ROWS);
   try {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hello', worker_id: 'w1', task_id: 't1' });
     await m._waitTurn('w1', 8000);
@@ -140,7 +141,7 @@ test('a turn writes a harness checkpoint with a tool digest and stores the final
 test('a worker with no task gets no checkpoint, says why, and its turn still reaches memory', async () => {
   const sb = sandbox();
   const core = createFakeCore();
-  const m = mgr(sb, core);
+  const m = mgr(sb, core, FAKE, TURN_ROWS);
   try {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hello', worker_id: 'wn' });
     await m._waitTurn('wn', 8000);
@@ -242,7 +243,7 @@ test('no ready event inside the window is E_NO_READY with a stderr tail and a de
 test('message writes to stdin, counts a turn, and refuses a worker with no live stdin', async () => {
   const sb = sandbox();
   const core = createFakeCore();
-  const m = mgr(sb, core);
+  const m = mgr(sb, core, FAKE, TURN_ROWS);
   try {
     const row = await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w4', task_id: 't4' });
     await m._waitTurn('w4', 8000);
@@ -334,7 +335,7 @@ test('stopping a worker that is already gone claims neither a graceful stop nor 
 test('restart resumes inside the window and replaces outside it, and says the numbers', async () => {
   const sb = sandbox();
   const core = createFakeCore();
-  const m = mgr(sb, core);
+  const m = mgr(sb, core, FAKE, TURN_ROWS);
   try {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w8', task_id: 't1' });
     await m._waitTurn('w8', 8000);

@@ -29,7 +29,7 @@ const cleanup = (dir) => fs.rmSync(dir, { recursive: true, force: true });
 const cli = (cwd, args, env = {}) => spawnSync(process.execPath, [CLI, ...args], { cwd, windowsHide: true, encoding: 'utf8', env: { ...process.env, ...env } });
 const count = (s, t) => s.split(t).length - 1;
 
-for (const [name, config, shown] of [['no config', null, true], ['a config with no project', { memory: { rules: false } }, true], ['a config with a project', { memory: { project: 'acme' } }, false], ['notes off', { memory: { notes: false } }, false]]) {
+for (const [name, config, shown] of [['no config (a run derives the project)', null, false], ['a config with no project (a run derives it)', { memory: { rules: false } }, false], ['redaction off and no project', { memory: { redact: false } }, true], ['a config with a project', { memory: { project: 'acme' } }, false], ['notes off', { memory: { notes: false } }, false]]) {
   test(`settings, status and doctor with ${name}: the warning ${shown ? 'is' : 'is not'} listed, and no file is created`, () => {
     const dir = project(config);
     try {
@@ -61,8 +61,18 @@ function runWith(config, specMemory) {
   return { dir, r };
 }
 
-test('run: the notice is printed once on stderr when there is no project, and the stdout receipt does not carry it', () => {
+test('run: a run with no project derives one and prints it once, with no notice', () => {
   const { dir, r } = runWith(null);
+  try {
+    assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(count(r.stderr, 'belay: notes project '), 1, r.stderr);
+    assert.match(r.stderr, /derived from folder name belay-mnotice-/);
+    assert.strictEqual(count(r.stderr, TITLE), 0, r.stderr);
+  } finally { cleanup(dir); }
+});
+
+test('run: the notice is printed once on stderr when there is no project, and the stdout receipt does not carry it', () => {
+  const { dir, r } = runWith(null, { redact: false });
   try {
     assert.strictEqual(r.status, 0, r.stderr);
     assert.strictEqual(count(r.stderr, TITLE), 1, r.stderr);

@@ -132,6 +132,8 @@ function effectiveNotes(found, out) {
   const block = cfg && typeof cfg === 'object' && !Array.isArray(cfg) ? cfg : {};
   const r = ML.parseMemoryBlock(block);
   if (r.error) return { ...out, note: 'effective: off (the notes block, memory, is refused: ' + r.error + ')' };
+  const derived = !r.value.notes && !('project' in block) && block.notes !== false && block.redact !== false && !(found.found && found.config && found.config.memory === null);
+  if (derived) return { ...out, value: true, note: 'effective: on, because a run takes its project from the git remote or the folder name (set memory.project to name it)' };
   const why = r.value.notes ? 'on, because memory.project is set' : block.redact === false ? 'off, because memory.redact is false' : 'off, because memory.project is not set';
   return { ...out, value: r.value.notes, note: 'effective: ' + why };
 }

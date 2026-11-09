@@ -25,8 +25,7 @@ const REPLACED = [
   'do not poll in a loop',
   'and ending your turn closes the run.',
   'is not mid-turn, and the run closes.',
-  'To stop on purpose, store the outcome in memory, say why, then end a turn with no worker mid-turn.',
-  'and when you end the run (the outcome',
+  'To stop on purpose, say why, then end a turn with no worker mid-turn.',
   // amendment 6: the headless waiting rules
   'a timeout is a result: the worker is still working, so end your turn',
   'Never end a turn just after a `task_assign` whose',
@@ -78,10 +77,10 @@ test('interactive prompt: says what the mode is', () => {
     '  `worker_ids` returns the same exceptions and steps; you do not need to call it. Each step is shown once. It is belay\'s record, not a request.',
     '- A worker whose turn has ended without what you waited for is idle, not working. Instead call',
     '  `mcp__belay__worker_message` to tell it what is missing: that starts a turn. Then end your turn.',
-    '- When every task is `done`, or when you stop on purpose, store the outcome in memory with',
+    '- When every task is `done`, or when you stop on purpose, tell the operator the result and any open blocking findings, and then wait for them.',
   ], 'the waiting bullets, pinned line for line');
   assert.ok(!/check its work with `task_evaluate`/.test(TWIN), 'a hand-back with a result is evaluated at release; task_evaluate on a done task is refused (E_TASK_DONE)');
-  assert.match(TWIN, /`namespace: "project"`, tell the operator the result and any open blocking findings, and then wait for them/);
+  assert.match(TWIN, /stop on purpose, tell the operator the result and any open blocking findings, and then wait for them/);
   // the no-wakes wording is one self-contained paragraph a later amendment can swap
   const para = TWIN.split(/\n\n/).find((p) => p.startsWith('belay wakes you'));
   assert.ok(para && !para.includes('\n'), 'the wakes paragraph is a single line between blank lines');
@@ -110,10 +109,8 @@ test('interactive prompt: apart from four named ranges the twin equals orchestra
   assert.deepStrictEqual(T.slice(0, 3), [H[0], '', MARKER]);
   // The top, apart from the marker and its blank line.
   assert.deepStrictEqual(ts.get('(top)').slice(4), hs.get('(top)').slice(2), 'the title block');
-  // "Your role" differs by one phrase ("when you end the run (the outcome" -> "when you stop (the outcome"): the run does not end here.
-  const role = hs.get('## Your role').map((l) => l.replace('and when you end the run (the outcome', 'and when you stop (the outcome'));
-  assert.notDeepStrictEqual(role, hs.get('## Your role'), 'the substitution applied');
-  assert.deepStrictEqual(ts.get('## Your role'), role);
+  // "Your role" is the same in both: the memory bullet no longer names the run's end.
+  assert.deepStrictEqual(ts.get('## Your role'), hs.get('## Your role'));
   for (const k of ['## Tasks', '## Handing a task to a worker', '## Rules of thumb']) assert.deepStrictEqual(ts.get(k), hs.get(k), k);
   // The fourth named difference: the digest sentence of the plans section. The interactive wake line is 221 bytes, so the digest rides it only when it fits;
   // the headless wake carries it whole.

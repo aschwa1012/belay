@@ -35,7 +35,7 @@ function go(prompt, specExtra, envExtra = {}) {
   const specPath = `${dir}/spec.json`;
   fs.writeFileSync(specPath, JSON.stringify({
     worktree: `${dir}/wt`, prompt_file: `${dir}/prompt.txt`, run_id: `levers-${Date.now()}`,
-    orchestrator_dir: `${dir}/orch`, poll_ms: 300, startup_timeout_ms: 20000, on_embedder_failure: 'continue', ...specExtra,
+    orchestrator_dir: `${dir}/orch`, poll_ms: 300, startup_timeout_ms: 20000, on_embedder_failure: 'continue', memory: null, ...specExtra, // memory: null is the receipt as it was; a run with no block derives a project (default-project.test.cjs)
   }));
   const env = { ...process.env, BELAY_CLAUDE_EXE: FAKE, FAKE_SESSION_ID: 'fake-levers', ...envExtra };
   const r = spawnSync(process.execPath, [CLI, 'run', specPath, '--data', `${dir}/.belay`, ...(envExtra.NO_JSON ? [] : ['--json'])], { cwd: dir, env, encoding: 'utf8', windowsHide: true, timeout: 90000 });
@@ -178,7 +178,7 @@ test('template: the shipped orchestrator prompt has both placeholders and the fo
   assert.match(text, /belay appends the Review standard and the verdict hand-back rule to the reviewer's first message; do not repeat them/);
   assert.ok(!/verbatim, in the reviewer's prompt/.test(text), 'the orchestrator is not asked to copy it');
   assert.match(text, /answer carries a\s+`fix_notice` with the count/);
-  assert.match(text, /A failed acceptance check is not a fix round/); // ADR 0058: worded beside fix_from_review
+  assert.match(text, /\(`fix_eval`, `fix_run`\), counts against the fix-round limit like a fix task/); // the executor counts these steps (policy-rounds.cjs), worded beside fix_from_review
   assert.ok(!/\bland\b/.test(text), 'no "land" wording');
   const done = substituteLevers(text, { max_fix_rounds: 2, fix_cutoff: 'orchestrator' }, 0);
   assert.ok(!done.text.includes('{{'), 'substitution leaves no placeholder');

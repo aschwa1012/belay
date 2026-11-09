@@ -67,7 +67,7 @@ test('observations on: one row per turn, the observation, embedded, with the tur
 });
 
 test('observations off: the turn row is written as before, embedded, and there is no observation', { timeout: 60000 }, async () => {
-  const { rows, taskId, embedded } = await twoTurns({ cost_ledger: true });
+  const { rows, taskId, embedded } = await twoTurns({ cost_ledger: true, turn_rows: true });
   assert.deepStrictEqual(rows.filter((r) => r.type !== 'turn'), [], 'only turn rows (a job lever is on, observations are not)');
   assert.strictEqual(rows.length, 2);
   rows.forEach((r, i) => {

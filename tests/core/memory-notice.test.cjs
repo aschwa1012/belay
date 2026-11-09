@@ -44,16 +44,16 @@ test('a run row with notes on suppresses the config notice; one with none or off
   assert.strictEqual(N.noticeForRun({ memory_notice: 'unknown_code' }, cfgNoProject), null, 'a code this build does not know is no notice');
   assert.strictEqual(N.noticeForRun({}, cfgNoProject), null, 'a run from before the column has none');
   // no run selected: the config's notice
-  assert.ok(N.noticeForRun(null, cfgNoProject));
+  assert.strictEqual(N.noticeForRun(null, cfgNoProject), null, 'no project in the config: a run would derive one');
+  assert.ok(N.noticeForRun(null, { found: true, config: { memory: { redact: false } } }), 'redaction off: nothing is derived, so the config is warned');
   assert.strictEqual(N.noticeForRun(null, cfgProject), null);
   assert.deepStrictEqual(N.CODES, [N.CODE, N.REDACT_CODE]);
   for (const c of N.CODES) assert.strictEqual(N.byCode(c).code, c);
 });
 
 test('from a discovered config: no file, an empty file and a file with a project', () => {
-  assert.ok(N.noticeForConfig({ found: false }));
-  assert.ok(N.noticeForConfig({ found: true, config: {} }));
-  assert.ok(N.noticeForConfig({ found: true, config: { memory: { rules: true } } }));
+  for (const found of [{ found: false }, { found: true, config: {} }, { found: true, config: { memory: { rules: true } } }]) assert.strictEqual(N.noticeForConfig(found), null, 'a run derives the project from the git remote or the folder');
+  assert.strictEqual(N.noticeForConfig({ found: true, config: { memory: { redact: false } } }).code, N.CODE, 'redaction off: nothing is derived');
   assert.strictEqual(N.noticeForConfig({ found: true, config: { memory: { project: 'acme' } } }), null);
 });
 

@@ -18,7 +18,7 @@ const { memoryCore } = require('./fake-memory.cjs');
 const { cleanup } = require('../core/helpers.cjs');
 
 const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(/\\/g, '/');
-const ON = { capture: true, observations: true };
+const ON = { capture: true, observations: true, turn_rows: true }; // turn_rows: the safety-net turn row of a failed observation is written only when the lever is on
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function sandbox() {
@@ -234,7 +234,7 @@ test('a turn with no assistant text still gets its observation', async () => {
 });
 
 test('the jobs after a turn get the turn events and the observation id, only when a job lever is on', async () => {
-  for (const [levers, expectCalls] of [[ON, 0], [{ ...ON, summaries: 'mechanical' }, 1], [{ capture: true, cost_ledger: true }, 1]]) {
+  for (const [levers, expectCalls] of [[ON, 0], [{ ...ON, summaries: 'mechanical' }, 1], [{ capture: true, cost_ledger: true, turn_rows: true }, 1]]) {
     const seen = [];
     const core = memoryCore({ levers });
     await run(core, async (m, sb) => {

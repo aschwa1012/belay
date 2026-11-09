@@ -39,9 +39,9 @@ function runWith(config, specMemory, extra = []) {
   return { dir, r, runId };
 }
 
-test('a run whose spec sets the project: status and agents say notes are on, not "Notes are on, but no project is set"; a run with no project still warns', () => {
+test('a run whose spec sets the project: status and agents say notes are on, not "Notes are on, but no project is set"; a run that could derive no project still warns', () => {
   const on = runWith(null, { project: 'acme' });
-  const off = runWith(null, undefined);
+  const off = runWith(null, { redact: false });
   try {
     assert.strictEqual(on.r.status, 0, on.r.stderr);
     const st = cli(on.dir, ['status', on.runId, '--data', `${on.dir}/.belay`, '--json']);
@@ -52,15 +52,15 @@ test('a run whose spec sets the project: status and agents say notes are on, not
     assert.strictEqual(ag.memory_notice, null, 'the panel reads this: the run has none, so the settings notice is dropped');
 
     const so = cli(off.dir, ['status', off.runId, '--data', `${off.dir}/.belay`, '--json']);
-    assert.ok(JSON.parse(so.stdout).memory_notice, 'no project anywhere: the notice stands');
+    assert.ok(JSON.parse(so.stdout).memory_notice, 'no project anywhere and none derivable (redaction off): the notice stands');
     const ao = JSON.parse(cli(off.dir, ['agents', off.runId, '--data', `${off.dir}/.belay`, '--json']).stdout);
     assert.strictEqual(ao.memory_notice.code, 'memory_project_unset', 'the run launched without a project carries the notice itself');
   } finally { cleanup(on.dir); cleanup(off.dir); }
 });
 
 test('belay run --json keeps stderr free of the notice; without --json it prints once', () => {
-  const j = runWith(null, undefined, ['--json']);
-  const t = runWith(null, undefined);
+  const j = runWith(null, { redact: false }, ['--json']);
+  const t = runWith(null, { redact: false });
   try {
     assert.strictEqual(j.r.status, 0, j.r.stderr);
     assert.strictEqual(j.r.stderr.includes(TITLE), false, j.r.stderr);
@@ -79,7 +79,7 @@ test('run: memory:null prints no notice, redact:false with a project says why no
 
 test('settings shows the effective notes state and why, in text and json', () => {
   for (const [config, value, why] of [
-    [null, false, 'memory.project is not set'],
+    [null, true, 'a run takes its project from the git remote or the folder name'],
     [{ memory: { project: 'acme' } }, true, 'memory.project is set'],
     [{ memory: { project: 'acme', redact: false } }, false, 'memory.redact is false'],
     [{ memory: { project: 'acme', notes: false } }, false, null],
@@ -106,7 +106,7 @@ const notices = (dir, runId) => {
 };
 
 test('a run keeps its own notice when the config changes: no project at launch stays warned, explicit off and memory null stay silent, redact false stays named', () => {
-  const noProject = runWith(null, undefined);
+  const noProject = runWith(null, { redact: false });
   const memNull = runWith(null, null);
   const notesOff = runWith(null, { notes: false });
   const redactOff = runWith(null, { project: 'acme', redact: false });
@@ -125,7 +125,7 @@ test('a run keeps its own notice when the config changes: no project at launch s
 });
 
 test('settings <key> prints the same because line as the full listing', () => {
-  for (const [config, why] of [[{ memory: { project: 'acme' } }, 'on, because memory.project is set'], [null, 'off, because memory.project is not set'], [{ memory: { project: 'acme', redact: false } }, 'off, because memory.redact is false']]) {
+  for (const [config, why] of [[{ memory: { project: 'acme' } }, 'on, because memory.project is set'], [null, 'on, because a run takes its project from the git remote or the folder name'], [{ memory: { project: 'acme', redact: false } }, 'off, because memory.redact is false']]) {
     const dir = project(config);
     try {
       const one = cli(dir, ['settings', 'memory.notes']);

@@ -5,6 +5,7 @@ require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch nev
 // leaves are compared by column with what the lever-off path wrote before ADR 0044: written_by differs, and the turn row
 // now names the worker that took the turn, its number and the task of the lease it held (it read as the orchestrator's,
 // with no task and no turn). The only stand-in is a fixed vector on each store, so no embedding model is needed.
+// The turn row is written only with the turn_rows lever, so these tests turn it on; the default writes none (turn-rows-lever.test.cjs).
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -39,7 +40,7 @@ async function withRun(script, check) {
     const view = Object.create(h, { memory: { value: { ...h.memory, store: (a) => h.memory.store({ ...a, embedding: [1, 0], embedding_model: 'fixed', dim: 2 }) } } });
     const wt = path.join(dir, 'wt');
     fs.mkdirSync(wt, { recursive: true });
-    const m = createRunManager({ core: view, dataDir: dir, runId: 'test-run', paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
+    const m = createRunManager({ core: view, dataDir: dir, runId: 'test-run', memoryLevers: { ...require('../../src/run/memory-levers.cjs').DEFAULTS, turn_rows: true }, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
     let made;
     try { made = await script({ core, m, wt: wt.split(path.sep).join('/') }); } finally { try { await m.shutdown(); } catch { /* best effort */ } }
     await check({ core, made });
