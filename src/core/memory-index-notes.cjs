@@ -286,7 +286,7 @@ async function index(E, caller, c) {
   const nano = models.length === 0 || models.every((m) => m === c.nanoModel);
   const useCos = nano && sel.info && sel.info.semantic_contributed === true && sel.cos.size > 0;
   // A path match always admits. A subject match admits when two distinct subjects of the note match, or the one that does is not common: on a single
-  // note, or on fewer than 20% of the project's live notes (a cheap idf; a word like "data" on a quarter of the notes names no task in particular).
+  // note, or on fewer than 20% of the project's notes (a cheap idf, counted over all the note rows of the namespaces, held and old ones included, which only makes it stricter; a word like "data" on a quarter of the notes names no task in particular).
   const subjFreq = new Map();
   for (const r of E.store.db.prepare(`SELECT json_extract(e.body, '$.subjects') AS sj FROM memory_entries e WHERE e.namespace IN (${marks(namespaces)}) AND e.type = 'note'`).all(...namespaces)
     .filter(Boolean)) for (const s of new Set((parseJson(r.sj) || []).filter((x) => typeof x === 'string').map((x) => oneLine(x).toLowerCase()))) subjFreq.set(s, (subjFreq.get(s) || 0) + 1);
