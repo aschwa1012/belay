@@ -141,7 +141,7 @@ async function build(c, env) {
   const leaseRef = async () => { const l = ((await env.core.task.get({ task_id: c.task_id })) || {}).lease; return l && l.id ? `lease:${l.id}` : `task:${c.task_id}`; }; // the row the step wrote is the lease
   if (!spawn) { const r = await handOver(env, { task_id: c.task_id, worker_id: c.worker }, `task:${c.task_id}`, true); if (r.outcome === 'done') r.row_ref = await leaseRef(); return r; }
   let row;
-  try { row = await env.spawn({ substrate: 'claude-code', worktree: tree, task_id: c.task_id, agent_type: spawn.agent_type, worker_id: c.worker }); } catch (e) { if (e && e.code === 'E_PAUSED') return paused(`the run was paused as the builder was spawned; task ${c.task_id} stands unassigned and the retake assigns it`); return exception(`the builder could not be spawned: ${errText(e)}`); }
+  try { row = await env.spawn({ substrate: spawn.substrate || 'claude-code', worktree: tree, task_id: c.task_id, agent_type: spawn.agent_type, worker_id: c.worker }); } catch (e) { if (e && e.code === 'E_PAUSED') return paused(`the run was paused as the builder was spawned; task ${c.task_id} stands unassigned and the retake assigns it`); return exception(`the builder could not be spawned: ${errText(e)}`); }
   const held = ((await env.core.task.get({ task_id: c.task_id })) || {}).lease;
   if (!held || held.holder !== (row && row.id)) return exception(`spawned ${row && row.id}, but it holds no lease on ${c.task_id}`);
   return { outcome: 'done', row_ref: `lease:${held.id}` };

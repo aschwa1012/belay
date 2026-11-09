@@ -110,7 +110,7 @@ async function run(c, env) {
     if (!wt || !wt.path || wt.removed_at) return skipped(`relaunch refused: ${why.join('; ')}; and ${c.task_id} has no belay worktree to start a coder in`);
     try {
       const prompt = c.role === 'review' ? await require('./fresh-reviewer.cjs').promptFor(env.core, t) : null; // a fresh re-reviewer is told the findings it is to judge
-      const row = await env.spawn({ substrate: 'claude-code', worktree: wt.path, task_id: c.task_id, agent_type: spawn.agent_type, ...(prompt ? { prompt } : {}), worker_id: spawn.worker_id || `${c.role === 'review' ? 'rev' : 'bld'}-${require('node:crypto').randomUUID().slice(0, 8)}` }); // a plan's named spawn id is used in place, as the build and review steps do
+      const row = await env.spawn({ substrate: spawn.substrate || 'claude-code', worktree: wt.path, task_id: c.task_id, agent_type: spawn.agent_type, ...(prompt ? { prompt } : {}), worker_id: spawn.worker_id || `${c.role === 'review' ? 'rev' : 'bld'}-${require('node:crypto').randomUUID().slice(0, 8)}` }); // a plan's named spawn id is used in place, as the build and review steps do
       const l = await holder();
       if (l && l.holder === (row && row.id)) return { outcome: 'done', row_ref: `lease:${l.id}`, spawned: row.id };
       why.push(`spawned ${row && row.id}, but it holds no lease on ${c.task_id}`);

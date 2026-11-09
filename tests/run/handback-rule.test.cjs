@@ -143,3 +143,11 @@ test('a task that declares required hand-back fields says so in the rule, at a s
   assert.ok(!HB.rule(assigned({ id: 't1', acceptance: { commands: [] } })).includes('must carry'));
   assert.ok((await firstMessage({ id: 't1', acceptance })).endsWith(line), 'the spawn\'s first message carries it');
 });
+
+test('the rule for a Codex worker in the task\'s own tree says belay commits at hand-back and does not ask for a commit; Claude and other cases are unchanged', () => {
+  const codex = HB.rule(assigned({ id: 't1', worktree: TREE }), '', 'codex');
+  assert.strictEqual(codex, '\n\nWhen you are finished, call lease_release with lease_id L1 and a result object (summary, tests, findings). Do not run git commit: belay commits your changes in your worktree when you hand back.' + ESC);
+  assert.strictEqual(HB.rule(assigned({ id: 't1', worktree: TREE }), '', 'claude-code'), HB.rule(assigned({ id: 't1', worktree: TREE })), 'a Claude Code worker\'s rule is as it was');
+  assert.strictEqual(HB.rule(assigned({ id: 't1' }), '', 'codex'), HB.rule(assigned({ id: 't1' })), 'no belay tree, no commit by belay: the plain rule');
+  assert.strictEqual(HB.rule(assigned({ id: 'r1', acceptance: { verdict: true } }), '', 'codex'), HB.rule(assigned({ id: 'r1', acceptance: { verdict: true } })), 'a verdict task\'s rule is the same');
+});
