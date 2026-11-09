@@ -101,7 +101,7 @@ function one(E, caller, args, own, runTop) {
   }
 
   const plan = require('./policy-plan.cjs').forCreate(rows.current(E.store, 'run', caller.run_id), args, { repairs, follows_up: own.follows_up, acceptance }); // ADR 0071: checked before the append, so a refused plan writes nothing
-  const planNotice = repairs && plan.policy && plan.policy.build ? 'the plan does not build a task that repairs another, so policy.build is not used here: assign it with task_assign, or create it without repairs to have the plan build it' : null; // the build gate is `!repairs` (policy-exec.cjs)
+  const planNotice = repairs && plan.policy && plan.policy.build ? 'the plan does not build a task that repairs another, so policy.build is not used: assign it with task_assign. The policy stated here is the whole plan of this task, so a step it does not name (review, re_review, integrate) is not taken for it' : null; // the build gate is `!repairs` (policy-exec.cjs)
   const t = Date.now();
   const budget = require('./run-budget.cjs').taskLimit(E, caller, args); // dollar limit, checked before the append; null when none (the run process is told after the write: run-budget noteRows)
   const row = rows.append(E.store, 'task', {
