@@ -4,7 +4,6 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const crypto = require('node:crypto');
 
 const L = require('./launch.cjs');
 const { createParser } = require('./parsers.cjs');
@@ -18,7 +17,7 @@ const { rotateWireLog } = require('./wire-log.cjs');
 const S = require('./surface.cjs'); // ADR 0024, S2 fix round F4: the surface fields spawn/restart/resume return
 const I = require('./instructions.cjs'); // ADR 0024 amendment 1: the spawn-time CLAUDE.md copy
 const { fail } = require('./errors.cjs');
-const { checkWorkerId, checkIdFree, validateSpawnArgs, checkMemoryQueries, discardUnstarted } = require('./spawn-args.cjs');
+const { freshWorkerId, checkWorkerId, checkIdFree, validateSpawnArgs, checkMemoryQueries, discardUnstarted } = require('./spawn-args.cjs');
 const CS = require('./codex-surface.cjs'); // what belay sets on a Codex launch
 const AD = require('./agent-defaults.cjs'); // the config's per-agent-type model and effort defaults
 const TP = require('./tool-policy.cjs'); // ADR 0054 decision 4: a worker type's tool list
@@ -204,16 +203,16 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     validateSpawnArgs({ substrate, worktree, prompt, task_id, permission_prompt, permit_wait_ms, effort, worker_id, native_memory: nativeMemory });
     const codexSurface = CS.forSpawn(substrate, effort, agent); // a Codex worker: what belay set and what it left to the user's config
     const indexQueries = checkMemoryQueries(memory_queries);
-
-    const id = worker_id || crypto.randomUUID();
+    const id = worker_id || await freshWorkerId(core, root, agent_type, (k) => [...workers.keys(), ...pendingIds].some((x) => x.toLowerCase() === k)); // readable and unique in the store; its directory is made by the choice, so it is this spawn's own
     if ([...workers.keys(), ...pendingIds].some((k) => k.toLowerCase() === id.toLowerCase())) fail('E_ARGS', 'a worker with that id already exists in this run (ids compare without case: NTFS gives W1 and w1 one directory). Choose another id: an id is used once per run, even by a spawn that failed', { worker_id: id });
     // ADR 0030 decision 4: ask the core whether the task can be assigned before anything is written, so a
     // refusal leaves no directory, no row, and the id free. Later refusals still take the write-dead path.
     // The id is reserved synchronously: the await below must not let a second spawn with it pass the check above.
     pendingIds.add(id);
-    let w; const dirExisted = fs.existsSync(L.workerDir(root, id)); // a directory this spawn creates is its own to remove if it fails before any row exists
+    let w; const dirExisted = worker_id ? fs.existsSync(L.workerDir(root, id)) : false; // a directory this spawn creates is its own to remove if it fails before any row exists
+    let made = !worker_id; // the empty directory this spawn made to hold its id (a generated id's, or a named fresh id's): removed again if the spawn fails before a row exists
     try {
-      if (worker_id) await checkIdFree(core, root, id, runId); // inside the reservation, so two spawns of one id cannot both pass
+      if (worker_id) made = await checkIdFree(core, root, id, runId); // inside the reservation, so two spawns of one id cannot both pass
       if (task_id) await core.task.assign({ task_id, check_only: true, worker_id: id, worktree: typeof worktree === 'string' ? L.fwd(path.resolve(worktree)) : worktree });
       w = W.newWorkerRecord({
         id, substrate, worktree, dataDir: root, taskId: task_id, model,
@@ -222,6 +221,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       });
       w.assignCore = assignCore; w.indexQueries = indexQueries; w.toolsBy = allowed_tools != null ? 'spawn' : 'type'; // indexQueries: the orchestrator's situation lines for this worker's memory index (memory.embedQuery extra_texts); toolsBy: what narrowed w.tools, the spawn's allowed_tools or else the agent type's list (task-body.cjs toolsLine)
       workers.set(id, w); w.launching = true; hold.w = w; // launching: until the spawn returns or fails, a run pause is held for it (launch-gate.cjs)
+    } catch (e) { if (made) { try { fs.rmSync(L.workerDir(root, id), { recursive: true, force: true }); } catch { /* the original error is the one to report */ } } throw e; // a refusal writes nothing (ADR 0030): not even the id's directory
     } finally { pendingIds.delete(id); }
     try { await MP.spawnLevers(ctx, w); w.nativeMemoryAuth = await NM.authorize(core, runId, w.nativeMemory); } catch (e) { await discardUnstarted(workers, w, dirExisted); throw e; } // ADR 0047: the levers are known before the files are written; with the first-message index off the row keeps no situation lines
     try { writeFilesFor(w); } catch (e) { await discardUnstarted(workers, w, dirExisted); throw e; } // no row, nothing launched: leave no record and no directory, so a corrected retry with the same id is free
