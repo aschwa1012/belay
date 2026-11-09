@@ -28,7 +28,7 @@ function ctxWith(overrides = {}) {
   return { ctx, stored, recorded };
 }
 
-test('the turn buffer holds 4000 events: the 4000th is kept and the 4001st is counted as dropped', () => {
+test('legacy: the turn buffer holds 4000 events: the 4000th is kept and the 4001st is counted as dropped', () => {
   assert.strictEqual(MC.MAX_TURN_EVENTS, 4000);
   const w = { parser: {} };
   for (let i = 0; i < 4000; i += 1) MC.onEvent(w, tool(i), ON);
@@ -40,7 +40,7 @@ test('the turn buffer holds 4000 events: the 4000th is kept and the 4001st is co
   assert.strictEqual(w.memBuf.events[3999].tool_use_id, 'u3999');
 });
 
-test('a turn that ends starts the next one with nothing dropped, and the plan carries only its own count', () => {
+test('legacy: a turn that ends starts the next one with nothing dropped, and the plan carries only its own count', () => {
   const w = { parser: {}, turns: 1, id: 'w1' };
   for (let i = 0; i < 4003; i += 1) MC.onEvent(w, tool(i), ON);
   const end1 = { kind: 'turn_end' };
@@ -62,7 +62,7 @@ test('a turn that ends starts the next one with nothing dropped, and the plan ca
   assert.strictEqual(failed.memBuf.dropped, 0, 'a failed turn clears the count too');
 });
 
-test('plan is null, not undefined, when no lever uses the capture, and a plan is taken once', () => {
+test('legacy: plan is null, not undefined, when no lever uses the capture, and a plan is taken once', () => {
   const w = { parser: {}, turns: 1, id: 'w1' };
   const e = { kind: 'turn_end' };
   assert.strictEqual(MC.plan(w, e, { memoryLevers: undefined }), null);
@@ -73,7 +73,7 @@ test('plan is null, not undefined, when no lever uses the capture, and a plan is
   }
 });
 
-test('the snapshot is taken at turn end: turn, usage, cost, pid, substrate, model, task, worker and final text', () => {
+test('legacy: the snapshot is taken at turn end: turn, usage, cost, pid, substrate, model, task, worker and final text', () => {
   const w = { turns: 4, lastTurnUsage: { input_tokens: 3 }, costUsd: 0.5, pid: 99, substrate: 'claude-code', initModel: 'claude-x', model: 'other', taskId: 't1', id: 'w1', lastAssistantText: 'earlier text' };
   assert.deepStrictEqual(MC.snapshotOf(w, { text: 'turn text' }), {
     turn: 4, usage: { input_tokens: 3 }, cost: 0.5, costBase: 0, pid: 99, substrate: 'claude-code', model: 'claude-x', taskId: 't1', workerId: 'w1', since: 0, until: 0, finalText: 'turn text',
@@ -84,7 +84,7 @@ test('the snapshot is taken at turn end: turn, usage, cost, pid, substrate, mode
   assert.strictEqual(MC.snapshotOf({ turns: 1, id: 'w2', lastAssistantText: 'tail' }, { text: '' }).finalText, 'tail');
 });
 
-test('a store that fails is an ok 0 event with the plain message, the code and the dropped flag, and names the message on the worker', async () => {
+test('legacy: a store that fails is an ok 0 event with the plain message, the code and the dropped flag, and names the message on the worker', async () => {
   const { ctx, recorded } = ctxWith();
   ctx.core.memory.store = async () => { throw Object.assign(new Error('store down'), { code: 'E_OWNER_LOST' }); };
   const w = { id: 'w1', turns: 2, taskId: 't1' };
@@ -101,7 +101,7 @@ test('a store that fails is an ok 0 event with the plain message, the code and t
   assert.strictEqual(recorded[0].dropped, 0);
 });
 
-test('an event write that fails names its message on the worker', async () => {
+test('legacy: an event write that fails names its message on the worker', async () => {
   const { ctx } = ctxWith();
   ctx.core.memory.recordEvent = async () => { throw Object.assign(new Error('ledger down'), { code: 'E_TIMEOUT' }); };
   const w = { id: 'w1', turns: 1 };
@@ -110,7 +110,7 @@ test('an event write that fails names its message on the worker', async () => {
   assert.deepStrictEqual(w.lastError, { where: 'memory.recordEvent', code: 'E_TIMEOUT', message: 'ledger down' });
 });
 
-test('a build that throws is an ok 0 event with the error\'s own message, not its string form, and stores nothing', async () => {
+test('legacy: a build that throws is an ok 0 event with the error\'s own message, not its string form, and stores nothing', async () => {
   const { ctx, stored, recorded } = ctxWith();
   const w = { id: 'w1', turns: 1, taskId: 't1' };
   const events = new Proxy([], { get(t, k) { if (k === Symbol.iterator) throw new Error('boom'); return t[k]; } });
@@ -125,7 +125,7 @@ test('a build that throws is an ok 0 event with the error\'s own message, not it
   assert.strictEqual(w.lastError.message, 'boom');
 });
 
-test('the ok receipt carries the row id, the byte count and the sha256 of the stored text, and the store args are fixed', async () => {
+test('legacy: the ok receipt carries the row id, the byte count and the sha256 of the stored text, and the store args are fixed', async () => {
   const { ctx, stored, recorded } = ctxWith();
   const w = { id: 'w1', turns: 5, taskId: 't9' };
   const events = [{ kind: 'tool_use', tool: 'Edit', tool_use_id: 'e1', args: { file_path: 'a.cjs' } }, { kind: 'tool_result', tool: 'Edit', tool_use_id: 'e1', files: ['a.cjs'] }];
@@ -145,7 +145,7 @@ test('the ok receipt carries the row id, the byte count and the sha256 of the st
   assert.ok(a.text.includes('é') || a.text.includes('done'), 'the multibyte narrative is in the text');
 });
 
-test('after shutdown has closed the flag nothing is stored or recorded and the drop is named', async () => {
+test('legacy: after shutdown has closed the flag nothing is stored or recorded and the drop is named', async () => {
   const { ctx, stored, recorded } = ctxWith({ shutdownFlags: { closed: true } });
   const w = { id: 'w1', turns: 1 };
   assert.strictEqual(await MC.storeObservation(w, { kind: 'turn_end' }, ctx, { levers: ON, events: [], dropped: 0, snap: MC.snapshotOf(w, { text: 'x' }) }), null);

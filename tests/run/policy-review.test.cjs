@@ -1,4 +1,5 @@
 'use strict';
+// Not a legacy test: it tests the review step; capture and cost_ledger are set only to build the run row.
 require('../helpers/tmp.cjs');
 // policy-review.test.cjs — the review step (ADR 0072 decision 1, decision 4) and the budget rule (ADR 0075 decision 1) against the REAL core
 // and, where a worker is spawned, the REAL run manager over the fake claude executable. The review of a done work goes to the plan's worker or

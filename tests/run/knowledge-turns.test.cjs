@@ -78,7 +78,7 @@ function turnManager() {
 const ctxOf = (core) => ({ core, runId: RUN, dataDir: dir, worktree: dir, memoryLevers: { knowledge_agent: true } });
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-test('a timed-out question never hands its answer to the next: the earlier turn is waited out and dropped', async () => {
+test('legacy: a timed-out question never hands its answer to the next: the earlier turn is waited out and dropped', async () => {
   const core = fakeCore();
   const m = turnManager();
   const first = K.ask(m, ctxOf(core), { question: 'first?', timeout_ms: 50 });
@@ -96,7 +96,7 @@ test('a timed-out question never hands its answer to the next: the earlier turn 
   assert.strictEqual(r.earlier_answer_dropped, true);
 });
 
-test('a question while the earlier turn never ends is refused E_BUSY and sends nothing', async () => {
+test('legacy: a question while the earlier turn never ends is refused E_BUSY and sends nothing', async () => {
   const core = fakeCore();
   const m = turnManager();
   await assert.rejects(K.ask(m, ctxOf(core), { question: 'first?', timeout_ms: 30 }), (e) => e.code === 'E_TIMEOUT');
@@ -105,7 +105,7 @@ test('a question while the earlier turn never ends is refused E_BUSY and sends n
   assert.ok(core.events.some((e) => e.kind === 'knowledge_ask' && e.ok === false && e.code === 'E_BUSY'), 'the refusal is a receipt');
 });
 
-test('an ended agent is relaunched, and a replaced session is told to read the corpus again', async () => {
+test('legacy: an ended agent is relaunched, and a replaced session is told to read the corpus again', async () => {
   const core = fakeCore();
   const m = turnManager();
   const a1 = K.ask(m, ctxOf(core), { question: 'one?' });
@@ -122,7 +122,7 @@ test('an ended agent is relaunched, and a replaced session is told to read the c
   assert.strictEqual(core.events.filter((e) => e.kind === 'corpus_primed').length, 2);
 });
 
-test('a session replaced by someone else is re-primed; the same session is not', async () => {
+test('legacy: a session replaced by someone else is re-primed; the same session is not', async () => {
   const core = fakeCore();
   const m = turnManager();
   const a1 = K.ask(m, ctxOf(core), { question: 'one?' });
@@ -147,7 +147,7 @@ function leaveArgv(tools) {
   fs.writeFileSync(path.join(wd, 'argv.json'), JSON.stringify({ spec: { args } }));
 }
 
-test('an agent row left by an earlier adapter of this run is relaunched through restart, never spawned again', async () => {
+test('legacy: an agent row left by an earlier adapter of this run is relaunched through restart, never spawned again', async () => {
   const core = fakeCore({ workerRow: true });
   leaveArgv(K.KNOWLEDGE_BUILTINS);
   const m = turnManager();
@@ -160,7 +160,7 @@ test('an agent row left by an earlier adapter of this run is relaunched through 
   assert.strictEqual(r.answer, 'answer');
 });
 
-test('a worker under the agent id with any other tool surface is refused, and is never sent the question', async () => {
+test('legacy: a worker under the agent id with any other tool surface is refused, and is never sent the question', async () => {
   // A record this manager holds, launched with the full built-in list.
   const m = turnManager();
   m.rec = { id: ID, tools: null, turns: 1, turnEnded: true, settled: false, sessionId: 's1', lastAssistantText: '' };
@@ -175,13 +175,13 @@ test('a worker under the agent id with any other tool surface is refused, and is
   assert.strictEqual(m2.restarts.length, 0, 'nothing was relaunched');
 });
 
-test('ask refuses E_ARGS without the run worktree, before anything is spawned', async () => {
+test('legacy: ask refuses E_ARGS without the run worktree, before anything is spawned', async () => {
   const m = turnManager();
   await assert.rejects(K.ask(m, { ...ctxOf(fakeCore()), worktree: null }, { question: 'q?' }), (e) => e.code === 'E_ARGS' && /worktree/.test(e.message));
   assert.strictEqual(m.spawned.length, 0);
 });
 
-test('the knowledge launch narrows --tools to Read, Glob and Grep, and the surface check holds it there', () => {
+test('legacy: the knowledge launch narrows --tools to Read, Glob and Grep, and the surface check holds it there', () => {
   const argv = L.claudeLaunchArgv({ workerId: ID, mcpJsonPath: 'x/mcp.json', settingsPath: 'x/s.json', allowedTools: K.KNOWLEDGE_TOOLS, tools: K.KNOWLEDGE_BUILTINS });
   assert.strictEqual(argv[argv.indexOf('--tools') + 1], 'Read,Glob,Grep');
   const full = L.claudeLaunchArgv({ workerId: 'w1', mcpJsonPath: 'x/mcp.json', settingsPath: 'x/s.json' });
@@ -198,7 +198,7 @@ test('the knowledge launch narrows --tools to Read, Glob and Grep, and the surfa
   assert.strictEqual(S.narrowTools([...S.CLAUDE_TOOLS]), null, 'the full list is the default');
 });
 
-test('a narrowed list survives a cross-adapter relaunch through argv.json', () => {
+test('legacy: a narrowed list survives a cross-adapter relaunch through argv.json', () => {
   const argv = L.claudeLaunchArgv({ workerId: ID, mcpJsonPath: 'x/mcp.json', settingsPath: 'x/s.json', tools: K.KNOWLEDGE_BUILTINS });
   fs.writeFileSync(path.join(dir, 'argv.json'), JSON.stringify({ spec: { args: argv } }));
   assert.deepStrictEqual(LC.readLaunchOptions(dir).tools, ['Read', 'Glob', 'Grep']);

@@ -1,4 +1,5 @@
 'use strict';
+// Not a legacy test: it tests the turn_rows lever itself, on and off.
 require('../helpers/temp-root.cjs').enforceSafeTemp(process.env);
 require('../helpers/tmp.cjs'); // every test process gets its own tmp dir and cleanup, however it is run
 // turn-rows-lever.test.cjs — the turn_rows lever: a turn row (type 'turn') is written only when it is true; the default writes none.

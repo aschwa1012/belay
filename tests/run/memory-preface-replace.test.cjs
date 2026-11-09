@@ -78,7 +78,7 @@ async function replaceAfterShown(levers, { beforeRestart } = {}) {
   }
 }
 
-test('replace with the bottle off: the replacement is shown the whole index again, nothing excluded', async () => {
+test('legacy: replace with the bottle off: the replacement is shown the whole index again, nothing excluded', async () => {
   const r = await replaceAfterShown({ first_message_index: true });
   assert.strictEqual(r.branch, 'replace');
   assert.deepStrictEqual(r.second.exclude_ids, []);
@@ -86,7 +86,7 @@ test('replace with the bottle off: the replacement is shown the whole index agai
   assert.deepStrictEqual(r.events.filter((e) => e.kind === 'index_injected')[1].row_ids, ['mem-a', 'mem-b']);
 });
 
-test('replace with the bottle on: the bottle carries the first message, so the shown rows stay excluded', async () => {
+test('legacy: replace with the bottle on: the bottle carries the first message, so the shown rows stay excluded', async () => {
   const r = await replaceAfterShown({ first_message_index: true, bottle: true });
   assert.strictEqual(r.branch, 'replace');
   const bottle = r.events.find((e) => e.kind === 'bottle');
@@ -95,7 +95,7 @@ test('replace with the bottle on: the bottle carries the first message, so the s
   assert.ok(!r.texts[1].includes('INDEX'), r.texts[1]);
 });
 
-test('replace with the bottle on but fallen back: nothing is carried, so nothing is excluded', async () => {
+test('legacy: replace with the bottle on but fallen back: nothing is carried, so nothing is excluded', async () => {
   const r = await replaceAfterShown({ first_message_index: true, bottle: true }, { beforeRestart: (w) => fs.unlinkSync(w.streamPath) });
   assert.strictEqual(r.branch, 'replace');
   const bottle = r.events.find((e) => e.kind === 'bottle');
@@ -104,7 +104,7 @@ test('replace with the bottle on but fallen back: nothing is carried, so nothing
   assert.ok((r.texts[1].includes('- mem-a [') && r.texts[1].includes('- mem-b [')), r.texts[1]);
 });
 
-test('a bottle made without the sent record does not carry the first message (spec_pinned false)', () => {
+test('legacy: a bottle made without the sent record does not carry the first message (spec_pinned false)', () => {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-spec-pinned-'));
   try {
     const sent = [{ seq: 1, turn: 1, kind: 'task', text: 'Read input.md and tell me its first five words.' }];
@@ -120,7 +120,7 @@ test('a bottle made without the sent record does not carry the first message (sp
   } finally { cleanup(dir); }
 });
 
-test('replace with a bottle that holds no recorded first message: the bottle is made, but carries no index, so nothing is excluded', async () => {
+test('legacy: replace with a bottle that holds no recorded first message: the bottle is made, but carries no index, so nothing is excluded', async () => {
   const r = await replaceAfterShown({ first_message_index: true, bottle: true }, { beforeRestart: (w) => fs.unlinkSync(fwd(path.join(w.dir, 'sent.jsonl'))) });
   assert.strictEqual(r.branch, 'replace');
   const bottle = r.events.find((e) => e.kind === 'bottle');
@@ -129,7 +129,7 @@ test('replace with a bottle that holds no recorded first message: the bottle is 
   assert.ok((r.texts[1].includes('- mem-a [') && r.texts[1].includes('- mem-b [')), r.texts[1]);
 });
 
-test('the carry flag is reset on every replace: a second replace whose bottle falls back excludes nothing', async () => {
+test('legacy: the carry flag is reset on every replace: a second replace whose bottle falls back excludes nothing', async () => {
   const core = memoryCore({ first_message_index: true, bottle: true }, ['mem-a', 'mem-b']);
   const sb = sandbox();
   const m = mgr(sb, core);
@@ -163,7 +163,7 @@ test('the carry flag is reset on every replace: a second replace whose bottle fa
 // a later relaunch (here mem-b, a resume's index) can fall out of the bottle, and must then be shown again to the replacement.
 function lines(n) { return Array.from({ length: n }, (_, i) => JSON.stringify({ type: 'assistant', message: { content: [{ type: 'text', text: `filler message ${i} ${'x'.repeat(300)}` }] } })).join('\n') + '\n'; }
 
-test('a row shown only by a later resume that the bottle dropped is shown again; the opening index stays excluded', async () => {
+test('legacy: a row shown only by a later resume that the bottle dropped is shown again; the opening index stays excluded', async () => {
   const rows = ['mem-a'];
   const core = memoryCore({ first_message_index: true, bottle: true, bottle_bytes: 12000 }, rows);
   const sb = sandbox();
@@ -198,7 +198,7 @@ test('a row shown only by a later resume that the bottle dropped is shown again;
   }
 });
 
-test('a resume after a replace holds what the replacement was shown (receipts since the replace count in full)', async () => {
+test('legacy: a resume after a replace holds what the replacement was shown (receipts since the replace count in full)', async () => {
   const core = memoryCore({ first_message_index: true }, ['mem-a', 'mem-b']); // bottle off: the replacement starts from nothing
   const sb = sandbox();
   const m = mgr(sb, core);
@@ -221,7 +221,7 @@ test('a resume after a replace holds what the replacement was shown (receipts si
   }
 });
 
-test('a replace whose receipts cannot be read still relaunches, and the failed index is a receipt, not silence', async () => {
+test('legacy: a replace whose receipts cannot be read still relaunches, and the failed index is a receipt, not silence', async () => {
   const core = memoryCore({ first_message_index: true, bottle: true }, ['mem-a']);
   const sb = sandbox();
   const m = mgr(sb, core);

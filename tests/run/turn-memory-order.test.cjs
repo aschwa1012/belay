@@ -47,7 +47,7 @@ async function drain(w) {
   for (let i = 0; i < 5; i += 1) { await w.memoryQueue; await sleep(20); }
 }
 
-test('a turn that ends while the previous turn store is in flight: each turn keeps its own number, usage and cost', async () => {
+test('legacy: a turn that ends while the previous turn store is in flight: each turn keeps its own number, usage and cost', async () => {
   const { ctx, c, w } = setup({ capture: true, observations: true, cost_ledger: true });
   w.turns = 1; w.lastTurnUsage = { input_tokens: 10, output_tokens: 111 }; w.costUsd = 0.1; w.lastAssistantText = 'turn one text';
   TR.queueMemory(w, { kind: 'turn_end', text: 'turn one text' }, ctx, 4000, null);
@@ -63,7 +63,7 @@ test('a turn that ends while the previous turn store is in flight: each turn kee
   assert.strictEqual(w.lastError, undefined);
 });
 
-test('the observation text is the turn\'s own final text even when the record has moved on', async () => {
+test('legacy: the observation text is the turn\'s own final text even when the record has moved on', async () => {
   const { ctx, c, w } = setup({ capture: true, observations: true });
   const texts = [];
   c.memory.store = async (a) => { if (a.turn === 1) await sleep(100); texts.push([a.turn, a.text]); return { id: 'x' + a.type }; };
@@ -77,7 +77,7 @@ test('the observation text is the turn\'s own final text even when the record ha
   assert.ok(texts[1][1].includes('BRAVO'));
 });
 
-test('shutdown during the turn store: the in-flight observation keeps its paired event, no job reaches the core, and the drop is named', async () => {
+test('legacy: shutdown during the turn store: the in-flight observation keeps its paired event, no job reaches the core, and the drop is named', async () => {
   const { ctx, c, w } = setup({ capture: true, observations: true, cost_ledger: true, wrapup: true }, { turnStoreMs: 300 });
   w.turns = 1; w.lastTurnUsage = { output_tokens: 5 }; w.costUsd = 0.01;
   TR.queueMemory(w, { kind: 'turn_end', text: 'hello' }, ctx, 4000, null);
@@ -89,7 +89,7 @@ test('shutdown during the turn store: the in-flight observation keeps its paired
   assert.strictEqual(w.lastError.where, 'after-shutdown');
 });
 
-test('shutdown during the turn store once the owner is gone: the paired event is dropped too, and named', async () => {
+test('legacy: shutdown during the turn store once the owner is gone: the paired event is dropped too, and named', async () => {
   const { ctx, c, w } = setup({ capture: true, observations: true, cost_ledger: true, wrapup: true }, { turnStoreMs: 300 });
   w.turns = 1; w.lastTurnUsage = { output_tokens: 5 }; w.costUsd = 0.01;
   TR.queueMemory(w, { kind: 'turn_end', text: 'hello' }, ctx, 4000, null);
@@ -101,7 +101,7 @@ test('shutdown during the turn store once the owner is gone: the paired event is
   assert.strictEqual(w.lastError.where, 'after-shutdown');
 });
 
-test('shutdown between the observation and the jobs: the jobs send nothing', async () => {
+test('legacy: shutdown between the observation and the jobs: the jobs send nothing', async () => {
   const { ctx, c, w } = setup({ capture: true, observations: true, cost_ledger: true });
   c.memory.recordEvent = async (a) => { c.calls.push({ m: 'recordEvent', kind: a.kind, closed: ctx.shutdownFlags.closed }); ctx.shutdownFlags.closed = true; return a; };
   w.turns = 1; w.lastTurnUsage = { output_tokens: 5 }; w.costUsd = 0.01;
