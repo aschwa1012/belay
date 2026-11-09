@@ -97,7 +97,7 @@ test('a fix task that states policy.build carries plan_notice: the plan builds n
   await orch.run.attach({ adapter_pid: process.pid, max_fix_rounds: 9, fix_hard_cap: 9 });
   const work = await orch.task.create({ spec: 'wp' });
   const fix = await orch.task.create({ spec: 'f', repairs: work.id, policy: { build: { worker: 'b1' } } });
-  assert.match(fix.plan_notice, /does not build a task that repairs another.*task_assign.*whole plan.*review, re_review, integrate/);
+  assert.match(fix.plan_notice, /does not build a task that repairs another.*task_assign.*name re_review and fix in it.*merged with its work/);
   assert.strictEqual((await orch.task.create({ spec: 'f2', repairs: work.id })).plan_notice, undefined, 'a fix with no stated build has none');
   assert.strictEqual((await orch.task.create({ spec: 'w2', policy: { build: { worker: 'b1' } } })).plan_notice, undefined, 'a work task the plan builds has none');
 });
