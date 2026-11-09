@@ -84,7 +84,7 @@ async function giveTask(c, env, b, { taskId, ref, prompt = null, pausedOk = fals
 const CODEX_WORDS = [
   [', commit, and release the task again.', ', and release the task again.'],
   ['Make sure your work is committed, and release', 'Make sure your changes are in your worktree, and release'],
-  ['commit your work in your worktree (git add, git commit), run your checks, and release', 'make the change in your worktree (belay commits it when you hand back), run your checks, and release'],
+  ['commit your work in your worktree (git add, git commit), run your checks, and release', 'make sure your changes are in your worktree, run your checks, and release'],
   [', run your checks, commit, and release.', ', run your checks, and release.'],
   [', make those checks pass, commit, and release.', ', make those checks pass, and release.'],
 ];

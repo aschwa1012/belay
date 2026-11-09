@@ -12,7 +12,8 @@ const PROC = require('../core/process.cjs');
 
 const MSG_MAX = 72;
 const TOTAL_MS = 120000;
-const SECRET = /^(\.env(\..*)?|.*\.pem|.*\.key|id_rsa.*|credentials.*)$/i;
+// Well-known secret names; only a NEW (untracked) path is refused, so a tracked fixture a task modifies is committed. Example, sample and template env files are not secrets.
+const SECRET = /^(\.env(\.(?!(example|sample|template)$).+)?|.*\.pem|.*\.key|id_rsa(?!.*\.pub$).*|credentials(\.json)?|\.credentials)$/i;
 
 // The commit subject: the hand-back summary's first non-empty line, controls removed, cut; else a fixed line naming the worker.
 function subjectOf(task, workerId) {
@@ -24,6 +25,9 @@ function subjectOf(task, workerId) {
 const norm = (p) => { const x = String(p || '').replace(/\\/g, '/').replace(/\/+$/, ''); return process.platform === 'win32' ? x.toLowerCase() : x; };
 const secretsIn = (paths) => paths.filter((p) => SECRET.test(String(p).split('/').pop()));
 
+// The NUL-separated paths git printed.
+const listOf = (r) => (r.ok ? r.stdout.split('\0').filter(Boolean) : null);
+
 // One commit job: its git calls share a deadline and a cancel. `job.cancel(by)` ends the call in flight and refuses the next.
 function newJob(totalMs = TOTAL_MS) {
   const job = { cancelled: null, child: null, deadline: Date.now() + totalMs };
@@ -34,9 +38,20 @@ function newJob(totalMs = TOTAL_MS) {
     if (room <= 0) return { ok: false, exit_code: null, stdout: '', stderr: `the hand-back commit passed its ${Math.round(totalMs / 1000)} s bound` };
     const r = await G.run(cwd, args, { timeoutMs: room, onChild: (c) => { job.child = c; if (job.cancelled) PROC.killTree(c).catch(() => {}); } });
     job.child = null;
+    if (job.cancelled) return { ...r, ok: false, stderr: `cancelled by ${job.cancelled}; ${r.stderr}`.trim() };
     return r.timed_out ? { ...r, stderr: `timed out; ${r.stderr}`.trim() } : r;
   };
   return job;
+}
+
+// Why a git call failed, for the plan: 'bound' (cancelled or out of time), 'identity' (no author configured), 'signing', else `dflt` ('hook' for a commit:
+// the output of a failing pre-commit or commit-msg hook is what the worker can act on; 'add' for a stale lock or an unreadable file).
+function reasonOf(r, dflt) {
+  const t = String(r.stderr || '');
+  if (r.timed_out || /^cancelled by|passed its \d+ s bound|^timed out/.test(t)) return 'bound';
+  if (/Author identity unknown|unable to auto-detect email|Committer identity unknown|empty ident name/i.test(t)) return 'identity';
+  if (/gpg|signing|sign the data/i.test(t)) return 'signing';
+  return dflt;
 }
 
 // -> the commit fact to record: { made, head, branch, files?, paths?, message?, error? }, or null when this hand-back is not belay's to commit
@@ -49,25 +64,29 @@ async function commitFor(w, task, job = newJob()) {
   let head = null;
   const fact = (o) => ({ made: false, branch, head, ...o });
   try {
-    if (w.worktree && norm(w.worktree) !== norm(rec.path)) return fact({ error: `worker ${w.id} runs in ${w.worktree}, not in the task's worktree ${rec.path}; nothing was committed` });
+    if (w.worktree && norm(w.worktree) !== norm(rec.path)) return fact({ reason: 'tree', error: `worker ${w.id} runs in ${w.worktree}, not in the task's worktree ${rec.path}; nothing was committed` });
     const cwd = rec.path;
     const head0 = await job.git(cwd, ['rev-parse', 'HEAD']);
     head = head0.ok ? head0.stdout.trim() : null;
     const sym = await job.git(cwd, ['symbolic-ref', '-q', 'HEAD']);
     const on = sym.ok ? sym.stdout.trim() : '';
-    if (!on) return fact({ error: 'HEAD is detached in the worktree; nothing was committed' });
-    if (!branch || on !== `refs/heads/${branch}`) return fact({ error: `the worktree is on ${on.replace(/^refs\/heads\//, '')}, not on the task's branch ${branch}; nothing was committed` });
-    const dirty = await G.dirtyPaths(cwd);
+    if (!on) return fact({ reason: 'head', error: 'HEAD is detached in the worktree; nothing was committed' });
+    if (!branch || on !== `refs/heads/${branch}`) return fact({ reason: 'head', error: `the worktree is on ${on.replace(/^refs\/heads\//, '')}, not on the task's branch ${branch}; nothing was committed` });
+    // Everything git would add (modified, deleted, new; ignored files left out), under the job's bound and cancel like every other call.
+    const changed = listOf(await job.git(cwd, ['ls-files', '-z', '-m', '-d', '-o', '--exclude-standard']));
+    const fresh = listOf(await job.git(cwd, ['ls-files', '-z', '-o', '--exclude-standard']));
+    if (!changed || !fresh) return fact({ reason: 'bound', error: 'git could not list the worktree changes (cancelled, timed out or failed); nothing was committed' });
+    const dirty = [...new Set(changed)];
     if (!dirty.length) return fact({});
-    const secrets = secretsIn(dirty);
-    if (secrets.length) return fact({ error: `not committed: ${secrets.slice(0, 10).join(', ')} look${secrets.length === 1 ? 's' : ''} like a secret; remove ${secrets.length === 1 ? 'it' : 'them'} from the worktree or ignore ${secrets.length === 1 ? 'it' : 'them'}` });
+    const secrets = secretsIn(fresh);
+    if (secrets.length) return fact({ reason: 'secret', error: `not committed: ${secrets.slice(0, 10).join(', ')} look${secrets.length === 1 ? 's' : ''} like a secret; remove ${secrets.length === 1 ? 'it' : 'them'} from the worktree or ignore ${secrets.length === 1 ? 'it' : 'them'}` });
     const add = await job.git(cwd, ['add', '-A']);
-    if (!add.ok) return fact({ error: `git add failed: ${add.stderr || `exit ${add.exit_code}`}` });
+    if (!add.ok) return fact({ reason: reasonOf(add, 'add'), error: `git add failed: ${add.stderr || `exit ${add.exit_code}`}` });
     const message = subjectOf(task, w.id);
     const c = await job.git(cwd, ['commit', '-m', message]);
-    if (!c.ok) return fact({ error: `git commit failed: ${(c.stderr || `exit ${c.exit_code}`).slice(0, 300)}` });
+    if (!c.ok) return fact({ reason: reasonOf(c, 'hook'), error: `git commit failed: ${(c.stderr || `exit ${c.exit_code}`).slice(0, 300)}` });
     const h = await job.git(cwd, ['rev-parse', 'HEAD']);
-    if (!h.ok || !h.stdout.trim() || h.stdout.trim() === head) return fact({ error: 'git commit reported success but HEAD did not move' });
+    if (!h.ok || !h.stdout.trim() || h.stdout.trim() === head) return fact({ reason: 'moved', error: 'git commit reported success but HEAD did not move' });
     return { made: true, head: h.stdout.trim(), branch, files: dirty.length, paths: dirty, message };
   } catch (e) {
     return fact({ error: `${(e && e.message) || e}`.slice(0, 300) });
@@ -93,4 +112,4 @@ async function handBack(w, ctx, taskId, ev = null) {
   } finally { if (ev) ev.cancelCommit = null; }
 }
 
-module.exports = { commitFor, handBack, subjectOf, newJob, secretsIn, TOTAL_MS };
+module.exports = { commitFor, handBack, subjectOf, newJob, secretsIn, reasonOf, TOTAL_MS };

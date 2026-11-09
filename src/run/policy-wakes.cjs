@@ -198,7 +198,7 @@ function derive(snap) {
       for (const f of fails) if (f.task_id === x.id && f.code !== 'E_CANCELLED' && Number(f.written_at) >= Number(x.handoff.at)) {
         const fact = { key: `${x.id}!${f.id}`, seq: Number(f.seq) || 0, at: Number(f.written_at) || 0, rowSeq: rowSeqOf(f) };
         if (a && a.cap) add('E2', root, tref(x), 'fix', { cause: a.cause, task: x.id, used: a.used, max: a.max, last: a.last }, fact);
-        else if (!a) add('E5', root, tref(x), null, { executable: true, failing: [], error: f.code, task: x.id }, fact);
+        else if (!a) add('E5', root, tref(x), null, { executable: true, failing: [], error: f.code === 'E_COMMIT' && x.handoff.commit && x.handoff.commit.error ? `E_COMMIT: ${x.handoff.commit.error}` : f.code, task: x.id }, fact);
       }
     }
     // E1 build (rc.6): the plan sets `build` to null, so building is the orchestrator's; once an open, unleased task's dependencies have landed (done, and

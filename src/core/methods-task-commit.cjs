@@ -16,7 +16,7 @@ async function recordCommit(E, caller, args) {
   if (!c || typeof c !== 'object' || Array.isArray(c) || typeof c.made !== 'boolean') throw err('E_ARGS', 'task.recordCommit: commit must be { made, head, branch, files?, message?, error? }');
   if (c.made && !SHA.test(String(c.head))) throw err('E_ARGS', 'task.recordCommit: a made commit names its head (a hex sha)');
   const fact = { made: c.made, head: typeof c.head === 'string' && SHA.test(c.head) ? c.head : null, branch: str(c.branch, 200),
-    ...(c.made ? { files: Number.isInteger(c.files) ? c.files : null, paths: Array.isArray(c.paths) ? c.paths.slice(0, PATHS_MAX).map((p) => str(String(p), 300)) : [], ...(Array.isArray(c.paths) && c.paths.length > PATHS_MAX ? { paths_more: c.paths.length - PATHS_MAX } : {}), message: str(c.message, 200) } : {}), ...(c.error ? { error: str(c.error, 400) } : {}) };
+    ...(c.made ? { files: Number.isInteger(c.files) ? c.files : null, paths: Array.isArray(c.paths) ? c.paths.slice(0, PATHS_MAX).map((p) => str(String(p), 300)) : [], ...(Array.isArray(c.paths) && c.paths.length > PATHS_MAX ? { paths_more: c.paths.length - PATHS_MAX } : {}), message: str(c.message, 200) } : {}), ...(c.error ? { error: str(c.error, 400), reason: str(c.reason, 20) } : {}) };
   const out = E.store.tx(() => {
     const task = rows.current(E.store, 'task', args.task_id);
     if (!task) throw err('E_NOT_FOUND', `no task row exists for ${args.task_id}`, { task_id: args.task_id });

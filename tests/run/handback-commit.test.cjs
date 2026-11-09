@@ -296,7 +296,7 @@ test('a stop ends a hung commit hook by its child handle, and the commit is reco
     await job.cancel('stop');
     const got = await within(p, 20000);
     assert.strictEqual(got.made, false);
-    assert.match(got.error, /^git commit failed/);
+    assert.match(got.error, /^git commit failed/); assert.strictEqual(got.reason, 'bound');
     assert.ok(Date.now() - t0 < 30000, 'ended long before the hook\'s 60 s');
     assert.strictEqual(git(r.tree, 'rev-parse', 'HEAD'), r.base);
   } finally { await r.e.close(); }
@@ -309,7 +309,7 @@ test('one bound covers the whole hand-back commit: a hung hook ends at the bound
     const t0 = Date.now();
     const got = await HC.commitFor(r.w, await r.row(), HC.newJob(3000));
     assert.strictEqual(got.made, false);
-    assert.match(got.error, /^git commit failed: timed out/);
+    assert.match(got.error, /^git commit failed: timed out/); assert.strictEqual(got.reason, 'bound');
     assert.ok(Date.now() - t0 < 30000);
     assert.strictEqual(git(r.tree, 'rev-parse', 'HEAD'), r.base);
   } finally { await r.e.close(); }
@@ -321,4 +321,37 @@ test('a lifecycle stop cancels the commit in flight through the release evaluati
   const w = { evaluation: { task_ids: ['t'], next: 0, ctx: { core: {} }, signalCancel: () => {}, cancelCommit: (by) => { calls.push(by); return Promise.resolve(); } } };
   RE.cancelEvaluation(w, 'stop');
   assert.deepStrictEqual(calls, ['stop']);
+});
+
+test('only NEW secret-looking paths are refused: a tracked key fixture a task modifies, example env files and credentials.md are committed', async () => {
+  const r = await released('hc-secret-tracked');
+  try {
+    // a tracked fixture, committed before the worker ran
+    write(r.tree, 'fixtures/test.pem', 'one\n'); git(r.tree, 'add', '-A'); git(r.tree, 'commit', '-q', '-m', 'fixture');
+    r.base = git(r.tree, 'rev-parse', 'HEAD');
+    write(r.tree, 'fixtures/test.pem', 'two\n'); write(r.tree, '.env.example', 'KEY=\n'); write(r.tree, '.env.sample', 'KEY=\n'); write(r.tree, 'notes/credentials.md', 'x\n'); write(r.tree, 'id_rsa.pub', 'x\n');
+    await r.release();
+    const got = await r.handBack();
+    assert.strictEqual(got.made, true, got.error);
+    assert.deepStrictEqual([...got.paths].sort(), ['.env.example', '.env.sample', 'fixtures/test.pem', 'id_rsa.pub', 'notes/credentials.md']);
+    assert.deepStrictEqual(HC.secretsIn(['.env.example', '.env.sample', '.env.template', 'credentials.md', 'credentials.test.js', 'id_rsa.pub', 'x/.credentials', 'credentials.json', '.env.production']), ['x/.credentials', 'credentials.json', '.env.production']);
+  } finally { await r.e.close(); }
+});
+
+test('the reason of a refused commit is recorded: hook, add, head, secret, and bound for a cancelled call', async () => {
+  const r = await released('hc-reasons');
+  try {
+    assert.strictEqual(HC.reasonOf({ stderr: 'Author identity unknown' }, 'hook'), 'identity');
+    assert.strictEqual(HC.reasonOf({ stderr: 'gpg failed to sign the data' }, 'hook'), 'signing');
+    assert.strictEqual(HC.reasonOf({ stderr: 'timed out; x', timed_out: true }, 'hook'), 'bound');
+    assert.strictEqual(HC.reasonOf({ stderr: 'cancelled by stop; x' }, 'hook'), 'bound');
+    assert.strictEqual(HC.reasonOf({ stderr: 'lint says no' }, 'hook'), 'hook');
+    const hook = git(r.tree, 'rev-parse', '--path-format=absolute', '--git-path', 'hooks/pre-commit');
+    fs.mkdirSync(path.dirname(hook), { recursive: true });
+    fs.writeFileSync(hook, '#!/bin/sh\necho "lint says no" >&2\nexit 1\n', { mode: 0o755 });
+    write(r.tree, 'src/mod.txt', 'two\n'); await r.release();
+    const got = await r.handBack();
+    assert.strictEqual(got.reason, 'hook');
+    assert.strictEqual((await r.row()).handoff.commit.reason, 'hook');
+  } finally { await r.e.close(); }
 });
