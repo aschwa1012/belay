@@ -160,11 +160,11 @@ ${PROMPT}${PL}${HB}`);
 });
 
 test('a relaunch that excluded notes the worker already holds never says that no note passed', async () => {
-  const core = memoryCore({ levers: { first_message_index: true }, noneListed: 2, heldBack: 3, scope: 40 });
+  const core = memoryCore({ levers: { first_message_index: true }, noneListed: 2, heldBack: 3, scope: 37 }); // 37 notes not yet shown (candidates.scope) and 3 already shown
   await run(core, async (m, sb) => {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w5', task_id: 't1' });
     const line = "No further project note passed the index's relevance bar for this task (40 notes in scope); memory_search can still look.";
-    assert.ok(m._worker('w5').firstMessage.includes(line), 'further, and the notes in scope are the index scope (candidates.scope), not the ranked candidates');
+    assert.ok(m._worker('w5').firstMessage.includes(line), 'further, and the notes in scope are the unshown scope plus the shown ones, not the ranked candidates');
     assert.ok(!m._worker('w5').firstMessage.includes('No project note passed'));
   });
 });

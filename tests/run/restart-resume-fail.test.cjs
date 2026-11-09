@@ -127,3 +127,17 @@ test('a kill mark counts when either side lacks the creation time, and not for a
     assert.strictEqual(KM.isKilledLoose(data, 'w1', 6, '123'), false);
   } finally { cleanup(data); }
 });
+
+test('cost-carry: graceful stop, resume, kill, resume (the last process restores the total saved at the graceful exit)', () => {
+  const CC = require('../../src/run/cost-carry.cjs');
+  const w = { costUsd: 0, costBase: 0 };
+  CC.arm(w); w.costUsd = CC.total(w, 0.0050575); // first process, reports 0.0050575 and exits gracefully
+  CC.arm(w); w.costUsd = CC.total(w, 0.0074774); // resumed: the total carried; killed
+  assert.ok(Math.abs(w.costUsd - 0.0074774) < 1e-9);
+  CC.arm(w); w.costUsd = CC.total(w, 0.005963); // resumed after the kill: restored the graceful total 0.0050575, plus its own 0.0009055
+  assert.ok(Math.abs(w.costUsd - (0.0074774 + 0.0009055)) < 1e-9, `the row grows by the new process's own spend only: ${w.costUsd}`);
+  CC.arm(w); w.costUsd = CC.total(w, 0.0001); // a restarted total below every remembered one is whole
+  assert.ok(Math.abs(w.costUsd - (0.0074774 + 0.0009055 + 0.0001)) < 1e-9);
+  CC.fresh(w); CC.arm(w); const before = w.costUsd; w.costUsd = CC.total(w, 0.002); // a fresh session forgets the totals
+  assert.ok(Math.abs(w.costUsd - (before + 0.002)) < 1e-9);
+});

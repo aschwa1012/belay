@@ -351,7 +351,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       firstText = (await MP.relaunch(w, ctx, firstText, { fresh: d.branch === 'replace', message: appendMessage })) + leaseNote(hold); // ADR 0042 decision 3: minus the rows already shown, only where that conversation still holds them
       if (d.branch === 'replace') {
         w.sessionId = null;
-        w.costBase = w.costUsd; // a fresh session's total starts at zero: what the earlier sessions reported stays in the row
+        require('./cost-carry.cjs').fresh(w); // a fresh session's total starts at zero: what the earlier sessions reported stays in the row
         w.parser = createParser(w.substrate, MP.parserOpts(ctx));
       }
       if (onFirstText) onFirstText(firstText); if (!skipDeadPidKill) await LG.refuseIfPaused(ctx.core, ctx.runId, w, { restart: true }); // a run pause landing during the awaits above; a resume (skipDeadPidKill) runs while the run is still paused

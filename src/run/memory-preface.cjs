@@ -196,7 +196,7 @@ async function offReceipt(ctx, w, emb, convo) {
 }
 
 // The one line a worker gets when the project has notes in scope and none passed the index's relevance bar.
-// `n`: the notes in scope (candidates.scope, before the already-shown ones are left out); `held`: notes this conversation was already shown, which did pass, so the line says no FURTHER note passed.
+// `n`: the notes in scope (candidates.scope counts only the notes not yet shown, so the already-shown ones are added back); `held`: notes this conversation was already shown, which did pass, so the line says no FURTHER note passed.
 const noneListedLine = (n, held = 0) => `No ${held > 0 ? 'further ' : ''}project note passed the index's relevance bar for this task (${n} note${n === 1 ? '' : 's'} in scope); memory_search can still look.`;
 
 // What a worker is told when its first-message index was refused (E_INDEX_BOUND, E_SEMANTIC_REQUIRED): belay's own words, no note text.
@@ -254,7 +254,7 @@ async function indexBlock(w, ctx, prompt, given, replacing = null) {
   });
   if (got.bytes > 0) return got.text;
   // The project has notes in scope and none passed the bar: say so in one line, so silence is not read as "no notes" (nothing is said when there are none).
-  return got.none_passed ? noneListedLine(got.candidates && Number.isInteger(got.candidates.scope) ? got.candidates.scope : got.considered + (got.excluded_already_injected || 0), got.excluded_already_injected || 0) : '';
+  return got.none_passed ? noneListedLine((got.candidates && Number.isInteger(got.candidates.scope) ? got.candidates.scope : got.considered) + (got.excluded_already_injected || 0), got.excluded_already_injected || 0) : '';
 }
 
 // Eval-only `native_memory` run lever (the run row's memory levers): the folder a Claude Code worker gets when the spawn call names none.
