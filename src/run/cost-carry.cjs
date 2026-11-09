@@ -1,26 +1,30 @@
 'use strict';
-// cost-carry.cjs — a worker row's cost across launches. Claude Code reports total_cost_usd for the session it is in. Measured on this host
-// (ADR 0068 amendment 1): after a graceful exit a --resume carries the session total; after a kill it starts again at zero; and after
-// graceful stop, resume, KILL, resume the last process restored the total saved at the earlier GRACEFUL exit, not the killed process's.
-// So a launch assumes none of these. It remembers the total each earlier process of the session ended on, and the new process's FIRST cost
-// report R is read against them: its own spend is R less the largest remembered total not above R (zero when R is below all of them).
-//   carried   (R at or above the last total)  -> the largest total not above R is the last one: the new spend is R less it.
-//   restored  (R between an older total and the last) -> R less that older total.
-//   restarted (R below every total)           -> R whole.
-// The row grows by exactly that spend, so it never falls and, in each of the three, never counts the earlier spend twice. One case is
-// accepted: a restarted total whose first report is already at or above some remembered total reads as restored or carried, and the row then
-// undercounts by at most that total (the new process alone had to spend more than the earlier session had reported by then).
+// cost-carry.cjs — a worker row's cost across launches. Claude Code reports total_cost_usd for the session it is in. The model three live
+// measurements fit (Claude Code 2.1.321, ADR 0068 amendment 1): the substrate saves the session total only at a GRACEFUL exit, a kill saves
+// nothing, and a --resume starts from the last saved total (zero if none was ever saved). belay sees a graceful exit itself (exit code 0).
+// So the worker keeps ONE number per session, `saved`: the process-reported total at the session's last graceful exit (0 until one happens;
+// reset on a replace, a fresh session). It is the worker row's `cost_saved`, so an adopting adapter and a park resume have it.
+// A new process's reports R are relative to `saved`: the row grows by R - saved, from the cost at its launch, so it never falls.
+// Guard: a first report below `saved` means the model is wrong for this version; the process is then counted from zero (R whole) and the
+// worker's lastError says so, so it is visible and never double counts silently. A graceful exit whose code belay did not see (a pid-poll
+// settle) saves nothing here, so the next resume counts from the older total and the row can overcount by the difference.
 
 const EPS = 1e-9;
 
-// A fresh session (the replace branch): its total starts at zero and the earlier totals no longer apply.
-function fresh(w) { w.costBase = w.costUsd; w.costSeen = []; }
+// A fresh session (the replace branch): its total starts at zero and nothing is saved.
+function fresh(w) { w.costBase = w.costUsd; w.costSaved = 0; w.costGraceful = false; }
 
-// At every launch: the previous process's last total is the row's cost less the base it was reported on top of.
+// The process ended; a clean exit code means the substrate saved the total it had reported.
+function noteExit(w) { w.costGraceful = w.exitCode === 0; }
+
+// The saved total as the row records it: the exited process's own last report if it ended cleanly and reported, else the earlier figure.
+function savedOf(w) {
+  return w.costGraceful && w.costDecided === true ? Math.max(0, (w.costUsd || 0) - (w.costBase || 0)) : (w.costSaved || 0);
+}
+
+// At every launch.
 function arm(w) {
-  const last = Math.max(0, (w.costUsd || 0) - (w.costBase || 0));
-  if (!Array.isArray(w.costSeen)) w.costSeen = [];
-  if (last > EPS && !w.costSeen.some((t) => Math.abs(t - last) < EPS)) w.costSeen.push(last);
+  w.costSaved = savedOf(w); w.costGraceful = false;
   w.costRowAtLaunch = w.costUsd || 0;
   w.costDecided = false;
 }
@@ -29,10 +33,13 @@ function arm(w) {
 function total(w, reported) {
   if (w.costDecided === false) {
     w.costDecided = true;
-    const below = (w.costSeen || []).filter((t) => t <= reported + EPS);
-    w.costBase = w.costRowAtLaunch - (below.length ? Math.max(...below) : 0);
+    const saved = w.costSaved || 0;
+    if (reported < saved - EPS) {
+      w.costBase = w.costRowAtLaunch;
+      w.lastError = { where: 'cost', detail: `the first cost report ${reported} is below the total saved at the last graceful exit ${saved}; this process is counted from zero` };
+    } else w.costBase = w.costRowAtLaunch - saved;
   }
   return (w.costBase || 0) + reported;
 }
 
-module.exports = { arm, total, fresh };
+module.exports = { arm, total, fresh, noteExit, savedOf };

@@ -302,6 +302,8 @@ const MIGRATIONS = [
   'ALTER TABLE worker ADD COLUMN cost_source TEXT',
   // Reported cost of the sessions before the current one: a fresh session's total_cost_usd starts at zero, so the adapter adds this base.
   'ALTER TABLE worker ADD COLUMN cost_base REAL',
+  // The session total Claude Code saved at the worker's last graceful exit, which a --resume starts from (src/run/cost-carry.cjs); null before it.
+  'ALTER TABLE worker ADD COLUMN cost_saved REAL',
   // 0.4.0 (ADR 0072 decision 3): who took a row's step and why. `acted_by` ('policy' or null), `trigger` (JSON text {table, id, seq} of the
   // fact the step acted on) and `policy_rev` are written by the core from the harness caller only, never from arguments; all nullable, null on
   // every row written before them. `policy` is a task's resolved plan (JSON text, nullable), carried forward by every later task row.

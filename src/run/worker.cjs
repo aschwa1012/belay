@@ -137,6 +137,7 @@ async function adopt({ core, workerId, dataDir, runId }) {
   w.outputTokens = row.output_tokens || 0;
   w.costUsd = row.cost_usd || 0;
   w.adoptedLedger = { cost: w.costUsd, turns: w.turns }; // what the usage ledger already holds for this worker
+  w.costSaved = row.cost_saved || 0; // the session total the substrate saved at the last graceful exit (cost-carry.cjs)
   w.costBase = row.cost_base || 0; // reported cost of the lives before this session (a fresh session's total starts at zero)
   w.exitedAt = row.exited_at || null;
   w.exitCode = row.exit_code == null ? null : row.exit_code;
@@ -185,7 +186,7 @@ function rowOf(w, state, { runId, adapterPid }) {
     // An inherited started_at that is not a safe integer is left out, so the core keeps it rather than refusing this write (api.md: an inherited value is never checked).
     ...(Number.isSafeInteger(w.startedAt) ? { started_at: w.startedAt } : {}),
     exited_at: w.exitedAt, exit_code: w.exitCode, exit_signal: w.exitSignal,
-    turns: w.turns, input_tokens: w.inputTokens, output_tokens: w.outputTokens, cost_usd: w.costUsd, cost_base: w.costBase || 0,
+    turns: w.turns, input_tokens: w.inputTokens, output_tokens: w.outputTokens, cost_usd: w.costUsd, cost_base: w.costBase || 0, cost_saved: require('./cost-carry.cjs').savedOf(w),
     last_event_at: w.lastEventAt,
     // ADR 0021 decision 3: set only by a launch this record made, so an adopted record claims nothing.
     permission_mode_requested: w.permissionModeEffective ? w.permissionMode : null,

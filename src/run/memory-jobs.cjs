@@ -89,8 +89,8 @@ const { snapshotOf, pairedWrite } = require('./memory-capture.cjs');
 const jobsOf = (w) => w.memoryJobs || (w.memoryJobs = w.adoptedLedger
   ? { pid: null, lastCost: w.adoptedLedger.cost, seen: true, lastTurn: w.adoptedLedger.turns }
   : { pid: null, lastCost: 0, seen: false, lastTurn: 0 });
-// snap.cost is the row's reported total: the cost base plus this process's total, so it only goes up across a --resume (a graceful exit carries the
-// session total; after a kill the new process restarts at zero and the row takes the base, cost-carry.cjs) and across a fresh session. A lower figure is a counter that restarted.
+// snap.cost is the row's reported total: the cost base plus this process's total, so it only goes up across a --resume (a resume starts from the total saved at
+// the last graceful exit and the row adds only the new spend, cost-carry.cjs) and across a fresh session. A lower figure is a counter that restarted.
 function costOf(w, snap) {
   if (snap.substrate !== 'claude-code' || typeof snap.cost !== 'number' || !Number.isFinite(snap.cost)) return { cost_usd: null, cost_basis: 'none' };
   const t = jobsOf(w);

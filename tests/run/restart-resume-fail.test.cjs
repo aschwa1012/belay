@@ -92,18 +92,6 @@ test('a resume whose total restarted from zero (a killed process) adds to the co
   assert.ok(Math.abs(cost - 0.031) < 1e-9, `0.031, got ${cost}`);
 });
 
-test('cost-carry: the one ambiguous case reads as carried, and the row never falls', () => {
-  const CC = require('../../src/run/cost-carry.cjs');
-  const w = { costUsd: 0.03, costBase: 0 };
-  CC.arm(w);
-  assert.strictEqual(CC.total(w, 0.03), 0.03, 'a report equal to the previous total is a carry');
-  assert.ok(Math.abs(CC.total(w, 0.04) - 0.04) < 1e-9, 'decided once; later reports add to the same base');
-  const z = { costUsd: 0.03, costBase: 0 };
-  CC.arm(z);
-  assert.ok(Math.abs(CC.total(z, 0) - 0.03) < 1e-9, 'a $0 report from a restarted total leaves the row where it was');
-  assert.ok(Math.abs(CC.total(z, 0.01) - 0.04) < 1e-9);
-});
-
 test('the fallback reason quotes the failed resume, not an earlier life stderr', async (t) => {
   const { m, worktree } = await rig(t, 'run-rf-stderr');
   process.env.FAKE_ECHO_MCP_TOOL_TIMEOUT = '1';
@@ -126,18 +114,4 @@ test('a kill mark counts when either side lacks the creation time, and not for a
     assert.strictEqual(KM.isKilledLoose(data, 'w1', 5, '999'), false, 'two known and different creation times are two processes');
     assert.strictEqual(KM.isKilledLoose(data, 'w1', 6, '123'), false);
   } finally { cleanup(data); }
-});
-
-test('cost-carry: graceful stop, resume, kill, resume (the last process restores the total saved at the graceful exit)', () => {
-  const CC = require('../../src/run/cost-carry.cjs');
-  const w = { costUsd: 0, costBase: 0 };
-  CC.arm(w); w.costUsd = CC.total(w, 0.0050575); // first process, reports 0.0050575 and exits gracefully
-  CC.arm(w); w.costUsd = CC.total(w, 0.0074774); // resumed: the total carried; killed
-  assert.ok(Math.abs(w.costUsd - 0.0074774) < 1e-9);
-  CC.arm(w); w.costUsd = CC.total(w, 0.005963); // resumed after the kill: restored the graceful total 0.0050575, plus its own 0.0009055
-  assert.ok(Math.abs(w.costUsd - (0.0074774 + 0.0009055)) < 1e-9, `the row grows by the new process's own spend only: ${w.costUsd}`);
-  CC.arm(w); w.costUsd = CC.total(w, 0.0001); // a restarted total below every remembered one is whole
-  assert.ok(Math.abs(w.costUsd - (0.0074774 + 0.0009055 + 0.0001)) < 1e-9);
-  CC.fresh(w); CC.arm(w); const before = w.costUsd; w.costUsd = CC.total(w, 0.002); // a fresh session forgets the totals
-  assert.ok(Math.abs(w.costUsd - (before + 0.002)) < 1e-9);
 });
