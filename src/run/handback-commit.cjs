@@ -68,8 +68,8 @@ function reasonOf(r, dflt) {
   return dflt;
 }
 
-// A commit that fails after pre-commit passed was refused by a later hook (commit-msg or prepare-commit-msg), which rejects belay's own subject:
-// the worker cannot fix that. Git writes COMMIT_EDITMSG only after pre-commit, so a fresh one holding our subject, with a commit-msg hook present, says so.
+// A commit that fails after pre-commit passed was refused by a later hook (commit-msg or prepare-commit-msg), which rejects the subject belay took from the worker's own summary line:
+// that is for the orchestrator to decide (E5). Git writes COMMIT_EDITMSG only after pre-commit, so a fresh one holding our subject, with a commit-msg hook present, says so.
 async function msgHookRefused(job, cwd, startedAt, subject) {
   const path = async (p) => ((await job.git(cwd, ['rev-parse', '--path-format=absolute', '--git-path', p])).stdout || '').trim();
   try {
@@ -79,7 +79,7 @@ async function msgHookRefused(job, cwd, startedAt, subject) {
   } catch { return false; }
 }
 
-// belay ended its own commit (a stop or the bound) and may have left the index lock git held. It is removed only when it was not there before the commit
+// belay ended its commit (a stop or the bound), and a lock may have appeared during it. The lock is removed only when it was not there before the commit
 // began, it appeared after the commit started, and no git process is running at all (a snapshot that cannot be read removes nothing). -> text for the error.
 async function dropOwnLock(lock, existedBefore, startedAt, snapshot = () => PROC.processSnapshot()) {
   try {
@@ -87,11 +87,11 @@ async function dropOwnLock(lock, existedBefore, startedAt, snapshot = () => PROC
     if (existedBefore) return `; ${lock} was there before the commit began and is left`;
     if (fs.statSync(lock).mtimeMs < startedAt - 1000) return `; ${lock} predates the commit and is left`;
     const snap = await snapshot();
-    if (!snap) return `; ${lock} may be from the ended commit and is left (the process list could not be read)`;
+    if (!snap) return `; ${lock} appeared during the ended commit and is left (the process list could not be read)`;
     const rows = snap instanceof Map ? [...snap.values()] : Object.values(snap);
-    if (rows.some((r) => /^git(\.exe)?$/i.test(String((r && r.image) || '').split(/[\\/]/).pop()))) return `; ${lock} may be from the ended commit, but another git process is running, so it is left`;
+    if (rows.some((r) => /^git(\.exe)?$/i.test(String((r && r.image) || '').split(/[\\/]/).pop()))) return `; ${lock} appeared during the ended commit, but another git process is running, so it is left`;
     fs.unlinkSync(lock);
-    return `; the index.lock the ended commit left was removed`;
+    return `; the index.lock that appeared during the ended commit was removed`;
   } catch (e) { return `; ${lock} could not be checked or removed (${(e && e.code) || e})`; }
 }
 
