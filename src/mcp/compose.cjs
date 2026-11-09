@@ -64,7 +64,7 @@ function createCompose({ callCore, manager, openManager, dataDir = null, runId =
     const sentKey = raw && raw.new_lease ? `${coreArgs.worker_id}|${raw.new_lease.id}` : null;
     if (raw && raw.existing === true && sentKey && DELIVERED.has(sentKey)) return not('the assignment already stands (existing) and the worker was told of it, so nothing was sent again'); // a policy step or an earlier call made it and told the worker (ADR 0072 decision 2); with no record of the delivery it is sent again
     const r = manager();
-    const rule = HB.rule(out, await HB.facts((id) => callCore('task.get', { task_id: id }), out)); // the hand-back rule for this task, sent below and kept for the worker
+    const rule = HB.rule(out, await HB.facts((id) => callCore('task.get', { task_id: id }), out), launchedHere(r, coreArgs.worker_id) ? (r._worker(coreArgs.worker_id) || {}).substrate : null); // the hand-back rule for this task, sent below and kept for the worker
     if (launchedHere(r, coreArgs.worker_id) && typeof r.retask === 'function') r.retask({ worker_id: coreArgs.worker_id, task_id: coreArgs.task_id, spec: out && out.task && out.task.spec, review: out && out.review, rule }); // the worker's current task follows the assignment, delivered or not
     if (deliver === false) return not('deliver was false');
     if (!launchedHere(r, coreArgs.worker_id)) return not(`worker ${coreArgs.worker_id} was not launched by this session, so belay has no channel to it; send the task with worker_message`);

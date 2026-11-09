@@ -108,6 +108,15 @@ async function run(w, ctx, ev) {
     const t = { id: ev.task_ids[ev.next] };
     if (ev.cancelled) { out.push({ task_id: t.id, cancelled: true, by: ev.cancelled }); recordFailure(ctx, w, t.id, 'E_CANCELLED', ev.cancelled, ev.turn); continue; }
     try {
+      if (w.substrate === 'codex') { // Codex cannot commit in its sandbox: belay does, before the hand-back is judged
+        const c = await require('./handback-commit.cjs').handBack(w, ctx, t.id, ev);
+        if (c && c.made === false && c.error) { // nothing was committed that should have been: the work is not judged as if it were, and the task stays released
+          if (ev.cancelled) { out.push({ task_id: t.id, cancelled: true, by: ev.cancelled }); recordFailure(ctx, w, t.id, 'E_CANCELLED', ev.cancelled, ev.turn); continue; } // a stop ended the commit: that is the cancel, not a refusal
+          recordFailure(ctx, w, t.id, 'E_COMMIT', c.error, ev.turn);
+          out.push({ task_id: t.id, error: 'E_COMMIT', message: String(c.error).slice(0, 200) });
+          continue;
+        }
+      }
       const row = await core.task.evaluate({ task_id: t.id, worktree: w.worktree, trigger: 'release', cancel_key: ev.key });
       out.push(summaryOf(row, await workOf(core, row)));
       // ADR 0058 decision 8: the stop waits for the worker's queue itself, and this is not on it.
@@ -151,6 +160,7 @@ function cancelEvaluation(w, by) {
   if (!ev) return null;
   w.evaluation = null;
   ev.cancelled = by || 'a lifecycle operation';
+  if (typeof ev.cancelCommit === 'function') Promise.resolve(ev.cancelCommit(ev.cancelled)).catch(() => {}); // a hand-back commit in flight ends with its git call
   if (ev.signalCancel) ev.signalCancel();
   const t = ev.ctx.core && ev.ctx.core.task;
   if (t && typeof t.evaluateCancel === 'function') Promise.resolve().then(() => t.evaluateCancel({ cancel_key: ev.key, by: ev.cancelled })).catch(() => {});

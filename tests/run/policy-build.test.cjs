@@ -205,3 +205,28 @@ test('a task with no tree gets one at its build, made by the real core in the ru
     assert.ok(require('node:fs').existsSync(row.worktree.path), 'a real tree on disk');
   } finally { await e.close(); }
 });
+
+test('the plan may name codex as the substrate of a build spawn (not of a review), and the build step spawns that substrate', async () => {
+  const codex = { build: { spawn: { agent_type: 'coder', substrate: 'codex' } } };
+  assert.deepStrictEqual(PP.check(codex), codex);
+  assert.deepStrictEqual(PP.check({ build: { spawn: { agent_type: 'coder', substrate: 'claude-code' } } }).build.spawn.substrate, 'claude-code');
+  assert.strictEqual(PP.tag(codex), 'b:spawn(coder,codex)');
+  assert.throws(() => PP.check({ build: { spawn: { agent_type: 'coder', substrate: 'gemini' } } }), /substrate must be one of claude-code, codex/);
+  assert.throws(() => PP.check({ review: { spawn: { agent_type: 'reviewer', substrate: 'codex' } } }), /policy\.review\.spawn\.substrate is not accepted/);
+  const { due } = require('../../src/run/policy-exec.cjs');
+  const STEPS = require('../../src/run/policy-steps-run.cjs');
+  const t = { id: 'B', seq: 3, run_id: RUN, state: 'open', policy: codex, policy_rev: 1, depends_on: [], lease: null, acceptance: { commands: [] } };
+  const [c] = due({ runId: RUN, tasks: [t] }).filter((x) => x.step === 'build');
+  const calls = [];
+  const env = {
+    runId: RUN,
+    core: {
+      task: { get: async () => ({ ...t, worktree: { path: 'C:/wt/B' }, ...(calls.length ? { lease: { id: 'L1', holder: 'cx-1' } } : {}) }), worktreeCreate: async () => ({ worktree: { path: 'C:/wt/B' } }) },
+      run: { get: async () => ({ run: { paused_at: null } }) },
+    },
+    spawn: async (a) => { calls.push(a); return { id: 'cx-1' }; },
+  };
+  const res = await STEPS.run({ ...c, worker: 'cx-1' }, env);
+  assert.deepStrictEqual([calls[0].substrate, calls[0].agent_type, calls[0].worktree], ['codex', 'coder', 'C:/wt/B']);
+  assert.deepStrictEqual([res.outcome, res.row_ref], ['done', 'lease:L1']);
+});

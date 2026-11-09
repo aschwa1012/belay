@@ -82,6 +82,20 @@ async function giveTask(c, env, b, { taskId, ref, prompt = null, pausedOk = fals
   return { outcome: 'done', row_ref: written ? ref : `lease:${l.id}`, worker_id: id, spawned: id };
 }
 
+// A Codex worker cannot commit (belay commits its worktree when it hands back), so a round's text to it does not ask for a commit.
+const CODEX_WORDS = [
+  [', commit, and release the task again.', ', and release the task again.'],
+  ['Make sure your work is committed, and release', 'Make sure your changes are in your worktree, and release'],
+  ['commit your work in your worktree (git add, git commit), run your checks, and release', 'make sure your changes are in your worktree, run your checks, and release'],
+  [', run your checks, commit, and release.', ', run your checks, and release.'],
+  [', make those checks pass, commit, and release.', ', make those checks pass, and release.'],
+];
+async function wording(env, workerId, text) {
+  if (typeof text !== 'string' || !workerId) return text;
+  const w = (((await env.core.worker.list({})) || {}).workers || []).find((x) => x.id === workerId);
+  return w && w.substrate === 'codex' ? CODEX_WORDS.reduce((t, [a, b]) => t.split(a).join(b), text) : text;
+}
+
 // The same task assigned to the worker that handed it back, with belay's reason as the prompt that follows the task text.
 async function reassign(c, env) {
   const S = steps();
@@ -95,7 +109,7 @@ async function reassign(c, env) {
   }
   const b = await readyWorker(c, env, c.task_id);
   if (b.res) return b.res;
-  return giveTask(c, env, b, { taskId: c.task_id, ref: `task:${c.task_id}`, prompt: c.prompt, pausedOk: true });
+  return giveTask(c, env, b, { taskId: c.task_id, ref: `task:${c.task_id}`, prompt: await wording(env, b.worker, c.prompt), pausedOk: true });
 }
 
 // The evaluation run again where the worker's own was run (its worktree). A re-run that did not finish writes nothing and ends skipped: the plan
@@ -117,15 +131,27 @@ async function rerun(c, env) {
   return { outcome: 'done', row_ref: `task:${row.id}` };
 }
 
+// A merge or rebase needs git writes a Codex sandbox denies, so a conflict or checks fix whose builder is Codex goes to a fresh Claude Code coder in the
+// same tree (the step ends with worker_id naming it). With no way to start one, the step is an exception that says so: Codex is not sent what it cannot do.
+const NEEDS_GIT = new Set(['fix_conflict', 'fix_checks']);
+async function claudeInstead(c, env, w) {
+  if (!NEEDS_GIT.has(c.step)) return null;
+  const cw = (((await env.core.worker.list({})) || {}).workers || []).find((x) => x.id === c.worker);
+  if (!cw || cw.substrate !== 'codex') return null;
+  const tree = w.worktree && w.worktree.path && !w.worktree.removed_at ? w.worktree.path : null;
+  if (!env.spawn || !tree) return { res: steps().exception(`${c.worker} is a Codex worker, whose sandbox cannot merge or rebase, and ${!env.spawn ? 'this run has no spawn path' : `task ${w.id} has no worktree`} to start a Claude Code coder in; the fix was not sent`) };
+  return { fresh: { tree, agent_type: 'coder', id: `bld-${require('node:crypto').randomUUID().slice(0, 8)}` } };
+}
+
 // A fix task for what the integrate step could not land, worked in the conflicting task's tree by the one who built it.
 async function mergeFix(c, env) {
   const S = steps();
   const w = await env.core.task.get({ task_id: c.conflict_task });
   if (!w || w.state !== 'done') return { outcome: 'skipped', error: `${c.conflict_task} is no longer done` };
-  const b = await readyWorker(c, env, w.id);
+  const b = (await claudeInstead(c, env, w)) || await readyWorker(c, env, w.id);
   if (b.res) return b.res;
   const made = await env.core.task.create({
-    spec: c.spec, acceptance: w.acceptance, files_owned: w.files_owned, depends_on: [w.id], repairs: c.task_id, tree_of: w.id, ...(w.base ? { base: w.base } : {}),
+    spec: await wording(env, b.worker, c.spec), acceptance: w.acceptance, files_owned: w.files_owned, depends_on: [w.id], repairs: c.task_id, tree_of: w.id, ...(w.base ? { base: w.base } : {}),
   });
   const ref = `task:${made.id}`;
   if (made.fix_notice) return S.exception(`fix_notice: ${made.fix_notice}`, ref); // past max_fix_rounds since the pass read it: the fix stays unassigned

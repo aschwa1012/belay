@@ -165,6 +165,8 @@ const METHODS = {
   'task.assign': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: require('./paused-run.cjs').gate(task.assign) },
   // The run manager asks this before it relaunches a worker (restart, resume, a Codex turn): the task it holds is held for the manager's live run, or the relaunch is refused.
   'task.ensureHold': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: taskHold.ensureHold },
+  // The run manager records that belay committed a Codex worker's hand-back (Codex's sandbox cannot commit), or why it could not.
+  'task.recordCommit': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: require('./methods-task-commit.cjs').recordCommit },
   'task.list': { roles: ALL, kind: 'read', fn: task.list },
   'task.get': { roles: ALL, kind: 'read', fn: task.get },
   'task.evaluate': { roles: ORCH, kind: 'write', fn: task.evaluate },

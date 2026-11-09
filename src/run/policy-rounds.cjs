@@ -110,6 +110,13 @@ function action(x, P, rf) {
     if (failing(r).some((c) => beside(c) > 0) && !since('rerun_alone').length) return othersEvaluating(x, rf, r.evaluated_at) ? { wait: true } : { step: 'rerun_alone', worker: handBy(x) };
     return round('fix_eval', 'tests red', `belay: your hand-back of task ${x.id} failed belay's own evaluation (${clean(`${names(r)}: ${lastLine(r)}`, 220)}). Fix it in your worktree, commit, and release the task again.`, lastLine(r));
   }
+  // belay could not commit the hand-back (Codex cannot): never re-evaluate it, which would judge uncommitted work. A failing commit hook is the worker's to fix
+  // (a round with the hook's output); every other cause (a secret, HEAD, a lock, the time bound, identity, signing) is the orchestrator's: null, which raises E5.
+  const ce = x.handoff.commit;
+  if (!own && !isReviewTask(x) && ce && ce.made === false && ce.error && Number(ce.at) >= hand) {
+    if (P.fix !== 'builder' || ce.reason !== 'hook') return null;
+    return round('fix_run', 'commit refused by a hook', `belay: your hand-back of task ${x.id} was not committed: a git hook refused it (${clean(String(ce.error).replace(/^git commit failed: /, ''), 300)}). Fix what the hook reports in your worktree, and release the task again.`, 'commit hook');
+  }
   if (!own && !isReviewTask(x) && P.fix === 'builder') {
     const f = rf.failures.filter((e) => e.task_id === x.id && e.code !== 'E_CANCELLED' && Number(e.written_at) >= hand).sort((a, b) => Number(a.seq) - Number(b.seq)).pop();
     if (!f) return null;

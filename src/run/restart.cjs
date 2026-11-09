@@ -115,7 +115,7 @@ async function currentRule(w, core, hold) {
     if (!task) return '';
     const full = (await core.task.get({ task_id: task.id })) || task;
     const HB = require('./handback.cjs'), assigned = { task: full, new_lease: full.lease };
-    return HB.rule(assigned, await HB.facts((id) => core.task.get({ task_id: id }), assigned));
+    return HB.rule(assigned, await HB.facts((id) => core.task.get({ task_id: id }), assigned), w.substrate);
   } catch { return ''; }
 }
 
