@@ -459,7 +459,7 @@ test('an index.lock left by belay\'s own ended commit is removed only when it is
     assert.ok(fs.existsSync(lock));
     assert.match(await HC.dropOwnLock(lock, false, Date.now() + 60000, none), /predates the commit and is left/);
     assert.ok(fs.existsSync(lock));
-    assert.match(await HC.dropOwnLock(lock, false, t0, none), /index\.lock the ended commit left was removed/);
+    assert.match(await HC.dropOwnLock(lock, false, t0, none), /index\.lock that appeared during the ended commit was removed/);
     assert.ok(!fs.existsSync(lock));
   } finally { fs.rmSync(dir, { recursive: true, force: true }); }
 });
