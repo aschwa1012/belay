@@ -121,3 +121,19 @@ test('the fresh reviewer a reask starts is retired with the work, like the one a
     assert.deepStrictEqual(stopped, [fresh]);
   } finally { await e.close(); }
 });
+
+test('a read that keeps failing after the claim is reopened four times, then one exception that names the read', async () => {
+  const e = await env('stilldue-read-bound');
+  try {
+    await e.orch.task.create({ spec: 'w', acceptance: PASS, policy: { build: { worker: 'b1' }, ...REST } });
+    await e.worker('b1');
+    let n = 0;
+    const down = { ...e.h, task: { ...e.h.task, list: async (a) => { if (++n === 3) throw Object.assign(new Error('store busy'), { code: 'E_BUSY' }); return e.h.task.list(a); } } }; // the third call of a pass is the recheck after the claim
+    const x = e.exec({}, down);
+    const outcomes = [];
+    for (let i = 0; i < 5; i++) { n = 0; outcomes.push((await x.tick()).steps.map((s) => s.outcome)[0]); }
+    assert.deepStrictEqual(outcomes, ['skipped', 'skipped', 'skipped', 'skipped', 'exception']);
+    const last = stepRows(e).filter((s) => s.step === 'build').pop();
+    assert.match(last.error, /^E_READ_FAILED: the task\.list read failed 5 times in a row/);
+  } finally { await e.close(); }
+});

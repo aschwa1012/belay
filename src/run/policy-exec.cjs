@@ -207,19 +207,22 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
   // revision it was claimed at (the pass's snapshot can be minutes old after an integrate). -> a reason to skip, or null.
   const seen = { run: null, tasks: [] }; // the run row and the task rows stillDue read, for the budget rule
   // A store read that threw is marked, so the pass retakes the step; any other throw in here is a bug and stays an exception.
-  const rd = async (f) => { try { return await f(); } catch (e) { if (e && typeof e === 'object') e.stillDueRead = true; throw e; } };
+  const rd = async (f, name) => { try { return await f(); } catch (e) { if (e && typeof e === 'object') e.stillDueRead = name; throw e; } };
+  // A read that keeps failing reopens the same claim each pass: after this many in a row, or this long since the first, it is one exception (E8) that names the read.
+  const readFails = new Map(); // keyOf(step, trigger) -> { n, since }
+  const READ_FAIL_MAX = 5, READ_FAIL_MS = 180000;
   async function stillDue(c, seq) {
-    const run = (await rd(() => g.run.get({}))).run;
+    const run = (await rd(() => g.run.get({}), 'run.get')).run;
     seen.run = run;
     if (!run || run.ended_at != null) return 'the run has ended after the step was claimed';
     if (run.paused_at != null) return 'E_PAUSED: the run was paused after the step was claimed; the claim is reopened and the step retaken after the resume';
-    const tasks = await rd(() => read(g.task.list, 'tasks', []));
+    const tasks = await rd(() => read(g.task.list, 'tasks', []), 'task.list');
     seen.tasks = tasks;
-    const integrations = c.step === 'integrate' || c.trigger.table === 'integration' ? await rd(() => read(g.integration.list, 'integrations', [])) : [];
-    const rl = c.step === 'relaunch' ? { steps: (await rd(() => read(g.policy.list, 'rows', []))).filter((r) => !(r.step === 'relaunch' && r.outcome === 'started' && r.trigger_table === c.trigger.table && r.trigger_id === c.trigger.id && Number(r.trigger_seq) === c.trigger.seq)), workers: await rd(() => read(g.worker.list, 'workers', [])) } : {}; // this claim is not a used relaunch
-    const roundSteps = (await rd(() => read(g.policy.list, 'rows', []))).filter((r) => r.seq !== seq); // the rounds read the step log, without this step's own claim
-    const same = due({ runId, tasks, integrations, roundSteps, ...rl, ...(await rd(() => extras(tasks, run))), ...(dataDir ? { isKilled: (w) => KM.isKilled(dataDir, w.id, w.pid, w.pid_created) } : {}) }).find((d) => keyOf(d.step, d.trigger) === keyOf(c.step, c.trigger));
-    if (same && (await rd(() => haltedNow(run))).has(c.task_id)) return `E_NOT_NOW: ${c.task_id} was halted after the step was claimed; the claim is reopened and the step retaken if the halt is lifted`;
+    const integrations = c.step === 'integrate' || c.trigger.table === 'integration' ? await rd(() => read(g.integration.list, 'integrations', []), 'integration.list') : [];
+    const rl = c.step === 'relaunch' ? { steps: (await rd(() => read(g.policy.list, 'rows', []), 'policy.list')).filter((r) => !(r.step === 'relaunch' && r.outcome === 'started' && r.trigger_table === c.trigger.table && r.trigger_id === c.trigger.id && Number(r.trigger_seq) === c.trigger.seq)), workers: await rd(() => read(g.worker.list, 'workers', []), 'worker.list') } : {}; // this claim is not a used relaunch
+    const roundSteps = (await rd(() => read(g.policy.list, 'rows', []), 'policy.list')).filter((r) => r.seq !== seq); // the rounds read the step log, without this step's own claim
+    const same = due({ runId, tasks, integrations, roundSteps, ...rl, ...(await rd(() => extras(tasks, run), 'run.get or failures')), ...(dataDir ? { isKilled: (w) => KM.isKilled(dataDir, w.id, w.pid, w.pid_created) } : {}) }).find((d) => keyOf(d.step, d.trigger) === keyOf(c.step, c.trigger));
+    if (same && (await rd(() => haltedNow(run), 'task.list or policy.list')).has(c.task_id)) return `E_NOT_NOW: ${c.task_id} was halted after the step was claimed; the claim is reopened and the step retaken if the halt is lifted`;
     if (!same) return `E_NOT_NOW: the plan or the facts changed after the claim: ${c.step} on ${c.trigger.table}:${c.trigger.id} is no longer due; the claim is reopened and the step retaken if it is due again`;
     if ((same.policy_rev ?? null) !== (c.policy_rev ?? null)) return `E_NOT_NOW: the plan moved from rev ${c.policy_rev} to rev ${same.policy_rev} after the claim; the claim is reopened and the step retaken`;
     return null;
@@ -260,7 +263,13 @@ function createPolicyExecutor({ core, runId, assignFor, spawnFor = null, restart
     async function finishStep() {
     let res;
     try {
-      const why = await stillDue(c, row.seq).catch((e) => { if (!(e && e.stillDueRead)) throw e; return `E_NOT_NOW: the facts could not be read after the claim (${errText(e)}); the claim is reopened and the step retaken`; });
+      const rk = keyOf(c.step, c.trigger);
+      const why = await stillDue(c, row.seq).then((w) => { readFails.delete(rk); return w; }, (e) => {
+        if (!(e && e.stillDueRead)) throw e;
+        const f = readFails.get(rk) || { n: 0, since: Date.now() }; f.n += 1; readFails.set(rk, f);
+        if (f.n >= READ_FAIL_MAX || Date.now() - f.since >= READ_FAIL_MS) { readFails.delete(rk); throw Object.assign(new Error(`the ${e.stillDueRead} read failed ${f.n} times in a row over ${Math.round((Date.now() - f.since) / 1000)} s after the claim: ${errText(e)}`), { code: 'E_READ_FAILED' }); }
+        return `E_NOT_NOW: the facts could not be read after the claim (${errText(e)}); the claim is reopened and the step retaken`;
+      });
       const over = why ? null : await budgetRefusal(c);
       res = why ? { outcome: 'skipped', error: why } : over ? { outcome: c.step === 'relaunch' ? 'skipped' : 'exception', error: over } : await STEPS.run(c, { core: stepCore, runId, assign: assignFor(stepCore), spawn: spawnFor ? spawnFor(stepCore) : null, restart: restartWorker, restartOnce: (step) => restartOnce(step, row.seq), stop: stopWorker, dataDir });
     } catch (e) { res = { outcome: 'exception', error: errText(e) }; }
