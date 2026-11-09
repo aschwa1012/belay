@@ -108,6 +108,7 @@ async function run(w, ctx, ev) {
     const t = { id: ev.task_ids[ev.next] };
     if (ev.cancelled) { out.push({ task_id: t.id, cancelled: true, by: ev.cancelled }); recordFailure(ctx, w, t.id, 'E_CANCELLED', ev.cancelled, ev.turn); continue; }
     try {
+      if (w.substrate === 'codex') await require('./handback-commit.cjs').handBack(w, ctx, t.id); // Codex cannot commit in its sandbox: belay does, before the hand-back is judged
       const row = await core.task.evaluate({ task_id: t.id, worktree: w.worktree, trigger: 'release', cancel_key: ev.key });
       out.push(summaryOf(row, await workOf(core, row)));
       // ADR 0058 decision 8: the stop waits for the worker's queue itself, and this is not on it.

@@ -26,7 +26,8 @@ function of(task, ctx) {
 // ADR 0061 section 3: the hand-back names a `head` that is not the head the last results were judged at (a follow-up the
 // orchestrator evaluated itself, with no second hand-back). Either may be abbreviated, so one is compared as a prefix of the other.
 function handoffStale(task) {
-  const said = task.handoff && task.handoff.result && typeof task.handoff.result.head === 'string' ? task.handoff.result.head.trim().toLowerCase() : '';
+  const made = task.handoff && task.handoff.commit && task.handoff.commit.made === true && typeof task.handoff.commit.head === 'string' ? task.handoff.commit.head : null; // belay's own commit for a Codex worker is the head the hand-back stands at
+  const said = made ? made.toLowerCase() : task.handoff && task.handoff.result && typeof task.handoff.result.head === 'string' ? task.handoff.result.head.trim().toLowerCase() : '';
   const j = said ? require('./judged.cjs').judgedOf(task) : null; // the results' head, or the files check's on an older row
   const judged = j && typeof j.head === 'string' ? j.head.toLowerCase() : '';
   if (!/^[0-9a-f]{4,64}$/.test(said) || !judged) return false;

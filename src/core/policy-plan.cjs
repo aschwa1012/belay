@@ -12,10 +12,12 @@ const { isReservedWorkerId } = require('./reserved-ids.cjs');
 
 // The worker agent types a spawn may name. Kept here because the core imports nothing from src/run; a test pins it to agent-defaults.cjs WORKER_TYPES.
 const AGENT_TYPES = ['coder', 'tester', 'reviewer', 'researcher'];
+// The substrates a build spawn may name (a reviewer is always Claude Code). Absent means claude-code.
+const BUILD_SUBSTRATES = ['claude-code', 'codex'];
 
 // field -> the one value (or shape) v1 accepts. `review` is a shape; the rest are a single word.
 const V1_ACCEPTS = Object.freeze({
-  build: 'a worker id ({ worker }) or a spawn ({ spawn: { agent_type, worker_id? } }): who builds an open task once its dependencies are done',
+  build: 'a worker id ({ worker }) or a spawn ({ spawn: { agent_type, worker_id?, substrate? } }; substrate claude-code or codex): who builds an open task once its dependencies are done',
   review: 'a worker id ({ worker }) or a spawn ({ spawn: { agent_type, worker_id? } })',
   fix: Object.freeze(['builder']),
   re_review: Object.freeze(['refuter']),
@@ -37,11 +39,13 @@ function checkReview(v, where) {
   if (k !== 'spawn') throw notAccepted(`${where}.${k}`, undefined, 'worker, spawn');
   const s = v.spawn;
   if (!s || typeof s !== 'object' || Array.isArray(s)) throw err('E_ARGS', `${where}.spawn must be an object with agent_type`, { field: `${where}.spawn` });
-  for (const sk of Object.keys(s)) if (sk !== 'agent_type' && sk !== 'worker_id') throw notAccepted(`${where}.spawn.${sk}`, undefined, 'agent_type, worker_id');
+  const isBuild = where.endsWith('.build') || where === 'build';
+  for (const sk of Object.keys(s)) if (sk !== 'agent_type' && sk !== 'worker_id' && !(isBuild && sk === 'substrate')) throw notAccepted(`${where}.spawn.${sk}`, undefined, isBuild ? 'agent_type, worker_id, substrate' : 'agent_type, worker_id');
+  if (s.substrate !== undefined && !BUILD_SUBSTRATES.includes(s.substrate)) throw err('E_ARGS', `${where}.spawn.substrate must be one of ${BUILD_SUBSTRATES.join(', ')}`, { field: `${where}.spawn.substrate` });
   if (!AGENT_TYPES.includes(s.agent_type)) throw err('E_ARGS', `${where}.spawn.agent_type must be one of ${AGENT_TYPES.join(', ')}`, { field: `${where}.spawn.agent_type` });
   if (s.worker_id !== undefined && !isPathId(s.worker_id)) throw err('E_ARGS', `${where}.spawn.worker_id: ${pathIdMessage('worker_id', s.worker_id)}`, { field: `${where}.spawn.worker_id` });
   if (s.worker_id !== undefined && isReservedWorkerId(s.worker_id)) throw err('E_ARGS', `${where}.spawn.worker_id: ids starting knowledge-, notereview-, scrub- or archreview- are reserved for belay's own workers`, { field: `${where}.spawn.worker_id`, reason: 'reserved' });
-  return { spawn: { agent_type: s.agent_type, ...(s.worker_id !== undefined ? { worker_id: s.worker_id } : {}) } };
+  return { spawn: { agent_type: s.agent_type, ...(s.worker_id !== undefined ? { worker_id: s.worker_id } : {}), ...(s.substrate !== undefined ? { substrate: s.substrate } : {}) } };
 }
 
 // The plan as stated: an object whose fields are in V1_ACCEPTS with accepted values. Returns a fresh normalised object; throws E_ARGS and writes
@@ -102,7 +106,7 @@ function forAmend(runRow, task, statedPolicy) {
 function tag(policy) {
   if (!policy || typeof policy !== 'object') return null;
   const parts = [];
-  const who = (x) => (x.worker !== undefined ? x.worker : `spawn(${x.spawn.agent_type})`);
+  const who = (x) => (x.worker !== undefined ? x.worker : `spawn(${x.spawn.agent_type}${x.spawn.substrate === 'codex' ? ',codex' : ''})`);
   if (policy.build) parts.push(`b:${who(policy.build)}`);
   if (policy.review) parts.push(`r:${who(policy.review)}`);
   if (policy.fix) parts.push(`f:${policy.fix}`);
