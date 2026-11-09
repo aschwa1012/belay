@@ -178,9 +178,9 @@ async function embedForIndex(ctx, w, lv) {
 // The receipt's detail, one JSON text in the event's `message` (the store has no scalar columns for it):
 // { hybrid, queries: [{ label, ms, ok }], failure?: { code, message } }. `hybrid` is true only when a semantic ranking
 // contributed to the index's order; `failure` is why a query or the semantic signal did not.
-function receiptDetail(emb, hybrid, failure) {
+function receiptDetail(emb, hybrid, failure, bar = null) {
   const f = failure || emb.failure;
-  return JSON.stringify({ hybrid, queries: emb.queries.map(({ label, ms, ok }) => ({ label, ms, ok })), ...(f ? { failure: { code: f.code, message: String(f.message || '').slice(0, 160) } } : {}) });
+  return JSON.stringify({ hybrid, ...(bar ? { bar } : {}), queries: emb.queries.map(({ label, ms, ok }) => ({ label, ms, ok })), ...(f ? { failure: { code: f.code, message: String(f.message || '').slice(0, 160) } } : {}) });
 }
 
 // ADR 0034 decision 2 under `required`: the owner's hook has paused the run, so this launch injects no index. The receipt is
@@ -194,6 +194,9 @@ async function stopReceipt(ctx, w, emb, convo) {
 async function offReceipt(ctx, w, emb, convo) {
   return recordIndex(ctx, w, convo, { ok: 1, row_ids: [], bytes: 0, dropped: 0, over_budget: 0, message: JSON.stringify({ hybrid: false, memory: 'off', queries: emb.queries.map(({ label, ms, ok }) => ({ label, ms, ok })), ...(emb.failure ? { failure: { code: emb.failure.code, message: String(emb.failure.message || '').slice(0, 160) } } : {}) }) });
 }
+
+// The one line a worker gets when the project has notes in scope and none passed the index's relevance bar.
+const noneListedLine = (n) => `No project note passed the index's relevance bar for this task (${n} note${n === 1 ? '' : 's'} in scope); memory_search can still look.`;
 
 // What a worker is told when its first-message index was refused (E_INDEX_BOUND, E_SEMANTIC_REQUIRED): belay's own words, no note text.
 function noIndexNotice(e) {
@@ -246,9 +249,11 @@ async function indexBlock(w, ctx, prompt, given, replacing = null) {
   const semFailure = emb.embeddings.length && !hybrid && rel.semantic && typeof rel.semantic === 'object' ? rel.semantic : null;
   await recordIndex(ctx, w, convo, {
     ok: 1, row_ids: got.row_ids, bytes: got.bytes, sha256: got.sha256,
-    dropped: got.dropped > 0 ? 1 : 0, over_budget: got.over_budget ? 1 : 0, message: receiptDetail(emb, hybrid, semFailure),
+    dropped: got.dropped > 0 ? 1 : 0, over_budget: got.over_budget ? 1 : 0, message: receiptDetail(emb, hybrid, semFailure, got.bar || null),
   });
-  return got.bytes > 0 ? got.text : '';
+  if (got.bytes > 0) return got.text;
+  // The project has notes in scope and none passed the bar: say so in one line, so silence is not read as "no notes" (nothing is said when there are none).
+  return got.none_passed ? noneListedLine(got.considered) : '';
 }
 
 // Eval-only `native_memory` run lever (the run row's memory levers): the folder a Claude Code worker gets when the spawn call names none.

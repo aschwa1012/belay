@@ -256,17 +256,38 @@ async function index(E, caller, c) {
     const hits = ps > 0 ? 0 : subjectHits(r.b && r.b.subjects, prep, norm);
     // A path match whose idf is 0 names a task file but adds no rank; it is still a fact, so the overflow line counts it.
     const fact = ps > 0 || hits > 0 || (paths.length > 0 && pathMatches(paths, ownedF));
-    return { r, ps, hits, fact, tier: ps > 0 ? 1 : hits > 0 ? 2 : 3, rel: rel.scores.get(r.id) || 0 };
+    const cosine = sel.cos.has(r.id) ? sel.cos.get(r.id) : null;
+    return { r, ps, hits, fact, cosine, tier: ps > 0 ? 1 : hits > 0 ? 2 : 3, rel: rel.scores.get(r.id) || 0 };
   }).sort((a, b) => (
     (heldTier(a) - heldTier(b)) || (b.rel - a.rel) || (a.tier - b.tier) || (b.ps - a.ps) || (b.hits - a.hits)
     || ((b.r.status === 'verified') - (a.r.status === 'verified')) || (b.r.created_at - a.r.created_at)
     || (a.r.id < b.r.id ? -1 : a.r.id > b.r.id ? 1 : 0)
   ));
 
+  // The bar (research 2026-11-09): a note is listed when its best cosine to the task's queries reaches index_min_relevance, or it matches the task by
+  // path or subject; then at most index_max_notes. The cosine floor was measured on nano only, so with another embedder, or with no vector list
+  // (keyword-only), only the path and subject facts qualify, and the receipt says so.
+  const minRel = typeof lv.index_min_relevance === 'number' ? lv.index_min_relevance : 0.4;
+  const maxNotes = Number.isInteger(lv.index_max_notes) ? lv.index_max_notes : 5;
+  const nano = c.nano !== false; // the caller says whether the tier is nano, the one the bar was measured on
+  const useCos = nano && sel.info && sel.info.semantic_contributed === true && sel.cos.size > 0;
+  const why = (x) => (minRel === 0 ? 'rank' : useCos && x.cosine !== null && x.cosine >= minRel ? 'cos' : x.ps > 0 ? 'path' : x.hits > 0 ? 'subject' : null); // index_min_relevance 0 turns the bar off: rank order, up to the cap
+  const passing = ranked.filter((x) => why(x) !== null);
+  const shown = passing.slice(0, maxNotes);
+  const cutByFloor = ranked.length - passing.length, cutByCap = passing.length - shown.length;
+  const bestCut = ranked.filter((x) => why(x) === null && x.cosine !== null).reduce((m, x) => (m === null || x.cosine > m ? x.cosine : m), null);
+  const barInfo = {
+    bar: {
+      min_relevance: minRel, max_notes: maxNotes, by: minRel === 0 ? 'off' : useCos ? 'cosine_or_facts' : 'facts_only',
+      ...(useCos || minRel === 0 ? {} : { reason: !nano ? 'the embedder is not the one the relevance bar was measured on' : 'no vector list ranked the notes (keyword only)' }),
+      listed: shown.map((x) => ({ id: x.r.id, cos: x.cosine === null ? null : Math.round(x.cosine * 1000) / 1000, why: why(x) })),
+      cut_by_floor: cutByFloor, cut_by_cap: cutByCap, best_cut_cos: bestCut === null ? null : Math.round(bestCut * 1000) / 1000,
+    },
+  };
   const trust = lv.notes_trust_wording === true;
   const header = trust ? HEADER_ON : HEADER_OFF;
-  const items = ranked.map(({ r }, i) => ({ id: r.id, text: lineOf(r, r.b, trust, caller.run_id, holds.get(r.id) || null), priority: ranked.length - i }));
-  const factIds = new Set(ranked.filter((x) => x.fact).map((x) => x.r.id));
+  const items = shown.map(({ r }, i) => ({ id: r.id, text: lineOf(r, r.b, trust, caller.run_id, holds.get(r.id) || null), priority: shown.length - i }));
+  const factIds = new Set(passing.filter((x) => x.fact).map((x) => x.r.id));
   const run = (footer) => fit(items, { max_bytes: o.maxBytes, header, footer, drop_order: 'priority-then-oldest' });
   let fitted = run(FRAME.end);
   let overflow = factIds.size - fitted.kept.filter((id) => factIds.has(id)).length;
@@ -286,7 +307,8 @@ async function index(E, caller, c) {
   const info = {
     // A held note is listed last, so a tight budget cuts it first: the orchestrator and the operator are told which ones were cut. Workers never see held notes.
     ...(heldCut.length ? { held_unlisted: heldCut } : {}),
-    considered: found.length, excluded_already_injected: excluded, candidates: sel.candidates, ...(rel.info ? { relevance: rel.info } : {}),
+    considered: found.length, excluded_already_injected: excluded, candidates: sel.candidates, ...(rel.info ? { relevance: rel.info } : {}), ...barInfo,
+    none_passed: found.length > 0 && passing.length === 0,
     notes: { path: ranked.filter((x) => x.tier === 1).length, term: ranked.filter((x) => x.tier === 2).length, unlisted_path_or_term: Math.max(overflow, 0) },
   };
   if (!fitted.kept.length) return { ...empty(found.length, excluded, ranked.length, fitted.over_budget), ...info };

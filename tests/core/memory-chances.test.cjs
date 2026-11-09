@@ -16,7 +16,7 @@ const RUN = 'rc-rec', OFF = 'rc-off', PEN = 'rc-pen', RFL = 'rc-rfl';
 const orch = (run) => callerFor('orchestrator', { run_id: run });
 const worker = (id, run) => callerFor('worker', { run_id: run, worker_id: id });
 const call = (run, method, args = {}) => E.handle(method, { caller: orch(run), ...args });
-const base = { project: 'acme', notes: true, first_message_index: true };
+const base = { project: 'acme', notes: true, index_min_relevance: 0, index_max_notes: 20, first_message_index: true };
 
 before(async () => {
   dir = sandbox();
