@@ -355,3 +355,59 @@ test('the reason of a refused commit is recorded: hook, add, head, secret, and b
     assert.strictEqual((await r.row()).handoff.commit.reason, 'hook');
   } finally { await r.e.close(); }
 });
+
+test('a hook refusal leaves belay\'s own add staged: a re-release with no new edits commits it (or fails again), and is never evaluated uncommitted', async () => {
+  const r = await released('hc-staged');
+  try {
+    const hook = git(r.tree, 'rev-parse', '--path-format=absolute', '--git-path', 'hooks/pre-commit');
+    fs.mkdirSync(path.dirname(hook), { recursive: true });
+    fs.writeFileSync(hook, '#!/bin/sh\necho "lint says no" >&2\nexit 1\n', { mode: 0o755 });
+    write(r.tree, 'src/mod.txt', 'two\n'); write(r.tree, 'src/new.txt', 'n\n'); fs.unlinkSync(path.join(r.tree, 'src/gone.txt'));
+    await r.release();
+    const first = await r.handBack();
+    assert.deepStrictEqual([first.made, first.reason], [false, 'hook']);
+    assert.ok(git(r.tree, 'diff', '--cached', '--name-only').length > 0, 'the refused add stays staged');
+    // The worker is sent back and re-releases with no file edit: still refused, then (hook fixed) committed with every staged path.
+    const again = await r.e.orch.task.assign({ task_id: r.task.id, worker_id: 'cx1' });
+    r.lease = again.new_lease.id; await r.release({ summary: 'again' });
+    const second = await r.handBack();
+    assert.deepStrictEqual([second.made, second.reason], [false, 'hook'], 'a tree with only staged changes is not "nothing to commit"');
+    fs.unlinkSync(hook);
+    const again2 = await r.e.orch.task.assign({ task_id: r.task.id, worker_id: 'cx1' });
+    r.lease = again2.new_lease.id; await r.release({ summary: 'third' });
+    const third = await r.handBack();
+    assert.strictEqual(third.made, true, third.error);
+    assert.deepStrictEqual([...third.paths].sort(), ['src/gone.txt', 'src/mod.txt', 'src/new.txt']);
+    assert.strictEqual(git(r.tree, 'status', '--porcelain'), '');
+  } finally { await r.e.close(); }
+});
+
+test('parseStatus: staged, unstaged and untracked paths, both names of a rename, new paths apart', () => {
+  const out = ['M  a.txt', ' M b.txt', 'A  c.txt', '?? d.txt', 'R  new.txt', 'old.txt', 'D  e.txt', ''].join('\0');
+  const p = HC.parseStatus(out);
+  assert.deepStrictEqual(p.all.sort(), ['a.txt', 'b.txt', 'c.txt', 'd.txt', 'e.txt', 'new.txt', 'old.txt']);
+  assert.deepStrictEqual(p.fresh.sort(), ['c.txt', 'd.txt']);
+});
+
+test('a stop that ends the commit is recorded as E_CANCELLED, never as a refused commit', async () => {
+  const r = await released('hc-stop-record');
+  try {
+    const hook = git(r.tree, 'rev-parse', '--path-format=absolute', '--git-path', 'hooks/pre-commit');
+    const marker = path.join(r.e.dir, 'hook.started').split('\\').join('/');
+    fs.mkdirSync(path.dirname(hook), { recursive: true });
+    fs.writeFileSync(hook, `#!/bin/sh\necho 1 > "${marker}"\nsleep 60\n`, { mode: 0o755 });
+    write(r.tree, 'src/mod.txt', 'two\n'); await r.release();
+    const RE = require('../../src/run/release-eval.cjs');
+    const w = { id: 'cx1', substrate: 'codex', worktree: r.tree, turns: 1, releaseIds: { turn: 1, ids: [r.task.id] } };
+    const ev = RE.startRelease(w, r.ctx);
+    assert.ok(ev, 'an evaluation started');
+    for (const end = Date.now() + 30000; !fs.existsSync(marker) && Date.now() < end;) await new Promise((res) => setTimeout(res, 25));
+    assert.ok(fs.existsSync(marker), 'the hook is running');
+    RE.cancelEvaluation(w, 'stop');
+    await within(ev.promise, 30000);
+    const codes = ((await r.e.h.memory.events({ run_id: RUN, kinds: ['release_failed'] })).events || []).map((x) => x.code);
+    assert.ok(codes.includes('E_CANCELLED'), JSON.stringify(codes));
+    assert.ok(!codes.includes('E_COMMIT'), JSON.stringify(codes));
+    assert.strictEqual(git(r.tree, 'rev-parse', 'HEAD'), r.base);
+  } finally { await r.e.close(); }
+});

@@ -30,7 +30,7 @@ async function run(cwd, args, { timeoutMs = GIT_TIMEOUT_MS, env = null, register
   // Every call also runs with no fsmonitor program and no untracked cache, so a global core.fsmonitor=true starts no daemon that outlives the call (invariant 2) and no cache file is written (ADR 0065 amendment 3). `argv` in the result stays as asked.
   const safe = !env && HARDENED.has(args[0]);
   const r = safe
-    ? await safeGit(args[0] === 'diff' ? ['diff', '--no-ext-diff', '--no-textconv', ...args.slice(1)] : args, cwd, timeoutMs, { tail: LIST_TAIL, lineEndings: true, register })
+    ? await safeGit(args[0] === 'diff' ? ['diff', '--no-ext-diff', '--no-textconv', ...args.slice(1)] : args, cwd, timeoutMs, { tail: LIST_TAIL, lineEndings: true, register, ...(onChild ? { onChild } : {}) })
     : await runCommand(['git', '-c', 'core.fsmonitor=false', '-c', 'core.untrackedCache=false', ...args], cwd, timeoutMs, { env: { ...gitEnv(), ...(env || {}) }, tail: LIST_TAIL, register, ...(onChild ? { onChild } : {}) });
   return {
     ok: r.executable && r.exit_code === 0 && !r.timed_out && !r.truncated, exit_code: r.exit_code, timed_out: r.timed_out,

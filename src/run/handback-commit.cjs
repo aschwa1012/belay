@@ -25,8 +25,21 @@ function subjectOf(task, workerId) {
 const norm = (p) => { const x = String(p || '').replace(/\\/g, '/').replace(/\/+$/, ''); return process.platform === 'win32' ? x.toLowerCase() : x; };
 const secretsIn = (paths) => paths.filter((p) => SECRET.test(String(p).split('/').pop()));
 
-// The NUL-separated paths git printed.
-const listOf = (r) => (r.ok ? r.stdout.split('\0').filter(Boolean) : null);
+// `git status --porcelain -z`: every path with a change staged, unstaged or untracked (a rename or copy puts its old path second, and both count),
+// and the paths that are new (untracked or staged as added), which are the only ones the secret rule refuses.
+function parseStatus(out) {
+  const parts = String(out).split('\0');
+  const all = []; const fresh = [];
+  for (let i = 0; i < parts.length; i += 1) {
+    const e = parts[i];
+    if (!e) continue;
+    const xy = e.slice(0, 2), p = e.slice(3);
+    all.push(p);
+    if (xy === '??' || xy[0] === 'A') fresh.push(p);
+    if (/[RC]/.test(xy)) { i += 1; if (parts[i]) all.push(parts[i]); }
+  }
+  return { all: [...new Set(all)], fresh };
+}
 
 // One commit job: its git calls share a deadline and a cancel. `job.cancel(by)` ends the call in flight and refuses the next.
 function newJob(totalMs = TOTAL_MS) {
@@ -72,11 +85,10 @@ async function commitFor(w, task, job = newJob()) {
     const on = sym.ok ? sym.stdout.trim() : '';
     if (!on) return fact({ reason: 'head', error: 'HEAD is detached in the worktree; nothing was committed' });
     if (!branch || on !== `refs/heads/${branch}`) return fact({ reason: 'head', error: `the worktree is on ${on.replace(/^refs\/heads\//, '')}, not on the task's branch ${branch}; nothing was committed` });
-    // Everything git would add (modified, deleted, new; ignored files left out), under the job's bound and cancel like every other call.
-    const changed = listOf(await job.git(cwd, ['ls-files', '-z', '-m', '-d', '-o', '--exclude-standard']));
-    const fresh = listOf(await job.git(cwd, ['ls-files', '-z', '-o', '--exclude-standard']));
-    if (!changed || !fresh) return fact({ reason: 'bound', error: 'git could not list the worktree changes (cancelled, timed out or failed); nothing was committed' });
-    const dirty = [...new Set(changed)];
+    // Everything the commit will hold: staged (a refused earlier commit leaves belay's own add staged), unstaged and untracked; ignored files left out.
+    const st = await job.git(cwd, ['status', '--porcelain', '-z', '--untracked-files=all']);
+    if (!st.ok) return fact({ reason: reasonOf(st, 'git'), error: `git could not list the worktree changes: ${(st.stderr || `exit ${st.exit_code}`).slice(0, 200)}; nothing was committed` });
+    const { all: dirty, fresh } = parseStatus(st.stdout);
     if (!dirty.length) return fact({});
     const secrets = secretsIn(fresh);
     if (secrets.length) return fact({ reason: 'secret', error: `not committed: ${secrets.slice(0, 10).join(', ')} look${secrets.length === 1 ? 's' : ''} like a secret; remove ${secrets.length === 1 ? 'it' : 'them'} from the worktree or ignore ${secrets.length === 1 ? 'it' : 'them'}` });
@@ -112,4 +124,4 @@ async function handBack(w, ctx, taskId, ev = null) {
   } finally { if (ev) ev.cancelCommit = null; }
 }
 
-module.exports = { commitFor, handBack, subjectOf, newJob, secretsIn, reasonOf, TOTAL_MS };
+module.exports = { parseStatus, commitFor, handBack, subjectOf, newJob, secretsIn, reasonOf, TOTAL_MS };

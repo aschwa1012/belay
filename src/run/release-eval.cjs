@@ -111,6 +111,7 @@ async function run(w, ctx, ev) {
       if (w.substrate === 'codex') { // Codex cannot commit in its sandbox: belay does, before the hand-back is judged
         const c = await require('./handback-commit.cjs').handBack(w, ctx, t.id, ev);
         if (c && c.made === false && c.error) { // nothing was committed that should have been: the work is not judged as if it were, and the task stays released
+          if (ev.cancelled) { out.push({ task_id: t.id, cancelled: true, by: ev.cancelled }); recordFailure(ctx, w, t.id, 'E_CANCELLED', ev.cancelled, ev.turn); continue; } // a stop ended the commit: that is the cancel, not a refusal
           recordFailure(ctx, w, t.id, 'E_COMMIT', c.error, ev.turn);
           out.push({ task_id: t.id, error: 'E_COMMIT', message: String(c.error).slice(0, 200) });
           continue;
