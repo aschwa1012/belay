@@ -349,3 +349,26 @@ test('an index that dropped its vector lists, or was refused for its work, write
   assert.ok(rev && detail(rev).refused === true, 'a refusal is recorded as such');
   assert.ok(refused.events.some((e) => e.kind === 'index_injected' && e.ok === 0), 'and the usual failed receipt stands');
 });
+
+test('a plan-spawned worker: the orchestrator never calls worker_spawn with memory_queries, the task carries the lines, and the first message holds the index built from them', async () => {
+  const TASK_LINES = ['stop --at just after midnight', 'lib/timer.js start and stop'];
+  const seenEmbed = [], seenIndex = [];
+  // The double does what the core does: with no extra_texts it embeds the task's own lines, labelled q:N, beside the spec.
+  const embed = async (a) => {
+    seenEmbed.push(a);
+    const lines = a.extra_texts ? [] : TASK_LINES;
+    return { queries: [okQuery(), ...lines.map((_, i) => okQuery(`q:${i + 1}`, 5))], on_embedder_failure: 'required', embed_ms: 20 };
+  };
+  await withManager(embed, async (m, sb, core) => {
+    core.memory.index = async (a) => {
+      seenIndex.push(a);
+      const labels = (a.query_embeddings || []).map((q) => q.label);
+      return { text: `INDEX from ${labels.join(',')}`, bytes: 9, row_ids: ['a'], dropped: 0, over_budget: false, sha256: 'f'.repeat(64), relevance: { semantic_contributed: true } };
+    };
+    // what the plan executor's spawn passes: no memory_queries
+    await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, task_id: 't1', agent_type: 'coder', worker_id: 'bld-1' });
+    assert.ok(!('extra_texts' in seenEmbed[0]), 'no extra texts were sent');
+    assert.deepStrictEqual(seenIndex[0].query_embeddings.map((q) => q.label), ['task', 'q:1', 'q:2']);
+    assert.match(m._worker('bld-1').firstMessage, /INDEX from task,q:1,q:2/);
+  });
+});

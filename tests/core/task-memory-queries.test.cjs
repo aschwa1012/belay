@@ -57,6 +57,9 @@ test('task_create validates the lines like worker_spawn: at most 4, none blank, 
   await refuses(make(['ok', '   ']), /memory_queries\[1\]/);
   await refuses(make(['x'.repeat(161)]), /161 bytes/);
   await refuses(make('not a list'), /at most 4|array/);
+  await refuses(make(['clear the screen \u001b[2J']), /control character/);
+  await refuses(make(['bell \u0007']), /memory_queries\[0\] has a control character/);
+  await refuses(make(['\u007f']), /control character/);
   await refuses(orch.task.create({ tasks: [{ spec: 'ok' }, { spec: 'y', memory_queries: ['x'.repeat(161)] }] }), /161 bytes/);
   assert.strictEqual((await orch.task.list({})).tasks.length, 0, 'nothing was written');
 });
@@ -65,6 +68,8 @@ test('the lines are stored trimmed on the task row, and every later row of the t
   const { orch, handBack } = await ctx();
   const t = await orch.task.create({ spec: 'work', acceptance: PASS, memory_queries: ['  parse   --at  ', 'lib/timer.js'] });
   assert.deepStrictEqual(t.memory_queries, ['parse --at', 'lib/timer.js']);
+  const folded = await orch.task.create({ spec: 'folds', memory_queries: ['two\twords', 'line\nbreak'] });
+  assert.deepStrictEqual(folded.memory_queries, ['two words', 'line break'], 'tab and line breaks fold to a space');
   const plain = await orch.task.create({ spec: 'no lines' });
   assert.strictEqual(plain.memory_queries ?? null, null, 'none given, none stored');
   await handBack(t.id, { branch: 'b' }); // assigned, then released with a result: two more rows of the task
@@ -78,6 +83,7 @@ test('the batch form stores each item\'s lines', async () => {
   assert.deepStrictEqual((await orch.task.get({ task_id: r.tasks[2].id })).memory_queries, ['b line', 'c line']);
 });
 
+// The lines reach a worker through its first-message index, which is built when a worker is spawned or relaunched: a task handed to a live worker by task.assign gets no index.
 test('a repairs task made with no lines of its own carries the repaired work\'s; one with lines keeps its own', async () => {
   const { orch } = await ctx();
   const w = await orch.task.create({ spec: 'work', memory_queries: LINES });

@@ -201,6 +201,9 @@ const noneListedLine = (n, held = 0) => (held > 0
   ? `No further project note matched this task's queries closely enough to list here (${n} note${n === 1 ? '' : 's'} in scope). Some may still apply: before you change a file or command, run memory_search on it.`
   : `The project has ${n} note${n === 1 ? '' : 's'}; none matched this task's queries closely enough to list here. Some may still apply: before you change a file or command, run memory_search on it.`);
 
+// The line when the index could not rank the notes against the task (keyword mode after an embedder failure, or notes embedded with another model): no floor was applied, so it must not say that nothing matched.
+const unrankedLine = (n) => `The project has ${n} note${n === 1 ? '' : 's'}; this run could not rank them against this task, so none are listed here. Before you change a file or command, run memory_search on it.`;
+
 // What a worker is told when its first-message index was refused (E_INDEX_BOUND, E_SEMANTIC_REQUIRED): belay's own words, no note text.
 function noIndexNotice(e) {
   return `NO NOTE INDEX WAS INJECTED into this message: the index was refused (${codeOf(e)}: ${String((e && e.message) || e).slice(0, 240)}). This is not a pause and your task is unchanged. Use the memory_search tool to look for what the task may touch before you start, and do not assume that the project has no notes on it.`;
@@ -256,6 +259,8 @@ async function indexBlock(w, ctx, prompt, given, replacing = null) {
   });
   if (got.bytes > 0) return got.text;
   // The project has notes in scope and none passed the bar: say so in one line, so silence is not read as "no notes" (nothing is said when there are none).
+  const inScope = (got.candidates && Number.isInteger(got.candidates.scope) ? got.candidates.scope : got.considered) + (got.excluded_already_injected || 0);
+  if (got.unranked) return unrankedLine(inScope);
   return got.none_passed ? noneListedLine((got.candidates && Number.isInteger(got.candidates.scope) ? got.candidates.scope : got.considered) + (got.excluded_already_injected || 0), got.excluded_already_injected || 0) : '';
 }
 

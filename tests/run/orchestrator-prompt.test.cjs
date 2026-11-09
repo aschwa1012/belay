@@ -100,7 +100,7 @@ test('both orchestrator prompts ask for 2 to 4 memory_queries at task creation o
     assert.ok(!/memory_queries/.test(text.replace('{{memory_queries_line}}', '')), `${f}: the sentence lives only behind the placeholder`);
     const on = substituteLevers(text, parseLevers({ memory: { first_message_index: true } }), 0);
     assert.match(on.text, /`depends_on`: task ids that must be `done` first\. Also give `memory_queries`: 2 to 4 short search lines/, `${f} asks for memory_queries on the task_create fields with the index on`);
-    assert.match(on.text, /each worker on the task is shown the project notes that match/, `${f}: says what the lines are for`);
+    assert.match(on.text, /a worker spawned or relaunched for the task is shown the project notes that match/, `${f}: says what the lines are for`);
     assert.ok(!/worker will be in/.test(on.text), `${f}: the old worker_spawn request is gone`);
     assert.strictEqual(on.substituted.memory_queries_line, 1);
     // D58: with every lever off the prompt asks for nothing the run never reads.

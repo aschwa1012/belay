@@ -327,7 +327,7 @@ const MIGRATIONS = [
   // The substrate moved the session to another model (model-switch.cjs): JSON text { at, from, to, trigger, scope, category }; null until it does.
   'ALTER TABLE worker ADD COLUMN model_fallback TEXT',
   'ALTER TABLE run ADD COLUMN orch_model_fallback TEXT',
-  // ADR 0042 amendment (proposed): the orchestrator's search lines for the task (JSON array of up to 4 short strings, nullable), carried by every later task row; the first-message index of every worker on the task embeds them.
+  // ADR 0042 amendment (proposed): the orchestrator's search lines for the task (JSON array of up to 4 short strings, nullable), carried by every later task row; the first-message index of a worker spawned or relaunched for the task embeds them (a task handed to a live worker by task.assign gets no index).
   'ALTER TABLE task ADD COLUMN memory_queries TEXT',
 ];
 

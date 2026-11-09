@@ -18,7 +18,7 @@ const DEFAULT_BOUND_MS = 3000;
 function createKnowledgeGate({ role, runId, storeExists, openCore, log, boundMs = DEFAULT_BOUND_MS, attachedRun = () => null }) {
   let answer = null; // true or false once a read has answered; null until then
   let notes = false; // ADR 0047: the same read also answers whether the run has the notes lever on
-  let indexOn = false; // and the first_message_index lever: the orchestrator's worker_spawn lists memory_queries only then
+  let indexOn = false; // and the first_message_index lever: the orchestrator's task_create and worker_spawn list memory_queries only then
   let inflight = null;
 
   async function read() {

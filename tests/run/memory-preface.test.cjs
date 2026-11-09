@@ -44,14 +44,14 @@ const received = (f) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8').split('\n
 
 // The fake core plus run.get (levers) and the memory methods the preface calls. `rows` is what memory.index
 // would rank; it honours exclude_ids as the real method does and returns a fixed text for what is left.
-function memoryCore({ levers = null, rows = [], failIndex = false, failEvents = false, noneListed = 0, heldBack = 0, scope = 0 } = {}) {
+function memoryCore({ levers = null, rows = [], failIndex = false, failEvents = false, noneListed = 0, heldBack = 0, scope = 0, unranked = false } = {}) {
   const core = createFakeCore({ runId: 'run-fake', resumeLineText: RL });
   const events = [];
   core.run = { get: async () => ({ run: { memory_levers: levers === null ? null : JSON.stringify(levers) } }) };
   core.memory.index = async (a) => {
     core.calls.push({ method: 'memory.index', args: a });
     if (failIndex) { const e = new Error('index down'); e.code = 'E_OWNER_LOST'; throw e; }
-    if (noneListed) return { text: '', bytes: 0, row_ids: [], dropped: 0, over_budget: false, sha256: 'f'.repeat(64), considered: noneListed, excluded_already_injected: heldBack, ...(scope ? { candidates: { scope } } : {}), none_passed: true, bar: { min_relevance: 0.4, max_notes: 5, by: 'cosine_or_facts', listed: [], cut_by_floor: noneListed, cut_by_cap: 0, best_cut_cos: 0.31 } };
+    if (noneListed) return { text: '', bytes: 0, row_ids: [], dropped: 0, over_budget: false, sha256: 'f'.repeat(64), considered: noneListed, excluded_already_injected: heldBack, ...(scope ? { candidates: { scope } } : {}), ...(unranked ? { unranked: true } : { none_passed: true }), bar: { min_relevance: 0.4, max_notes: 5, by: 'cosine_or_facts', listed: [], cut_by_floor: noneListed, cut_by_cap: 0, best_cut_cos: 0.31 } };
     const left = rows.filter((r) => !(a.exclude_ids || []).includes(r));
     const text = left.length ? `INDEX ${left.join(' ')}` : '';
     return { text, bytes: Buffer.byteLength(text), row_ids: left, dropped: 0, over_budget: false, sha256: 'f'.repeat(64), considered: rows.length, excluded_already_injected: rows.length - left.length };
@@ -156,6 +156,16 @@ ${PROMPT}${PL}${HB}`);
     assert.ok(Buffer.byteLength(line) <= 200, 'about 190 bytes');
     assert.strictEqual(core.events[0].bytes, 0);
     assert.strictEqual(JSON.parse(core.events[0].message).bar.best_cut_cos, 0.31);
+  });
+});
+
+test('notes in scope that could not be ranked (keyword mode, another embedder): the worker is told so, never that none matched', async () => {
+  const core = memoryCore({ levers: { first_message_index: true }, noneListed: 4, unranked: true });
+  await run(core, async (m, sb) => {
+    await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w5', task_id: 't1' });
+    const line = 'The project has 4 notes; this run could not rank them against this task, so none are listed here. Before you change a file or command, run memory_search on it.';
+    assert.ok(m._worker('w5').firstMessage.includes(line));
+    assert.ok(!m._worker('w5').firstMessage.includes('none matched'));
   });
 });
 

@@ -38,7 +38,7 @@ const MEMORY_USE_NOTES = [
 ].join('\n');
 const MEMORY_OUTCOME_NOTES = 'record the outcome with `namespace: "summary"`, ';
 const MEMORY_VERIFY_RULE = ' Use `mcp__belay__memory_verify` only with a receipt.'; // a notes run's orchestrator has no memory_verify
-const MEMORY_QUERIES_LINE = ' Also give `memory_queries`: 2 to 4 short search lines (each under 160 bytes) naming the commands, files, symbols or behaviours the work touches, so each worker on the task is shown the project notes that match.';
+const MEMORY_QUERIES_LINE = ' Also give `memory_queries`: 2 to 4 short search lines (each under 160 bytes) naming the commands, files, symbols or behaviours the work touches, so a worker spawned or relaunched for the task is shown the project notes that match.';
 
 // The time-bound condition is observable only if the orchestrator is told the bound and can read elapsed time. `belay run` renders the run's
 // start and deadline into it as absolute UTC times (`opts.startedAt`), so the rule carries them through a compaction and needs no call the

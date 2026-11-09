@@ -256,7 +256,7 @@ test('through the adapter\'s wiring a review sent to a live worker is delivered 
   } finally { await e.close(); }
 });
 
-test('the review the plan makes carries the work\'s search lines, so the reviewer\'s first-message index is searched by them', async () => {
+test('the review the plan makes carries the work\'s search lines (a reviewer spawned or relaunched for it is shown the matching notes; one handed the task live is not)', async () => {
   const e = await env('review-lines');
   try {
     const { work } = await workDone(e, { review: { worker: 'rv' }, ...REST }, { create: { memory_queries: ['parse --at as the latest past time', 'lib/timer.js start and stop'] } });

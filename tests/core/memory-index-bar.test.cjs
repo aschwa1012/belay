@@ -11,6 +11,7 @@ const { core, sandbox, cleanup, callerFor } = require('./helpers.cjs');
 const { Store } = core('store.cjs');
 const { Engine } = core('engine.cjs');
 const L = core('memory-levers.cjs');
+const rows = core('rows.cjs');
 const NANO = require('../../src/core/retrieval-profiles.cjs').NANO; // the model the relevance bar was measured on
 
 let dir, store, E, n = 0;
@@ -157,13 +158,29 @@ test('with no vector list (keyword only) no note qualifies by the bar, and the r
   assert.deepStrictEqual(r.row_ids, []);
   assert.strictEqual(r.bar.by, 'none');
   assert.match(r.bar.reason, /keyword only/);
-  assert.strictEqual(r.none_passed, true);
+  assert.notStrictEqual(r.none_passed, true, 'nothing was scored, so "none matched" would be false');
+  assert.strictEqual(r.unranked, true, 'the worker is told the notes could not be ranked, not that none matched');
+});
+
+test('lines on the task that failed to embed do not loosen the bar: the spec alone meets the spec leg\'s 0.60, not the spec-only 0.55', async () => {
+  const space = fresh();
+  const mid = note(space, 'a claim at 0.58', at(0.58));
+  const task = (id, memory_queries) => rows.append(store, 'task', { id, run_id: RUN, spec: 'x', state: 'open', ...(memory_queries ? { memory_queries } : {}) }, 'orchestrator');
+  task('t-bar-lines', ['line one', 'line two']);
+  task('t-bar-none');
+  const failed = await index({ namespaces: [space], task_id: 't-bar-lines', query_embeddings: [spec(X)] });
+  assert.deepStrictEqual(failed.row_ids, [], 'a spec cosine of 0.58 is under 0.60');
+  assert.deepStrictEqual([failed.bar.subqueries, failed.bar.subqueries_embedded, failed.bar.spec_only], [2, 0, false], 'the bar records that the lines were present and failed');
+  assert.strictEqual(failed.none_passed, true);
+  const bare = await index({ namespaces: [space], task_id: 't-bar-none', query_embeddings: [spec(X)] });
+  assert.deepStrictEqual(bare.row_ids, [mid], 'a task with no lines at all meets the spec-only floor 0.55');
+  assert.deepStrictEqual([bare.bar.subqueries, bare.bar.spec_only], [0, true]);
 });
 
 test('notes in scope and none passing: none_passed is set with the count; no notes at all: it is not', async () => {
   const space = fresh();
-  note(space, 'unrelated gadget claim', Y);
-  note(space, 'another unrelated claim', [0, 0, 1]);
+  note(space, 'unrelated gadget claim', at(0.2));
+  note(space, 'another unrelated claim', at(0.1));
   const none = await index({ namespaces: [space], query_embeddings: [spec(X)] });
   assert.deepStrictEqual([none.row_ids, none.bytes, none.none_passed, none.considered], [[], 0, true, 2]);
   const empty = await index({ namespaces: [fresh()], query_embeddings: [spec(X)] });
@@ -177,6 +194,7 @@ test('the nano gate is the namespace\'s stored embedding model, not the caller\'
   const r = await index({ namespaces: [space], query: 'fix the widget cache' }); // keyword only: the heavy vectors cannot be compared with a nano query
   assert.deepStrictEqual(r.row_ids, []);
   assert.strictEqual(r.bar.by, 'none');
+  assert.strictEqual(r.unranked, true);
   assert.match(r.bar.reason, /embedded with heavy-model-x/);
   // and notes stored under nano use the cosine whoever asks
   const space2 = fresh();

@@ -289,7 +289,10 @@ async function index(E, caller, c) {
   const subMaps = useCos ? [...sel.cosBy].filter(([label]) => label !== SPEC_LABEL).map(([, m]) => m) : [];
   const specMap = useCos ? sel.cosBy.get(SPEC_LABEL) || null : null;
   const subOn = subMaps.length > 0;
-  const subqueries = (rq.queries || []).filter((q) => q.label !== SPEC_LABEL).length;
+  const embedded = (rq.queries || []).filter((q) => q.label !== SPEC_LABEL).length; // search-line vectors the call carried
+  const onTask = task && Array.isArray(task.memory_queries) ? task.memory_queries.length : 0; // lines the task has, embedded or not
+  const subqueries = Math.max(embedded, onTask);
+  const linesPresent = subqueries > 0; // lines that failed to embed do not loosen the bar: the spec alone then meets the spec leg's floor
   let bestSub = null;
   for (const x of ranked) {
     x.sub = subMaps.reduce((m, map) => (map.has(x.r.id) && (m === null || map.get(x.r.id) > m) ? map.get(x.r.id) : m), null);
@@ -303,6 +306,7 @@ async function index(E, caller, c) {
       if (x.sub !== null && x.sub >= minRel && x.sub >= bestSub - REL_CUT) return 'sub';
       return minSpec === 0 || (x.spec !== null && x.spec >= minSpec) ? 'spec' : null;
     }
+    if (linesPresent) return minSpec === 0 || (x.spec !== null && x.spec >= minSpec) ? 'spec' : null;
     return specOnly === 0 || (x.spec !== null && x.spec >= specOnly) ? 'spec_only' : null;
   };
   const passing = ranked.filter((x) => why(x) !== null);
@@ -314,7 +318,7 @@ async function index(E, caller, c) {
     bar: {
       min_relevance: minRel, min_relevance_spec: minSpec, spec_only_floor: specOnly, max_notes: maxNotes, by: minRel === 0 ? 'off' : useCos ? 'cosine' : 'none',
       ...(useCos || minRel === 0 ? {} : { reason: !nano ? `the notes are embedded with ${[...new Set(models)].join(', ')}, not the model the relevance bar was measured on (${c.nanoModel})` : 'no vector list ranked the notes (keyword only)' }),
-      subqueries, spec_only: useCos && !subOn,
+      subqueries, subqueries_embedded: embedded, spec_only: useCos && !linesPresent,
       listed: shown.map((x) => ({ id: x.r.id, sub: r3(x.sub), spec: r3(x.spec), why: why(x) })),
       cut_by_floor: cutByFloor, cut_by_cap: cutByCap, best_cut_sub: bestCut('sub'), best_cut_spec: bestCut('spec'),
     },
@@ -343,7 +347,9 @@ async function index(E, caller, c) {
     // A held note is listed last, so a tight budget cuts it first: the orchestrator and the operator are told which ones were cut. Workers never see held notes.
     ...(heldCut.length ? { held_unlisted: heldCut } : {}),
     considered: found.length, excluded_already_injected: excluded, candidates: sel.candidates, ...(rel.info ? { relevance: rel.info } : {}), ...barInfo,
-    none_passed: found.length > 0 && passing.length === 0,
+    // none_passed: the notes were scored and none reached a floor. unranked: nothing could be scored by meaning (keyword mode, a non-nano embedder), so no floor was applied.
+    none_passed: found.length > 0 && passing.length === 0 && (useCos || minRel === 0),
+    ...(found.length > 0 && passing.length === 0 && !useCos && minRel !== 0 ? { unranked: true } : {}),
     notes: { path: ranked.filter((x) => x.tier === 1).length, term: ranked.filter((x) => x.tier === 2).length, unlisted_path_or_term: Math.max(overflow, 0) },
   };
   if (!fitted.kept.length) return { ...empty(found.length, excluded, ranked.length, fitted.over_budget), ...info };
