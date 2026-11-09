@@ -20,8 +20,10 @@ const DEFAULTS = Object.freeze({
   project_writes: false,
   cost_ledger: false,
   turn_rows: false, // the harness writes a turn row (the worker's last text of each turn) only when true; notes do not read them
-  first_message_index: false,
-  index_bytes: 1200,
+  first_message_index: false, // the lever as a block states it; an unstated one follows `notes` (parseMemoryBlock), so the index is on with notes and off without
+  index_bytes: 1600,
+  index_min_relevance: 0.4, // provisional (research 2026-11-09, nano cosine, alpha-tune data): a note is listed when its best cosine to the task's queries is at least this, or it matches the task by path or subject
+  index_max_notes: 5, // the most notes the first-message index lists, inside index_bytes
   bottle: false,
   bottle_bytes: 65536,
   wrapup: false,
@@ -172,6 +174,7 @@ function parseMemoryBlock(block, opts = {}) {
   }
   const v = { ...DEFAULTS, ...block };
   v.notes = resolveNotes(v, Object.prototype.hasOwnProperty.call(block, 'notes'));
+  if (!Object.prototype.hasOwnProperty.call(block, 'first_message_index')) v.first_message_index = v.notes; // the index follows notes unless the block says
   const mode = normalizeMode(v.on_embedder_failure);
   if (mode === null) return { error: `memory.on_embedder_failure must be one of ${describeModes()}` };
   v.on_embedder_failure = mode;
@@ -186,6 +189,8 @@ function parseMemoryBlock(block, opts = {}) {
     return { error: 'memory.project must be null or match ^[a-z0-9][a-z0-9._-]{0,63}$' };
   }
   if (!boundedInt(v.index_bytes, INDEX_BYTES_MAX)) return { error: `memory.index_bytes must be an integer from 1 to ${INDEX_BYTES_MAX}` };
+  if (typeof v.index_min_relevance !== 'number' || !(v.index_min_relevance >= 0 && v.index_min_relevance <= 1)) return { error: 'memory.index_min_relevance must be a number from 0 to 1' };
+  if (!boundedInt(v.index_max_notes, 20)) return { error: 'memory.index_max_notes must be an integer from 1 to 20' };
   if (!boundedInt(v.bottle_bytes, BOTTLE_BYTES_MAX)) return { error: `memory.bottle_bytes must be an integer from 1 to ${BOTTLE_BYTES_MAX}` };
   if (v.observations && !v.capture) return { error: 'memory.observations needs memory.capture' };
   if (v.project_writes && v.project === null) return { error: 'memory.project_writes needs memory.project' };
@@ -258,6 +263,8 @@ const OVERRIDES = {
   summaries: { type: 'enum', values: SUMMARIES },
   project: { type: 'string', nullable: true },
   index_bytes: { type: 'integer', min: 1, max: INDEX_BYTES_MAX },
+  index_min_relevance: { type: 'number', min: 0, max: 1 },
+  index_max_notes: { type: 'integer', min: 1, max: 20 },
   bottle_bytes: { type: 'integer', min: 1, max: BOTTLE_BYTES_MAX },
   notes_match_threshold: { type: 'number', min: 0, max: 1, minExclusive: true },
   notes_match_n: { type: 'integer', min: 1, max: 10 },

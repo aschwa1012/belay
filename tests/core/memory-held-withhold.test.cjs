@@ -24,8 +24,8 @@ before(async () => {
   dir = sandbox();
   store = new Store(`${dir}/memory.db`, { stamp: true });
   E = new Engine({ dataDir: dir, store, getEmbedder: null, owner: null, establishedBy: 'test' });
-  const on = JSON.stringify({ project: 'hv', notes: true });
-  const warn = JSON.stringify({ project: 'hv', notes: true, held_visibility: 'warn' });
+  const on = JSON.stringify({ project: 'hv', notes: true, index_min_relevance: 0, index_max_notes: 20 });
+  const warn = JSON.stringify({ project: 'hv', notes: true, index_min_relevance: 0, index_max_notes: 20, held_visibility: 'warn' });
   await call(orch(RUNS.writer), 'run.attach', { adapter_pid: process.pid, project: 'hv', memory_levers: on });
   await call(orch(RUNS.withhold), 'run.attach', { adapter_pid: process.pid, project: 'hv', memory_levers: on });
   await call(orch(RUNS.warn), 'run.attach', { adapter_pid: process.pid, project: 'hv', memory_levers: warn });

@@ -31,7 +31,7 @@ before(async () => {
   dir = sandbox();
   store = new Store(`${dir}/memory.db`, { stamp: true });
   E = new Engine({ dataDir: dir, store, getEmbedder: null, owner: null, establishedBy: 'test' });
-  const lv = JSON.stringify({ project: 'acme', notes: true });
+  const lv = JSON.stringify({ project: 'acme', notes: true, index_min_relevance: 0, index_max_notes: 20 });
   for (const r of [READER, WRITER]) await call(orch(r), 'run.attach', { adapter_pid: process.pid, project: 'acme', memory_levers: lv });
 });
 after(() => { store.close(); cleanup(dir, { skipInvariants: { rules: ['done_evidence', 'lease_supersedes'], reason: 'the test writes done task rows and lease rows by hand, so they carry no evaluation and no supersedes' } }); });
@@ -110,7 +110,7 @@ test('clause a: a reassigned writer\'s new lease is open, and a take-control is 
 
 test('clause a: the note\'s run is closed', async () => {
   const space = fresh();
-  await call(orch('rn-closing'), 'run.attach', { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true }) });
+  await call(orch('rn-closing'), 'run.attach', { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true, index_min_relevance: 0, index_max_notes: 20 }) });
   task('t-run', 'rn-closing', 'assigned'); lease('t-run', 'rn-closing', 'w1', false);
   const id = note(space, 'run open then closed', { run_id: 'rn-closing', task_id: 't-run' });
   assert.deepStrictEqual(await everywhere(orch(READER), space, id), NONE, 'run still open');
@@ -183,7 +183,7 @@ test('the lifecycle namespaces are refused to a tool-channel worker or orchestra
 test('a note with no task, written by the orchestrator in another open run, stays hidden until that run ends', async () => {
   const space = fresh();
   const pname = space.replace('project/', '');
-  await call(orch('rn-orch-open'), 'run.attach', { adapter_pid: process.pid, project: pname, memory_levers: JSON.stringify({ project: pname, notes: true }) });
+  await call(orch('rn-orch-open'), 'run.attach', { adapter_pid: process.pid, project: pname, memory_levers: JSON.stringify({ project: pname, notes: true, index_min_relevance: 0, index_max_notes: 20 }) });
   const id = note(space, 'orchestrator note', { run_id: 'rn-orch-open', task_id: null, worker_id: 'orchestrator' });
   assert.deepStrictEqual(await everywhere(orch(READER), space, id), NONE, 'its run is open');
   assert.deepStrictEqual(await everywhere(orch('rn-orch-open'), space, id), ALL, 'its own run sees it');

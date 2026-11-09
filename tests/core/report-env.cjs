@@ -115,7 +115,7 @@ async function setup(RUN, levers = {}) {
 
   Object.assign(env, { stall, E, store, dir, repo, head, RUN, orch, harness, operator, worker, rawCall, call, rowOf, bodyOf, events, note, startTask, written, reported, briefOf, review, cite, rv, apply, heldRows, activeHold, heldCount, UP, embed, cleanup: () => teardown(null, [() => store.close(), () => cleanup(dir), () => cleanup(repo)]) });
   // The store and both directories are registered for teardown now: a setup that fails here does not leak them.
-  try { await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true, ...levers }) }); } catch (e) { await teardown(e, [() => store.close(), () => cleanup(dir), () => cleanup(repo)]); throw e; }
+  try { await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true, index_min_relevance: 0, index_max_notes: 20, ...levers }) }); } catch (e) { await teardown(e, [() => store.close(), () => cleanup(dir), () => cleanup(repo)]); throw e; }
   return env;
 }
 

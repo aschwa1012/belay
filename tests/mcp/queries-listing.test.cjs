@@ -42,7 +42,8 @@ test('a worker_spawn call that carries memory_queries is accepted when the field
 
 test('over the wire: no levers and a run without the index do not list it, first_message_index does', async () => {
   assert.strictEqual(hasQueries(await wireListing(null)), false);
-  assert.strictEqual(hasQueries(await wireListing(JSON.stringify({ project: 'p', notes: true }))), false);
+  assert.strictEqual(hasQueries(await wireListing(JSON.stringify({ project: 'p', notes: true, first_message_index: false }))), false);
+  assert.strictEqual(hasQueries(await wireListing(JSON.stringify({ project: 'p', notes: true }))), true, 'the index follows notes');
   const on = await wireListing(JSON.stringify({ project: 'p', notes: false, first_message_index: true }));
   assert.strictEqual(hasQueries(on), true);
   assert.deepStrictEqual(on, tools.toolsFor('orchestrator', { queries: true }));
@@ -55,7 +56,7 @@ test('the gate answers from the adapter\'s own run row once attached, and from t
   const attached = createKnowledgeGate({ role: 'orchestrator', runId: 'r1', storeExists: () => false, openCore: async () => { throw new Error('no read once attached'); }, log: noop, attachedRun: () => row({ project: 'p', first_message_index: true }) });
   await attached();
   assert.strictEqual(attached.queries(), true);
-  const attachedOff = createKnowledgeGate({ role: 'orchestrator', runId: 'r1', storeExists: () => false, openCore: async () => { throw new Error('no read'); }, log: noop, attachedRun: () => row({ project: 'p' }) });
+  const attachedOff = createKnowledgeGate({ role: 'orchestrator', runId: 'r1', storeExists: () => false, openCore: async () => { throw new Error('no read'); }, log: noop, attachedRun: () => row({ project: 'p', first_message_index: false }) });
   await attachedOff();
   assert.strictEqual(attachedOff.queries(), false);
   const unread = createKnowledgeGate({ role: 'orchestrator', runId: 'r1', storeExists: () => false, openCore: async () => { throw new Error('no store'); }, log: noop });

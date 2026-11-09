@@ -44,7 +44,7 @@ test('settings: every memory lever is listed as memory.<key> with its default, d
     const mem = r.out.settings.filter((s) => s.key.startsWith('memory.'));
     assert.deepStrictEqual(mem.map((s) => s.key), Object.keys(ML.DEFAULTS).filter((k) => !ML.EVAL_ONLY.includes(k)).map((k) => `memory.${k}`));
     for (const s of mem) {
-      assert.strictEqual(s.value, s.key === 'memory.notes' ? true : ML.DEFAULTS[s.key.slice(7)], s.key); // notes are on by default: a run derives its project
+      assert.strictEqual(s.value, s.key === 'memory.notes' || s.key === 'memory.first_message_index' ? true : ML.DEFAULTS[s.key.slice(7)], s.key); // notes are on by default (a run derives its project) and the index follows notes
       assert.deepStrictEqual(s.default, ML.DEFAULTS[s.key.slice(7)], s.key);
       assert.strictEqual(s.source, 'default');
       assert.ok(s.type, `${s.key} names its type`);
@@ -60,7 +60,7 @@ test('settings: every memory lever is listed as memory.<key> with its default, d
       ['claude-sonnet-5-5', null, 'claude-opus-5-5', 'high', 'claude-opus-5-5'], 'the roster is the built-in default');
     assert.strictEqual(by['agents.orchestrator.effort'], null, 'the orchestrator has no built-in effort');
     const text = cli(dir, ['settings'], { json: false });
-    assert.match(text.stdout, /memory\.index_bytes\s+1200\s+\(from default\)\s+\[integer 1\.\.4096\]/);
+    assert.match(text.stdout, /memory\.index_bytes\s+1600\s+\(from default\)\s+\[integer 1\.\.4096\]/);
     assert.match(text.stdout, /agents\.reviewer\.effort\s+"high"\s+\(from default\)\s+\[low \| medium \| high \| xhigh \| max \| null\]/);
   } finally { cleanup(dir); }
 });

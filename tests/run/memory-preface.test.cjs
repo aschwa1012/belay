@@ -44,13 +44,14 @@ const received = (f) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8').split('\n
 
 // The fake core plus run.get (levers) and the memory methods the preface calls. `rows` is what memory.index
 // would rank; it honours exclude_ids as the real method does and returns a fixed text for what is left.
-function memoryCore({ levers = null, rows = [], failIndex = false, failEvents = false } = {}) {
+function memoryCore({ levers = null, rows = [], failIndex = false, failEvents = false, noneListed = 0 } = {}) {
   const core = createFakeCore({ runId: 'run-fake', resumeLineText: RL });
   const events = [];
   core.run = { get: async () => ({ run: { memory_levers: levers === null ? null : JSON.stringify(levers) } }) };
   core.memory.index = async (a) => {
     core.calls.push({ method: 'memory.index', args: a });
     if (failIndex) { const e = new Error('index down'); e.code = 'E_OWNER_LOST'; throw e; }
+    if (noneListed) return { text: '', bytes: 0, row_ids: [], dropped: 0, over_budget: false, sha256: 'f'.repeat(64), considered: noneListed, excluded_already_injected: 0, none_passed: true, bar: { min_relevance: 0.4, max_notes: 5, by: 'cosine_or_facts', listed: [], cut_by_floor: noneListed, cut_by_cap: 0, best_cut_cos: 0.31 } };
     const left = rows.filter((r) => !(a.exclude_ids || []).includes(r));
     const text = left.length ? `INDEX ${left.join(' ')}` : '';
     return { text, bytes: Buffer.byteLength(text), row_ids: left, dropped: 0, over_budget: false, sha256: 'f'.repeat(64), considered: rows.length, excluded_already_injected: rows.length - left.length };
@@ -139,6 +140,22 @@ test('levers on, no rows: nothing is injected and the event records zero bytes',
     assert.strictEqual(core.events.length, 1);
     assert.strictEqual(core.events[0].bytes, 0);
     assert.strictEqual(core.events[0].ok, 1);
+  });
+});
+
+test('levers on, notes in scope but none passed the bar: one short line says so, and the receipt carries the bar', async () => {
+  const core = memoryCore({ levers: { first_message_index: true }, noneListed: 3 });
+  await run(core, async (m, sb) => {
+    await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w5', task_id: 't1' });
+    const line = "No project note passed the index's relevance bar for this task (3 notes in scope); memory_search can still look.";
+    assert.strictEqual(m._worker('w5').firstMessage, `${RL}
+
+${line}
+
+${PROMPT}${PL}${HB}`);
+    assert.ok(Buffer.byteLength(line) <= 120, 'about 110 bytes');
+    assert.strictEqual(core.events[0].bytes, 0);
+    assert.strictEqual(JSON.parse(core.events[0].message).bar.best_cut_cos, 0.31);
   });
 });
 
@@ -246,7 +263,7 @@ test('the prompt reaches memory.index as its relevance query; without one no que
   const spec = 'Add a --since <date> option to tally report; dates are UTC days';
   assert.strictEqual(await MP.memoryPreface({ id: 'wq', taskId: 't1' }, ctx, spec), 'INDEX mem-a\n\n');
   const idx = () => core.calls.filter((c) => c.method === 'memory.index');
-  assert.deepStrictEqual(idx()[0].args, { task_id: 't1', worker_id: 'wq', max_bytes: 1200, exclude_ids: [], query: spec });
+  assert.deepStrictEqual(idx()[0].args, { task_id: 't1', worker_id: 'wq', max_bytes: 1600, exclude_ids: [], query: spec });
   // A relaunch has no prompt: the core ranks by the task's spec on its own, so no query key is sent.
   await MP.relaunch({ id: 'wr', taskId: 't1' }, ctx, 'resumed');
   assert.ok(!('query' in idx()[1].args), JSON.stringify(idx()[1].args));
