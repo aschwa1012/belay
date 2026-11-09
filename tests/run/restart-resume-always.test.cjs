@@ -114,8 +114,19 @@ test('withFallback: a failed resume with no second launch writes the deferred de
   await assert.rejects(refused({}, {}), /refused/);
   assert.strictEqual(dead, 1, 'no second launch followed: the dead row is written');
   const calls = [];
-  const twice = withFallback(async (w, o) => { calls.push(o.forceReplace || 'resume'); w.deadDeferred = true; throw noReady(o.forceReplace ? 'replace' : 'resume'); }, async () => { dead += 1; });
+  const twice = withFallback(async (w, o) => { calls.push(o.forceReplace || 'resume'); w.deadDeferred = true; if (o.forceReplace) w.launches = (w.launches || 0) + 1; /* the replacement launched, failed, and wrote its own row */ throw noReady(o.forceReplace ? 'replace' : 'resume'); }, async () => { dead += 1; });
   await assert.rejects(twice({}, {}), (e) => /the resume failed \(exited\)/.test(e.detail.resume_failed));
   assert.strictEqual(calls.length, 2, 'once more, never a third');
   assert.strictEqual(dead, 1, 'a second launch followed: nothing deferred is written here');
+});
+
+test('withFallback: a replacement that refuses before it launches (paused) still writes the deferred dead row', async () => {
+  const { withFallback } = require('../../src/run/resume-fallback.cjs');
+  let dead = 0; const w = { launches: 1 };
+  const f = withFallback(async (ww, o) => {
+    if (!o.forceReplace) { ww.deadDeferred = true; throw Object.assign(new Error('no ready'), { code: 'E_NO_READY', detail: { branch: 'resume', reason: 'exited' } }); }
+    throw Object.assign(new Error('paused'), { code: 'E_PAUSED', detail: {} }); // before any launch: launches did not move
+  }, async () => { dead += 1; });
+  await assert.rejects(f(w, {}), (e) => e.code === 'E_PAUSED' && /the resume failed/.test(e.detail.resume_failed));
+  assert.strictEqual(dead, 1);
 });

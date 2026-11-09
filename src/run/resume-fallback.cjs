@@ -23,7 +23,9 @@ const withFallback = (inner, settleDead) => async (w, opts = {}) => {
     const why = resumeFailure(w, e, opts);
     if (!why) { if (w.deadDeferred) { w.deadDeferred = false; await settleDead(w).catch(() => {}); } throw e; }
     w.deadDeferred = false;
+    const launches = w.launches;
     try { return await inner(w, { ...opts, forceReplace: why }); } catch (e2) {
+      if (w.launches === launches) await settleDead(w).catch(() => {}); // the replacement refused before it launched (paused, a hold refused): the deferred dead row is still owed
       if (e2 && e2.detail && typeof e2.detail === 'object') e2.detail.resume_failed = why;
       throw e2;
     }
