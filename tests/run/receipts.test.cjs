@@ -111,7 +111,7 @@ test('receipts: cost is set from the latest cumulative total, not summed, across
     const before = await pollUntil(async () => { const r = await core.worker.get({ worker_id: 'w-r2' }); return r.turns === 2 ? r : null; }, 5000);
     assert.ok(before, 'two turns never landed on the row');
     assert.ok(Math.abs(before.cost_usd - 0.002) < 1e-9, `cost after two turns ${before.cost_usd}`);
-    await m.stop({ worker_id: 'w-r2', mode: 'kill', timeout_ms: 8000 });
+    await m.stop({ worker_id: 'w-r2', mode: 'graceful', timeout_ms: 8000 });
     // A resumed session inherits the running total: its next result reports 0.002 + 0.001.
     const r = await withEnv({ FAKE_COST_BASE: '0.002' }, () => m.restart({ worker_id: 'w-r2', first_turn_timeout_ms: 8000 }));
     assert.strictEqual(r.branch, 'resume', r.reason);

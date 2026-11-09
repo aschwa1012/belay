@@ -33,7 +33,8 @@ if (process.env.FAKE_SPAWN_SCRIPT) {
 }
 
 // FAKE_FAIL_RESUME=1: a launch with --resume ends at once with the error Claude Code gives for a session it cannot find.
-if (process.env.FAKE_FAIL_RESUME === '1' && process.argv.includes('--resume')) { process.stderr.write('No conversation found with session ID: ' + process.argv[process.argv.indexOf('--resume') + 1] + String.fromCharCode(10)); process.exit(1); }
+// FAKE_FAIL_RESUME_RESULT=1 also prints the error result the real binary prints first (subtype error_during_execution, num_turns 0).
+if (process.env.FAKE_FAIL_RESUME === '1' && process.argv.includes('--resume')) { if (process.env.FAKE_FAIL_RESUME_RESULT === '1') process.stdout.write(JSON.stringify({ type: 'result', subtype: 'error_during_execution', is_error: true, num_turns: 0, session_id: 'none', total_cost_usd: 0, usage: { input_tokens: 0, output_tokens: 0 } }) + String.fromCharCode(10)); process.stderr.write('No conversation found with session ID: ' + process.argv[process.argv.indexOf('--resume') + 1] + String.fromCharCode(10)); process.exit(1); }
 const SESSION = process.env.FAKE_SESSION_ID || 'fake-session-0000-0000-0000-000000000001';
 const EXTRA_INIT = process.env.FAKE_EXTRA_INIT === '1'; // simulate an inbound cross-session turn
 // 5b-2: the unsolicited turn's own init lands right after the answer it rides in on; its own

@@ -25,8 +25,14 @@ function isKilled(dataDir, workerId, pid, created = null) {
   try { const m = JSON.parse(fs.readFileSync(file(dataDir, workerId), 'utf8')); return !!m && m.pid === pid && norm(m.pid_created) === norm(created); } catch { return false; }
 }
 
+// Like isKilled, but a creation time unknown on either side (the row and the mark are written at different moments) does not hide a kill of the same pid.
+function isKilledLoose(dataDir, workerId, pid, created = null) {
+  if (!dataDir) return false;
+  try { const m = JSON.parse(fs.readFileSync(file(dataDir, workerId), 'utf8')); return !!m && m.pid === pid && (norm(m.pid_created) === norm(created) || m.pid_created == null || created == null); } catch { return false; }
+}
+
 function clear(dataDir, workerId) {
   try { fs.unlinkSync(file(dataDir, workerId)); return true; } catch { return false; }
 }
 
-module.exports = { mark, isKilled, clear };
+module.exports = { mark, isKilled, isKilledLoose, clear };

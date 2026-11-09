@@ -31,9 +31,11 @@ test('restart on the replace branch adds the earlier session reported cost as a 
   assert.strictEqual(w.costBase, 0);
 
   // A resume of the same session: the new process starts from the session total (FAKE_COST_BASE is how the fake inherits it), no base.
-  await m.stop({ worker_id: 'cb', mode: 'kill', timeout_ms: 5000 });
+  process.env.FAKE_COST_BASE = String(first); // the saved total is what a resume starts from
+  await m.stop({ worker_id: 'cb', mode: 'graceful', timeout_ms: 5000 });
   await m.restart({ worker_id: 'cb', first_turn_timeout_ms: 20000 });
   assert.strictEqual(w.costBase, 0, 'the resume branch keeps no base');
+  delete process.env.FAKE_COST_BASE;
 
   // A fresh session: its total starts at zero, and the row keeps what the earlier session reported.
   const before = w.costUsd;
