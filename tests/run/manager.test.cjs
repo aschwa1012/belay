@@ -333,7 +333,7 @@ test('stopping a worker that is already gone claims neither a graceful stop nor 
   } finally { await teardown(m, sb); }
 });
 
-test('legacy: restart resumes inside the window and replaces outside it, and says the numbers', async () => {
+test('legacy: restart resumes at any age, says when the cache is cold, and replaces only with no session id', async () => {
   const sb = sandbox();
   const core = createFakeCore();
   const m = mgr(sb, core, FAKE, TURN_ROWS);
@@ -343,7 +343,7 @@ test('legacy: restart resumes inside the window and replaces outside it, and say
 
     const r = await m.restart({ worker_id: 'w8', first_turn_timeout_ms: 8000 });
     assert.equal(r.branch, 'resume');
-    assert.match(r.reason, /inside the 3300000 ms claude-code window/);
+    assert.match(r.reason, /inside the 3300000 ms cache window/);
     assert.ok(r.new_pid !== r.old_pid);
     assert.equal(r.first_turn_timed_out, false);
     assert.ok(r.first_turn_usage);
@@ -351,11 +351,17 @@ test('legacy: restart resumes inside the window and replaces outside it, and say
     const argv = JSON.parse(fs.readFileSync(path.join(sb.data, 'workers', 'w8', 'argv.json'), 'utf8'));
     assert.ok(argv.spec.args.includes('--resume'), 'a resume branch passes --resume');
 
-    // Age the worker past the window: the branch flips to replace and resume.md is written.
+    // Aged past the window the branch is still resume, with the cache named cold.
     m._worker('w8').lastEventAt = Date.now() - 60 * 60 * 1000;
+    const rOld = await m.restart({ worker_id: 'w8', first_turn_timeout_ms: 8000 });
+    assert.equal(rOld.branch, 'resume');
+    assert.equal(rOld.cache_cold, true);
+    assert.match(rOld.reason, /past the 3300000 ms cache window/);
+    // No session id: the branch is replace and resume.md is written.
+    m._worker('w8').sessionId = null;
     const r2 = await m.restart({ worker_id: 'w8', first_turn_timeout_ms: 8000 });
     assert.equal(r2.branch, 'replace');
-    assert.match(r2.reason, /outside the 3300000 ms claude-code window/);
+    assert.match(r2.reason, /no session or thread id/);
     const doc = fs.readFileSync(path.join(sb.data, 'workers', 'w8', 'resume.md'), 'utf8');
     assert.match(doc, /^# resume/);
     const argv2 = JSON.parse(fs.readFileSync(path.join(sb.data, 'workers', 'w8', 'argv.json'), 'utf8'));

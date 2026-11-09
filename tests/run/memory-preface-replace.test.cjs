@@ -66,7 +66,7 @@ async function replaceAfterShown(levers, { beforeRestart } = {}) {
     await withEnv({ FAKE_RECV_FILE: recv }, async () => {
       await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w1', task_id: 't1' });
       await m._waitTurn('w1', 8000);
-      m._worker('w1').lastEventAt = 1; // outside the resume window: the replace branch
+      m._worker('w1').sessionId = null; // no session to resume: the replace branch
       if (beforeRestart) beforeRestart(m._worker('w1'));
       branch = (await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 })).branch;
     });
@@ -138,11 +138,11 @@ test('legacy: the carry flag is reset on every replace: a second replace whose b
     await withEnv({ FAKE_RECV_FILE: recv }, async () => {
       await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w1', task_id: 't1' });
       await m._waitTurn('w1', 8000);
-      m._worker('w1').lastEventAt = 1;
+      m._worker('w1').sessionId = null;
       assert.strictEqual((await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 })).branch, 'replace');
       assert.strictEqual(m._worker('w1').bottleCarriesFirst, true);
       await m._waitTurn('w1', 8000);
-      m._worker('w1').lastEventAt = 1;
+      m._worker('w1').sessionId = null;
       fs.unlinkSync(m._worker('w1').streamPath); // the second bottle cannot be built
       assert.strictEqual((await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 })).branch, 'replace');
     });
@@ -178,7 +178,7 @@ test('legacy: a row shown only by a later resume that the bottle dropped is show
       await m._waitTurn('w1', 8000);
       const w = m._worker('w1');
       fs.appendFileSync(w.streamPath, lines(40)); // more than the 20 messages the bottle always keeps
-      w.lastEventAt = 1;
+      w.sessionId = null;
       assert.strictEqual((await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 })).branch, 'replace');
     });
     const bottle = core.events.find((e) => e.kind === 'bottle');
@@ -207,7 +207,7 @@ test('legacy: a resume after a replace holds what the replacement was shown (rec
     await withEnv({ FAKE_RECV_FILE: recv }, async () => {
       await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w1', task_id: 't1' });
       await m._waitTurn('w1', 8000);
-      m._worker('w1').lastEventAt = 1;
+      m._worker('w1').sessionId = null;
       assert.strictEqual((await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 })).branch, 'replace');
       await m._waitTurn('w1', 8000);
       core.memory.index = ((orig) => async (a) => { core.calls.push({ method: 'memory.index.late', args: a }); return orig(a); })(core.memory.index);
@@ -229,7 +229,7 @@ test('legacy: a replace whose receipts cannot be read still relaunches, and the 
     await withEnv({ FAKE_RECV_FILE: path.join(sb.data, 'recv.jsonl') }, async () => {
       await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w1', task_id: 't1' });
       await m._waitTurn('w1', 8000);
-      m._worker('w1').lastEventAt = 1;
+      m._worker('w1').sessionId = null;
       core.memory.events = async () => { throw Object.assign(new Error('events unreadable'), { code: 'E_BUSY' }); };
       assert.strictEqual((await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 })).branch, 'replace');
     });

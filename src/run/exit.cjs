@@ -105,7 +105,7 @@ function settle(w, code, signal, establishedBy, ctx) {
   }
   for (const r of w.exitWaiters.splice(0)) r({ code, signal, at: w.exitedAt, established_by: establishedBy });
   for (const r of w.readyWaiters.splice(0)) r(null);
-  if (w.deferDead && state === 'dead') { w.deadDeferred = true; return; } // a failed resume that a second launch replaces (resume-fallback.cjs): not a death, no row, no wake
+  if (w.deferDead && w.launches > w.deferFrom && state === 'dead') { w.deadDeferred = true; return; } // a failed resume that a second launch replaces (resume-fallback.cjs): not a death, no row, no wake
   lifeWrite(w, ctx, state, 'worker.write/exit');
 }
 

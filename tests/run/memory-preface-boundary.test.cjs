@@ -65,7 +65,7 @@ async function throughResume(m, rows, extra = '') {
   await m._waitTurn('w1', 8000);
   const w = m._worker('w1');
   fs.appendFileSync(w.streamPath, filler(40) + extra);
-  w.lastEventAt = 1;
+  w.sessionId = null;
 }
 const replace = async (m) => assert.strictEqual((await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 })).branch, 'replace');
 
@@ -121,7 +121,7 @@ test('legacy: a replace whose receipts could not be read for once holds nothing 
   await scenario(core, rows, async (m, recv) => {
     await m.spawn({ substrate: 'claude-code', worktree: m._sb.worktree, prompt: PROMPT, worker_id: 'w1', task_id: 't1' });
     await m._waitTurn('w1', 8000);
-    m._worker('w1').lastEventAt = 1;
+    m._worker('w1').sessionId = null;
     const read = core.memory.events;
     let calls = 0;
     core.memory.events = async (a) => { calls += 1; if (calls === 1) throw Object.assign(new Error('busy once'), { code: 'E_BUSY' }); return read(a); };
@@ -234,7 +234,7 @@ test('legacy: a boundary key that cannot be read is a boundary with nothing carr
   await scenario(core, rows, async (m) => {
     await throughResume(m, rows);
     core.events.push({ kind: 'index_injected', worker_id: 'w1', ok: 1, row_ids: [], key: 'convo:{"carri' });
-    m._worker('w1').lastEventAt = Date.now();
+    m._worker('w1').sessionId = 'sess-restored'; // the helper cleared it to force a replace; this restart resumes
     await m._waitTurn('w1', 8000);
     assert.strictEqual((await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 })).branch, 'resume');
     assert.deepStrictEqual(indexCalls(core).pop().args.exclude_ids, [], 'rows before the unreadable boundary are not taken as held');
