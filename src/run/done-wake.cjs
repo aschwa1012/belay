@@ -57,7 +57,7 @@ function doneOf(snap, exceptions = []) {
   const finishedE1 = (e) => { const t = byId.get(e.task_id); return e.exception === 'E1' && !['review', 'integrate'].includes(e.field) && !!t && (t.state === 'done' || t.state === 'cancelled'); };
   const skipped = exceptions.filter((e) => finishedE1(e) && PW.haltedIds([e], all).size);
   if (PW.haltedIds(exceptions.filter((e) => !finishedE1(e)), all).size) return null;
-  const finished = { size: skipped.length };
+  const finished = { size: new Set(skipped.map((e) => e.task_id)).size }; // distinct tasks
   if (due({ runId, tasks: all, integrations: snap.integrations || [], steps: snap.steps || [], rounds: snap.rounds, failures: snap.failures }).length) return null;
   if ((snap.steps || []).some((s) => s.run_id === runId && s.outcome === 'started')) return null;
   const n = work.length;

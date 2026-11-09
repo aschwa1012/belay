@@ -43,7 +43,7 @@ function planOf(task, byId) {
 }
 const handBy = (t) => (t && t.handoff && typeof t.handoff.by === 'string' ? t.handoff.by : null);
 const merged = (t) => !!(t.integration && t.integration.state === 'merged');
-const mergedOk = (d) => merged(d) && d.integration.passed !== false && d.integration.checks_passed !== false; // landed, and its integration's checks did not fail (the build gate's test; policy-carried.cjs reads it too)
+const mergedOk = PW.mergedOk; // landed, and its integration's checks did not fail (the build gate's test, shared with policy-wakes.cjs)
 
 // -> the steps due on these rows, in row order (the trigger's seq, then the step's name). `snap`: { runId, tasks (task.list rows),
 // integrations, steps, maxBuilds, rounds ({ caps }: the failures policy-rounds.cjs carries as rounds are read only when it is given), failures }. Pure: no store, no clock. A candidate: { step, task_id, trigger, policy_rev, worker (the named builder or refuter), ... }.

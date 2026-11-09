@@ -203,7 +203,7 @@ function derive(snap) {
     }
     // E1 build (rc.6): the plan sets `build` to null, so building is the orchestrator's; once an open, unleased task's dependencies have landed (done, and
     // merged when their plan merges) nothing else would tell it the task is ready. A task with no dependencies is not raised: the orchestrator made it knowing it is its own.
-    if (P.build === null && !x.repairs && !isReviewRow(x) && x.state === 'open' && !x.lease && Array.isArray(x.depends_on) && x.depends_on.length && x.depends_on.every((d) => { const u = byId.get(d); return !!u && u.state === 'done' && (!(policyOf(u, byId) || {}).integrate || !!(u.integration && u.integration.state === 'merged')); }) && landedAfterCreate(x)) add('E1', root, tref(x), 'build', { task: x.id }, { key: `${x.id}!build`, seq: Number(x.seq) || 0 });
+    if (P.build === null && !x.repairs && !isReviewRow(x) && x.state === 'open' && !x.lease && Array.isArray(x.depends_on) && x.depends_on.length && x.depends_on.every((d) => { const u = byId.get(d); return !!u && u.state === 'done' && (!(policyOf(u, byId) || {}).integrate || mergedOk(u)); }) && landedAfterCreate(x)) add('E1', root, tref(x), 'build', { task: x.id }, { key: `${x.id}!build`, seq: Number(x.seq) || 0 });
     // E1, work done with no review step in the plan; a fix done with no re_review.
     if (own && x.state === 'done' && !isReviewRow(x) && !dependents.has(x.id)) {
       if (!x.repairs && !P.review) add('E1', root, tref(x), 'review', { task: x.id }, evOf(x));
@@ -394,4 +394,7 @@ function createPolicyWatcher({ core, runId, enabled = false, dataDir = null }) {
   return { poll, active: () => last.slice(), snapshot: () => lastSnap, doneCurrent };
 }
 
-module.exports = { unplannedEscalation, escalationFact, fixRoundsLeft, derive, readRevisions, familyIds, exceptionOf, policyOf, rootOf, haltScope, haltedIds, textOf, wakeOf, createPolicyWatcher, HALTING, HALT_SCOPE, WAKE_TEXT_MAX };
+// Landed: merged, and the integration's checks did not fail. The executor's build gate, the stalled wake and the E1 build raise all read this one test.
+const mergedOk = (d) => !!(d.integration && d.integration.state === 'merged') && d.integration.passed !== false && d.integration.checks_passed !== false;
+
+module.exports = { mergedOk, unplannedEscalation, escalationFact, fixRoundsLeft, derive, readRevisions, familyIds, exceptionOf, policyOf, rootOf, haltScope, haltedIds, textOf, wakeOf, createPolicyWatcher, HALTING, HALT_SCOPE, WAKE_TEXT_MAX };
