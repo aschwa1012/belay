@@ -31,7 +31,7 @@ const VIEWS = ['full', 'index'];
 const SEARCH_VIEWS = ['compact', 'debug', 'full', 'index'];
 const SCOPES = ['task', 'worker', 'run', 'namespace'];
 const NS_MAX = 10, OFFSET_MAX = 1000, K_MAX = 100, ID_MAX = 50, SPAN_MAX = 50, LIST_MAX = 500, LIST_TEXT = 200, DEPTH_MAX = 1200;
-// ADR 0040 amendment (hybrid default): rrf k=10, alpha 0.3, OR join, chosen by the second hybrid evaluation.
+// ADR 0040 amendment (hybrid default): rrf k=10, alpha 0.5 (ADR 0040 amendment 2), OR join, chosen by the second hybrid evaluation.
 const DEFAULT_ALPHA = HYBRID_ALPHA, RRF_K = HYBRID_K, DUP_THRESHOLD = 0.95;
 
 const bad = (msg, field) => err('E_ARGS', msg, field ? { field } : undefined);

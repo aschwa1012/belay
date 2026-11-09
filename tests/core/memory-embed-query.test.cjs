@@ -264,14 +264,14 @@ test('rrfMany with one list is rrf, and the semantic weight is shared among the 
   assert.deepStrictEqual(rrfMany([], ['x']).map((h) => h.id), ['x']);
 });
 
-test('the index fuses with memory.search\'s weights: alpha 0.3 and k 10', async () => {
+test('the index fuses with memory.search\'s weights: alpha 0.5 and k 10', async () => {
   const ns = 'embq-fuse';
   await put(ns, 'deploy checklist for the release', vecOf('release'), 1);
   await put(ns, 'dates use the TZ zone', vecOf('dates'), 2);
   const args = { namespaces: [ns], query: 'checklist', query_embeddings: [{ vector: [0, 1, 0], model: 'stub', label: 'task' }] };
   const r = await call('memory.index', args);
   assert.deepStrictEqual(r.relevance.fusion, { method: 'rrf', alpha: HYBRID_ALPHA, k: HYBRID_K, lists: 1 });
-  assert.strictEqual(HYBRID_ALPHA, 0.3);
+  assert.strictEqual(HYBRID_ALPHA, 0.5);
   assert.strictEqual(HYBRID_K, 10);
   const s = await call('memory.search', { namespace: ns, query: 'checklist', query_embedding: [0, 1, 0], embedding_model: 'stub', mode: 'hybrid' });
   assert.deepStrictEqual(s.fusion, { method: 'rrf', alpha: HYBRID_ALPHA, k: HYBRID_K }, 'the same fusion as memory.search');

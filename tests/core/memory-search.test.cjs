@@ -51,7 +51,7 @@ after(() => { store.close(); cleanup(dir); });
 test('the default mode is hybrid with a query string and semantic with only a vector', async () => {
   const h = await call('memory.search', { namespace: 'n1', query: 'alpha', k: 3 });
   assert.deepStrictEqual(h.modes_run, ['semantic', 'keyword']);
-  assert.deepStrictEqual(h.fusion, { method: 'rrf', alpha: 0.3, k: 10 });
+  assert.deepStrictEqual(h.fusion, { method: 'rrf', alpha: 0.5, k: 10 });
   const v = await call('memory.search', { namespace: 'n1', query_embedding: [1, 0, 0], embedding_model: 'm', k: 3 });
   assert.deepStrictEqual(v.modes_run, ['semantic'], 'no query string, so no keyword half');
   assert.strictEqual(v.fusion, null);
@@ -96,7 +96,7 @@ test('hybrid fuses both lists and reports the fusion it used', async () => {
   // "alpha pidAlive" matches no row as a whole by keyword (both terms are required), so the keyword list is
   // empty and the semantic list leads; a one-term query makes the two lists meet.
   assert.deepStrictEqual(r.modes_run, ['semantic', 'keyword']);
-  assert.deepStrictEqual(r.fusion, { method: 'rrf', alpha: 0.3, k: 10 });
+  assert.deepStrictEqual(r.fusion, { method: 'rrf', alpha: 0.5, k: 10 });
   const q = await call('memory.search', { namespace: 'n1', query: 'alpha', mode: 'hybrid', k: 10 });
   assert.strictEqual(q.results[0].id, rows.pid.id, 'semantic rank 1 leads when keyword finds nothing');
   const one = await call('memory.search', { namespace: 'n1', query: 'pidAlive', mode: 'hybrid', k: 10 });

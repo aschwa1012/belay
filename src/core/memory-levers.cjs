@@ -12,7 +12,7 @@ const DEFAULTS = Object.freeze({
   on_embedder_failure: DEFAULT_MODE,
   redact: true,
   rules: false,
-  alpha: 0.3,
+  alpha: 0.5,
   capture: false,
   observations: false,
   summaries: 'off',
