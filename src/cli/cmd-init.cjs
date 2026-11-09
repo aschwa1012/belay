@@ -31,15 +31,13 @@ function seedConfig(dataDirOverride, writeDir) {
   return refused ? { data_dir: C.KEYS.data_dir.default, outside: refused } : { data_dir: rel };
 }
 
+const USAGE = 'usage: belay init [--fetch | --no-fetch] [--data <dir>] [--json]\n  --fetch     download the embedding model without asking\n  --no-fetch  never download it, never ask\n';
+
 async function run(ctx) {
-  if (ctx.argv.length) {
-    const message = `unknown argument ${ctx.argv[0]}`;
-    return {
-      code: 2,
-      text: `belay init: ${message}\n\nusage: belay init [--data <dir>] [--json]\n`,
-      json: { error: message },
-    };
-  }
+  const IE = require('./init-embedder.cjs');
+  const flags = IE.takeFlags(ctx.argv);
+  const message = flags.error || (flags.rest.length ? `unknown argument ${flags.rest[0]}` : null);
+  if (message) return { code: 2, text: `belay init: ${message}\n\n${USAGE}`, json: { error: message } };
 
   const writeDir = C.writeDirOf(ctx.cwd);
   const configPath = `${writeDir}/${C.CONFIG_NAME}`;
@@ -82,6 +80,8 @@ async function run(ctx) {
   const dataDirExisted = fs.existsSync(dataDir);
   if (!dataDirExisted) fs.mkdirSync(dataDir, { recursive: true });
 
+  const model = await IE.offer(ctx, flags.fetch);
+
   const payload = {
     path: configPath,
     bytes,
@@ -92,9 +92,11 @@ async function run(ctx) {
     data_dir_created: !dataDirExisted,
     ...(created && project ? { project: project.name, project_source: project.source } : {}),
     ...(outsideNote ? { note: outsideNote } : {}),
+    embedder: model,
   };
+  const code = model.action === 'fetch_failed' ? 1 : 0;
 
-  if (ctx.json) return { code: 0, text: '', json: payload };
+  if (ctx.json) return { code, text: '', json: payload };
 
   const lines = [
     created
@@ -105,8 +107,9 @@ async function run(ctx) {
   if (payload.project) lines.push(`notes project ${payload.project} (from ${payload.project_source}); change it with: belay settings memory.project <name>`);
   if (found.parse_error) lines.push(`warning: ${found.parse_error}`);
   if (outsideNote) lines.push(`note: ${outsideNote}`);
+  if (model.line) lines.push(model.line);
   lines.push('');
-  return { code: 0, text: lines.join('\n'), json: payload };
+  return { code, text: lines.join('\n'), json: payload };
 }
 
 module.exports = { run };

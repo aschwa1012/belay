@@ -242,7 +242,7 @@ async function run(ctx) {
   if (!warm.ok && guard.mode() === 'required') {
     let sd = null;
     try { sd = await core.shutdownOwner(); } catch (e) { sd = { error: (e && e.message) || String(e) }; }
-    const endedBy = `the embedder could not be warmed, so the run did not start: ${warm.code}: ${warm.message}; fix: ${warm.fix}`;
+    const endedBy = `the embedder could not be warmed, so the run did not start: ${warm.code}: ${warm.message}; fix: ${warm.fix}; ${require('../core/embedder-mode.cjs').withoutEmbedderAdvice()}`;
     const receipt = refusal(endedBy, process.pid, 'embedder warm-up failed before any spawn');
     receipt.embedder = warm;
     receipt.store.shutdown = sd;
