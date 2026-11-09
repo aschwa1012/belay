@@ -411,3 +411,71 @@ test('a stop that ends the commit is recorded as E_CANCELLED, never as a refused
     assert.strictEqual(git(r.tree, 'rev-parse', 'HEAD'), r.base);
   } finally { await r.e.close(); }
 });
+
+test('the secret names include other key types, certificate stores and credential dotfiles; public keys and tracked files are not refused', () => {
+  const bad = ['id_ed25519', 'k/id_ecdsa_work', 'id_dsa', 'a.p12', 'b.pfx', '.npmrc', 'x/.pypirc', '.netrc', 'c.keystore', 'd.jks'];
+  assert.deepStrictEqual(HC.secretsIn([...bad, 'id_ed25519.pub', 'id_ecdsa.pub', 'npmrc.md', 'notes.jks.txt', 'netrc']), bad);
+});
+
+test('a commit-msg hook that rejects belay\'s subject is hook-msg; a failing pre-commit hook stays hook', async () => {
+  const m = await released('hc-msg');
+  try {
+    const hook = git(m.tree, 'rev-parse', '--path-format=absolute', '--git-path', 'hooks/commit-msg');
+    fs.mkdirSync(path.dirname(hook), { recursive: true });
+    fs.writeFileSync(hook, '#!/bin/sh\necho "subject must start with feat:" >&2\nexit 1\n', { mode: 0o755 });
+    write(m.tree, 'src/mod.txt', 'two\n'); await m.release();
+    const got = await m.handBack();
+    assert.deepStrictEqual([got.made, got.reason], [false, 'hook-msg']);
+    assert.match(got.error, /subject must start with feat:/);
+    assert.strictEqual(git(m.tree, 'rev-parse', 'HEAD'), m.base);
+  } finally { await m.e.close(); }
+  const p = await released('hc-pre-and-msg');
+  try {
+    for (const [name, text] of [['pre-commit', 'echo "lint says no" >&2\nexit 1'], ['commit-msg', 'exit 0']]) {
+      const hook = git(p.tree, 'rev-parse', '--path-format=absolute', '--git-path', `hooks/${name}`);
+      fs.mkdirSync(path.dirname(hook), { recursive: true });
+      fs.writeFileSync(hook, `#!/bin/sh\n${text}\n`, { mode: 0o755 });
+    }
+    write(p.tree, 'src/mod.txt', 'two\n'); await p.release();
+    const got = await p.handBack();
+    assert.deepStrictEqual([got.made, got.reason], [false, 'hook'], 'pre-commit refused it, so the message hook never ran');
+  } finally { await p.e.close(); }
+});
+
+test('an index.lock left by belay\'s own ended commit is removed only when it is new and no git process runs; otherwise it is left and said so', async () => {
+  const dir = fs.mkdtempSync(path.join(require('node:os').tmpdir(), 'belay-lock-'));
+  try {
+    const lock = path.join(dir, 'index.lock').split('\\').join('/');
+    const none = async () => ({ 1: { image: 'node.exe' } });
+    const busy = async () => new Map([[7, { image: 'C:\\Program Files\\Git\\mingw64\\bin\\git.exe' }]]);
+    const t0 = Date.now() - 100;
+    assert.strictEqual(await HC.dropOwnLock(lock, false, t0, none), '', 'no lock, nothing to do');
+    fs.writeFileSync(lock, '');
+    assert.match(await HC.dropOwnLock(lock, true, t0, none), /was there before the commit began and is left/);
+    assert.ok(fs.existsSync(lock));
+    assert.match(await HC.dropOwnLock(lock, false, t0, busy), /another git process is running, so it is left/);
+    assert.ok(fs.existsSync(lock));
+    assert.match(await HC.dropOwnLock(lock, false, t0, async () => null), /process list could not be read/);
+    assert.ok(fs.existsSync(lock));
+    assert.match(await HC.dropOwnLock(lock, false, Date.now() + 60000, none), /predates the commit and is left/);
+    assert.ok(fs.existsSync(lock));
+    assert.match(await HC.dropOwnLock(lock, false, t0, none), /index\.lock the ended commit left was removed/);
+    assert.ok(!fs.existsSync(lock));
+  } finally { fs.rmSync(dir, { recursive: true, force: true }); }
+});
+
+test('a hand-back commit ended by a stop on a hung hook leaves no index.lock behind and says what it did', async () => {
+  const r = await released('hc-lock-after-cancel');
+  try {
+    await hung(r);
+    const lockPath = git(r.tree, 'rev-parse', '--path-format=absolute', '--git-path', 'index.lock');
+    const job = HC.newJob();
+    const p = HC.commitFor(r.w, await r.row(), job);
+    const t0 = Date.now();
+    for (const end = Date.now() + 20000; !(job.child && Date.now() - t0 > 1500) && Date.now() < end;) await new Promise((res) => setTimeout(res, 25));
+    await job.cancel('stop');
+    const got = await within(p, 20000);
+    assert.strictEqual(got.reason, 'bound');
+    assert.ok(!fs.existsSync(lockPath), 'no stale lock is left for the next attempt');
+  } finally { await r.e.close(); }
+});
