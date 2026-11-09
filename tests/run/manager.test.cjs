@@ -1,4 +1,5 @@
 'use strict';
+// Not a legacy test: its other tests are about the run manager; the turn-row ones are labelled.
 require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // The run manager against a fake substrate and the in-memory fake core. Every assertion is about
 // an effect: a row written, a checkpoint written, a memory entry written, a file on disk. A

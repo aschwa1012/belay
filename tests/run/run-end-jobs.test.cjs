@@ -41,7 +41,7 @@ async function teardown(s) {
 }
 const ledger = async (c, kinds) => (await c.memory.events({ run_id: RUN, kinds })).events;
 
-test('belay run\'s run-end, store only: the summary and both wrap-ups land, from the rows alone', async () => {
+test('legacy: belay run\'s run-end, store only: the summary and both wrap-ups land, from the rows alone', async () => {
   const s = await setup();
   try {
     const out = await MJ.runEndJobs({ core: s.op, runId: RUN, levers: LEVERS });
@@ -56,7 +56,7 @@ test('belay run\'s run-end, store only: the summary and both wrap-ups land, from
   } finally { await teardown(s); }
 });
 
-test('after a partial adapter-side run (summary written, wrap-ups cut off), belay run finishes it with no duplicate', async () => {
+test('legacy: after a partial adapter-side run (summary written, wrap-ups cut off), belay run finishes it with no duplicate', async () => {
   const s = await setup();
   try {
     // The adapter's own run-end, cut short after the summaries: emulated by the same jobs with the wrap-up lever off.
@@ -76,7 +76,7 @@ test('after a partial adapter-side run (summary written, wrap-ups cut off), bela
   } finally { await teardown(s); }
 });
 
-test('a run-end that cannot read the run\'s rows leaves run:gave-up on the ledger, naming the code and what did not run', async () => {
+test('legacy: a run-end that cannot read the run\'s rows leaves run:gave-up on the ledger, naming the code and what did not run', async () => {
   const s = await setup();
   try {
     const broken = { ...s.op, task: { ...s.op.task, list: async () => { throw Object.assign(new Error('store gone'), { code: 'E_OWNER_LOST' }); } } };
@@ -91,7 +91,7 @@ test('a run-end that cannot read the run\'s rows leaves run:gave-up on the ledge
   } finally { await teardown(s); }
 });
 
-test('memoryRunEnd with every job lever off loads nothing and calls nothing', async () => {
+test('legacy: memoryRunEnd with every job lever off loads nothing and calls nothing', async () => {
   const jobs = { runEndJobs: () => { throw new Error('must not be called'); } };
   const spy = new Proxy({}, { get: (_, k) => { if (k === 'harness') return undefined; throw new Error('the core must not be touched'); } });
   assert.strictEqual(await memoryRunEnd({ core: spy, runId: RUN, levers: { max_fix_rounds: 2 }, jobs }), null, 'no memory block at all');

@@ -49,7 +49,7 @@ async function twoTurns(levers) {
   }
 }
 
-test('observations on: one row per turn, the observation, embedded, with the turn tags; resumeDoc finds it', { timeout: 60000 }, async () => {
+test('legacy: observations on: one row per turn, the observation, embedded, with the turn tags; resumeDoc finds it', { timeout: 60000 }, async () => {
   const { rows, taskId, resume, embedded, events } = await twoTurns({ capture: true, observations: true });
   assert.deepStrictEqual(rows.map((r) => r.type), ['observation', 'observation'], 'two turns, two rows, no turn row');
   rows.forEach((r, i) => {

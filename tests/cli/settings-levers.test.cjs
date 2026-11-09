@@ -1,4 +1,5 @@
 'use strict';
+// Not a legacy test: it tests the settings listing; every lever, legacy ones included, is listed.
 require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1';
 // settings-levers.test.cjs — `belay settings` for the memory levers and the per-agent-type defaults: the keys
