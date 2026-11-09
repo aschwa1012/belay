@@ -40,7 +40,7 @@ async function redThenDead(e) {
   return { t, wt, pid };
 }
 // Runs `f` with the clock 5 minutes on: a restart claim is then older than its grace.
-const later = async (f) => { const real = Date.now; Date.now = () => real() + 300000; try { return await f(); } finally { Date.now = real; } };
+const later = async (f, ms = 300000) => { const real = Date.now; Date.now = () => real() + ms; try { return await f(); } finally { Date.now = real; } };
 const holder = (e, id) => e.raw('SELECT holder FROM lease WHERE task_id = ? ORDER BY seq DESC LIMIT 1', id)[0].holder;
 const fixSteps = () => (out) => out.steps.filter((s) => s.step === 'fix_eval').map((s) => [s.step, s.outcome]);
 
@@ -302,5 +302,18 @@ test('a builder restarted a moment ago whose restart is not up yet is not replac
     assert.match(stepRows(e).filter((s) => s.step === 'fix_eval').pop().error, /^E_NOT_NOW/);
     assert.strictEqual(out.steps.length, 1);
     assert.notStrictEqual(holder(e, t.id), undefined);
+  } finally { await e.close(); }
+});
+
+test('a tick that lands while the restart may still be on its second launch (100 s on) still waits; past the grace it goes on', async () => {
+  const e = await env('dead-slow-restart-150');
+  try {
+    await redThenDead(e);
+    const spawned = [];
+    const x = e.exec({ restartWorker: async () => ({ relaunch_in_flight: true }), spawnFor: fakeSpawn(e, spawned) });
+    await x.tick();
+    assert.deepStrictEqual(fixSteps()(await later(() => x.tick(), 100000)), [['fix_eval', 'skipped']], 'two startup windows later is not yet past the grace');
+    assert.deepStrictEqual(spawned, []);
+    assert.deepStrictEqual(fixSteps()(await later(() => x.tick(), 160000)), [['fix_eval', 'done']]);
   } finally { await e.close(); }
 });

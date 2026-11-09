@@ -36,6 +36,7 @@ function adapterLogPath() {
 
 if (process.argv.includes('--version')) { process.stdout.write('codex-cli 9.9.9-fake' + String.fromCharCode(10)); process.exit(0); }
 if (process.env.FAKE_CODEX_UNKNOWN_FEATURE) { process.stderr.write('Error: Unknown feature flag: ' + process.env.FAKE_CODEX_UNKNOWN_FEATURE + String.fromCharCode(10)); process.exit(1); } // a renamed feature: Codex exits at once
+if (process.env.FAKE_CODEX_FAIL_RESUME === '1' && process.argv.includes('resume')) { process.stderr.write('Error: thread not found (expired on the server)' + String.fromCharCode(10)); process.exit(1); } // exec resume of a thread the server no longer has
 let prompt = process.argv[process.argv.length - 1];
 if (prompt === '-') { // the prompt arrives on stdin (`codex exec -`); say how much and how it ended, not all of it
   const text = fs.readFileSync(0, 'utf8');

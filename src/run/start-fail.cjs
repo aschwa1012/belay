@@ -37,7 +37,8 @@ function createStartFail({ core, writeRow }) {
     // delivers one (by seconds under load). Wait, bounded, for it.
     if (exitCode && W.deathByPidCheck(w)) await W.awaitExitCode(w, W.exitCodeBudgetMs(w));
     await step(() => w.queue);
-    if (w.state !== 'dead' && !park && !(w.stopRequested && w.state === 'stopped')) await step(() => writeRow(w, 'dead')); // a row the operator's stop made terminal stays
+    if (w.deferDead) w.deadDeferred = true; // a resume that fails is replaced by a second launch (resume-fallback.cjs): the dead row is written there, only if no second launch follows
+    else if (w.state !== 'dead' && !park && !(w.stopRequested && w.state === 'stopped')) await step(() => writeRow(w, 'dead')); // a row the operator's stop made terminal stays
     return bind;
   }
 
