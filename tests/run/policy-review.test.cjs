@@ -255,3 +255,16 @@ test('through the adapter\'s wiring a review sent to a live worker is delivered 
     assert.strictEqual(reviewsOf(e, work.id).length, 1);
   } finally { await e.close(); }
 });
+
+test('the review the plan makes carries the work\'s search lines, so the reviewer\'s first-message index is searched by them', async () => {
+  const e = await env('review-lines');
+  try {
+    const { work } = await workDone(e, { review: { worker: 'rv' }, ...REST }, { create: { memory_queries: ['parse --at as the latest past time', 'lib/timer.js start and stop'] } });
+    await e.worker('rv');
+    const out = await e.exec().tick();
+    assert.deepStrictEqual(out.steps.map((s) => [s.step, s.outcome]), [['review', 'done']]);
+    const made = out.steps[0].row_ref.replace('task:', '');
+    assert.deepStrictEqual(JSON.parse(latest(e, 'task', made).memory_queries), ['parse --at as the latest past time', 'lib/timer.js start and stop']);
+    assert.strictEqual(reviewsOf(e, work.id).length, 1);
+  } finally { await e.close(); }
+});

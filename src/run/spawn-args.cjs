@@ -17,17 +17,9 @@ function checkWorkerId(worker_id) {
 
 // memory_queries: up to 4 situation lines the orchestrator writes for the worker's memory index (each a `when`-shaped task line, at
 // most 160 bytes). Returns them trimmed, or [] when none were given.
-const QUERIES_MAX = 4, QUERY_BYTES_MAX = 160;
-function checkMemoryQueries(list) {
-  if (list === null || list === undefined) return [];
-  if (!Array.isArray(list) || list.length > QUERIES_MAX) fail('E_ARGS', `spawn memory_queries must be an array of at most ${QUERIES_MAX} task lines`, { field: 'memory_queries' });
-  return list.map((q, i) => {
-    const t = typeof q === 'string' ? q.replace(/\s+/g, ' ').trim() : '';
-    if (!t) fail('E_ARGS', `spawn memory_queries[${i}] must be a non-empty string`, { field: 'memory_queries', index: i });
-    if (Buffer.byteLength(t) > QUERY_BYTES_MAX) fail('E_ARGS', `spawn memory_queries[${i}] is ${Buffer.byteLength(t)} bytes and the limit is ${QUERY_BYTES_MAX}; word the task line shorter`, { field: 'memory_queries', index: i, max: QUERY_BYTES_MAX });
-    return t;
-  });
-}
+const MQ = require('../core/memory-queries.cjs');
+const { QUERIES_MAX, QUERY_BYTES_MAX } = MQ;
+const checkMemoryQueries = (list) => MQ.check(list, 'spawn', fail);
 
 // NTFS is case-insensitive, so W1 and w1 share one directory, and another run's row of the same id would be restated. A caller-named id is fresh only when no row in the
 // store has it (any state, any run, compared without case) and no directory holds it. A restart, resume or adopt of the same row never comes through spawn.

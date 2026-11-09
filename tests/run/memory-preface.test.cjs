@@ -147,13 +147,13 @@ test('levers on, notes in scope but none passed the bar: one short line says so,
   const core = memoryCore({ levers: { first_message_index: true }, noneListed: 3 });
   await run(core, async (m, sb) => {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w5', task_id: 't1' });
-    const line = "No project note passed the index's relevance bar for this task (3 notes in scope); memory_search can still look.";
+    const line = "The project has 3 notes; none matched this task's queries closely enough to list here. Some may still apply: before you change a file or command, run memory_search on it.";
     assert.strictEqual(m._worker('w5').firstMessage, `${RL}
 
 ${line}
 
 ${PROMPT}${PL}${HB}`);
-    assert.ok(Buffer.byteLength(line) <= 120, 'about 110 bytes');
+    assert.ok(Buffer.byteLength(line) <= 200, 'about 190 bytes');
     assert.strictEqual(core.events[0].bytes, 0);
     assert.strictEqual(JSON.parse(core.events[0].message).bar.best_cut_cos, 0.31);
   });
@@ -163,9 +163,9 @@ test('a relaunch that excluded notes the worker already holds never says that no
   const core = memoryCore({ levers: { first_message_index: true }, noneListed: 2, heldBack: 3, scope: 37 }); // 37 notes not yet shown (candidates.scope) and 3 already shown
   await run(core, async (m, sb) => {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w5', task_id: 't1' });
-    const line = "No further project note passed the index's relevance bar for this task (40 notes in scope); memory_search can still look.";
+    const line = "No further project note matched this task's queries closely enough to list here (40 notes in scope). Some may still apply: before you change a file or command, run memory_search on it.";
     assert.ok(m._worker('w5').firstMessage.includes(line), 'further, and the notes in scope are the unshown scope plus the shown ones, not the ranked candidates');
-    assert.ok(!m._worker('w5').firstMessage.includes('No project note passed'));
+    assert.ok(!m._worker('w5').firstMessage.includes('The project has'));
   });
 });
 

@@ -18,7 +18,7 @@ const DEFAULT_FIX_CUTOFF = 'orchestrator';
 const EM = require('../core/embedder-mode.cjs');
 const DEFAULT_ON_EMBEDDER_FAILURE = EM.DEFAULT_MODE; // ADR 0034 decision 2, amendment 1
 const MEMORY_RULES_FILE = path.join(__dirname, '..', 'run', 'prompts', 'memory-rules.md');
-// The one sentence that asks the orchestrator for `memory_queries`. Its only reader is the first-message index
+// The one sentence that asks the orchestrator for `memory_queries` at task creation. Its only reader is the first-message index
 // (memory-preface.cjs), so it is told to the orchestrator only when that lever is on; off, the placeholder is ''
 // and the prompt asks for nothing the run never reads.
 const MEMORY_REPORT_LINE = ' If a note is wrong, out of date or contradicted by the evaluation of a task or the code, report it with `mcp__belay__memory_report` and say why (it holds the note for the archive review); you need not wait for the operator.';
@@ -38,7 +38,7 @@ const MEMORY_USE_NOTES = [
 ].join('\n');
 const MEMORY_OUTCOME_NOTES = 'record the outcome with `namespace: "summary"`, ';
 const MEMORY_VERIFY_RULE = ' Use `mcp__belay__memory_verify` only with a receipt.'; // a notes run's orchestrator has no memory_verify
-const MEMORY_QUERIES_LINE = ' Also give 1 to 3 `memory_queries`: task lines (each under 160 bytes) naming the situations the worker will be in, such as "add a migration" or "dedupe email addresses", not the finding you expect it to make.';
+const MEMORY_QUERIES_LINE = ' Also give `memory_queries`: 2 to 4 short search lines (each under 160 bytes) naming the commands, files, symbols or behaviours the work touches, so each worker on the task is shown the project notes that match.';
 
 // The time-bound condition is observable only if the orchestrator is told the bound and can read elapsed time. `belay run` renders the run's
 // start and deadline into it as absolute UTC times (`opts.startedAt`), so the rule carries them through a compaction and needs no call the

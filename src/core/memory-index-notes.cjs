@@ -37,6 +37,8 @@ const redactText = (s) => require('./redact.cjs').redact(String(s)).text; // the
 const WHERE_SHOWN = 80; // bytes of the evidence location shown (the location, not the claim, is cut)
 const HELD_WHY_SHOWN = 60; // bytes of a hold's reason shown
 const WHY_SHOWN = 120; // bytes of a reported_wrong reason shown
+const SPEC_LABEL = 'task'; // the embedQuery label of the whole task spec; every other query is a search line
+const REL_CUT = 0.05; // a search-line hit is listed only within this of the best search-line cosine of any note
 const RECEIPT_KINDS = new Set(['commit', 'task', 'review', 'test', 'memory', 'checkpoint']);
 
 const marks = (list) => list.map(() => '?').join(', ');
@@ -142,12 +144,6 @@ function subjectMatches(subject, prep, norm) {
     return parts.length > 1 && parts.every((p) => ([...p].length < 2 ? false : [...p].length < 4 ? prep.words.has(p) : formsOf(p).some((f) => prep.words.has(f))));
   }
   return false;
-}
-// The distinct subjects of a note that the task text names.
-function subjectsMatched(subjects, text, norm) {
-  if (!text || !Array.isArray(subjects)) return [];
-  const prep = typeof text === 'string' ? prepareText(text) : text;
-  return [...new Set(subjects.filter((x) => typeof x === 'string'))].filter((s) => subjectMatches(s, prep, norm));
 }
 function subjectHits(subjects, text, norm) {
   if (!text || !Array.isArray(subjects)) return 0;
@@ -276,36 +272,51 @@ async function index(E, caller, c) {
     || (a.r.id < b.r.id ? -1 : a.r.id > b.r.id ? 1 : 0)
   ));
 
-  // The bar (research 2026-11-09): a note is listed when its best cosine to the task's queries reaches index_min_relevance, or it matches the task by
-  // path or subject; then at most index_max_notes. The cosine floor was measured on nano only, so with another embedder, or with no vector list
-  // (keyword-only), only the path and subject facts qualify, and the receipt says so.
-  const minRel = typeof lv.index_min_relevance === 'number' ? lv.index_min_relevance : 0.4;
-  const maxNotes = Number.isInteger(lv.index_max_notes) ? lv.index_max_notes : 5;
+  // The bar (ADR 0042 amendment, proposed). Two scores per note, each against its own floor and never mixed under one: `sub`, the best cosine over the
+  // task's search lines (its memory_queries), and `spec`, the cosine to the whole task spec (label `task`). Whole-text queries sit on a higher cosine
+  // scale than short lines, so one floor cannot serve both. With search lines a note is listed when (sub >= index_min_relevance and sub is within
+  // REL_CUT of the best sub of any note) or spec >= index_min_relevance_spec; with none, when spec >= index_spec_only_floor. A path or subject match
+  // lists nothing (it measured as noise); it stays a tiebreaker in the order above. index_min_relevance 0 turns the whole bar off (rank order up to
+  // the cap); a spec floor of 0 turns that leg off. The floors were measured on nano only, so with another embedder, or with no vector list
+  // (keyword only), no note qualifies by the bar, and the receipt says so.
+  const num = (v, d) => (typeof v === 'number' ? v : d);
+  const minRel = num(lv.index_min_relevance, 0.45), minSpec = num(lv.index_min_relevance_spec, 0.6), specOnly = num(lv.index_spec_only_floor, 0.55);
+  const maxNotes = Number.isInteger(lv.index_max_notes) ? lv.index_max_notes : 3;
   // The cosine comes from the vectors stored under the namespace, so the gate is the namespace's own embedding model: the bar was measured on nano.
   const models = namespaces.map((ns) => E.store.db.prepare('SELECT embedding_model FROM namespace_models WHERE namespace = ?').get(ns)).filter(Boolean).map((m) => m.embedding_model);
   const nano = models.length === 0 || models.every((m) => m === c.nanoModel);
   const useCos = nano && sel.info && sel.info.semantic_contributed === true && sel.cos.size > 0;
-  // A path match always admits. A subject match admits when two distinct subjects of the note match, or the one that does is not common: on a single
-  // note, or on fewer than 20% of the project's notes (a cheap idf, counted over all the note rows of the namespaces, held and old ones included, which only makes it stricter; a word like "data" on a quarter of the notes names no task in particular).
-  const subjFreq = new Map();
-  for (const r of E.store.db.prepare(`SELECT json_extract(e.body, '$.subjects') AS sj FROM memory_entries e WHERE e.namespace IN (${marks(namespaces)}) AND e.type = 'note'`).all(...namespaces)
-    .filter(Boolean)) for (const s of new Set((parseJson(r.sj) || []).filter((x) => typeof x === 'string').map((x) => oneLine(x).toLowerCase()))) subjFreq.set(s, (subjFreq.get(s) || 0) + 1);
-  const specific = (s) => { const f = subjFreq.get(oneLine(s).toLowerCase()) || 0; return f <= 1 || f < 0.2 * pool.length; };
+  const subMaps = useCos ? [...sel.cosBy].filter(([label]) => label !== SPEC_LABEL).map(([, m]) => m) : [];
+  const specMap = useCos ? sel.cosBy.get(SPEC_LABEL) || null : null;
+  const subOn = subMaps.length > 0;
+  const subqueries = (rq.queries || []).filter((q) => q.label !== SPEC_LABEL).length;
+  let bestSub = null;
   for (const x of ranked) {
-    const m = x.hits > 0 ? subjectsMatched(x.r.b && x.r.b.subjects, prep, norm) : [];
-    x.subjOk = m.length >= 2 || m.some(specific);
+    x.sub = subMaps.reduce((m, map) => (map.has(x.r.id) && (m === null || map.get(x.r.id) > m) ? map.get(x.r.id) : m), null);
+    x.spec = specMap && specMap.has(x.r.id) ? specMap.get(x.r.id) : null;
+    if (x.sub !== null && (bestSub === null || x.sub > bestSub)) bestSub = x.sub;
   }
-  const why = (x) => (minRel === 0 ? 'rank' : useCos && x.cosine !== null && x.cosine >= minRel ? 'cos' : x.ps > 0 ? 'path' : x.subjOk ? 'subject' : null); // index_min_relevance 0 turns the bar off: rank order, up to the cap
+  const why = (x) => {
+    if (minRel === 0) return 'rank';
+    if (!useCos) return null;
+    if (subOn) {
+      if (x.sub !== null && x.sub >= minRel && x.sub >= bestSub - REL_CUT) return 'sub';
+      return minSpec === 0 || (x.spec !== null && x.spec >= minSpec) ? 'spec' : null;
+    }
+    return specOnly === 0 || (x.spec !== null && x.spec >= specOnly) ? 'spec_only' : null;
+  };
   const passing = ranked.filter((x) => why(x) !== null);
   const shown = passing.slice(0, maxNotes);
   const cutByFloor = ranked.length - passing.length, cutByCap = passing.length - shown.length;
-  const bestCut = ranked.filter((x) => why(x) === null && x.cosine !== null).reduce((m, x) => (m === null || x.cosine > m ? x.cosine : m), null);
+  const r3 = (v) => (v === null ? null : Math.round(v * 1000) / 1000);
+  const bestCut = (k) => r3(ranked.filter((x) => why(x) === null && x[k] !== null).reduce((m, x) => (m === null || x[k] > m ? x[k] : m), null));
   const barInfo = {
     bar: {
-      min_relevance: minRel, max_notes: maxNotes, by: minRel === 0 ? 'off' : useCos ? 'cosine_or_facts' : 'facts_only',
+      min_relevance: minRel, min_relevance_spec: minSpec, spec_only_floor: specOnly, max_notes: maxNotes, by: minRel === 0 ? 'off' : useCos ? 'cosine' : 'none',
       ...(useCos || minRel === 0 ? {} : { reason: !nano ? `the notes are embedded with ${[...new Set(models)].join(', ')}, not the model the relevance bar was measured on (${c.nanoModel})` : 'no vector list ranked the notes (keyword only)' }),
-      listed: shown.map((x) => ({ id: x.r.id, cos: x.cosine === null ? null : Math.round(x.cosine * 1000) / 1000, why: why(x) })),
-      cut_by_floor: cutByFloor, cut_by_cap: cutByCap, best_cut_cos: bestCut === null ? null : Math.round(bestCut * 1000) / 1000,
+      subqueries, spec_only: useCos && !subOn,
+      listed: shown.map((x) => ({ id: x.r.id, sub: r3(x.sub), spec: r3(x.spec), why: why(x) })),
+      cut_by_floor: cutByFloor, cut_by_cap: cutByCap, best_cut_sub: bestCut('sub'), best_cut_spec: bestCut('spec'),
     },
   };
   const trust = lv.notes_trust_wording === true;

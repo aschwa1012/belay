@@ -124,6 +124,7 @@ async function followUp(E, caller, args) {
       acceptance: args.acceptance !== undefined ? args.acceptance : judged.acceptance,
       files_owned: F.ownedSet(args.files_owned, judged, rec),
       depends_on: [judged.id],
+      ...(judged.memory_queries ? { memory_queries: judged.memory_queries } : {}),
       ...(cut ? { worktree: cut } : {}),
       ...(args.id ? { id: args.id } : {}),
     }, { follows_up: { review_id: review.id, review_ids: reviewIds, task_id: judged.id, root } });

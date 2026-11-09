@@ -22,8 +22,10 @@ const DEFAULTS = Object.freeze({
   turn_rows: false, // the harness writes a turn row (the worker's last text of each turn) only when true; notes do not read them
   first_message_index: false, // the lever as a block states it; an unstated one follows `notes` (parseMemoryBlock), so the index is on with notes and off without
   index_bytes: 1600,
-  index_min_relevance: 0.4, // provisional (research 2026-11-09, nano cosine, alpha-tune data): a note is listed when its best cosine to the task's queries is at least this, or it matches the task by path or subject
-  index_max_notes: 5, // the most notes the first-message index lists, inside index_bytes
+  index_min_relevance: 0.45, // provisional (research 2026-11-09, nano cosine): the floor of the SEARCH-LINE leg: a note is listed when its best cosine to the task's memory_queries lines is at least this and within 0.05 of the best such note. 0 turns the whole bar off (rank order up to the cap)
+  index_min_relevance_spec: 0.6, // provisional: the floor of the SPEC leg when the task has search lines: a note whose cosine to the whole task spec is at least this is listed whatever the lines say. 0 turns that leg's bar off
+  index_spec_only_floor: 0.55, // provisional: the floor when the task has NO search lines: the cosine to the whole task spec. 0 turns that bar off
+  index_max_notes: 3, // the most notes the first-message index lists, inside index_bytes
   bottle: false,
   bottle_bytes: 65536,
   wrapup: false,
@@ -190,6 +192,7 @@ function parseMemoryBlock(block, opts = {}) {
   }
   if (!boundedInt(v.index_bytes, INDEX_BYTES_MAX)) return { error: `memory.index_bytes must be an integer from 1 to ${INDEX_BYTES_MAX}` };
   if (typeof v.index_min_relevance !== 'number' || !(v.index_min_relevance >= 0 && v.index_min_relevance <= 1)) return { error: 'memory.index_min_relevance must be a number from 0 to 1' };
+  for (const k of ['index_min_relevance_spec', 'index_spec_only_floor']) if (typeof v[k] !== 'number' || !(v[k] >= 0 && v[k] <= 1)) return { error: `memory.${k} must be a number from 0 to 1` };
   if (!boundedInt(v.index_max_notes, 20)) return { error: 'memory.index_max_notes must be an integer from 1 to 20' };
   if (!boundedInt(v.bottle_bytes, BOTTLE_BYTES_MAX)) return { error: `memory.bottle_bytes must be an integer from 1 to ${BOTTLE_BYTES_MAX}` };
   if (v.observations && !v.capture) return { error: 'memory.observations needs memory.capture' };
@@ -264,6 +267,8 @@ const OVERRIDES = {
   project: { type: 'string', nullable: true },
   index_bytes: { type: 'integer', min: 1, max: INDEX_BYTES_MAX },
   index_min_relevance: { type: 'number', min: 0, max: 1 },
+  index_min_relevance_spec: { type: 'number', min: 0, max: 1 },
+  index_spec_only_floor: { type: 'number', min: 0, max: 1 },
   index_max_notes: { type: 'integer', min: 1, max: 20 },
   bottle_bytes: { type: 'integer', min: 1, max: BOTTLE_BYTES_MAX },
   notes_match_threshold: { type: 'number', min: 0, max: 1, minExclusive: true },

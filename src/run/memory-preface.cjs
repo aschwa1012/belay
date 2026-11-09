@@ -143,14 +143,14 @@ const { SPAWN_EMBED_MS } = require('../core/spawn-bounds.cjs');
 const NO_EMBED = Object.freeze({ attempted: false, embeddings: [], queries: [], failure: null, stop: false, off: false, ms: 0 });
 
 // The query vectors of this worker's index, made by the store owner's embedder (memory.embedQuery: the path memory.search
-// uses; this process never loads the model). The queries are the task's own text, which the core reads from the task row
-// (so a relaunch embeds the same text a spawn did), plus the worker's `indexQueries` (the orchestrator's memory_queries from worker_spawn, kept on the worker row; each is sent as
-// "Task: <line>", the shape the task query has). Only for a run with a project, and only when there is a task or an extra query. Resolves
+// uses; this process never loads the model). The queries are the task's whole spec and its memory_queries lines, which the core reads from the
+// task row (so a relaunch, and a plan executor's spawn that names no lines, embed the same texts), unless the worker has `indexQueries` (the memory_queries
+// of its worker_spawn, kept on the worker row), which are sent instead. Only for a run with a project, and only when there is a task or an extra query. Resolves
 // { attempted, embeddings: [{ vector, model, label }], queries: [{ label, ms, ok, code?, message?, embedder?, timed_out? }],
 // failure: the first failed query's { code, message } or null, stop: whether a failure of the model itself must stop this
 // launch (the run's mode is `required`), off: whether the run's memory is off (mode `off` after a failure), ms }. A core without memory.embedQuery is a test double and gets none. Never throws.
 async function embedForIndex(ctx, w, lv) {
-  const extra = (Array.isArray(w.indexQueries) ? w.indexQueries : []).map((q) => (typeof q === 'string' ? `Task: ${q}` : { ...q, text: `Task: ${q.text}` }));
+  const extra = Array.isArray(w.indexQueries) ? w.indexQueries : []; // plain lines: a "Task: " wrap lowers their cosines
   if (!lv.project || !ctx.core.memory || typeof ctx.core.memory.embedQuery !== 'function' || (!w.taskId && !extra.length)) return NO_EMBED;
   const t0 = Date.now();
   let r;
@@ -197,7 +197,9 @@ async function offReceipt(ctx, w, emb, convo) {
 
 // The one line a worker gets when the project has notes in scope and none passed the index's relevance bar.
 // `n`: the notes in scope (candidates.scope counts only the notes not yet shown, so the already-shown ones are added back); `held`: notes this conversation was already shown, which did pass, so the line says no FURTHER note passed.
-const noneListedLine = (n, held = 0) => `No ${held > 0 ? 'further ' : ''}project note passed the index's relevance bar for this task (${n} note${n === 1 ? '' : 's'} in scope); memory_search can still look.`;
+const noneListedLine = (n, held = 0) => (held > 0
+  ? `No further project note matched this task's queries closely enough to list here (${n} note${n === 1 ? '' : 's'} in scope). Some may still apply: before you change a file or command, run memory_search on it.`
+  : `The project has ${n} note${n === 1 ? '' : 's'}; none matched this task's queries closely enough to list here. Some may still apply: before you change a file or command, run memory_search on it.`);
 
 // What a worker is told when its first-message index was refused (E_INDEX_BOUND, E_SEMANTIC_REQUIRED): belay's own words, no note text.
 function noIndexNotice(e) {

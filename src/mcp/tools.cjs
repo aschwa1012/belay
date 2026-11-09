@@ -203,10 +203,10 @@ const isReviewJob = (role, workerId) => role === 'worker' && typeof workerId ===
 
 // `knowledge` (orchestrator only) adds knowledge_ask; omitted or false, the listing is byte-for-byte what it was.
 // `workerId` (the adapter's argv) narrows the knowledge agent's listing to its read tools.
-// `queries` (orchestrator): whether worker_spawn lists `memory_queries`. They feed the first-message index only, so a run with that lever
+// `queries` (orchestrator): whether task_create and worker_spawn list `memory_queries`. They feed the first-message index only, so a run with that lever
 // off (the default) is not shown the field; a call that carries it is still accepted (the schema of validateArgs is the full one).
 const withoutQueries = (list) => list.map((t) => {
-  if (t.name !== 'worker_spawn') return t;
+  if (t.name !== 'worker_spawn' && t.name !== 'task_create') return t;
   const { memory_queries, ...properties } = t.inputSchema.properties;
   return { ...t, inputSchema: { ...t.inputSchema, properties } };
 });

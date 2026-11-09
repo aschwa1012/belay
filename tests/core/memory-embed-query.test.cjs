@@ -299,7 +299,7 @@ test('query_embeddings cross the pipe as base64 and arrive as the same vectors',
     [['task', 'stub', [0.25, -1, 3.5]], ['extra:1', null, [1, 2, 3]]]);
 });
 
-test('the task query is the spec\'s opening paragraph, up to the first blank line, and not the whole spec', async () => {
+test('the task query is the whole spec, cut to the cap, not its opening paragraph', async () => {
   mode = 'ok'; embedded.length = 0;
   const spec = `
 
@@ -311,15 +311,25 @@ Files: db/migrate/, db/schema.sql
 Acceptance: npm test exits 0`;
   rows.append(store, 'task', { id: 't-multi', run_id: 'test-run', spec, state: 'open' }, 'orchestrator');
   const r = await call('memory.embedQuery', { task_id: 't-multi', extra_texts: ['dedupe email addresses'] });
-  assert.deepStrictEqual(embedded, ['Add a migration that numbers the users table by its filename, and ship it', 'dedupe email addresses']);
+  assert.deepStrictEqual(embedded, [spec, 'dedupe email addresses']);
   assert.deepStrictEqual(r.queries.map((q) => q.label), ['task', 'extra:1']);
-  // one paragraph with no blank line is itself, still cut to the cap
+  // a spec past the cap is cut to it
   rows.append(store, 'task', { id: 't-one', run_id: 'test-run', spec: `ship ${'y'.repeat(5000)}`, state: 'open' }, 'orchestrator');
   embedded.length = 0;
   await call('memory.embedQuery', { task_id: 't-one' });
   assert.strictEqual(embedded[0].length, 2048);
-  const { openingParagraph } = core('methods-embed-query.cjs');
-  assert.strictEqual(openingParagraph('a\r\nb\r\n\r\nc'), 'a b', 'CRLF is a line break too');
+});
+
+test('the task\'s memory_queries are embedded as plain lines (no "Task: " prefix) labelled q:1.., after the spec; extra_texts given win over them', async () => {
+  mode = 'ok'; embedded.length = 0;
+  rows.append(store, 'task', { id: 't-lines', run_id: 'test-run', spec: 'Tickets: T11', state: 'open', memory_queries: ['parse --at as the latest past time', 'lib/timer.js start and stop'] }, 'orchestrator');
+  const r = await call('memory.embedQuery', { task_id: 't-lines' });
+  assert.deepStrictEqual(embedded, ['Tickets: T11', 'parse --at as the latest past time', 'lib/timer.js start and stop']);
+  assert.deepStrictEqual(r.queries.map((q) => q.label), ['task', 'q:1', 'q:2']);
+  embedded.length = 0;
+  const w = await call('memory.embedQuery', { task_id: 't-lines', extra_texts: ['dedupe email addresses'] });
+  assert.deepStrictEqual(embedded, ['Tickets: T11', 'dedupe email addresses'], 'the spawn\'s own lines win for that spawn');
+  assert.deepStrictEqual(w.queries.map((q) => q.label), ['task', 'extra:1']);
 });
 
 test('a call whose run ended while it waited for the embedder writes no embed_bound event', async () => {

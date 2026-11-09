@@ -103,7 +103,7 @@ function cosinesMany(E, namespaces, allowed, queries, defaultModel, deadline = I
 
 // pool: ids newest first. o: { text, source, queries, embeddingModel, alpha, pathIds (ids whose paths match the task, best first),
 // pathMode, deadline (absolute, on `clock`), boundMs (for the receipt), clock }. Returns { ids, scores: Map id -> fused relevance, cos: Map id -> the
-// best cosine over the task's query vectors (empty when no vector list contributed), info, candidates }.
+// best cosine over the task's query vectors (empty when no vector list contributed), cosBy: Map label -> Map id -> cosine, info, candidates }.
 function select(E, namespaces, pool, o) {
   const allowed = new Set(pool);
   const queries = o.queries || [];
@@ -130,7 +130,7 @@ function select(E, namespaces, pool, o) {
     }
   }
 
-  const sems = [], failed = [];
+  const sems = [], failed = [], cosBy = new Map(); // cosBy: query label -> Map id -> cosine, so the bar can score the spec and the search lines apart
   if (queries.length) {
     info.semantic_lists = [];
     const clock = o.clock || Date.now;
@@ -152,7 +152,7 @@ function select(E, namespaces, pool, o) {
     } else {
       sweep.lists.forEach((out, j) => {
         info.semantic_lists.push({ label: queries[j].label, matched: out.size });
-        if (out.size) sems.push(out);
+        if (out.size) { sems.push(out); cosBy.set(queries[j].label, out); }
       });
       if (failed.length === queries.length) info.semantic = { code: failed[0].code, message: failed.map((f) => f.message).join('; ') };
       else if (failed.length) info.semantic_failed = failed;
@@ -182,7 +182,7 @@ function select(E, namespaces, pool, o) {
 
   if (!vec.size && !key.size && !path.size) { // nothing ranked: the newest notes
     cand.total = Math.min(pool.length, NEWEST);
-    return { ids: pool.slice(0, NEWEST), scores, cos, info: o.text || queries.length ? info : null, candidates: cand };
+    return { ids: pool.slice(0, NEWEST), scores, cos, cosBy, info: o.text || queries.length ? info : null, candidates: cand };
   }
   const ranked = new Set([...vec, ...key, ...path]);
   const ids = [...new Set([...ranked, ...pool.slice(0, PAD)])];
@@ -190,7 +190,7 @@ function select(E, namespaces, pool, o) {
     source: [sems.length && kw.size ? 'hybrid' : sems.length ? 'vector' : kw.size ? 'keyword' : '', path.size ? 'path' : ''].filter(Boolean).join('+'),
     vector: vec.size, keyword: key.size, path: path.size, union: ranked.size, padding: ids.length - ranked.size, total: ids.length,
   });
-  return { ids, scores, cos, info: o.text || queries.length ? info : null, candidates: cand };
+  return { ids, scores, cos, cosBy, info: o.text || queries.length ? info : null, candidates: cand };
 }
 
 // The sinking seam. A note's relevance is multiplied by sinkFactor(note, ctx) in the index ranking. It returns 1 for every note and

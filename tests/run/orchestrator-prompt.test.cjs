@@ -92,15 +92,16 @@ test('memory rules: the text stays within 1,200 bytes and carries each rule the 
 
 // The paired write/search contract: the orchestrator names the situations a worker will be in as task lines, so the worker's
 // first-message index is searched by situation and not only by the spec's own words.
-test('both orchestrator prompts ask for 1 to 3 memory_queries only when the first-message index is on, and worker_spawn lists the field', () => {
+test('both orchestrator prompts ask for 2 to 4 memory_queries at task creation only when the first-message index is on, and task_create and worker_spawn list the field', () => {
   const { substituteLevers, parseLevers } = require(path.join(ROOT, 'src/cli/run-levers.cjs'));
   for (const f of ['orchestrator.md', 'orchestrator-interactive.md']) {
     const text = fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8');
     assert.strictEqual(text.split('{{memory_queries_line}}').length, 2, `${f} carries the placeholder once`);
     assert.ok(!/memory_queries/.test(text.replace('{{memory_queries_line}}', '')), `${f}: the sentence lives only behind the placeholder`);
     const on = substituteLevers(text, parseLevers({ memory: { first_message_index: true } }), 0);
-    assert.match(on.text, /give 1 to 3 `memory_queries`: task lines/, `${f} asks for memory_queries with the index on`);
-    assert.match(on.text, /not the finding you expect it to make/, `${f}: situations, not findings`);
+    assert.match(on.text, /`depends_on`: task ids that must be `done` first\. Also give `memory_queries`: 2 to 4 short search lines/, `${f} asks for memory_queries on the task_create fields with the index on`);
+    assert.match(on.text, /each worker on the task is shown the project notes that match/, `${f}: says what the lines are for`);
+    assert.ok(!/worker will be in/.test(on.text), `${f}: the old worker_spawn request is gone`);
     assert.strictEqual(on.substituted.memory_queries_line, 1);
     // D58: with every lever off the prompt asks for nothing the run never reads.
     for (const lv of [parseLevers({}), parseLevers({ memory: { capture: true, rules: true } })]) {
@@ -113,6 +114,8 @@ test('both orchestrator prompts ask for 1 to 3 memory_queries only when the firs
   const spawn = T.toolsFor('orchestrator', { queries: true }).find((t) => t.name === 'worker_spawn');
   assert.ok(spawn.inputSchema.properties.memory_queries, 'worker_spawn lists memory_queries');
   assert.strictEqual(spawn.inputSchema.properties.memory_queries.type, 'array');
+  assert.strictEqual(T.toolsFor('orchestrator', { queries: true }).find((t) => t.name === 'task_create').inputSchema.properties.memory_queries.type, 'array', 'task_create lists memory_queries with the index on');
+  for (const name of ['task_create', 'worker_spawn']) assert.ok(!('memory_queries' in T.toolsFor('orchestrator', {}).find((t) => t.name === name).inputSchema.properties), `${name} does not list it with the index off`);
 });
 
 // ADR 0047 amendment of 2026-10-22, decision 7: a notes run renders the memory bullet as four points; a run without notes renders what it always did.
