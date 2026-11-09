@@ -8,19 +8,28 @@
 // (pause.cjs) goes back to parked instead.
 
 // -> the failure's reason when the error is a resume that never reached ready, else null.
-function resumeFailure(w, e, opts) {
+// What happened to a resume that exited by itself before ready: its exit code and the first line of its stderr, redacted and bounded.
+function exitedWhy(d) {
+  const line = String(d.stderr_tail || '').split(/\r?\n/).map((l) => l.trim()).find(Boolean) || '';
+  const text = line ? require('../core/redact.cjs').redact(line).text.slice(0, 200) : '';
+  return `the process exited before it was ready${d.exit_code != null ? ` (exit code ${d.exit_code})` : ''}${text ? `: ${text}` : ''}`;
+}
+
+// `killed(w)`: an operator's kill ended the process the row names; belay does not undo it with a fresh conversation.
+function resumeFailure(w, e, opts, killed) {
   if (opts.skipDeadPidKill || opts.forceReplace || w.nativeMemoryRefused || w.readyAt) return null;
   if (!(e && e.code === 'E_NO_READY' && e.detail && e.detail.branch === 'resume' && !e.detail.stopped_during_launch)) return null;
-  return `the resume failed (${e.detail.reason || e.message}); replaced with a fresh conversation`;
+  if (killed && killed(w)) return null;
+  return `the resume failed (${e.detail.exited_before_ready ? exitedWhy(e.detail) : e.detail.reason || e.message}); replaced with a fresh conversation`;
 }
 
 // `inner(w, opts)`: the restart on one branch; opts.forceReplace names why the branch is replace. `settleDead(w)` writes the row a deferred death left unwritten.
-const withFallback = (inner, settleDead) => async (w, opts = {}) => {
+const withFallback = (inner, settleDead, killed = null) => async (w, opts = {}) => {
   const eligible = !opts.skipDeadPidKill && !opts.forceReplace;
   w.deferDead = eligible; w.deferFrom = w.launches; w.deadDeferred = false; // only a process launched from here on is deferred: the life before this restart still gets its dead row
   try { return await inner(w, opts); } catch (e) {
     w.deferDead = false;
-    const why = resumeFailure(w, e, opts);
+    const why = resumeFailure(w, e, opts, killed);
     if (!why) { if (w.deadDeferred) { w.deadDeferred = false; await settleDead(w).catch(() => {}); } throw e; }
     w.deadDeferred = false;
     const launches = w.launches;

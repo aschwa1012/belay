@@ -322,7 +322,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
 
   // Shared by `restart` and by `resume` (pause.cjs): `firstTextOverride(branch)` replaces `restartFirstText`'s own text when given; `appendMessage` follows
   // two newlines; `awaitFirstTurn: false` returns once the relaunch's `running` row lands. `forceReplace`: why (resume-fallback.cjs).
-  const doRestart = require('./resume-fallback.cjs').withFallback((w, o) => restartBranch(w, o), (w) => writeRow(w, 'dead'));
+  const doRestart = require('./resume-fallback.cjs').withFallback((w, o) => restartBranch(w, o), (w) => writeRow(w, 'dead'), (w) => require('../core/kill-mark.cjs').isKilled(root, w.id, w.pid, w.pidCreated));
   async function restartBranch(w, { forceReplace = null, firstTextOverride = null, appendMessage = null, awaitFirstTurn = true, first_turn_timeout_ms = 180000, onFirstText = null, skipDeadPidKill = false } = {}) {
     const worker_id = w.id;
     const old_pid = w.pid;
@@ -376,7 +376,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       const t0 = now();
       const ready = await W.waitReady(w, 60000);
       if (!ready) {
-        await failNoReady(w, 'the relaunched worker produced no ready event inside the startup window', { branch: d.branch });
+        await failNoReady(w, 'the relaunched worker produced no ready event inside the startup window', { branch: d.branch, exited_before_ready: !!w.settled });
       }
       const v = await verifyReady(w, ready, t0 + 60000);
       if (!v.ok) await failNoReady(w, v.reason, { branch: d.branch });

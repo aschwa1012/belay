@@ -196,7 +196,8 @@ async function offReceipt(ctx, w, emb, convo) {
 }
 
 // The one line a worker gets when the project has notes in scope and none passed the index's relevance bar.
-const noneListedLine = (n) => `No project note passed the index's relevance bar for this task (${n} note${n === 1 ? '' : 's'} in scope); memory_search can still look.`;
+// `held`: notes this conversation was already shown and the index left out of this pass; they did pass, so the line says no FURTHER note passed and counts the notes in scope.
+const noneListedLine = (n, held = 0) => `No ${held > 0 ? 'further ' : ''}project note passed the index's relevance bar for this task (${n + held} note${n + held === 1 ? '' : 's'} in scope); memory_search can still look.`;
 
 // What a worker is told when its first-message index was refused (E_INDEX_BOUND, E_SEMANTIC_REQUIRED): belay's own words, no note text.
 function noIndexNotice(e) {
@@ -253,7 +254,7 @@ async function indexBlock(w, ctx, prompt, given, replacing = null) {
   });
   if (got.bytes > 0) return got.text;
   // The project has notes in scope and none passed the bar: say so in one line, so silence is not read as "no notes" (nothing is said when there are none).
-  return got.none_passed ? noneListedLine(got.considered) : '';
+  return got.none_passed ? noneListedLine(got.considered, got.excluded_already_injected || 0) : '';
 }
 
 // Eval-only `native_memory` run lever (the run row's memory levers): the folder a Claude Code worker gets when the spawn call names none.
