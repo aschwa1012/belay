@@ -1,5 +1,6 @@
 'use strict';
 require('../helpers/temp-root.cjs').enforceSafeTemp(process.env);
+require('../helpers/tmp.cjs'); // every test process gets its own tmp dir and cleanup, however it is run
 // default-project.test.cjs — the project a run or `belay init` takes when none is set: the git remote's owner and repository, read as text from
 // the local git config, else the folder name. An explicit setting always wins. Nothing here runs git.
 

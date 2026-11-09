@@ -46,7 +46,7 @@ const isPidRestatement = (r, prev) => !!prev && r.expect_seq !== undefined && r.
 async function runScript(core, { handLevers = true, readDelayMs = null } = {}) {
   const sb = sandbox();
   const m = createRunManager({
-    core, dataDir: sb.data, runId: 'run-fake', memoryLevers: handLevers && core.runRow ? leversOfRow(core.runRow) : null,
+    core, dataDir: sb.data, runId: 'run-fake', memoryLevers: handLevers ? { ...(core.runRow ? leversOfRow(core.runRow) : DEFAULTS), turn_rows: true } : null, // legacy: the turn row exists only with turn_rows
     paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') },
   });
   const recv = path.join(sb.data, 'recv.jsonl');
@@ -84,7 +84,7 @@ async function runScript(core, { handLevers = true, readDelayMs = null } = {}) {
   }
 }
 
-test('levers off: stdin bytes, memory store calls and rows equal the base build on the fake-claude fixture', async () => {
+test('legacy: levers off: stdin bytes, memory store calls and rows equal the base build on the fake-claude fixture', async () => {
   const base = await runScript(createFakeCore({ runId: 'run-fake', resumeLineText: RL }));
   // The base build's behaviour, stated outright so the comparison is not only against a copy of the same code.
   assert.deepStrictEqual(base.stdin, [`${RL}\n\none${PROCESS_LINE}${handback()}`, 'two']);
@@ -118,7 +118,7 @@ test('levers off: stdin bytes, memory store calls and rows equal the base build 
   }
 });
 
-test('levers off: the rows compare equal wherever the pid creation-time restatement lands, before or after they are read', async () => {
+test('legacy: levers off: the rows compare equal wherever the pid creation-time restatement lands, before or after they are read', async () => {
   const base = await runScript(createFakeCore({ runId: 'run-fake', resumeLineText: RL }), { readDelayMs: 10000 });
   assert.strictEqual(base.restated, false, 'the base read answers after the rows are read');
   for (const ms of [0, 300]) { // during the start, and after the second turn
@@ -128,7 +128,7 @@ test('levers off: the rows compare equal wherever the pid creation-time restatem
   }
 });
 
-test('a manager handed its levers makes no core call at shutdown when nothing was spawned; one not handed them reads once', async () => {
+test('legacy: a manager handed its levers makes no core call at shutdown when nothing was spawned; one not handed them reads once', async () => {
   const plain = createFakeCore({ runId: 'run-fake' });
   const psb = sandbox();
   try { await createRunManager({ core: plain, dataDir: psb.data, runId: 'run-fake', paths: { claudeExe: FAKE } }).shutdown(); } finally { cleanup(psb.data); }
@@ -143,7 +143,7 @@ test('a manager handed its levers makes no core call at shutdown when nothing wa
   }
   // Not handed the levers, a spawn costs exactly the one run.get on top of the base calls, and nothing else changes.
   const base = await runScript(createFakeCore({ runId: 'run-fake', resumeLineText: RL }));
-  const core = memoryCore({ levers: null, resumeLineText: RL });
+  const core = memoryCore({ levers: { turn_rows: true }, resumeLineText: RL });
   const got = await runScript(core, { handLevers: false });
   assert.deepStrictEqual(got.stdin, base.stdin);
   assert.deepStrictEqual(got.allMethods, [...base.allMethods, 'run.get'].sort());
@@ -156,4 +156,22 @@ test('levers on is observably different (the identity test would notice): an obs
   assert.deepStrictEqual(got.stdin, [`${RL}\n\none${PROCESS_LINE}${handback()}`, 'two'], 'the bytes on stdin do not change either way');
   assert.strictEqual(got.memoryCalls.filter((c) => c.args.type === 'observation').length, 2);
   assert.strictEqual(core.events.filter((e) => e.kind === 'observation').length, 2);
+});
+
+test('the default levers (turn_rows off) store nothing for a turn: the same script makes no memory.store call', async () => {
+  const sb = sandbox();
+  const core = createFakeCore({ runId: 'run-fake', resumeLineText: RL });
+  const m = createRunManager({ core, dataDir: sb.data, runId: 'run-fake', memoryLevers: { ...DEFAULTS }, paths: { claudeExe: FAKE, codexExe: FAKE, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
+  const saved = process.env.FAKE_TOOL_USES;
+  process.env.FAKE_TOOL_USES = '1';
+  try {
+    await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
+    await m._waitTurn('w1', 8000);
+    await m._worker('w1').memoryQueue;
+    assert.deepStrictEqual(core.calls.filter((c) => c.method === 'memory.store'), []);
+  } finally {
+    if (saved === undefined) delete process.env.FAKE_TOOL_USES; else process.env.FAKE_TOOL_USES = saved;
+    try { await m.shutdown(); } catch { /* best effort */ }
+    cleanup(sb.data);
+  }
 });

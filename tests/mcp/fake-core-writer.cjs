@@ -12,6 +12,9 @@ function wrap(c) {
   return new Proxy(c, {
     get(target, key) {
       if (key === 'memory') return noEmbed(target);
+      if (key === 'run' && process.env.BELAY_TEST_TURN_ROWS === '1') { // legacy: the run row says turn_rows, so the run manager writes the turn row this test is about
+        return { ...target.run, attach: (a) => target.run.attach({ ...a, memory_levers: JSON.stringify({ turn_rows: true }) }) };
+      }
       if (key === 'harness') {
         return () => {
           const h = target.harness();
