@@ -66,6 +66,7 @@ test('warm-up: an absent model refuses the run at start, names the cause and the
     assert.strictEqual(rc.embedder.code, 'E_MODEL_ABSENT');
     assert.match(rc.ended_by, /the embedder could not be warmed, so the run did not start: E_MODEL_ABSENT/);
     assert.match(rc.ended_by, /belay embedder fetch/);
+    assert.match(rc.ended_by, /to run without it: belay settings memory\.on_embedder_failure keyword .*or off/);
     assert.strictEqual(rc.orchestrator.pid, null, 'no orchestrator was spawned');
     assert.strictEqual(rc.store.attach, null, 'no run row was attached');
     assert.strictEqual(fs.existsSync(`${dir}/orch/run.json`), false, 'the refusal writes no run receipt');
