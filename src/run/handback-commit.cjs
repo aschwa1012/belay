@@ -7,13 +7,14 @@
 // The whole commit has one bound (TOTAL_MS) and a stop ends the git call in flight by its child handle (job.cancel). A path that looks
 // like a secret is never committed: the commit is refused and the paths are named.
 
+const fs = require('node:fs');
 const G = require('../core/git.cjs');
 const PROC = require('../core/process.cjs');
 
 const MSG_MAX = 72;
 const TOTAL_MS = 120000;
 // Well-known secret names; only a NEW (untracked) path is refused, so a tracked fixture a task modifies is committed. Example, sample and template env files are not secrets.
-const SECRET = /^(\.env(\.(?!(example|sample|template)$).+)?|.*\.pem|.*\.key|id_rsa(?!.*\.pub$).*|credentials(\.json)?|\.credentials)$/i;
+const SECRET = /^(\.env(\.(?!(example|sample|template)$).+)?|.*\.pem|.*\.key|id_(rsa|ed25519|ecdsa|dsa)(?!.*\.pub$).*|credentials(\.json)?|\.credentials|.*\.(p12|pfx|keystore|jks)|\.(npmrc|pypirc|netrc))$/i;
 
 // The commit subject: the hand-back summary's first non-empty line, controls removed, cut; else a fixed line naming the worker.
 function subjectOf(task, workerId) {
@@ -67,6 +68,33 @@ function reasonOf(r, dflt) {
   return dflt;
 }
 
+// A commit that fails after pre-commit passed was refused by a later hook (commit-msg or prepare-commit-msg), which rejects the subject belay took from the worker's own summary line:
+// that is for the orchestrator to decide (E5). Git writes COMMIT_EDITMSG only after pre-commit, so a fresh one holding our subject, with a commit-msg hook present, says so.
+async function msgHookRefused(job, cwd, startedAt, subject) {
+  const path = async (p) => ((await job.git(cwd, ['rev-parse', '--path-format=absolute', '--git-path', p])).stdout || '').trim();
+  try {
+    const hook = await path('hooks/commit-msg'), edit = await path('COMMIT_EDITMSG');
+    if (!hook || !edit || !fs.existsSync(hook) || !fs.existsSync(edit)) return false;
+    return fs.statSync(edit).mtimeMs >= startedAt - 1000 && fs.readFileSync(edit, 'utf8').startsWith(subject);
+  } catch { return false; }
+}
+
+// belay ended its commit (a stop or the bound), and a lock may have appeared during it. The lock is removed only when it was not there before the commit
+// began, it appeared after the commit started, and no git process is running at all (a snapshot that cannot be read removes nothing). -> text for the error.
+async function dropOwnLock(lock, existedBefore, startedAt, snapshot = () => PROC.processSnapshot()) {
+  try {
+    if (!lock || !fs.existsSync(lock)) return '';
+    if (existedBefore) return `; ${lock} was there before the commit began and is left`;
+    if (fs.statSync(lock).mtimeMs < startedAt - 1000) return `; ${lock} predates the commit and is left`;
+    const snap = await snapshot();
+    if (!snap) return `; ${lock} appeared during the ended commit and is left (the process list could not be read)`;
+    const rows = snap instanceof Map ? [...snap.values()] : Object.values(snap);
+    if (rows.some((r) => /^git(\.exe)?$/i.test(String((r && r.image) || '').split(/[\\/]/).pop()))) return `; ${lock} appeared during the ended commit, but another git process is running, so it is left`;
+    fs.unlinkSync(lock);
+    return `; the index.lock that appeared during the ended commit was removed`;
+  } catch (e) { return `; ${lock} could not be checked or removed (${(e && e.code) || e})`; }
+}
+
 // -> the commit fact to record: { made, head, branch, files?, paths?, message?, error? }, or null when this hand-back is not belay's to commit
 // (not a Codex worker, or the task has no belay worktree). Never throws.
 async function commitFor(w, task, job = newJob()) {
@@ -95,8 +123,16 @@ async function commitFor(w, task, job = newJob()) {
     const add = await job.git(cwd, ['add', '-A']);
     if (!add.ok) return fact({ reason: reasonOf(add, 'add'), error: `git add failed: ${add.stderr || `exit ${add.exit_code}`}` });
     const message = subjectOf(task, w.id);
+    const lock = ((await job.git(cwd, ['rev-parse', '--path-format=absolute', '--git-path', 'index.lock'])).stdout || '').trim();
+    const lockBefore = !!lock && fs.existsSync(lock);
+    const startedAt = Date.now();
     const c = await job.git(cwd, ['commit', '-m', message]);
-    if (!c.ok) return fact({ reason: reasonOf(c, 'hook'), error: `git commit failed: ${(c.stderr || `exit ${c.exit_code}`).slice(0, 300)}` });
+    if (!c.ok) {
+      let reason = reasonOf(c, 'hook'), note = '';
+      if (reason === 'bound') note = await dropOwnLock(lock, lockBefore, startedAt);
+      else if (reason === 'hook' && await msgHookRefused(job, cwd, startedAt, message)) reason = 'hook-msg';
+      return fact({ reason, error: `git commit failed: ${(c.stderr || `exit ${c.exit_code}`).slice(0, 300)}${note}` });
+    }
     const h = await job.git(cwd, ['rev-parse', 'HEAD']);
     if (!h.ok || !h.stdout.trim() || h.stdout.trim() === head) return fact({ reason: 'moved', error: 'git commit reported success but HEAD did not move' });
     return { made: true, head: h.stdout.trim(), branch, files: dirty.length, paths: dirty, message };
@@ -124,4 +160,4 @@ async function handBack(w, ctx, taskId, ev = null) {
   } finally { if (ev) ev.cancelCommit = null; }
 }
 
-module.exports = { parseStatus, commitFor, handBack, subjectOf, newJob, secretsIn, reasonOf, TOTAL_MS };
+module.exports = { dropOwnLock, parseStatus, commitFor, handBack, subjectOf, newJob, secretsIn, reasonOf, TOTAL_MS };

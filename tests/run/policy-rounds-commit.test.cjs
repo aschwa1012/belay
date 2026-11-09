@@ -23,7 +23,7 @@ test('a commit a hook refused is a fix round to the same worker with the hook ou
   assert.deepStrictEqual(due({ ...lost, rounds: { caps: { max: 0, hard: null } }, tasks: [W], steps: [], failures: eCommit }), [], 'at the cap nothing is due (the wake is E2)');
 });
 
-for (const [reason, error] of [['secret', 'not committed: .env, cfg/a.pem look like a secret; remove them from the worktree or ignore them'], ['head', 'HEAD is detached in the worktree; nothing was committed'], ['add', 'git add failed: Unable to create index.lock'], ['bound', 'git commit failed: timed out; '], ['identity', 'git commit failed: Author identity unknown']]) {
+for (const [reason, error] of [['secret', 'not committed: .env, cfg/a.pem look like a secret; remove them from the worktree or ignore them'], ['head', 'HEAD is detached in the worktree; nothing was committed'], ['add', 'git add failed: Unable to create index.lock'], ['bound', 'git commit failed: timed out; '], ['identity', 'git commit failed: Author identity unknown'], ['hook-msg', 'git commit failed: subject must start with feat:']]) {
   test(`a commit refused for ${reason} is no round and no re-run: it is an E5 carrying the error verbatim`, () => {
     const W = commitFail(reason, error);
     assert.deepStrictEqual(due({ ...lost, tasks: [W], steps: [], failures: eCommit }), [], 'nothing is due');
