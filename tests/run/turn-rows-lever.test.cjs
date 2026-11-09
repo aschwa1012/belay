@@ -1,5 +1,6 @@
 'use strict';
 require('../helpers/temp-root.cjs').enforceSafeTemp(process.env);
+require('../helpers/tmp.cjs'); // every test process gets its own tmp dir and cleanup, however it is run
 // turn-rows-lever.test.cjs — the turn_rows lever: a turn row (type 'turn') is written only when it is true; the default writes none.
 
 const test = require('node:test');
