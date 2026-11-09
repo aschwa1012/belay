@@ -16,11 +16,15 @@ function takeFlags(argv) {
   return { rest, fetch: yes ? true : no ? false : null };
 }
 
-function defaultPrompt(question) {
+// Resolves the typed line (an empty Enter is ''), or null when the input ended or was interrupted with no answer. Settled once.
+function defaultPrompt(question, io = {}) {
   return new Promise((resolve) => {
-    const rl = require('node:readline').createInterface({ input: process.stdin, output: process.stdout });
-    rl.once('close', () => resolve(''));
-    rl.question(question, (a) => { rl.close(); resolve(a); });
+    let done = false;
+    const settle = (v) => { if (!done) { done = true; resolve(v); } };
+    const rl = require('node:readline').createInterface({ input: io.input || process.stdin, output: io.output || process.stdout, terminal: io.terminal });
+    rl.once('close', () => settle(null));
+    rl.once('SIGINT', () => { settle(null); rl.close(); });
+    rl.question(question, (a) => { settle(a); rl.close(); });
   });
 }
 
@@ -35,7 +39,8 @@ async function offer(ctx, want) {
   let go = want;
   if (go === null && interactive && !ctx.json) {
     const size = bytes ? ` (about ${mb(bytes)} MB, one time)` : ' (one time)';
-    const answer = String(await (ctx.prompt || defaultPrompt)(`Download the embedding model now${size}? [Y/n] `)).trim().toLowerCase();
+    const typed = await (ctx.prompt || defaultPrompt)(`Download the embedding model now${size}? [Y/n] `);
+    const answer = typed === null || typed === undefined ? null : String(typed).trim().toLowerCase(); // null: no answer was given, which is no
     go = answer === '' || answer === 'y' || answer === 'yes';
     if (!go) return { ...out, action: 'declined', line: `the embedding model was not downloaded; fetch it later with: ${cmd}` };
   }
@@ -48,4 +53,4 @@ async function offer(ctx, want) {
   return { ...out, present: ok, action: ok ? 'fetched' : 'fetch_failed', fetch: r.json, ...(ok ? {} : { line: `the embedding model download failed: ${error}; retry with: ${cmd}` }) };
 }
 
-module.exports = { offer, takeFlags };
+module.exports = { offer, takeFlags, defaultPrompt };

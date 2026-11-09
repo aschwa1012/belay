@@ -109,3 +109,30 @@ test('the run refusal for an embedder that cannot load names how to run without 
   assert.match(t, /or off \(notes are off for the run\)/);
   for (const v of ['keyword', 'off']) assert.ok(E.MODES.includes(v), v);
 });
+
+// The real prompt over a terminal-mode stream: only a typed yes or a bare Enter downloads; EOF and Ctrl-C are no.
+async function ask(feed) {
+  const { PassThrough } = require('node:stream');
+  const input = new PassThrough(), output = new PassThrough();
+  output.resume();
+  const p = require('../../src/cli/init-embedder.cjs').defaultPrompt('? ', { input, output, terminal: true });
+  feed(input);
+  const typed = await p;
+  return typed === null ? null : String(typed).trim().toLowerCase();
+}
+test('the real prompt: n is no, y and a bare Enter are yes, EOF and Ctrl-C are no', async () => {
+  assert.strictEqual(await ask((i) => i.write('n\r')), 'n');
+  assert.strictEqual(await ask((i) => i.write('y\r')), 'y');
+  assert.strictEqual(await ask((i) => i.write('\r')), '');
+  assert.strictEqual(await ask((i) => i.end()), null);
+  assert.strictEqual(await ask((i) => i.write('\x03')), null);
+});
+
+test('no answer from the prompt means no: nothing is fetched', async () => {
+  const d = sandbox(), f = fakes();
+  try {
+    const r = await INIT.run({ argv: [], cwd: d, dataDir: `${d}/.belay`, json: false, interactive: true, prompt: async () => null, fetchModel: f.fetchModel });
+    assert.strictEqual(r.json.embedder.action, 'declined');
+    assert.strictEqual(f.fetched, 0);
+  } finally { rm(d); }
+});

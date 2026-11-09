@@ -29,7 +29,7 @@ const describe = () => `${MODES.join(', ')} (the old values stop and continue ar
 const pauseAdvice = (runId) => `The run is paused for an embedder failure (on_embedder_failure required). Stop and ask the operator which they want: keyword (rank by keywords only), off (notes off for the run), or stay paused. Apply their choice with: belay resume ${runId || '<run>'} --embedder keyword|off, or, after the embedder is fixed, belay resume ${runId || '<run>'}.`;
 
 // Added to the refusal of a run whose embedder cannot load: the default refuses, and these are the ways to run without it.
-const withoutEmbedderAdvice = () => 'to run without it: belay settings memory.on_embedder_failure keyword (notes are ranked by keywords only, with no semantic search, and new notes are stored without a vector) or off (notes are off for the run)';
+const withoutEmbedderAdvice = () => 'to run without it: belay settings memory.on_embedder_failure keyword (notes are ranked by keywords only, with no semantic search, and new notes get no vector until belay memory embed is run) or off (notes are off for the run); the setting is saved in the config file and a run spec\'s own on_embedder_failure wins over it';
 
 // A worker is told something else: it is not the one who chooses, and it must not run belay commands.
 const workerPauseAdvice = () => 'The run is paused for an embedder failure and this call was not written. Stop and wait: you will be resumed. After the resume, call it again (hand back again). Do not run belay commands.';
