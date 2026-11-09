@@ -252,3 +252,17 @@ test('normAgents: the hard cap source is read beside the cap', () => {
   assert.deepStrictEqual([a.fixHardCap, a.fixHardCapSource], [5, 'default, no run timeout']);
   assert.strictEqual(M.normAgents({ agents: [] }).fixHardCapSource, null);
 });
+
+test('rowName: a bare uuid id reads as its role and six characters; any other id is shown whole', () => {
+  const id = '3f2a9c10-1b2c-4d5e-8f90-a1b2c3d4e5f6';
+  assert.strictEqual(M.rowName({ id, role: 'coder' }), 'coder-3f2a9c');
+  assert.strictEqual(M.rowName({ id, role: null }), 'worker-3f2a9c');
+  assert.strictEqual(M.rowName({ id, role: 'orchestrator' }).length <= 16, true);
+  assert.strictEqual(M.rowName({ id: 'archreview-r-7f3a', role: 'reviewer' }), 'archreview-r-7f3a');
+});
+
+test('confirmLine: says a paused run does not hold the review; says nothing otherwise', () => {
+  const h = { count: 2, byProject: { acme: 2 } };
+  assert.ok(!M.confirmLine(h, 'acme').includes('paused'));
+  assert.ok(M.confirmLine(h, 'acme', true).includes('the watched run is paused; the review does not wait for it'));
+});

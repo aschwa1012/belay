@@ -3,7 +3,7 @@
 
 import type { BelayAwaitingNote, BelayEntry, BelayMemoryNotice, BelayPanelSettle, BelayPanelSnap } from '../../types/index'
 import {
-  bandLines, cacheSegs, ctxSegs, isBusy, isLive, markSeg, money, runLine, TONE,
+  bandLines, cacheSegs, ctxSegs, isBusy, isLive, markSeg, money, rowName, runLine, TONE,
   memoryTitleSegs, memoryFallbackSegs, staleLine, type Seg,
 } from './model'
 import { CONFIRM_MS, confirmLine, heldCount, heldDetail, heldLine, reviewLine, reviewProject, REASON_MAX, runningReview, SETTLE_ACTIONS, settleConfirm, settleEntryView, settledActive, shortId } from './held'
@@ -166,7 +166,7 @@ function Held({ E, snap, ui, now, act, cols, pend, focused, settled }: Ctx) {
         const bad = r.state === 'failed' // a review cut off (its claimant gone) is finished, so dim; only a failed one with a reason is red
         return wrapHard(reviewLine(r, now), Math.max(8, inner - 2)).map((t, j) => <Line E={E} w={inner} k={`hr${i}-${j}`} segs={[{ t: j === 0 ? '◇ ' : '  ', c: bad ? ERR : undefined, dim: !bad }, { t, c: bad ? ERR : undefined }]} />)
       })}
-      {hd && hd.count > 0 && wrapHard(asking && project ? confirmLine(hd, project) : heldDetail(hd, now), Math.max(8, inner)).map((t, i) => <Line E={E} w={inner} k={`hl${i}`} segs={[{ t, c: asking ? ATTN : undefined, dim: !asking }]} />)}
+      {hd && hd.count > 0 && wrapHard(asking && project ? confirmLine(hd, project, snap.runState === 'paused') : heldDetail(hd, now), Math.max(8, inner)).map((t, i) => <Line E={E} w={inner} k={`hl${i}`} segs={[{ t, c: asking ? ATTN : undefined, dim: !asking }]} />)}
       {notes.map(n => <SettleRow E={E} cols={inner} n={n} act={act} open={n.id === openId} pend={pend} focused={focused} done={settledActive(settled[n.id], snap, n.id) ? settleEntryView(settled[n.id]!, now) : null} />)}
       {carriedAt !== null && <Line E={E} w={inner} k="awc" segs={[{ t: `list from ${hhmm(carriedAt)}`, dim: true }]} />}
       {more > 0 && wrapHard(`+${more} more · belay memory held --awaiting`, inner).map((t, i) => <Line E={E} w={inner} k={`awm${i}`} segs={[{ t, dim: true }]} />)}
@@ -299,7 +299,7 @@ export function Fallback(c: Ctx) {
   const tasks = taskSegs(snap, cols)
   const lines: Seg[][] = [runLine(snap, now), ...(tasks.length ? [tasks] : [])] // the run line carries the cost
   for (const a of snap.agents) {
-    lines.push([markSeg(a.state, snap.settings.marks), { t: ` ${a.id} ${shortModel(a.model)} · ` }, ...ctxSegs(a, snap.settings), { t: ' · ' },
+    lines.push([markSeg(a.state, snap.settings.marks), { t: ` ${rowName(a)} ${shortModel(a.model)} · ` }, ...ctxSegs(a, snap.settings), { t: ' · ' },
       ...cacheSegs(a, snap.settings, snap.fetchedAt, now), { t: ` · ${money(a.costUsd)}` }, { t: a.task ? ` · ${a.task.id}` : '', dim: true }])
   }
   if (snap.memoryNotice) lines.push(memoryFallbackSegs(snap.memoryNotice))

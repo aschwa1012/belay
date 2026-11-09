@@ -1,7 +1,7 @@
 // The agent table: its columns, the task label, an opened agent's detail and the rows. Drawing only.
 
 import type { BelayAgent, BelayPanelSnap } from '../../types/index'
-import { cacheSegs, ctxSegs, type CtxMode, dur, fitSegs, interactiveMark, interactiveOrch, isLive, isReviewWorker, markSeg, markWidth, money, STATE_NAME, type Seg } from './model'
+import { cacheSegs, ctxSegs, type CtxMode, dur, fitSegs, interactiveMark, interactiveOrch, isLive, isReviewWorker, markSeg, markWidth, money, rowName, STATE_NAME, type Seg } from './model'
 import { cells, clipCells, wrapParts } from './wrap'
 import { clip, Line, pad, padName, shortModel, tp, type Act, type Ctx, type Els } from './base'
 import { ATTN, ERR, OK } from './theme'
@@ -13,7 +13,7 @@ type Cols = { mark: number; agent: number; id: number; model: boolean; task: num
 // least needed first: task, cache, context, the model name, then the id is cut. Nothing is squeezed.
 function columns({ snap, cols }: Ctx): Cols {
   const s = snap.settings
-  const longest = snap.agents.reduce((m, a) => Math.max(m, a.id.length), 0)
+  const longest = snap.agents.reduce((m, a) => Math.max(m, rowName(a).length), 0)
   const c: Cols = {
     mark: markWidth(s.marks), agent: 0, id: Math.max(6, Math.min(16, longest)), model: true, task: 0,
     ctx: 6, ctxMode: 'tokens', cache: s.cache === 'both' ? 11 : 5, cost: 7,
@@ -116,6 +116,7 @@ function Detail({ E, a, snap, now, cols, last }: { E: Els; a: BelayAgent; snap: 
   const { Box } = E
   const rows: DRow[] = []
   rows.push({ k: 'status', sep: ' · ', parts: [interactiveOrch(a, snap) ? 'interactive — its words are in its own window' : `${STATE_NAME[a.state]} — established by ${a.stateBy ?? 'not recorded'}`, a.pid !== null ? `pid ${a.pid}` : ''] })
+  if (rowName(a) !== a.id) rows.push({ k: 'id', sep: ' ', parts: [a.id] })
   // When the worker row was first started, and how long ago. belay sets started_at at the first spawn and keeps it across a restart and a resume,
   // so this is the row's age (parked time included), not the uptime of the process now running. The exit shows when one is recorded.
   if (a.startedAtMs !== null) rows.push({ k: 'started', sep: ' · ', parts: [`${hhmm(a.startedAtMs)} (${dur(Math.max(0, now - a.startedAtMs))} ago)`, a.exitedAtMs !== null ? `exited ${hhmm(a.exitedAtMs)}` : ''] })
@@ -176,7 +177,7 @@ function AgentRow(c: Ctx & { a: BelayAgent; c: Cols; last: boolean }) {
       <Box>
         {cell('m', w.mark, [mk])}
         <Box key="a" width={w.agent} flexShrink={0} marginRight={1}>
-          <Button key={`agent:${a.id}`} label={padName(a.id, w.id)} plain onPress={() => act.select(a.id)} />
+          <Button key={`agent:${a.id}`} label={padName(rowName(a), w.id)} plain onPress={() => act.select(a.id)} />
           {w.model ? <Text dimColor> {pad(shortModel(a.model), 7)}</Text> : null}
         </Box>
         {w.task > 0 && cell('t', w.task, taskSegs(a, snap, w.task))}

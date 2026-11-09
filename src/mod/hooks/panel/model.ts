@@ -441,3 +441,8 @@ export function bandLines(snap: BelayPanelSnap, ui: BelayPanelUi, now: number, c
   if (snap.settings.band === 'one-line') return [[...head, { t: '  │  ', dim: true, brk: true }, ...msg]]
   return [head, msg]
 }
+
+// A worker whose id is a bare uuid reads as its role and the first six characters of the id (`coder-3f2a9c`); any other id is shown whole. The full id
+// stays the row's key and is what the detail's commands name.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+export const rowName = (a: BelayAgent): string => (UUID.test(a.id) ? `${(a.role || 'worker').slice(0, 9)}-${a.id.slice(0, 6)}` : a.id)
