@@ -1,5 +1,187 @@
 # Changelog
 
+## 0.4.0
+
+Plan-first runs: the orchestrator sets a plan for each task, and belay
+builds, reviews, fixes, re-reviews and merges the work on its own, waking
+the orchestrator only at the fix-round limit, an escalation, an exception
+and once when the work is done. Notes are on by default under a derived
+project name, and a worker's first message lists the notes closest to its
+task. A restart resumes the worker's session, and belay commits a Codex
+worker's changes at hand-back.
+
+Upgrade warning (from 0.3.3)
+- every run now takes belay's default plan: each work task is built by a
+  spawned coder, reviewed by a spawned reviewer, fixed by its builder,
+  re-checked by the reviewer that refuted it and merged into
+  belay/integrate/<run> once its review holds. The orchestrator is no
+  longer woken by each hand-back. Set "policy": null in a run spec to keep
+  0.3.3's flow, or set your own default as policy in the spec or
+  run.policy in belay.config.json
+- under a plan, a merge conflict and a failed or unjudged evaluation go
+  back to the builder as fix rounds and count against max_fix_rounds; at
+  the limit belay stops the task's steps and wakes the orchestrator
+- notes are on by default. A run with no memory.project takes its project
+  name from the origin remote (owner-repo), else the folder name, prints
+  it and records it on the run. Turn notes off with belay settings
+  memory.notes false, or "memory": null in a spec
+- with notes on, the run-close scrub (Haiku 5.5, capped at $0.10 and
+  300 s) runs at every close that has new notes to compare
+- the note index in each worker's first message is on with notes (up to 3
+  notes, 1,600 bytes), and every notes worker's first message carries a
+  short guide to reading notes; set memory.first_message_index false to
+  leave the index out
+- the semantic weight of hybrid search (memory.alpha) is 0.5, up from
+  0.3, so search results order differently. Runs recorded before keep
+  their own value
+- turn records (each worker turn's last text) are no longer written; set
+  memory.turn_rows true to keep them. A restart reads a worker's last
+  turns from its own stream instead
+- worker_restart and belay worker restart resume the worker's session
+  whatever its age; 0.3.3 started a fresh session after 55 minutes (25 for
+  Codex)
+- belay commits a Codex worker's changes in its task's worktree when it
+  hands back, with your repository's git identity, and runs your hooks
+- belay init writes memory.project into a new belay.config.json and, in a
+  terminal, asks whether to download the embedding model. Scripts should
+  pass --no-fetch (or --fetch)
+- a worker spawned without a named id gets a readable one, such as
+  coder-1 or reviewer-2, instead of a uuid; workers a plan spawns are
+  named bld-... and rev-...
+- a Claude Code worker's writing git stash command is refused, and each
+  worker's TEMP, TMP and TMPDIR point at a temp folder of its own
+- the store moves to schema version 3 on the first 0.4.0 run, in place.
+  0.3.3 refuses a version 3 store: back up .belay\ before upgrading if you
+  may go back
+- copy the orchestrator prompt template again, or use brief_file; the
+  templates now carry <!-- belay-prompt 0.4.0 -->, describe plans, and
+  tell the orchestrator to wait for wakes, with worker_wait only a short
+  check (it now defaults to 5 s)
+
+Added
+- task plans: task_create takes a policy naming the steps belay takes for
+  the task (build, review, fix, re_review, integrate, follow_up). A task's
+  own plan wins over the run's field by field; a field set to null keeps
+  that step for the orchestrator, and policy: null hands the task back
+- the done wake: once every task is done, every planned task reviewed and
+  merged, and the merged head's checks passed, the orchestrator is woken
+  once with the branch and head. Exception wakes and the done wake carry
+  a digest of the steps belay took since the last wake
+- a worker can escalate in its hand-back (result.escalate), which wakes
+  the orchestrator and holds the task's planned steps
+- a headless run under a plan wakes the orchestrator once at 80% of its
+  time bound
+- max_parallel_builds in the run spec (default 4) caps a plan's builds in
+  flight; workers a plan spawned are stopped once their work is merged
+- a builder or reviewer the plan gave a task that dies unexpectedly is
+  restarted once; the orchestrator is woken only if that did not work. A
+  worker you kill with belay worker kill is never restarted
+- memory_queries on task_create: up to four short search lines per task,
+  which the note index matches notes against. Review, fix and follow-up
+  tasks inherit them. A note is listed when it is close to a line or very
+  close to the whole task text; the thresholds are levers
+  (index_min_relevance, index_min_relevance_spec, index_spec_only_floor,
+  index_max_notes)
+- a conflict forecast: when a hand-back passes, belay checks whether its
+  branch would conflict with the integration branch and says so in the
+  wake
+- belay status shows each task's plan and belay's steps with each turn's
+  cost; belay receipts shows the steps too, and both show checks that
+  failed and then passed on one tree
+- belay agents shows each worker's start and exit times
+- a model switch Claude Code makes on its own is recorded on the worker's
+  or headless orchestrator's row and shown in status, agents and receipts
+- belay init --fetch and --no-fetch; a run refused for a missing
+  embedding model says how to run without it
+- the run receipt lists new files in the drive-root tmp folder
+
+Changed
+- the orchestrator prompts teach plans and notes only; they no longer
+  teach the older memory tools
+- the panel reads through one belay process per refresh: every 5 s with
+  the pane open, 10 s for the band alone and 60 s once the run has ended,
+  instead of 20 to 35 processes a minute
+- the panel has a new look: a header card, accent headings and colour on
+  state only
+- wakes held back while an interactive session cannot take them (for
+  example while the session switcher is open) are kept in order and sent
+  later, and the status line says they are held; a halting exception or a
+  death under a plan is delivered at least once, with a ref that names a
+  repeat
+- a restart's cost is counted from the session total Claude Code saved at
+  the worker's last graceful exit, so a resumed session is not counted
+  twice
+- a fix round that needs a merge or rebase for a Codex builder goes to a
+  Claude Code coder in the same tree; reviewers stay Claude Code
+- a Codex hand-back belay could not commit because of a hook is a fix
+  round; any other commit failure wakes the orchestrator once. A
+  hand-back that adds a new file with a secret-looking name is not
+  committed, and the refusal names the paths
+- running out of time while ranking the note index never pauses a run or
+  refuses a spawn; the worker is told the notes could not be ranked
+- a dependent task's tree is cut from the integration branch once its
+  dependencies are merged
+- worker temp folders are removed when the run ends, kept for workers
+  still running, and swept for crashed runs
+- the tmp guard also covers redirects, wrappers, scripts that name the
+  drive-root tmp, and the PowerShell tool
+
+Fixed
+- a restart whose resume fails before the worker is ready falls back to
+  a fresh session once, with one process at a time and no dead row
+  between the two attempts, and reports the failed launch's exit code and
+  first error line; a resume that died before it was ready is not counted
+  as a turn
+- orchestrator output read after a run settled is appended to the run's
+  own stream files, never to a closed file handle
+- a cancelled worker_wait is not answered and claims nothing
+- the nvidia-smi probe has its own timer, so a wedged GPU driver cannot
+  hang it
+- the reranker fetch hint is given only when an ONNX reranker's model
+  file is missing or wrong
+
+Measured
+- on the last two release candidates, ten headless runs of the same
+  7-ticket build of a small command-line product were started under the
+  shipped plan. Five are counted; three that showed defects since fixed (a
+  false stall wake, and a note index that listed nothing) and two stopped
+  before they finished are not. The five cost about $7 to $10 each. In
+  two the orchestrator's only wake was the done digest; in three it was
+  also woken at the fix-round limit by a merge conflict that kept
+  recurring. A pilot, not a benchmark
+- in two of the counted runs, on the release code, every one of the 40 spawned
+  workers got 1 to 3 notes listed, about 60% of them on-task by one
+  reader's judgement; reviewers opened listed notes, builders did not
+- the restart cost rule was measured on Claude Code 2.1.321: a graceful
+  exit saves the session total and a kill saves nothing
+- the full unit, conformance and budget suite and the plugin suite passed
+  on the final release candidate, whose code differs from this release
+  only in its version strings
+- not measured: whether plans or the note index give better results than
+  0.3.3's flow or than native Claude Code agents
+
+Known limits
+- the note index is built when a worker is spawned or relaunched. A task
+  handed to a running worker, such as a fix round sent back to its
+  builder, gets no index
+- the index thresholds were set on one project with the default embedder.
+  With another embedder, or keyword search only, no note passes them and
+  the index lists nothing
+- the hybrid search weight of 0.5 rests on relevance labels made by a
+  model and not yet checked by hand; it is provisional
+- the restart cost rule depends on what Claude Code saves at exit, measured
+  on 2.1.321; a later version that saves it differently could make a
+  resumed worker's cost wrong
+- a Codex restart whose thread the server has expired, and that fails
+  only after it started, gets no fresh fallback
+- a plan the orchestrator gives a task replaces the run's plan field by
+  field, so a partial plan on a hand-made fix can leave out the review
+  and merge steps
+- a model switch in an interactive orchestrator is not recorded
+- Codex workers cannot be paused or parked, and the push, stash and tmp
+  guards do not cover them
+- Windows only
+
 ## 0.3.3
 
 Spending limits, merges into your own branches with your approval, and a

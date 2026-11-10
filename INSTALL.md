@@ -11,7 +11,7 @@
 | Claude Code >= 2.1.280 | Checked at every launch from the session's own report; a lower version fails the launch. The interactive mode and the panel were measured on 2.1.293. |
 | git | Needed by the npm install from GitHub and by task checks ("only owned files changed" diffs against a base). |
 | PowerShell (`powershell.exe` on PATH) | Every process snapshot, and so every identity-checked kill, goes through it. Present on every Windows 10/11 install. |
-| The embedding model | Effectively required: `belay run` refuses to start without it. A one-time ~253 MB download, see below. |
+| The embedding model | Effectively required: `belay run` refuses to start without it. A one-time ~252 MB download, which `belay init` offers; see below. |
 | Codex CLI | Optional. Only needed if the orchestrator spawns Codex workers. Measured on 0.153.4. |
 
 belay has no required npm dependencies. It has one optional dependency, `@huggingface/transformers` (pinned at 4.3.0), which runs the embedding model. npm installs optional dependencies by default; do not install with `--omit=optional`, or `belay run` will refuse to start.
@@ -26,7 +26,7 @@ npm install -g github:aschwa1012/belay
 
 npm may print warnings about install scripts for `onnxruntime-node` and `protobufjs`. They come from the optional embedding library and are harmless.
 
-To pin a tagged release, add the tag, for example `npm install -g github:aschwa1012/belay#v0.3.3`.
+To pin a tagged release, add the tag, for example `npm install -g github:aschwa1012/belay#v0.4.0`.
 
 This installs the package `@aschwa1012/belay` and puts the `belay` command on your PATH. The installed files live under:
 
@@ -74,7 +74,7 @@ To make it permanent, run `setx BELAY_CLAUDE_EXE "<path>"`, then open a new term
 belay embedder fetch
 ```
 
-This downloads the `onnx-community/voyage-4-nano-ONNX` model (q4 weights, about 253 MB) from huggingface.co into `%LOCALAPPDATA%\belay\models`, and checks every file's size and sha256 against a table in belay's source. It is belay's only network access, and is needed once per machine. `belay embedder verify` re-hashes what is there.
+This downloads the `onnx-community/voyage-4-nano-ONNX` model (q4 weights, about 252 MB) from huggingface.co into `%LOCALAPPDATA%\belay\models`, and checks every file's size and sha256 against a table in belay's source. It is belay's only network access, and is needed once per machine. `belay init` offers the same download when the model is missing (see [First run](#1-prepare-the-project)). `belay embedder verify` re-hashes what is there.
 
 Optional, for the retrieval profiles that rerank or use a GPU (the default profile needs none of this):
 
@@ -102,13 +102,15 @@ belay init
 belay doctor
 ```
 
-`belay init` writes `belay.config.json` (containing only `"data_dir": ".belay"`) and creates `.belay\`. It never overwrites an existing config and refuses your home directory. Add `.belay/` to your `.gitignore`.
+`belay init` writes `belay.config.json` with `"data_dir": ".belay"` and a notes project name (`memory.project`), creates `.belay\`, and prints both. It never overwrites an existing config and refuses your home directory. Add `.belay/` to your `.gitignore`.
 
-With no memory project named, `belay doctor` (and `belay run`, `status`, `settings` and the panel) says that memory notes are off for this project. To turn notes on (experimental; see the README's Notes section), name a project; to turn them off and silence the notice, set `memory.notes` to `false`:
+When the embedding model is missing, `belay init` asks in a terminal whether to download it now (Enter or `y` downloads; anything else, or closing the prompt, does not). Outside a terminal, or with `--json`, it downloads nothing and prints the command to run. `--fetch` downloads without asking and `--no-fetch` never asks. A failed download makes `belay init` exit 1; the config and data directory are still written.
+
+Notes (experimental; see the README's Notes section) are on by default. The project name comes from the `origin` remote of the repository's git config, as `owner-repo`, read from the file on disk with no git process and no network. With no `origin`, it is the repository's folder name. Either is lower-cased, and characters a project name cannot hold become dashes; a folder name with no usable characters gives `project-` and a short hash of its path. A run in a folder whose config names no project derives the name the same way at each start, prints it with its source on stderr, and records it on the run, but writes no config. To rename the project, or turn notes off:
 
 ```powershell
 belay settings memory.project my-app     # lowercase letters, digits, dot, underscore or dash
-belay settings memory.notes false        # or: no notes, no notice
+belay settings memory.notes false        # no notes, and no derived project
 ```
 
 ### 2. The orchestrator prompt
@@ -126,7 +128,7 @@ To copy the interactive one next to your spec:
 Copy-Item "$(npm root -g)\@aschwa1012\belay\src\run\prompts\orchestrator-interactive.md" .\prompt.md
 ```
 
-The templates explain the orchestrator's role (plan, delegate, check; leave the code work to workers), task worktrees and `integrate`, how to create tasks with acceptance commands and owned files, the review protocol and what counts as a blocking finding. Placeholders such as `{{max_fix_rounds}}` are filled in by belay from the spec. You can add project-specific guidance at the end.
+The templates explain the orchestrator's role (plan, delegate, check; leave the code work to workers), task plans, task worktrees and `integrate`, how to create tasks with acceptance commands, owned files and note search lines, the review protocol and what counts as a blocking finding. Placeholders such as `{{max_fix_rounds}}` and the run's plan are filled in by belay from the spec. You can add project-specific guidance at the end. The templates carry `<!-- belay-prompt 0.4.0 -->`.
 
 ### 3. The spec
 
@@ -152,20 +154,20 @@ belay run belay-spec.json --interactive
 - Claude Code opens in your console as the orchestrator, with belay as its only MCP server and the run's prompt appended to its system prompt.
 - **If Claude Code asks whether to trust the folder, answer yes.** Declining ends the run.
 - belay checks the session's surface: the Claude Code version, the model, the permission mode, and that no other instruction file, skill, plugin or MCP server got in. Anything else fails the launch.
-- belay passes no first prompt. Type your brief, for example: "Add a `--verbose` flag to the CLI in `src/cli.js`. Acceptance: `node test/cli.test.js` exits 0. One coder, then one reviewer."
+- belay passes no first prompt. Type your brief, for example: "Add a `--verbose` flag to the CLI in `src/cli.js`. Acceptance: `node test/cli.test.js` exits 0."
 
 While it runs:
 
 - The **band** above the prompt shows the run, the agent count, the cost, and the newest notice or the orchestrator's latest line.
 - **`/orch`** toggles the side panel: each agent's state mark, model, task, context size, prompt-cache countdown and cost (the orchestrator's cost is an estimate from Claude Code's session transcript, shown as ≈$; `/clear` starts a new transcript that is not followed), and the run's notices.
-- When a worker ends a turn or dies, belay wakes the orchestrator in the same session.
+- Under the run's plan (see [Task plans](#task-plans)), belay spawns, reviews, fixes and merges the tasks itself, and wakes the orchestrator in the same session for an exception, the fix-round limit, a worker's escalation, and once when everything is done. For a task with no plan, belay wakes it when a worker ends a turn or dies.
 - From a second terminal in the project: `belay agents`, `belay notices`, `belay status`, `belay pause <worker-id>`, `belay message <worker-id> "<text>"`, `belay take-control <task-id>`.
 
 The run ends when you quit the Claude Code session. If you close the console window, belay runs a fast close of about 3.5 s. Afterwards, `belay receipts <run-id>` gives the per-agent breakdown.
 
 ### A headless run
 
-Copy `orchestrator.md` instead, append your brief to the file, and leave `mode` out (or set it to `headless`). `belay run belay-spec.json` then launches the orchestrator as `claude -p`, hands it the prompt, and wakes it as workers finish. The run ends when the orchestrator ends a turn with no worker mid-turn, when `timeout_ms` passes, or on `belay stop <run-id>`. Follow it with `belay transcript -f`, `belay agents` and `belay notices`.
+Copy `orchestrator.md` instead, append your brief to the file, and leave `mode` out (or set it to `headless`). `belay run belay-spec.json` then launches the orchestrator as `claude -p`, hands it the prompt, and wakes it as the plan or its workers need it. The run ends when the orchestrator ends a turn with no worker mid-turn and no plan step due or in progress, when `timeout_ms` passes, or on `belay stop <run-id>`. Under a plan, belay also wakes a headless orchestrator once at 80% of `timeout_ms`. Follow it with `belay transcript -f`, `belay agents` and `belay notices`.
 
 ### Run spec keys
 
@@ -185,12 +187,14 @@ An unknown key is a usage error.
 | `mcp_tool_timeout_ms` | 120000 | The orchestrator's MCP tool timeout. At most 120000 in interactive mode. |
 | `poll_ms` | 1000 | Wake and status poll interval. |
 | `close_grace_ms` | 10000 | Grace period when the run closes. |
-| `max_fix_rounds` | 2 | Fix rounds per task after a refuted review before the orchestrator gets a notice. Not a refusal. |
+| `max_fix_rounds` | 2 | Fix rounds per task. Under a plan, at the limit belay stops the task's steps and wakes the orchestrator; a fix task the orchestrator makes itself past it carries a notice. Not a refusal. |
 | `fix_hard_cap` | 5 with no `timeout_ms`, else none | The only fix-round refusal: fix tasks per piece of work. `null` means no cap. |
 | `fix_cutoff` | `orchestrator` | `orchestrator` (may stop early under named conditions) or `cap-only`. |
 | `on_embedder_failure` | `required` | `required` (a failed embedder pauses the run), `keyword` (go on ranking by keywords only) or `off` (memory off for the run). The 0.2.0 values `stop` and `continue` are still accepted, as `required` and `keyword`. A run paused this way resumes with `belay resume <run-id> --embedder keyword\|off`, or plain `belay resume <run-id>` once the embedder is fixed. `--embedder` also writes the choice to the config file as `memory.on_embedder_failure`, so later runs inherit it. Also settable in the `memory` block or as a config default. |
 | `compact_at_tokens` | none | Optional compaction threshold for Claude Code workers. |
 | `max_parallel_evaluations` | unlimited | How many task checks run at once; the rest wait for a slot. |
+| `policy` | belay's default plan | The plan every work task takes unless it states its own (see [Task plans](#task-plans)). Merged field by field over `run.policy` in the config file and belay's default. `null` runs with no plan. Checked at launch: a bad plan is refused before any process starts. |
+| `max_parallel_builds` | 4 | How many of a plan's builds are in flight at once; the rest wait. |
 | `stop_idle_on_done` | false | Stop a worker once its task is done and it is idle. |
 | `permission_prompt` | false | Turn on the permission channel: workers' tool approvals become rows, and the orchestrator is shown `permission_list` and `permission_decide`. |
 | `max_follow_ups` | 1 | Follow-up tasks a held review may spawn for its should-fix findings. Not fix rounds. |
@@ -202,7 +206,7 @@ An unknown key is a usage error.
 | `mode` | `headless` | `headless` or `interactive` (`--interactive` wins). |
 | `interactive_surface_ms` | 15000 | How long the interactive launch check waits. |
 | `fullscreen` | true | Interactive only: Claude Code's fullscreen mode. |
-| `memory` | none | Optional block of memory levers, over the config file's `memory` defaults. All are off except `redact`, and `notes`, which is on once `project` is named. See the README sections on memory and notes. An unknown key, a bad value or a removed lever (`note_review` true, `note_review_model`, `note_review_cost_cap_usd`) is a usage error. So is `project_writes` with notes on. `"memory": null` uses no memory levers and inherits none from the config. |
+| `memory` | none | Optional block of memory levers, over the config file's `memory` defaults. All are off except `redact`, `notes` (on, with `project` derived when unset) and the first-message note index (on with notes). See the README sections on memory and notes. An unknown key, a bad value or a removed lever (`note_review` true, `note_review_model`, `note_review_cost_cap_usd`) is a usage error. So is `project_writes` with notes on. `"memory": null` uses no memory levers and inherits none from the config. |
 
 Two further keys, `native_memory` and `handback_question`, exist for belay's own evaluations and are not supported. `native_memory` takes an absolute folder path (not `true`) and turns Claude Code's own auto memory back on for workers, which belay otherwise switches off.
 
@@ -211,6 +215,36 @@ Two further keys, `native_memory` and `handback_question`, exist for belay's own
 Workers' tools come from their type: coders, testers and reviewers get Read, Edit, Write, Glob, Grep and Bash; researchers get Read, Glob, Grep, WebFetch and WebSearch, with no shell. `agents.<type>.tools` in the config file changes a type's list, and a spawn may narrow it, never widen it.
 
 Workers' models and efforts come from the orchestrator's spawn call, then from the config file's `agents` block (`belay settings agents.reviewer.model claude-opus-5-5`, `agents.coder.effort`, `agents.<type>.codex_model` for Codex workers), then from built-in defaults: Sonnet 5.5 for coders and testers, Opus 5.5 at effort high for reviewers and researchers.
+
+A worker the orchestrator spawns without naming an id gets a readable one, its agent type and the lowest free number in the data directory (`coder-1`, `reviewer-2`). Workers a plan spawns are named `bld-` or `rev-` and eight hex digits.
+
+### Task plans
+
+A plan names the steps belay takes for a task, so the orchestrator is not woken for each one. The orchestrator passes it as `policy` on `task_create`; a run's default plan comes from the spec's `policy`, then `run.policy` in `belay.config.json`, then belay's own.
+
+| Field | What belay does |
+|---|---|
+| `build: { spawn: { agent_type: "coder" } }` or `build: { worker: "<id>" }` | Once the task is open and every task it depends on is done (and merged, if the plan merges it), spawns a coder in the task's worktree or gives the task to that worker. A plan's builder may be a Codex worker (`spawn: { agent_type: "coder", substrate: "codex" }`). |
+| `review: { spawn: { agent_type: "reviewer" } }` or `review: { worker: "<id>" }` | When the work is done, makes its review task and spawns a reviewer or gives it to that worker. Reviewers are always Claude Code. |
+| `fix: "builder"` | A refuted review, a merge conflict, or a hand-back that failed or could not be evaluated goes back to the worker that built it, as a fix round. |
+| `re_review: "refuter"` | A finished fix goes back to the reviewer that refuted it. |
+| `integrate: "on_hold"` | Once the review holds and the task's dependencies are done, merges the work and its fixes into `belay/integrate/<run>`. |
+| `follow_up: "plan"` | A hold with should-fix findings becomes a follow-up task in its own tree, which the plan builds, reviews and merges (up to `max_follow_ups`). |
+
+belay's default plan is every row above with a spawned coder and reviewer:
+
+```json
+{ "build": { "spawn": { "agent_type": "coder" } }, "review": { "spawn": { "agent_type": "reviewer" } },
+  "fix": "builder", "re_review": "refuter", "integrate": "on_hold", "follow_up": "plan" }
+```
+
+- **Field by field.** A task's own plan wins over the run's, and the spec's over the config's, one field at a time. A field set to `null` keeps that step for the orchestrator; `policy: null` on a task hands the whole task back. A partial plan on a task the orchestrator makes by hand replaces only the fields it names, so leaving out `re_review` or `integrate` there means no re-review or merge for it.
+- **Wakes.** The orchestrator is woken at the fix-round limit, when a worker escalates in its hand-back, when a step fails or is left to it, when a builder or reviewer the plan gave a task dies and the one restart belay makes does not bring it back, on a budget pause, and once when every task is done, reviewed and merged and the merged head's checks pass. Each wake carries a digest of the steps belay took since the last one. A check that failed and then passed on a retry is only noted in the digest.
+- **Workers.** A coder or reviewer a plan spawned is stopped once its work is merged or cancelled. A worker you kill with `belay worker kill` is never restarted by the plan.
+- **Codex builders.** belay commits a Codex worker's changes at hand-back, in the task's own worktree, with the repository's git identity and its hooks. A hand-back that adds a new file with a secret-looking name (`.env`, `*.pem`, `*.key`, `id_rsa` and the like) is not committed, and the refusal names the paths; a hook that fails is a fix round, and any other commit failure wakes the orchestrator. A fix round that needs a merge or rebase goes to a Claude Code coder in the same tree.
+- **Seeing it.** `belay status` shows each task's plan and the steps belay took, with each turn's cost; `belay receipts` shows the steps too.
+
+**Note search lines.** With notes on, `task_create` also takes `memory_queries`: up to four short lines (160 bytes each) naming the files, commands or behaviour the task touches. A worker spawned or relaunched for the task gets, in its first message, up to 3 notes (1,600 bytes) that are close to one of those lines (`memory.index_min_relevance`, 0.45) or to the whole task text (`index_min_relevance_spec`, 0.60; `index_spec_only_floor`, 0.55, when the task has no lines). Review, fix and follow-up tasks inherit the lines. A `worker_spawn` can pass its own `memory_queries`, which win for that spawn. A task handed to a worker that is already running gets no index. The thresholds were set on the default embedder; with another, or with keyword search only, no note passes them.
 
 ## Optional: watch a run from a second window
 
@@ -226,7 +260,7 @@ Start it from the project folder, so belay finds the store. Then, inside that se
 - `/orch` toggles the panel.
 - `/belay unwatch` stops watching.
 
-The panel runs belay's own read commands every few seconds and never writes the store or submits anything to the model, with two exceptions, both asked for by a button: the review button on its memory line, which takes two presses, starts `belay memory review` for the held notes; and the settle buttons on a note that awaits you, which ask for a reason, then a confirm, and only the confirm runs `belay memory held settle`. An interactive run needs none of this; it loads its own copy of the plugin.
+The panel reads through one short belay process per refresh (every 5 s with the pane open, 10 s for the band alone, 60 s once the run has ended; a button press or opening the pane refreshes at once) and never writes the store or submits anything to the model, with two exceptions, both asked for by a button: the review button on its memory line, which takes two presses, starts `belay memory review` for the held notes; and the settle buttons on a note that awaits you, which ask for a reason, then a confirm, and only the confirm runs `belay memory held settle`. An interactive run needs none of this; it loads its own copy of the plugin.
 
 ## Updating
 
@@ -237,6 +271,22 @@ npm install -g github:aschwa1012/belay
 ```
 
 The embedding model stays in its cache and does not need fetching again unless a release changes it (`belay doctor` will say so). Stop any live run before updating.
+
+**From 0.3.3 to 0.4.0: back up `.belay\` first, copy the prompt template again, and decide whether you want the default plan and notes.**
+
+- The store moves to schema version 3 on the first 0.4.0 run: it adds two tables and columns in place. 0.3.3 refuses a version 3 store (`E_SCHEMA_NEWER`), so to go back, restore your backup.
+- Every run takes belay's default plan (see [Task plans](#task-plans)): belay builds, reviews, fixes and merges each work task, and the orchestrator is no longer woken by each hand-back. Set `"policy": null` in the spec to keep 0.3.3's flow, or set your own default in the spec's `policy` or the config's `run.policy`.
+- Under a plan, a merge conflict and a hand-back that failed or could not be evaluated go back to the builder as fix rounds and count against `max_fix_rounds`.
+- Notes are on by default. A run whose config and spec name no `memory.project` derives one from the `origin` remote or the folder (see [Prepare the project](#1-prepare-the-project)) and prints it. `belay settings memory.notes false`, or `"memory": null` in a spec, turns notes off. With notes on, the run-close scrub (Haiku 5.5, capped at $0.10 and 300 s) runs at every close with new notes to compare.
+- The note index in each worker's first message is on with notes, and every notes worker is told how to search notes. `memory.first_message_index false` leaves the index out.
+- `memory.alpha`, the semantic weight of hybrid search, is 0.5 (it was 0.3), so search results can come in a different order. A run recorded before keeps its own value.
+- Turn records (each worker turn's last text) are no longer written. Set `memory.turn_rows true` to keep them; a restart reads a worker's last turns from its stream instead.
+- A restart (`worker_restart`, `belay worker restart`) resumes the worker's session whatever its age; 0.3.3 started a fresh one after 55 minutes (25 for Codex). If the resume does not come up, belay starts a fresh session once.
+- belay commits a Codex worker's changes when it hands back, with your repository's git identity and hooks.
+- `belay init` writes `memory.project` into a new config and, in a terminal, asks whether to download the embedding model. Scripts should pass `--no-fetch` or `--fetch`.
+- A worker spawned without a named id gets a readable one (`coder-1`) instead of a UUID.
+- A Claude Code worker's `git stash` commands that write are refused, and each worker's `TEMP`, `TMP` and `TMPDIR` point at a folder of its own.
+- Copy the orchestrator prompt template again, or switch to `brief_file`; the templates carry `<!-- belay-prompt 0.4.0 -->`. They describe plans and tell the orchestrator to wait for wakes, with `worker_wait` only a short check (its default timeout is now 5 s).
 
 **From 0.3.2 to 0.3.3: copy the prompt template again, and check what your workers need from your environment.**
 
@@ -296,8 +346,9 @@ npm uninstall -g @aschwa1012/belay
 This leaves your data in place. Remove it by hand if you want it gone:
 
 - each project's `.belay\` folder and `belay.config.json`;
-- `%LOCALAPPDATA%\belay\models` (the ~253 MB model);
-- `%TEMP%\belay-run\` (orchestrator folders and run receipts).
+- `%LOCALAPPDATA%\belay\models` (the ~252 MB model);
+- `%TEMP%\belay-run\` (orchestrator folders and run receipts);
+- `%TEMP%\belay\`, where workers' temp folders are left only for a worker still running or a run that crashed.
 
 ## Troubleshooting
 
@@ -311,7 +362,7 @@ This leaves your data in place. Remove it by hand if you want it gone:
 
 **The interactive launch fails its surface check.** Something other than what belay asked for got into the session: another plugin, skill, MCP server or instruction file, a different model or permission mode, or an old Claude Code. The error names what it saw.
 
-**`belay run` refuses to start because the embedder cannot load.** Run `belay embedder fetch`, then `belay doctor`. If doctor says `@huggingface/transformers` is not installed in belay's `node_modules`, or is the wrong version (belay pins 4.3.0 and refuses any other), reinstall belay without `--omit=optional`. On a heavily loaded machine the first load can be slow; try again when it is quieter.
+**`belay run` refuses to start because the embedder cannot load.** Run `belay embedder fetch`, then `belay doctor`. To run without it, `belay settings memory.on_embedder_failure keyword` ranks notes by keywords only (new notes get no vector until `belay memory embed` runs), and `off` turns notes off for the run; the refusal says the same. If doctor says `@huggingface/transformers` is not installed in belay's `node_modules`, or is the wrong version (belay pins 4.3.0 and refuses any other), reinstall belay without `--omit=optional`. On a heavily loaded machine the first load can be slow; try again when it is quieter.
 
 **A run is still alive after you expected it to end.** Find it with `belay status` or `belay agents`, then stop it:
 
@@ -338,7 +389,8 @@ The error code (`E_NO_OWNER`) appears only with `--json`. Read commands still wo
 | Config | `belay.config.json` at the project root (found by walking up from the current directory, never into your home directory). |
 | The store | `<project>\.belay\memory.db` with its SQLite sidecars, plus `owner.lock\` while an owner is alive. It also holds the keyword index and, when levers are on, per-turn usage and memory action records. `belay memory export` writes rows to a file you choose. |
 | Per-worker files | `<project>\.belay\workers\<worker-id>\`: the launch config, the raw `stream.jsonl`, `stderr.txt`, the adapter log and the resume document. |
+| Worker temp folders | `%TEMP%\belay\<run-id>\<worker-id>\`, the worker's `TEMP`, `TMP` and `TMPDIR`, removed when the run ends. If your temp folder is in your home folder outside `AppData`, `%LOCALAPPDATA%\Temp` is used instead. |
 | Orchestrator files and run receipt | `%TEMP%\belay-run\<run-id>\`, including `run.json`, unless the spec sets `orchestrator_dir`. |
 | Embedding model | `%LOCALAPPDATA%\belay\models`, or the folder named by `BELAY_MODEL_CACHE`. |
 
-belay runs no background service and leaves no process running after a run ends. Its only network access is `belay embedder fetch`.
+belay runs no background service and leaves no process running after a run ends. Its only network access is the model download (`belay embedder fetch`, or `belay init` when you accept it).
