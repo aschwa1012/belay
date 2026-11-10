@@ -112,18 +112,17 @@ async function held(fn) {
   try { return await fn(); } finally { gate = null; open(); await Promise.allSettled([...running]); }
 }
 
-test('the call has its own bound: past it a query is timed out and the hook is told once, as an embedder failure, and the late embed finishes on its own', async () => {
+test('the call has its own bound: past it a query is timed out, the hook is NOT told (the index is an aid, not an embedder failure), and the late embed finishes on its own', async () => {
   mode = 'ok'; hookCalls.length = 0; embedded.length = 0;
   await held(async () => {
     const r = await call('memory.embedQuery', { task_id: 't-ship', timeout_ms: 500 });
     assert.deepStrictEqual(r.queries.map((q) => [q.label, q.ok, q.code, q.timed_out]), [['task', false, 'E_EMBED_BOUND', true]]);
     assert.strictEqual(running.size, 1, 'the abandoned embed is still running in the stub');
-    assert.strictEqual(r.queries[0].embedder, true);
-    assert.strictEqual(hookCalls.length, 1, 'the bound is an embedder failure (ADR 0034 amendment 1): under required it pauses the run');
-    assert.deepStrictEqual([hookCalls[0].call, hookCalls[0].error.code, hookCalls[0].error.detail.embedder, hookCalls[0].error.detail.cause], ['memory.embedQuery', 'E_EMBED_BOUND', true, 'timeout']);
+    assert.strictEqual(r.queries[0].embedder, false);
+    assert.strictEqual(hookCalls.length, 0, 'the index\'s own bound never reaches the hook, so under required it pauses nothing');
   });
   assert.strictEqual(running.size, 0, 'the abandoned embed finished by itself');
-  assert.strictEqual(hookCalls.length, 1, 'finishing late told the hook nothing more');
+  assert.strictEqual(hookCalls.length, 0, 'finishing late told the hook nothing either');
 });
 
 test('an embed still in flight for the same text is joined, not started again, so abandoned embeds do not pile up', async () => {

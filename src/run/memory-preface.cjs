@@ -180,7 +180,7 @@ async function embedForIndex(ctx, w, lv) {
 // contributed to the index's order; `failure` is why a query or the semantic signal did not.
 function receiptDetail(emb, hybrid, failure, bar = null) {
   const f = failure || emb.failure;
-  return JSON.stringify({ hybrid, ...(bar ? { bar } : {}), queries: emb.queries.map(({ label, ms, ok }) => ({ label, ms, ok })), ...(f ? { failure: { code: f.code, message: String(f.message || '').slice(0, 160) } } : {}) });
+  return JSON.stringify({ hybrid, ...(bar ? { bar } : {}), queries: emb.queries.map(({ label, ms, ok, code, timed_out }) => ({ label, ms, ok, ...(timed_out ? { timed_out: true, code } : {}) })), ...(f ? { failure: { code: f.code, message: String(f.message || '').slice(0, 160) } } : {}) });
 }
 
 // ADR 0034 decision 2 under `required`: the owner's hook has paused the run, so this launch injects no index. The receipt is

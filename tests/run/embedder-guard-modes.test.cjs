@@ -125,19 +125,21 @@ async function boundedCall(mode) {
   } finally { open(); await Promise.allSettled([...pending]); store.close(); cleanup(dir); }
 }
 
-test('the spawn-embed bound under required pauses the run, naming the call, the worker and the bound', async () => {
-  const { r, calls, guard } = await boundedCall('required');
-  assert.strictEqual(r.queries[0].code, 'E_EMBED_BOUND');
-  assert.strictEqual(r.on_embedder_failure, 'required');
-  assert.deepStrictEqual(calls.pause, ['embedder-failure (w9, memory.embedQuery, E_EMBED_BOUND, timeout)']);
-  assert.strictEqual(guard.events()[0].action, 'pause');
+test('the spawn-embed bound of the index pauses nothing in any mode: no pause, no stop, memory stays on, nothing for the guard; the entry says it timed out', async () => {
+  for (const mode of ['required', 'keyword', 'off']) {
+    const { r, calls, guard } = await boundedCall(mode);
+    assert.deepStrictEqual([r.queries[0].code, r.queries[0].timed_out, r.queries[0].embedder], ['E_EMBED_BOUND', true, false], mode);
+    assert.deepStrictEqual([calls.pause, calls.stop, guard.events(), guard.memoryOff()], [[], [], [], false], mode);
+  }
 });
 
-test('the spawn-embed bound under keyword is recorded and pauses nothing; under off it turns memory off', async () => {
-  const k = await boundedCall('keyword');
-  assert.deepStrictEqual([k.calls.pause, k.guard.events()[0].action, k.guard.events()[0].code, k.guard.memoryOff()], [[], 'continue', 'E_EMBED_BOUND', false]);
-  const o = await boundedCall('off');
-  assert.deepStrictEqual([o.calls.pause, o.guard.events()[0].action, o.guard.memoryOff()], [[], 'off', true]);
+test('an embedder that fails to load at the same call still follows the mode: required pauses, keyword goes on, off turns memory off', async () => {
+  for (const [mode, action] of [['required', 'pause'], ['keyword', 'continue'], ['off', 'off']]) {
+    const { guard } = make(mode);
+    guard.onFailure(ev({ call: 'memory.embedQuery', error: embedderError('E_MODEL_ABSENT') }));
+    await guard.settled();
+    assert.strictEqual(guard.events()[0].action, action, mode);
+  }
 });
 
 test('a reload at a resume is recorded apart from the failures: the fresh child, or the load that still failed', () => {
