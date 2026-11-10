@@ -1,5 +1,6 @@
 'use strict';
 require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
+const ESC = require('../../src/run/handback.cjs').ESCALATE_LINE; // every hand-back rule ends with the escalation line (ADR 0074 amendment 4)
 // handback-rule.test.cjs — belay itself ends a worker's first message with the hand-back rule (and, for a verdict task, the Review
 // standard), at a spawn as well as at a task_assign; the orchestrator no longer writes either into its prompts. The rule is one module
 // (src/run/handback.cjs) and the standard one file (src/run/prompts/review-standard.md). Pure checks, then a real manager spawn.
@@ -24,16 +25,16 @@ const assigned = (task, lease = 'L1') => ({ task, new_lease: { id: lease } });
 
 test('the rule for a work task names the lease and the result shape; in the task\'s own tree it says to commit first', () => {
   const plain = HB.rule(assigned({ id: 't1', acceptance: { commands: [] } }));
-  assert.strictEqual(plain, '\n\nWhen you are finished, call lease_release with lease_id L1 and a result object (branch, head, tests, findings).');
+  assert.strictEqual(plain, '\n\nWhen you are finished, call lease_release with lease_id L1 and a result object (branch, head, tests, findings).' + ESC);
   const tree = HB.rule(assigned({ id: 't1', worktree: TREE }));
-  assert.match(tree, /^\n\nWhen you are finished, commit your work in your worktree, then call lease_release with lease_id L1 and a result object \(branch, head, tests, findings\)\.$/);
+  assert.match(tree, /^\n\nWhen you are finished, commit your work in your worktree, then call lease_release with lease_id L1 and a result object \(branch, head, tests, findings\)\. If you need the orchestrator/);
   assert.ok(!HB.rule(assigned({ id: 't1', worktree: { ...TREE, removed_at: 5 } })).includes('commit your work'), 'a removed tree is no tree');
   assert.ok(!HB.rule(assigned({ id: 't1', worktree: TREE, acceptance: { verdict: true } })).includes('commit your work'), 'a reviewer never commits in the tree it judges');
 });
 
 test('the rule for a verdict task has the verdict shape and carries the Review standard, from its one file', () => {
   const r = HB.rule(assigned({ id: 'r1', acceptance: { verdict: true } }, 'L9'));
-  assert.ok(r.startsWith('\n\nWhen you are finished, call lease_release with lease_id L9 and result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [{ "severity": "blocking|should-fix|note", "title": "...", ... }] }.\n\n## Review standard\n'));
+  assert.ok(r.startsWith('\n\nWhen you are finished, call lease_release with lease_id L9 and result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [{ "severity": "blocking|should-fix|note", "title": "...", ... }] }.' + ESC + '\n\n## Review standard\n'));
   assert.ok(r.endsWith(STANDARD), 'the standard is the file\'s text, verbatim');
   assert.ok(!r.includes('(branch, head, tests, findings)'), 'not the work task\'s shape');
   assert.ok(STANDARD.includes('(a) breaks one of the brief\'s stated acceptance criteria') && STANDARD.includes('(d) causes a hang, data loss, an orphaned process or a security hole'));
@@ -70,7 +71,7 @@ async function firstMessage(task, spawnArgs = {}) {
 
 test('a spawn with a task sends its spec after the resume line, then the prompt as added instructions, then the rule; no prompt is fine', async () => {
   const task = { id: 't1', spec: 'rename the frobnicator', acceptance: { commands: [{ argv: ['x'] }] } };
-  const RULE = 'When you are finished, call lease_release with lease_id lease-1 and a result object (branch, head, tests, findings).';
+  const RULE = 'When you are finished, call lease_release with lease_id lease-1 and a result object (branch, head, tests, findings).' + ESC;
   assert.strictEqual(await firstMessage(task), `task t1 lease=lease-1.\n\nTask: rename the frobnicator\n\nthe brief${PL}\n\n${RULE}`);
   assert.strictEqual(await firstMessage(task, { prompt: undefined }), `task t1 lease=lease-1.\n\nTask: rename the frobnicator${PL}\n\n${RULE}`);
   const sb = sandbox();
@@ -82,15 +83,15 @@ test('a spawn with a task sends its spec after the resume line, then the prompt 
 
 test('a spawn ends the first message with the rule: the resume line, the prompt, then the hand-back rule', async () => {
   assert.strictEqual(await firstMessage({ id: 't1', acceptance: { commands: [{ argv: ['x'] }] } }),
-    'task t1 lease=lease-1.\n\nthe brief' + PL + '\n\nWhen you are finished, call lease_release with lease_id lease-1 and a result object (branch, head, tests, findings).');
+    'task t1 lease=lease-1.\n\nthe brief' + PL + '\n\nWhen you are finished, call lease_release with lease_id lease-1 and a result object (branch, head, tests, findings).' + ESC);
   const own = await firstMessage({ id: 't1', worktree: TREE });
-  assert.ok(own.endsWith('When you are finished, commit your work in your worktree, then call lease_release with lease_id lease-1 and a result object (branch, head, tests, findings).'));
+  assert.ok(own.endsWith('When you are finished, commit your work in your worktree, then call lease_release with lease_id lease-1 and a result object (branch, head, tests, findings).' + ESC));
 });
 
 test('a spawn for a verdict task ends with the verdict rule and the Review standard, so the orchestrator copies neither', async () => {
   const first = await firstMessage({ id: 't1', acceptance: { verdict: true } }, { agent_type: 'reviewer' });
   assert.ok(first.startsWith('task t1 lease=lease-1.\n\nthe brief'));
-  assert.ok(first.includes('\n\nWhen you are finished, call lease_release with lease_id lease-1 and result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [{ "severity": "blocking|should-fix|note", "title": "...", ... }] }.\n\n## Review standard\n'));
+  assert.ok(first.includes('\n\nWhen you are finished, call lease_release with lease_id lease-1 and result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [{ "severity": "blocking|should-fix|note", "title": "...", ... }] }.' + ESC + '\n\n## Review standard\n'));
   assert.ok(first.endsWith(STANDARD));
   assert.strictEqual(first.split('## Review standard').length - 1, 1, 'once');
 });
@@ -137,8 +138,16 @@ test('a worker spawned in a run with the permission_prompt lever on is launched 
 test('a task that declares required hand-back fields says so in the rule, at a spawn and from the rule alone; none declared, no line', async () => {
   const acceptance = { handoff: { required: ['head', 'tests', 'summary'] } };
   const line = ' The result must carry head, tests, summary, each non-empty; lease_release refuses it otherwise.';
-  assert.ok(HB.rule(assigned({ id: 't1', acceptance })).endsWith(`(branch, head, tests, findings).${line}`));
-  assert.ok(HB.rule(assigned({ id: 'r1', acceptance: { verdict: true, handoff: { required: ['head', 'tests', 'summary'] } } })).includes(`"findings": [{ "severity": "blocking|should-fix|note", "title": "...", ... }] }.${line}\n\n## Review standard`));
+  assert.ok(HB.rule(assigned({ id: 't1', acceptance })).endsWith(`(branch, head, tests, findings).${ESC}${line}`));
+  assert.ok(HB.rule(assigned({ id: 'r1', acceptance: { verdict: true, handoff: { required: ['head', 'tests', 'summary'] } } })).includes(`"findings": [{ "severity": "blocking|should-fix|note", "title": "...", ... }] }.${ESC}${line}\n\n## Review standard`));
   assert.ok(!HB.rule(assigned({ id: 't1', acceptance: { commands: [] } })).includes('must carry'));
   assert.ok((await firstMessage({ id: 't1', acceptance })).endsWith(line), 'the spawn\'s first message carries it');
+});
+
+test('the rule for a Codex worker in the task\'s own tree says belay commits at hand-back and does not ask for a commit; Claude and other cases are unchanged', () => {
+  const codex = HB.rule(assigned({ id: 't1', worktree: TREE }), '', 'codex');
+  assert.strictEqual(codex, '\n\nWhen you are finished, call lease_release with lease_id L1 and a result object (summary, tests, findings). Do not run git commit: belay commits your changes in your worktree when you hand back.' + ESC);
+  assert.strictEqual(HB.rule(assigned({ id: 't1', worktree: TREE }), '', 'claude-code'), HB.rule(assigned({ id: 't1', worktree: TREE })), 'a Claude Code worker\'s rule is as it was');
+  assert.strictEqual(HB.rule(assigned({ id: 't1' }), '', 'codex'), HB.rule(assigned({ id: 't1' })), 'no belay tree, no commit by belay: the plain rule');
+  assert.strictEqual(HB.rule(assigned({ id: 'r1', acceptance: { verdict: true } }), '', 'codex'), HB.rule(assigned({ id: 'r1', acceptance: { verdict: true } })), 'a verdict task\'s rule is the same');
 });

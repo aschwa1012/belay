@@ -241,7 +241,7 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
   if (core && core.worker && typeof core.worker.list === 'function') {
     try {
       const WP = require('./wake-pipe.cjs');
-      wakePub = WP.startWakePublisher({ core, runId, notes: !!spec.notes, budgetWake: spec.budgetWake || null, pipeName: deps.wakePipeName || WP.wakePipeName(dataDir, runId, wakeNonce), pollMs, isHeld: wakeHeld || deps.wakeHeld || (() => false), onRelease: wakeRelease || deps.wakeRelease || null });
+      wakePub = WP.startWakePublisher({ core, runId, notes: !!spec.notes, budgetWake: spec.budgetWake || null, dataDir, deliveredFile: `${String(written.dir).split('\\').join('/')}/wakes-delivered.jsonl`, pipeName: deps.wakePipeName || WP.wakePipeName(dataDir, runId, wakeNonce), pollMs, isHeld: wakeHeld || deps.wakeHeld || (() => false), onRelease: wakeRelease || deps.wakeRelease || null });
       await wakePub.listening;
     } catch (e) {
       wakeFailure = `the wake pipe could not be opened (${(e && (e.code || e.message)) || e})`;
@@ -459,7 +459,7 @@ async function runInteractiveOrchestrator({ core, runId, dataDir, spec, onAttach
     },
   };
   return {
-    ended_by: endedBy, holds: [], polls: 0, wakes: [], wakes_suppressed: wakePub ? wakePub.droppedWakes() : [], wakes_expired: [], wakes_held: [], pauses: [],
+    ended_by: endedBy, holds: [], polls: 0, wakes: wakePub ? wakePub.receipt() : [], wakes_suppressed: wakePub ? wakePub.droppedWakes() : [], wakes_expired: [], wakes_held: [], pauses: [],
     interactive_clean: clean, primary_cause: primary ? endedBy : null, orchestrator: block,
   };
 }

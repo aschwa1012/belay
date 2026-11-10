@@ -62,7 +62,7 @@ function handoffView(h) {
 
 function orchestratorView(r) {
   return {
-    model: nn(r.orch_model), turns: nn(r.orch_turns),
+    model: nn(r.orch_model), turns: nn(r.orch_turns), model_fallback: r.orch_model_fallback || null,
     input_tokens: nn(r.orch_input_tokens), output_tokens: nn(r.orch_output_tokens),
     cache_read_tokens: nn(r.orch_cache_read_tokens), cache_creation_tokens: nn(r.orch_cache_creation_tokens),
     cost_usd: nn(r.orch_cost_usd), tool_calls: null,
@@ -96,6 +96,7 @@ function workerView(w, tasksById, dataDir, since = null, inFlight = null) { // a
     cost_usd: nn(w.cost_usd), ...costParts(w), ...require('../core/inflight-cost.cjs').workerFigures(inFlight, w), tool_calls: nn(w.tool_calls),
     ...wall(w.started_at, w.exited_at),
     exit_code: nn(w.exit_code), base_sha: nn(w.base_sha), head_sha: nn(w.head_sha), task,
+    ...(w.model_fallback ? { model_fallback: w.model_fallback } : {}),
     ...(compactionsOf(dataDir, w.id)), // ADR 0007 decision 7: only a worker with compactions carries the key
   };
 }
@@ -257,11 +258,13 @@ function renderText(rc) {
     ...retrievalLines(rc.retrieval),
     `orchestrator  model ${v(o.model)}  turns ${v(o.turns)}  wall ${wallText(o)}  cost ${money(o.cost_usd)}  (orchestrator tool calls: no column)`,
     tokensLine(o),
+    ...(o.model_fallback ? [`  ${require('../core/model-switch.cjs').line('', o.model_fallback)}`] : []),
   ];
   for (const w of rc.workers) {
     lines.push(`worker ${v(w.id)}  ${w.substrate == null ? '' : clean(w.substrate)}  state ${v(w.state)}  exit ${v(w.exit_code)}`);
     lines.push(`  model ${v(w.model)}  turns ${v(w.turns)}  wall ${wallText(w)}  cost ${money(w.cost_usd)}${w.cost_source ? ' reported' : ''}${costNote(w)}  tools ${v(w.tool_calls)}`);
     lines.push(tokensLine(w));
+    if (w.model_fallback) lines.push(`  ${require('../core/model-switch.cjs').line('', w.model_fallback)}`);
     if (w.compactions) lines.push(`  compactions ${w.compactions.count} (harness ${w.compactions.harness}, auto ${w.compactions.auto})  last ${v(w.compactions.last_pre_tokens)} -> ${v(w.compactions.last_post_tokens)} tokens  max hook ${w.compactions.max_hook_bytes} B`);
     lines.push(`  base ${v(w.base_sha)}  head ${v(w.head_sha)}`);
     if (w.task) {
@@ -278,6 +281,13 @@ function renderText(rc) {
     if (t.env) lines.push(envLine(t.env));
     if (t.check_history) lines.push(`  ${clean(require('../core/check-history.cjs').line(t.check_history), Infinity)}`);
   }
+  if (rc.policy_log && rc.policy_log.total) {
+    const PL = require('../core/policy-log.cjs');
+    lines.push(`policy steps: ${rc.policy_log.total} in all${rc.policy_log.total > rc.policy_log.steps.length ? `, newest ${rc.policy_log.steps.length}` : ''}`);
+    for (const s of rc.policy_log.steps) lines.push(`  ${PL.line(s)}`);
+  }
+  for (const k of rc.flaky_checks || []) lines.push(require('../core/check-flake.cjs').line(k)); // 0.4.0: store-wide, beside the check history
+  if ((rc.flaky_checks_total || 0) > (rc.flaky_checks || []).length) lines.push(`flaky check: ${rc.flaky_checks_total - rc.flaky_checks.length} more flipped keys not shown (${rc.flaky_checks_total} in all)`);
   for (const i of rc.integrate_checks || []) lines.push(RCK.integrateLine(i));
   const t = rc.totals;
   const miss = SUM_FIELDS.filter(f => t.not_recorded[f] > 0).map(f => `${f} ${t.not_recorded[f]}`).join(', ');
@@ -334,6 +344,8 @@ async function run(ctx) {
       retrieval: retrievalOf(chosen), orchestrator, workers,
       unassigned_tasks: tasks.filter(t => !assigned.has(t.id)).map((t) => taskView(t, chosen.started_at, tasksById)),
       integrate_checks: RCK.integrateChecksOf(await core.integration.list({ run_id: chosen.id }).then((r) => r.integrations, () => []), chosen.id), // a read that fails leaves the block empty
+      ...(await core.check.flake({ limit: 10 }).then((f) => ({ flaky_checks: f.keys, flaky_checks_total: f.total }))),
+      ...(await core.policy.log({ run_id: chosen.id, limit: 200 }).then((l) => (l.total ? { policy_log: l } : {}))), // 0.4.0: the step log with each turn's cost; no key for a run with none
       totals: totalsOf(orchestrator, workers), owner,
     };
     return { code: 0, text: renderText(receipt), json: receipt };

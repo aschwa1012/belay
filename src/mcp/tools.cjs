@@ -14,24 +14,11 @@
 'use strict';
 
 const { isJobId } = require('../run/job-prefixes.cjs'); // pure
+const { KNOWLEDGE_PREFIX, isReservedWorkerId } = require('../core/reserved-ids.cjs'); // pure
 const { isPathId, pathIdMessage } = require('../core/path-id.cjs'); // pure
 const NOTES = require('./tools-notes.cjs'); // ADR 0047: the listing of a worker whose run has the notes lever on
-const { WORKER_TYPES } = require('../run/agent-defaults.cjs'); // pure; the agent_type enum
-const S = (properties, required) => {
-  const s = { type: 'object', properties };
-  if (required) s.required = required;
-  return s;
-};
-const str = (description) => (description ? { type: 'string', description } : { type: 'string' });
-const int = (description) => (description ? { type: 'integer', description } : { type: 'integer' });
-const num = () => ({ type: 'number' });
-const bool = () => ({ type: 'boolean' });
-const DEBUG = { type: 'string', enum: ['debug'] };
-const strs = (description) => {
-  const a = { type: 'array', items: { type: 'string' } };
-  if (description) a.description = description;
-  return a;
-};
+const { S, str, int, num, bool, DEBUG, strs } = require('./tools-schema.cjs');
+const { ORCHESTRATOR } = require('./tools-orchestrator.cjs');
 
 // name -> { role, via, method }. `via` is 'core' (a dotted Core method), 'run' (a RunManager method),
 // 'compose' (a core write and its follow-up, compose.cjs) or 'briefing' (the one tool that composes two Core calls into { line, doc }).
@@ -175,184 +162,6 @@ const ORCH_TASK_LIST = {
   inputSchema: S({ states: strs('open, assigned, released, done or cancelled'), task_ids: strs(), view: DEBUG }),
 };
 
-const ORCHESTRATOR = [
-  {
-    name: 'worker_spawn',
-    description: 'Launch a real Claude Code or Codex process and wait for its ready event. Returns id, substrate, pid, state, session id, worktree, model, effort, tools, ready_ms; view debug: the whole row and launch receipt.',
-    inputSchema: S({
-      substrate: { type: 'string', enum: ['claude-code', 'codex'] },
-      worktree: str('Absolute path; the worker\'s cwd. Default: task_id\'s worktree'),
-      prompt: str('Without task_id, the first message. With it, instructions added after the task\'s spec'),
-      task_id: str('Assign this task once ready; belay sends its resume line, then its spec'),
-      model: str(),
-      agent_type: { type: 'string', enum: WORKER_TYPES, description: 'Configured model, effort and tools; a researcher has no shell by default' },
-      effort: { type: 'string', enum: ['low', 'medium', 'high', 'xhigh', 'max'] },
-      memory_queries: strs('Up to 4 task lines naming the situations the worker will be in, each max 160 bytes'),
-      allowed_tools: strs(),
-      permission_mode: str(),
-      startup_timeout_ms: int('default 60000'),
-      worker_id: str('Otherwise generated'),
-      view: { type: 'string', enum: ['compact', 'debug'] },
-    }, ['substrate']),
-  },
-  {
-    // ADR 0015. `worker_spawn` above returns at the ready event and the worker keeps running; this is
-    // the call that waits for what happens next. A timeout is a result rather than an error because
-    // the caller's own tool timeout has to be the outer bound, and a refusal would lose the fact that
-    // nothing had finished yet.
-    name: 'worker_wait',
-    description: 'Block until one of the named workers, or any worker this session launched, finishes a turn or dies, or the timeout passes. Returns which worker, what happened, what established it, its turn and checkpoint id, and how long the call held. timed_out is a result. already: turn ended earlier.',
-    inputSchema: S({
-      worker_ids: strs('Otherwise every worker this session launched'),
-      timeout_ms: int('default 110000'),
-    }),
-  },
-  {
-    name: 'worker_message',
-    description: 'Send text to a live worker. Returns the channel used, bytes written, pid and turn; while it compacts, channel queued, sent when that ends.',
-    inputSchema: S({ worker_id: str(), text: str() }, ['worker_id', 'text']),
-  },
-  {
-    name: 'worker_last_reply',
-    description: 'The text a worker\'s last finished turn ended with, from the stream belay recorded (max 4 KB), marked as data.',
-    inputSchema: S({ worker_id: str() }, ['worker_id']),
-  },
-  {
-    name: 'worker_stop',
-    description: 'Stop a worker by its recorded pid. Returns exit code, signal, ms to exit, whether it was graceful or killed, and the session id to resume from later.',
-    inputSchema: S({
-      worker_id: str(),
-      mode: { type: 'string', enum: ['graceful', 'kill'] },
-      timeout_ms: int('default 10000'),
-    }, ['worker_id', 'mode']),
-  },
-  {
-    name: 'worker_restart',
-    description: 'Restart a worker from its last checkpoint. Returns which branch was taken, resume or replace, and why, the old and new pid, session id, checkpoint id and the first turn\'s usage. Past about 100 s it returns status "not ready yet" with first_turn_awaited false; the relaunch carries on.',
-    inputSchema: S({ worker_id: str(), first_turn_timeout_ms: int('default 180000') }, ['worker_id']),
-  },
-  {
-    name: 'task_create',
-    description: 'Create a task with the checks that decide it is done, the files it owns and the tasks it must wait for. Returns id, rev, state open, spec_head (view debug: whole row). worktree makes its tree first; tasks makes up to 10.',
-    inputSchema: S({
-      spec: str('What is to be done'),
-      acceptance: S({
-        commands: {
-          type: 'array',
-          items: S({ argv: strs(), cwd: str(), timeout_ms: int(), retries_on_fail: int('0-5; a pass after a fail is marked flaky') }, ['argv']),
-        },
-        files_within_owned: bool(),
-        verdict: { const: true },
-        handoff: S({ required: strs('Fields the hand-back result must carry') }),
-      }),
-      files_owned: strs('Paths relative to the worktree'),
-      depends_on: strs('Task ids that must be done before this one can be assigned'),
-      repairs: str('A fix task: the id of the work task it repairs; past max_fix_rounds the answer carries fix_notice'),
-      base: str('Diff base'),
-      budget_usd: { type: 'number', description: 'USD limit; needs the ledger' },
-      tree_of: str('Work in that task\'s worktree (a conflict fix)'),
-      worktree: { type: ['boolean', 'string'], description: 'Own tree: true from HEAD, or a base ref' },
-      tasks: { type: 'array', items: { type: 'object' }, description: 'Several, each with these fields; all or nothing' },
-      id: str(),
-      amend: { type: 'boolean', description: 'Replace not-done task id\'s acceptance and spec' },
-      view: DEBUG,
-    }), // spec: required unless amend (validateArgs)
-  },
-  {
-    name: 'task_assign',
-    description: 'Assign a task to a live worker, take a lease and send the worker the task, its lease id and the hand-back rule. Returns the old lease row, the new lease (id, holder, expires_at), the task\'s task_list row and delivered.',
-    inputSchema: S({ task_id: str(), worker_id: str(), ttl_ms: int('default 600000'), prompt: str('Instructions added after the task\'s spec'), deliver: bool() }, ['task_id', 'worker_id']),
-  },
-  {
-    // ADR 0020 decision 5: the orchestrator's window onto the permission channel, so a headless run
-    // with a prompting worker does not stall until a human types.
-    name: 'permission_list',
-    description: 'List your run\'s permission requests awaiting a verdict (other runs: E_ROLE). Returns each with tool, input, age and whether its adapter is alive. Default pending.',
-    inputSchema: S({ run_id: str(), states: strs('pending, allowed, denied or expired; default pending') }),
-  },
-  {
-    name: 'permission_decide',
-    description: 'Allow or deny one pending permission request. Returns the request and verdict rows, and whether the requesting adapter is alive to act on it.',
-    inputSchema: S({ id: str(), verdict: { type: 'string', enum: ['allow', 'deny'] }, reason: str() }, ['id', 'verdict']),
-  },
-  {
-    name: 'task_evaluate',
-    description: 'Run a task\'s checks in worktree. Returns row and results (passing output cut; view debug: whole); done (unblocks dependents) only if all pass. A run with max_parallel_evaluations may queue it; E_BUSY queued: waited too long, nothing run, call again.',
-    inputSchema: S({
-      task_id: str(),
-      worktree: str('Default: the task\'s worktree'),
-      base: str('Diff base; default the task\'s base, else merge-base main'),
-      view: DEBUG,
-    }, ['task_id']),
-  },
-  {
-    // ADR 0053 decisions 2, 3 and 6.
-    name: 'task_worktree',
-    description: 'Create (default) or remove the task\'s own git worktree and branch belay/<task_id>, cut from base (default HEAD). Returns id, rev, state, spec_head, worktree (view debug: whole row). remove keeps the branch unless delete_branch.',
-    inputSchema: S({
-      task_id: str(),
-      action: { type: 'string', enum: ['create', 'remove'] },
-      base: str(),
-      branch: str(),
-      force: bool(),
-      delete_branch: bool(),
-      view: DEBUG,
-    }, ['task_id']),
-  },
-  {
-    // ADR 0053 decision 5.
-    name: 'integrate',
-    description: 'Merge done tasks\' branches, at the head each was judged at, in order into into (default belay/integrate/<run>), then re-run their checks there. Returns state, merged (what this call merged), carried (count from earlier rows), not_merged, left_out (commits past it), checks (reused ones marked), passed, forced, not_carried (passing output cut; view debug: whole row). A conflict is aborted, tree clean; conflict names task and files; what merged before it is still checked. task_list gives each task\'s integration state. force with reason also merges tasks not done, recorded as forced. A run with max_parallel_evaluations may queue the re-run; E_BUSY queued: refused before any merge, call again. into may name a user branch; if the run asks first, approved_in_chat (interactive) or approval (awaiting_approval id).',
-    inputSchema: S({
-      task_ids: strs(),
-      into: str(),
-      base: str('If into is new; default the tasks\' base'),
-      evaluate: { type: 'boolean', description: 'false skips the tasks\' re-runs' },
-      checks: { type: 'array', items: S({ argv: strs(), cwd: str(), timeout_ms: int() }, ['argv']), description: 'Extra commands run on the merged head, before the tasks re-run; all the commands of the call share one 540 s budget' },
-      force: bool(),
-      reason: str(),
-      approved_in_chat: bool(),
-      approval: str(),
-      view: DEBUG,
-    }, ['task_ids']),
-  },
-  {
-    name: 'fix_from_review',
-    description: 'Create the fix task for a review evaluated refuted, with depends_on, repairs, acceptance and files_owned inferred and spec from its findings. Returns id, rev, state, spec_head, repairs, depends_on, files_owned, fix_notice past max_fix_rounds. With follow_up: true, for a review that held: a follow-up task for its should-fix findings in a tree of its own, not a fix round; E_FOLLOW_UPS past max_follow_ups (view debug: whole row).',
-    inputSchema: S({ review_id: str(), spec: str('Default: from the findings'), repairs: str('Which task, if it judged several'), follow_up: { type: 'boolean' }, id: str(), view: DEBUG }, ['review_id']),
-  },
-  {
-    name: 'task_cancel',
-    description: 'Give up on a task that is not done: releases its lease and its files_owned, state cancelled (final), and tells the lease holder. Returns the task\'s task_list row, the released lease and notified.',
-    inputSchema: S({ task_id: str(), reason: str() }, ['task_id']),
-  },
-  {
-    // ADR 0040 §4. A worker cannot verify a claim, so this is not on the worker listing.
-    name: 'memory_verify',
-    description: 'Set an entry\'s status with its evidence. Returns id, status, previous status, receipt.',
-    inputSchema: S({
-      id: str(),
-      status: { type: 'string', enum: ['unverified', 'verified', 'refuted'] },
-      receipt: str('checkpoint:id, task:id, memory:id, commit:sha or test:text; none for unverified'),
-    }, ['id', 'status']),
-  },
-  {
-    // ADR 0054 decision 2. One tool with an op, not four: the listing pays for one schema.
-    name: 'git_read',
-    description: 'Read-only git, run by belay with fixed argv, in worktree, task_id\'s worktree or the run\'s. Returns exit_code, out (16 KB max, truncated marked; view debug: argv too).',
-    inputSchema: S({
-      op: { type: 'string', enum: ['status', 'log', 'diff', 'show'] },
-      worktree: str(),
-      task_id: str(),
-      rev: str('a..b for log/diff; one commit for show'),
-      path: str(),
-      stat: bool(),
-      n: int('log, default 20'),
-      view: DEBUG,
-    }, ['op']),
-  },
-];
-
 const WORKER = [
   {
     name: 'lease_release',
@@ -394,10 +203,10 @@ const isReviewJob = (role, workerId) => role === 'worker' && typeof workerId ===
 
 // `knowledge` (orchestrator only) adds knowledge_ask; omitted or false, the listing is byte-for-byte what it was.
 // `workerId` (the adapter's argv) narrows the knowledge agent's listing to its read tools.
-// `queries` (orchestrator): whether worker_spawn lists `memory_queries`. They feed the first-message index only, so a run with that lever
+// `queries` (orchestrator): whether task_create and worker_spawn list `memory_queries`. They feed the first-message index only, so a run with that lever
 // off (the default) is not shown the field; a call that carries it is still accepted (the schema of validateArgs is the full one).
 const withoutQueries = (list) => list.map((t) => {
-  if (t.name !== 'worker_spawn') return t;
+  if (t.name !== 'worker_spawn' && t.name !== 'task_create') return t;
   const { memory_queries, ...properties } = t.inputSchema.properties;
   return { ...t, inputSchema: { ...t.inputSchema, properties } };
 });
@@ -457,13 +266,14 @@ const NO_NULL = { task_evaluate: ['base'] };
 // the core, never something a model says (invariant 3), so the boundary refuses them in either role,
 // by name, before the core sees them. The schema does not list them, which is why the listing does
 // not pay for them either.
-const HARNESS_ONLY = { task_evaluate: ['trigger', 'cancel_key'], memory_store: ['task_id', 'turn', 'source', 'embed', 'body', 'worker_id'], worker_spawn: ['native_memory', 'tools', 'sandbox', 'max_budget_usd'] }; // worker_spawn: native_memory is the eval driver's lever (ADR 0024 amendment 3); tools is the built-in list, which only allowed_tools may narrow (amendment 4); sandbox is a Codex worker's sandbox mode and max_budget_usd a job worker's spend cap, both the harness's. permission_prompt and permit_wait_ms stay open: ADR 0020 decision 1 makes the permission channel optional per spawn, and decision 5 has the orchestrator answer its requests
+const { STAMPS, stampIn } = require('./tools-policy.cjs');
+const HARNESS_ONLY = { task_create: STAMPS, task_assign: STAMPS, fix_from_review: STAMPS, integrate: STAMPS, task_evaluate: ['trigger', 'cancel_key'], memory_store: ['task_id', 'turn', 'source', 'embed', 'body', 'worker_id'], worker_spawn: ['native_memory', 'tools', 'sandbox', 'max_budget_usd'] }; // worker_spawn: native_memory is the eval driver's lever (ADR 0024 amendment 3); tools is the built-in list, which only allowed_tools may narrow (amendment 4); sandbox is a Codex worker's sandbox mode and max_budget_usd a job worker's spend cap, both the harness's. permission_prompt and permit_wait_ms stay open: ADR 0020 decision 1 makes the permission channel optional per spawn, and decision 5 has the orchestrator answer its requests
 // Tools that take exactly the properties their schema names: memory_store's row is written from its arguments, so an
 // unnamed one (an id, a created_at, a vector and its model) would reach the core as if the harness had chosen it.
 const CLOSED = new Set(['memory_store', 'briefing']);
 // ADR 0043 decision 1: the knowledge agent's id, knowledge-<run>, is the harness's. A worker the orchestrator named
 // with that prefix would be taken for the agent (or block it), so a caller-chosen id with it is refused.
-const RESERVED_WORKER_PREFIX = 'knowledge-';
+const RESERVED_WORKER_PREFIX = KNOWLEDGE_PREFIX;
 const MAX_IDS = 50;
 
 // The model is a boundary, so the required fields and the declared type of each named top-level
@@ -479,6 +289,10 @@ function validateArgs(name, args, { notes = false, role = 'worker' } = {}) {
   for (const k of HARNESS_ONLY[name] || []) {
     if (Object.prototype.hasOwnProperty.call(a, k)) bad(`${name}: ${k} is a harness field and cannot be set from a tool call`, { tool: name, field: k, reason: 'harness_only' });
   }
+  if (name === 'task_create') { // a batch item is a task too: its stamps are refused by name as the top level's are
+    const st = stampIn(a);
+    if (st && st.item !== undefined) bad(`task_create: tasks[${st.item}].${st.field} is a harness field and cannot be set from a tool call`, { tool: name, field: st.field, item: st.item, reason: 'harness_only' });
+  }
   if (CLOSED.has(name)) {
     const extra = Object.keys(a).find((k) => !Object.prototype.hasOwnProperty.call(schema.properties || {}, k));
     if (extra !== undefined) bad(`${name}: ${extra} is not one of its arguments`, { tool: name, field: extra, reason: 'unknown_field' });
@@ -488,7 +302,7 @@ function validateArgs(name, args, { notes = false, role = 'worker' } = {}) {
     if (a[k] !== undefined && a[k] !== null && (schema.properties || {})[k] && !isPathId(a[k])) bad(`${name}: ${pathIdMessage(k, a[k])}`, { tool: name, field: k, reason: 'bad_id' });
   }
   if (Array.isArray(a.worker_ids) && a.worker_ids.some((x) => !isPathId(x))) bad(`${name}: worker_ids has an id that is not valid: use ${require('../core/path-id.cjs').PATH_ID_GRAMMAR}`, { tool: name, field: 'worker_ids', reason: 'bad_id' });
-  if (name === 'worker_spawn' && typeof a.worker_id === 'string' && (a.worker_id.startsWith(RESERVED_WORKER_PREFIX) || isJobId(a.worker_id))) {
+  if (name === 'worker_spawn' && typeof a.worker_id === 'string' && isReservedWorkerId(a.worker_id)) {
     bad(`worker_spawn: worker ids starting ${RESERVED_WORKER_PREFIX}, notereview-, scrub- or archreview- are reserved for belay's own workers`, { tool: name, field: 'worker_id', reason: 'reserved', prefix: RESERVED_WORKER_PREFIX });
   }
   for (const k of schema.required || []) {
@@ -507,14 +321,15 @@ function validateArgs(name, args, { notes = false, role = 'worker' } = {}) {
     if (v === null && (NO_NULL[name] || []).includes(k)) bad(`${name}: ${k} must be ${spec.type}, not null`, { tool: name, field: k, expected: spec.type });
     if (v === undefined || v === null) continue;
     const t = spec.type;
-    const ok = t === 'string' ? typeof v === 'string'
-      : t === 'integer' ? Number.isInteger(v)
-        : t === 'number' ? typeof v === 'number'
-          : t === 'boolean' ? typeof v === 'boolean'
-            : t === 'array' ? Array.isArray(v)
-              : t === 'object' ? (typeof v === 'object' && !Array.isArray(v))
+    const typeOk = (x) => x === 'null' ? v === null : x === 'string' ? typeof v === 'string'
+      : x === 'integer' ? Number.isInteger(v)
+        : x === 'number' ? typeof v === 'number'
+          : x === 'boolean' ? typeof v === 'boolean'
+            : x === 'array' ? Array.isArray(v)
+              : x === 'object' ? (typeof v === 'object' && !Array.isArray(v))
                 : true;
-    if (!ok) bad(`${name}: ${k} must be ${t}`, { tool: name, field: k, expected: t });
+    const ok = Array.isArray(t) ? t.some(typeOk) : typeOk(t); // a type list (task_create worktree, policy) holds when any member does
+    if (!ok) bad(`${name}: ${k} must be ${[].concat(t).join(' or ')}`, { tool: name, field: k, expected: t });
     if (spec.enum && !spec.enum.includes(v)) bad(`${name}: ${k} must be one of ${spec.enum.join(', ')}`, { tool: name, field: k, expected: spec.enum });
   }
   if (name === 'memory_retrieve' && Array.isArray(a.ids)) {

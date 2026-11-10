@@ -1,5 +1,6 @@
 'use strict';
 require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
+const ESC = require('../../src/run/handback.cjs').ESCALATE_LINE; // every hand-back rule ends with the escalation line (ADR 0074 amendment 4)
 // compose-assign.test.cjs — what task_assign sends the worker (wording audit): the first assignment's line carries only the task and
 // the lease; the hand-back rule is belay's, shaped for the task (a verdict task's has the verdict shape and the Review standard);
 // and a verdict task assigned to a live reviewer carries the note-review brief, as it does at a spawn.
@@ -32,7 +33,7 @@ test('a first assignment sends only the task and its lease, then the task, then 
   const out = await h.c.assign({ task_id: 't1', worker_id: 'w1' });
   assert.strictEqual(out.delivered.sent, true);
   assert.deepStrictEqual(h.calls.find(([m]) => m === 'continuity.resumeLine')[1], { task_id: 't1', first: true });
-  assert.strictEqual(h.sent[0], 'task t1 lease=L1.\n\nTask: do it\n\nWhen you are finished, call lease_release with lease_id L1 and a result object (branch, head, tests, findings).');
+  assert.strictEqual(h.sent[0], 'task t1 lease=L1.\n\nTask: do it\n\nWhen you are finished, call lease_release with lease_id L1 and a result object (branch, head, tests, findings).' + ESC);
 });
 
 test('a coder in its own tree is told to commit first; the orchestrator\'s prompt is added after the spec', async () => {

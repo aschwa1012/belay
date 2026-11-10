@@ -13,8 +13,11 @@
 
 const crypto = require('node:crypto');
 const reviewWake = require('./review-wake.cjs');
+const { forecastTask } = require('../core/conflict-forecast.cjs');
 
 const WAKE_TEXT_MAX = 221;
+const FORECAST_EXIT_CEILING_MS = 30000; // how long past its answer a forecast may hold its slot while its git calls have not exited
+const FORECASTS_MAX = 4; // conflict forecasts running at once (conflict-forecast.cjs)
 const PENDING_MAX_MS = 900000; // a watched evaluation that never lands (cancelled, or the owner gone) is forgotten after this, unless its worker is live: a release evaluation may queue for a slot and then run 540 s
 // ADR 0058 amendment 4: how long a turn_end wake waits for its hand-backs' evaluation; BELAY_RELEASE_WAKE_HOLD_MS (ms) overrides it.
 const RELEASE_WAKE_HOLD_MS = 30000;
@@ -49,11 +52,13 @@ async function workOf(core, row) {
   } catch { return null; }
 }
 
-function summaryOf(row, byId) {
+// `forecasts` (optional): the conflict forecasts enrichWakes made, by `<task id>:<hand-back at>` (conflict-forecast.cjs).
+function summaryOf(row, byId, forecasts) {
   const r = row.results || {};
   const fr = fixRoundsOf(row, byId);
+  const fc = forecasts && typeof forecasts.get === 'function' && forecasts.get(`${row.id}:${row.handoff && row.handoff.at}`);
   const review = reviewWake.reviewOf(row); // a review whose verdict check was executable: its facts ride on the wake (review-wake.cjs)
-  return { task_id: row.id, state: row.state, passed: !!r.passed, executable: !!r.executable, checks: ((r.checks) || []).length, failing: failedKinds(row), ...(review ? { review } : {}), ...(r.flaky ? { flaky: true } : {}), ...(r.uncommitted ? { uncommitted: true } : {}), ...(r.queued ? { queued: r.queued } : {}), ...(fr ? { fix_rounds: fr } : {}) };
+  return { task_id: row.id, state: row.state, passed: !!r.passed, executable: !!r.executable, checks: ((r.checks) || []).length, failing: failedKinds(row), ...(review ? { review } : {}), ...(r.flaky ? { flaky: true } : {}), ...(r.uncommitted ? { uncommitted: true } : {}), ...(r.queued ? { queued: r.queued } : {}), ...(fr ? { fix_rounds: fr } : {}), ...(fc ? { forecast: fc } : {}) };
 }
 
 const unevaluated = (t, runId, workerId) => t.run_id === runId && t.state === 'released' && t.handoff && t.handoff.by === workerId && !t.handoff.stood_down
@@ -84,10 +89,15 @@ async function notePending(w, ctx) {
 // another process and cannot see that, so the end is a ledger event (kind release_failed, ok 0, the code), the same cross-process
 // path call_detached/call_ended use; enrichWakes reads it, drops the watched entry and tells the orchestrator. Best effort: a write
 // that fails is dropped, and the entry is then forgotten by age once its worker is not live.
+// The message carries the seq of the task's row current when the failure is written (best effort), so a plan amend after it is found by row order and not by clock.
 function recordFailure(ctx, w, taskId, code, message, turn) {
   const rec = ctx.core && ctx.core.memory && ctx.core.memory.recordEvent;
   if (typeof rec !== 'function') return Promise.resolve();
-  return Promise.resolve().then(() => rec({ kind: 'release_failed', ok: 0, code: String(code || 'E_INTERNAL'), worker_id: w.id, task_id: taskId, message: JSON.stringify({ turn, by: String(message || '').slice(0, 150) }) })).catch(() => {});
+  return Promise.resolve().then(async () => {
+    let seq = null;
+    try { const t = ctx.core.task && typeof ctx.core.task.get === 'function' ? await ctx.core.task.get({ task_id: taskId }) : null; if (t && Number.isFinite(Number(t.seq))) seq = Number(t.seq); } catch { /* the time comparison stands in */ }
+    return rec({ kind: 'release_failed', ok: 0, code: String(code || 'E_INTERNAL'), worker_id: w.id, task_id: taskId, message: JSON.stringify({ turn, by: String(message || '').slice(0, 150), ...(seq == null ? {} : { seq }) }) });
+  }).catch(() => {});
 }
 
 async function run(w, ctx, ev) {
@@ -98,6 +108,15 @@ async function run(w, ctx, ev) {
     const t = { id: ev.task_ids[ev.next] };
     if (ev.cancelled) { out.push({ task_id: t.id, cancelled: true, by: ev.cancelled }); recordFailure(ctx, w, t.id, 'E_CANCELLED', ev.cancelled, ev.turn); continue; }
     try {
+      if (w.substrate === 'codex') { // Codex cannot commit in its sandbox: belay does, before the hand-back is judged
+        const c = await require('./handback-commit.cjs').handBack(w, ctx, t.id, ev);
+        if (c && c.made === false && c.error) { // nothing was committed that should have been: the work is not judged as if it were, and the task stays released
+          if (ev.cancelled) { out.push({ task_id: t.id, cancelled: true, by: ev.cancelled }); recordFailure(ctx, w, t.id, 'E_CANCELLED', ev.cancelled, ev.turn); continue; } // a stop ended the commit: that is the cancel, not a refusal
+          recordFailure(ctx, w, t.id, 'E_COMMIT', c.error, ev.turn);
+          out.push({ task_id: t.id, error: 'E_COMMIT', message: String(c.error).slice(0, 200) });
+          continue;
+        }
+      }
       const row = await core.task.evaluate({ task_id: t.id, worktree: w.worktree, trigger: 'release', cancel_key: ev.key });
       out.push(summaryOf(row, await workOf(core, row)));
       // ADR 0058 decision 8: the stop waits for the worker's queue itself, and this is not on it.
@@ -141,6 +160,7 @@ function cancelEvaluation(w, by) {
   if (!ev) return null;
   w.evaluation = null;
   ev.cancelled = by || 'a lifecycle operation';
+  if (typeof ev.cancelCommit === 'function') Promise.resolve(ev.cancelCommit(ev.cancelled)).catch(() => {}); // a hand-back commit in flight ends with its git call
   if (ev.signalCancel) ev.signalCancel();
   const t = ev.ctx.core && ev.ctx.core.task;
   if (t && typeof t.evaluateCancel === 'function') Promise.resolve().then(() => t.evaluateCancel({ cancel_key: ev.key, by: ev.cancelled })).catch(() => {});
@@ -160,11 +180,25 @@ const cut = (s, max) => {
   return `${Buffer.from(s, 'utf8').subarray(0, max - 3).toString('utf8').replace(/�$/, '')}...`;
 };
 
+// A forecast conflict as a tail of a passed clause, at most `spare` bytes: the first whole file names, then a count; never part of a name.
+// A clean, unavailable or absent forecast says nothing, and neither does a conflict whose shortest form does not fit.
+function conflictTail(e, spare) {
+  const files = e.state === 'done' && e.forecast && Array.isArray(e.forecast.files) ? e.forecast.files : [];
+  const n = files.length;
+  for (let k = Math.min(3, n); k >= 0 && n; k -= 1) {
+    const t = k ? `; forecast: conflicts with the integration branch in ${files.slice(0, k).join(', ')}${n > k ? ` +${n - k}` : ''}` : `; forecast: ${n} file${n === 1 ? '' : 's'} would conflict with the integration branch`;
+    if (Buffer.byteLength(t, 'utf8') <= spare) return t;
+  }
+  return '';
+}
 // The evaluation clause, at most `room` bytes: " task T evaluated at release: passed, done." or "...: not done; failing: ...".
 function clause(evs, room) {
   // An evaluation that waited for a slot (max_parallel_evaluations) says so: queued behind `ahead` others, `waited_ms` before it ran.
   const waited = (e) => (e.queued ? ` (queued behind ${e.queued.ahead}, waited ${Math.round(e.queued.waited_ms / 1000)} s)` : '');
   const parts = evs.map((e) => `${one(e)}${waited(e)}`);
+  // The forecast tails take what room the bare clauses leave (the review render below is given room - 2, so they leave that too).
+  let spare = room - 2 - Buffer.byteLength(` ${parts.join('; ')}.`, 'utf8');
+  evs.forEach((e, i) => { const t = conflictTail(e, spare); parts[i] += t; spare -= Buffer.byteLength(t, 'utf8'); });
   function one(e) { return (e.stood_down ? `task ${e.task_id}: the worker stood down with no result (${e.stood_down}); nothing was evaluated`
     : e.error === 'E_BUSY' ? `task ${e.task_id} not evaluated at release: another evaluation of it is running`
     : e.error ? `task ${e.task_id} could not be evaluated at release (${e.error}); call task_evaluate to run it`
@@ -199,15 +233,48 @@ function turnEndText(head, tail, evs, evaluating) {
 // held wake first, so a worker's wakes keep their order. `holdMs` 0 holds nothing. `now` is the clock, for a test to set.
 // `workers` (the poll's worker rows, optional): a watched evaluation whose worker is live is not forgotten by age, because a queued release
 // evaluation waits for its slot without bound (ADR 0061 amendment); it leaves `pending` when it lands, is no longer awaiting evaluation, or its worker is gone.
-async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.now, workers = null } = {}) {
+async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.now, workers = null, dataDir = null, forecaster = forecastTask, exitCeilingMs = FORECAST_EXIT_CEILING_MS, log = (m) => process.stderr.write(`${m}\n`) } = {}) {
   const pending = seen.pending || (seen.pending = new Map());
   const held = seen.held || (seen.held = new Map());
-  if (!events.some((e) => e.event === 'turn_end') && !pending.size && !held.size) return events;
+  if (!events.some((e) => e.event === 'turn_end' || e.event === 'death') && !pending.size && !held.size && !(seen.deathHeld && seen.deathHeld.size)) return events;
   let tasks = null;
   try { tasks = ((await core.task.list({})) || {}).tasks || []; } catch { /* nothing is attached and nothing lands this poll */ }
-  if (!tasks) { const flushed = [...held.values()].map((h) => h.ev); held.clear(); return flushed.concat(events); }
+  if (!tasks) { const flushed = [...held.values()].map((h) => h.ev).concat([...(seen.deathHeld || new Map()).values()].map((h) => h.ev)); held.clear(); if (seen.deathHeld) seen.deathHeld.clear(); return flushed.concat(events); }
   const byId = new Map(tasks.map((t) => [t.id, t]));
+  const PR = require('./policy-relaunch.cjs');
+  const PW = require('./policy-wakes.cjs'); // ADR 0073: a task under a plan wakes on exceptions only, so its routine events are consumed here and not sent
+  const polOf = (t) => PW.policyOf(t, byId);
+  if (tasks.some((t) => t.run_id === runId && polOf(t))) { seen.policyArmed = true; seen.policyTasks = tasks; } // the policy watcher reads these rows this poll
+  if (seen.policyArmed || (seen.deathHeld && seen.deathHeld.size)) events = await PR.holdDeaths({ core, runId, events, seen, tasks, byId, polOf, rootOf: (t) => PW.rootOf(t, byId), workers, dataDir, now }); // a dead builder the plan relaunches is not a wake unless the relaunch did not work (policy-relaunch.cjs)
   const landed = (t) => t.results && t.results.trigger === 'release' && seen.get(t.id) !== t.results.evaluated_at && (!t.handoff || Number(t.results.evaluated_at) >= Number(t.handoff.at));
+  // The conflict forecast (a warning on the wake; it never gates anything) is started, never awaited, when a hand-back is first watched, so
+  // it has usually settled when the evaluation lands; a wake carries it only if it has. One per hand-back, at most FORECASTS_MAX at once.
+  const forecasts = seen.forecasts || (seen.forecasts = new Map());
+  const kick = (t) => {
+    const key = `${t.id}:${t.handoff && t.handoff.at}`;
+    const started = seen.forecastStarted || (seen.forecastStarted = new Set());
+    if (started.has(key) || (seen.forecastRunning || 0) >= FORECASTS_MAX) return;
+    started.add(key); seen.forecastRunning = (seen.forecastRunning || 0) + 1;
+    let p; try { p = Promise.resolve(forecaster(t, runId)); } catch { p = Promise.resolve(null); }
+    // Running until its git calls have exited (`exited`, conflict-forecast.cjs), not just until it has an answer, so the cap stays honest.
+    // The wait has a ceiling: a survivor holding the pipes after a timeout kill must not pin the slot for the life of the process.
+    const free = () => { seen.forecastRunning -= 1; };
+    const ceiling = (fc) => {
+      const exited = fc && fc.exited;
+      if (!exited) return undefined;
+      let timer; const cut = new Promise((res) => { timer = setTimeout(() => {
+        let live = [], kills = ''; try { live = fc.lingering ? fc.lingering() : []; } catch { /* the line stays without them */ }
+        try { kills = (fc.killReports ? fc.killReports() : []).map((k) => ` [killTree of git ${String(k.argv).slice(0, 200)}: ${k.ms} ms, process snapshot ${k.snapshot_ms} ms]`).join(''); } catch { /* the line stays without them */ }
+        const named = live.map((c) => ` [git ${String(c.argv).slice(0, 200)}, running ${c.ms} ms]`).join('');
+        log(live.length ? `belay: conflict forecast of task ${t.id} still had git running ${exitCeilingMs} ms after its answer${named}${kills}; its slot is freed`
+          : `belay: conflict forecast of task ${t.id} had not finished ${exitCeilingMs} ms after its answer, and no git child of it was alive (a git call's result or kill report was still pending)${kills}; its slot is freed`); res();
+      }, exitCeilingMs); if (timer.unref) timer.unref(); });
+      return Promise.race([exited, cut]).finally(() => clearTimeout(timer));
+    };
+    p.then((fc) => { if (fc) { forecasts.set(key, fc); recordForecast(core, runId, t, fc); } return ceiling(fc); }, () => { /* a forecast is optional */ }).then(free, free);
+  };
+  // A hand-back that was over the cap when first watched is started on a later poll, as slots free (kick marks only what it starts).
+  for (const id of pending.keys()) { const t = byId.get(id); if (t && t.state === 'released') kick(t); }
   const fails = await releaseFailures(core, runId, seen, pending, held, events, tasks);
   // A failure ends the attempt of its own turn: a hand-back gets a new attempt after every cancel or error, so a failure from an earlier turn
   // (stale, not yet read) is not this attempt's. `turn` is the turn_end turn the attempt belongs to.
@@ -220,7 +287,7 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
   const settle = (h) => {
     h.ids = h.ids.filter((id) => {
       const t = byId.get(id);
-      if (t && landed(t)) { seen.set(id, t.results.evaluated_at); pending.delete(id); h.evs.push(summaryOf(t, byId)); return false; }
+      if (t && landed(t)) { seen.set(id, t.results.evaluated_at); pending.delete(id); if (t.state === 'done') kick(t); h.evs.push(summaryOf(t, byId, forecasts)); return false; }
       const f = t && unevaluated(t, runId, h.ev.worker_id) && failedOf(t, h.ev.turn);
       if (f) { pending.delete(id); const s = failure(f); if (s) h.evs.push(s); return false; }
       if (!t || !unevaluated(t, runId, h.ev.worker_id)) { pending.delete(id); return false; }
@@ -238,12 +305,16 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
   for (const ev of events) {
     if (held.has(ev.worker_id)) release(ev.worker_id);
     if (ev.event !== 'turn_end') { out.push(ev); continue; }
-    const evs = []; const ing = [];
+    const evs = []; const ing = []; let sawPolicy = false; const took = [];
     for (const t of tasks) {
       if (t.run_id !== runId || !t.handoff || t.handoff.by !== ev.worker_id) continue;
       if (t.handoff.stood_down) { const key = `${t.id}:${t.handoff.at}`; if (!(seen.stood = seen.stood || new Set()).has(key) && t.state === 'released') { seen.stood.add(key); evs.push({ task_id: t.id, stood_down: t.handoff.stood_down }); } continue; } // a stand-down is a fact for the wake, once
-      if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); evs.push(summaryOf(t, byId)); } else if (unevaluated(t, runId, ev.worker_id) && failedOf(t, ev.turn)) { const s = failure(failedOf(t, ev.turn)); if (s) evs.push(s); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: t0, turn: ev.turn }); ing.push(t.id); }
+      const pol = polOf(t);
+      if (!pol) { const x = PW.unplannedEscalation(t); if (x && !(seen.escalated = seen.escalated || new Set()).has(x.uid)) { seen.escalated.add(x.uid); out.push(PW.wakeOf(x)); } } // ADR 0074 amendment 4: an escalation wakes for a task under no plan too; a planned one is the policy watcher's
+      if (pol && (landed(t) || unevaluated(t, runId, ev.worker_id))) { sawPolicy = true; took.push(t.id); }
+      if (landed(t)) { seen.set(t.id, t.results.evaluated_at); pending.delete(t.id); if (t.state === 'done') kick(t); if (!pol) evs.push(summaryOf(t, byId, forecasts)); } else if (unevaluated(t, runId, ev.worker_id) && failedOf(t, ev.turn)) { const s = failure(failedOf(t, ev.turn)); if (s && !pol) evs.push(s); } else if (unevaluated(t, runId, ev.worker_id)) { pending.set(t.id, { worker_id: ev.worker_id, since: t0, turn: ev.turn }); if (!pol) ing.push(t.id); kick(t); }
     }
+    if (sawPolicy && !evs.length && !ing.length) { (seen.absorbed || (seen.absorbed = [])).push({ worker_id: ev.worker_id, task_ids: took }); continue; } // the turn end of a hand-back of a task under a plan is routine; a turn end with no hand-back is not, and wakes as before. stall-wake.cjs reads `absorbed`
     if (ing.length && holdMs > 0) { held.set(ev.worker_id, { ev, evs, ids: ing, since: t0 }); continue; }
     if (evs.length) ev.evaluated = evs;
     if (ing.length) ev.evaluating = ing;
@@ -259,12 +330,14 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     const t = byId.get(id);
     if (t && landed(t)) {
       seen.set(id, t.results.evaluated_at); pending.delete(id);
+      if (t.state === 'done') kick(t); // a forecast is kicked for a task under a plan too
+      if (polOf(t)) continue;
       if (!follow.has(p.worker_id)) follow.set(p.worker_id, []);
-      follow.get(p.worker_id).push(summaryOf(t, byId));
+      follow.get(p.worker_id).push(summaryOf(t, byId, forecasts));
     } else if (t && unevaluated(t, runId, p.worker_id) && failedOf(t, p.turn)) {
       pending.delete(id);
       const s = failure(failedOf(t, p.turn));
-      if (s) { if (!follow.has(p.worker_id)) follow.set(p.worker_id, []); follow.get(p.worker_id).push(s); }
+      if (s && !polOf(t)) { if (!follow.has(p.worker_id)) follow.set(p.worker_id, []); follow.get(p.worker_id).push(s); }
     } else if (!t || !unevaluated(t, runId, p.worker_id) || (t0 - p.since > PENDING_MAX_MS && !(liveWorkers && liveWorkers.has(p.worker_id)))) pending.delete(id);
   }
   for (const [wid, evs] of follow) {
@@ -274,6 +347,15 @@ async function enrichWakes(core, runId, events, seen, { holdMs = 0, now = Date.n
     out.push({ event: 'evaluated', worker_id: `eval:${evs[0].task_id}`, turn: 0, seq, task_id: evs[0].task_id, ...(evs.length > 1 ? { task_ids: evs.map((e) => e.task_id) } : {}), text });
   }
   return out;
+}
+
+// The receipt of a settled forecast: a ledger event (kind release_forecast), once per forecast, whether or not a wake carried it.
+// Best effort, like release_failed: a write that fails is dropped.
+function recordForecast(core, runId, t, fc) {
+  const rec = core && core.memory && core.memory.recordEvent;
+  if (typeof rec !== 'function') return;
+  const body = { task_id: t.id, handoff_at: t.handoff && t.handoff.at, ...(Array.isArray(fc.files) ? { files: fc.files.slice(0, 20) } : {}), ...(fc.clean ? { clean: true } : {}), ...(fc.unavailable ? { unavailable: String(fc.unavailable).slice(0, 150) } : {}), against: fc.against == null ? null : fc.against, ms: fc.ms };
+  Promise.resolve().then(() => rec({ kind: 'release_forecast', run_id: runId, worker_id: t.handoff && t.handoff.by, task_id: t.id, ...(fc.unavailable ? { ok: 0, code: 'E_FORECAST_UNAVAILABLE' } : { ok: 1 }), message: JSON.stringify(body) })).catch(() => {});
 }
 
 // The release_failed events of this run, read only when a hand-back is awaiting its evaluation (nothing is read otherwise).
@@ -305,4 +387,4 @@ function drainHeld(seen) {
   return evs;
 }
 
-module.exports = { unevaluated, notePending, evaluatingHolds, drainHeld, startRelease, cancelEvaluation, evalOf, enrichWakes, clause, turnEndText, summaryOf, workOf, cut, holdMs, WAKE_TEXT_MAX, PENDING_MAX_MS, RELEASE_WAKE_HOLD_MS };
+module.exports = { __recordFailure: recordFailure, unevaluated, notePending, evaluatingHolds, drainHeld, startRelease, cancelEvaluation, evalOf, enrichWakes, clause, turnEndText, summaryOf, workOf, cut, holdMs, WAKE_TEXT_MAX, PENDING_MAX_MS, RELEASE_WAKE_HOLD_MS };

@@ -15,7 +15,7 @@ const LA = require('./live-as.cjs'); // a pid with the creation time the row rec
 const { WORKER_STATES, SUBSTRATES } = require('./schema.cjs');
 const { parseRunRow } = require('./pause-parks.cjs');
 
-const { setPaused, setEmbedderMode, end } = require('./methods-run-life.cjs'); // split out; re-exported below
+const { setPaused, setEmbedderMode, setModelFallback, end } = require('./methods-run-life.cjs'); // split out; re-exported below
 const { appendDead } = require('./lease-holder-dead.cjs'); // ADR 0026 amendment 1 (proposed)
 
 const { EFFORT_LEVELS } = require('./effort-levels.cjs');
@@ -72,6 +72,10 @@ async function attach(E, caller, args) {
   if (hardSrcGiven && args.fix_hard_cap_source !== null && (typeof args.fix_hard_cap_source !== 'string' || args.fix_hard_cap_source.length > 80)) {
     throw err('E_ARGS', 'run.attach fix_hard_cap_source must be null or a short string', { fix_hard_cap_source: args.fix_hard_cap_source });
   }
+  const buildsGiven = args.max_parallel_builds !== undefined;
+  if (buildsGiven && args.max_parallel_builds !== null && !(Number.isSafeInteger(args.max_parallel_builds) && args.max_parallel_builds > 0)) {
+    throw err('E_ARGS', 'run.attach max_parallel_builds must be null or a positive integer', { max_parallel_builds: args.max_parallel_builds });
+  }
   const parallelGiven = args.max_parallel_evaluations !== undefined;
   if (parallelGiven && args.max_parallel_evaluations !== null && !(Number.isSafeInteger(args.max_parallel_evaluations) && args.max_parallel_evaluations > 0)) {
     throw err('E_ARGS', 'run.attach max_parallel_evaluations must be null or a positive integer', { max_parallel_evaluations: args.max_parallel_evaluations });
@@ -101,6 +105,10 @@ async function attach(E, caller, args) {
   if (modeGiven && args.embedder_mode !== null && !require('./embedder-mode.cjs').normalize(args.embedder_mode)) throw err('E_ARGS', 'run.attach embedder_mode must be null, required, keyword or off', { embedder_mode: args.embedder_mode });
   // A merge into a user's branch: the setting and the run's mode are the launching process's (operator role) to state, never the orchestrator's.
   const mergeGiven = args.merge_into !== undefined, modeSet = args.run_mode !== undefined;
+  // ADR 0071 decision 3: the user's default plan is stated by the launching process, never by the orchestrator whose tasks it fills.
+  const policyGiven = args.policy_default !== undefined;
+  if (policyGiven && caller.role !== 'operator') throw err('E_ROLE', 'run.attach policy_default is stated by the process that launched the run, never by the orchestrator', { role: caller.role });
+  const policyDefault = policyGiven && args.policy_default !== null ? JSON.stringify(require('./policy-plan.cjs').check(args.policy_default, 'run.attach policy_default')) : null;
   if ((mergeGiven || modeSet) && caller.role !== 'operator') throw err('E_ROLE', 'run.attach merge_into and run_mode are stated by the process that launched the run, never by the orchestrator', { role: caller.role });
   const crossGiven = args.cross_run_merge !== undefined;
   if (crossGiven && caller.role !== 'operator') throw err('E_ROLE', 'run.attach cross_run_merge is stated by the process that launched the run, never by the orchestrator', { role: caller.role });
@@ -124,7 +132,7 @@ async function attach(E, caller, args) {
   const identity = await LA.prepare(rows.currentAll(E.store, 'worker').filter((w) => w.run_id === runId && ATTACH_SUSPECT.has(w.state)).map((w) => ({ pid: w.pid, created: w.pid_created })));
   const t = Date.now();
   let prev = rows.current(E.store, 'run', runId);
-  // ADR 0041: the project is named by the spec and never derived, and it is named once. The run row's project column (what a caller's reach and the
+  // ADR 0041: the project is named by the spec, or derived by `belay run` before the call (ADR 0041 amendment), and it is named once. The run row's project column (what a caller's reach and the
   // `project` alias resolve through) and the resolved levers' project must be the same name, else the orchestrator would write to one project while its
   // levers describe another. Refused here, with nothing written.
   if (resolvedLevers !== null) {
@@ -223,6 +231,7 @@ async function attach(E, caller, args) {
     fix_hard_cap_source: hardSrcGiven ? args.fix_hard_cap_source : (carryPause ? prev.fix_hard_cap_source : null),
     fix_hard_cap: hardCapGiven ? args.fix_hard_cap : (carryPause ? prev.fix_hard_cap : null), // same carry rule
     max_parallel_evaluations: parallelGiven ? args.max_parallel_evaluations : (carryPause ? prev.max_parallel_evaluations : null), // same carry rule
+    max_parallel_builds: buildsGiven ? args.max_parallel_builds : (carryPause ? prev.max_parallel_builds : null), // same carry rule
     memory_levers: leversGiven ? (args.memory_levers === null ? null : resolvedLevers) : (carryPause ? prev.memory_levers : null), // same carry rule
     project: projectGiven ? args.project : (carryPause ? prev.project : null),
     memory_notice: noticeGiven ? args.memory_notice : (carryPause ? prev.memory_notice : null), // same carry rule
@@ -232,6 +241,8 @@ async function attach(E, caller, args) {
     cross_run_merge: crossGiven ? (args.cross_run_merge === null ? null : Number(args.cross_run_merge)) : (carryPause ? prev.cross_run_merge : null), // same carry rule
     budget_usd: require('./run-budget.cjs').attachLimit(args, prev, carryPause), // dollar limit; a raised limit survives a re-attach of the same life
     budget: carryPause ? prev.budget : null,
+    orch_model_fallback: carryPause && !lapsed ? prev.orch_model_fallback : null, orch_model: carryPause && !lapsed && prev.orch_model_fallback ? prev.orch_model : null, // a live switch survives a re-attach of the same life, never a revived run's fresh session
+    policy_default: policyGiven ? policyDefault : (carryPause ? prev.policy_default : null), // same carry rule
     harness: require('./run-harness.cjs').record(harnessGiven ? args.harness : null, carryPause ? prev.harness : null), // ADR 0082: the build that wrote this epoch's row, never a caller's word
     retrieval_routing: carryPause ? prev.retrieval_routing : null, // pinned for the run's life; a re-run over an ended row pins again
     embedder_mode: modeGiven ? (args.embedder_mode === null ? null : require('./embedder-mode.cjs').normalize(args.embedder_mode)) : (carryPause ? prev.embedder_mode : null),
@@ -447,4 +458,4 @@ async function forgetWorker(E, caller, args) {
   };
 }
 
-module.exports = { appendRun, lifePids, LIFE_CLAIMING_STATES, attach, end, getRun, listRuns, writeWorker, getWorker, listWorkers, forgetWorker, decorate, setPaused, setEmbedderMode, appendRunRow: appendRun };
+module.exports = { appendRun, lifePids, LIFE_CLAIMING_STATES, attach, end, getRun, listRuns, writeWorker, getWorker, listWorkers, forgetWorker, decorate, setPaused, setEmbedderMode, setModelFallback, appendRunRow: appendRun };

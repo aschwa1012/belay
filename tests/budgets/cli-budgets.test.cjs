@@ -152,6 +152,7 @@ let noStoreDir = null;
 let orchDir = null;
 let txDir = null; // an interactive run's orchestrator dir: a launch marker and no stream
 let liveDir = null; // a budgeted run with 10 live workers in long turns (9 MB streams, no result line)
+let policyDir = null; // a live run holding 500 policy steps and 1000 usage rows
 let txCfg = null; // the sandbox CLAUDE_CONFIG_DIR holding the ~10 MB transcript the marker names
 
 before(async () => {
@@ -177,6 +178,9 @@ before(async () => {
   const core = await openCore({ dataDir, caller: { role: 'orchestrator', run_id: 'run-budgets', pid: process.pid } });
   let epoch;
   try { epoch = (await core.run.list({})).runs.find((r) => r.id === 'run-budgets').epoch; } finally { await core.shutdownOwner(); await core.close(); }
+  // The synthetic stream's first line is dated before the run row, so the stream alone cannot tell the mode; the closing receipt does,
+  // and panel-read reads the transcript only for a run it knows to be headless.
+  fs.writeFileSync(`${orchDir}/run.json`, JSON.stringify({ run_id: 'run-budgets', mode: 'headless', store: { attach: { epoch } } }));
   fs.writeFileSync(`${txDir}/run-start.json`, JSON.stringify({ run_id: 'run-budgets', epoch, mode: 'interactive', started_at: 1, launcher_pid: 1, session_id: 's', session_file: session }));
   // ADR 0066 amendment (a turn in flight): a budgeted run with 10 live workers, each in one long turn whose stream is 9 MB with no result
   // line, and the in-flight figures the run process would have published. A read must show them without parsing a stream.
@@ -195,6 +199,8 @@ before(async () => {
     }
     await lo.run.setBudget({ budget: { counts_in_flight: false, orchestrator: { counted: true, usd: 0, in_flight_usd: 0 }, in_flight_workers: { usd: 10, by_worker: by, partial: [], unpriced: [] } } });
   } finally { await lo.close(); await lc.shutdownOwner(); await lc.close(); }
+  policyDir = `${dir}/.belay-policy`;
+  await require('../helpers/policy-plant.cjs').plantPolicyRun(policyDir, 'run-policy', 500);
 });
 
 after(() => {
@@ -279,13 +285,34 @@ test('budgets: status, agents and receipts over 10 live workers in 9 MB turns ea
   assert.match(out, /worker lw0: \$1\.00 in flight \(estimate\)/);
 });
 
+test('budgets: status and receipts over a live run holding 500 policy steps and 1000 usage rows each add under 500 ms to the host floor, interleaved, and show the log', () => {
+  const result = interleaved({
+    spawnFloor: makeSpawnFloor(),
+    commands: {
+      status: () => timedCli(['status', 'run-policy', '--data', policyDir], {}, 0, policyDir),
+      receipts: () => timedCli(['receipts', 'run-policy', '--data', policyDir], {}, 0, policyDir),
+    },
+    n: N,
+  });
+  report('reads_policy_steps', result);
+  assertGate(result);
+  assert.match(spawnCli(['status', 'run-policy', '--data', policyDir]).stdout, /^policy steps: 500 in all, newest 5$/m);
+  assert.match(spawnCli(['receipts', 'run-policy', '--data', policyDir]).stdout, /^policy steps: 500 in all, newest 200$/m);
+});
+
 test('budgets: transcript, notices and agents (ADR 0036 U1) each add under 500 ms to the host floor, interleaved, on a dead store', () => {
+  // The panel_read row below is only the heaviest form if every part is read: prove agents, notices, the transcript and settings all came back.
+  const probe = spawnCli(['panel-read', 'run-budgets', '--dir', orchDir, '--tail', '10', '--prev-mode', 'headless', '--settings', '--data', dataDir, '--json']);
+  assert.strictEqual(probe.status, 0, probe.stderr);
+  const doc = JSON.parse(probe.stdout);
+  for (const k of ['agents', 'notices', 'transcript', 'settings']) assert.ok(doc.parts[k] && doc.parts[k].json, `panel-read read ${k}: ${JSON.stringify(doc.parts[k])}`);
   const result = interleaved({
     spawnFloor: makeSpawnFloor(),
     commands: {
       transcript: () => timedCli(['transcript', 'run-budgets', '--dir', orchDir, '--data', dataDir], {}, 0, dataDir),
       notices: () => timedCli(['notices', 'run-budgets', '--data', dataDir], {}, 0, dataDir),
       agents: () => timedCli(['agents', 'run-budgets', '--dir', orchDir, '--data', dataDir], {}, 0, dataDir),
+      panel_read: () => timedCli(['panel-read', 'run-budgets', '--dir', orchDir, '--tail', '10', '--prev-mode', 'headless', '--settings', '--data', dataDir], {}, 0, dataDir), // the heaviest form: a run id, the transcript read for a headless run, and settings, against the same 500 ms bound as each read alone
       wake_stream: () => timedCli(['wake-stream', '--run', 'run-budgets', '--nonce', 'n', '--data', dataDir], {}, 1, dataDir), // no publisher: ENOENT at once, exit 1
     },
     n: N,

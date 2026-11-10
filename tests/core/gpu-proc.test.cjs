@@ -163,7 +163,8 @@ test('killing the owner by its exact pid takes the GPU child with it promptly', 
     const info = await waitLine(owner.stdout, 'gpu_pid'); // printed once the child announced its op is in flight
     assert.ok(pidAlive(info.gpu_pid), 'the GPU child is up and busy');
     const gpuId = await G.identify(info.gpu_pid);
-    process.kill(info.owner_pid); // the exact pid of the owner this test spawned
+    assert.strictEqual(info.owner_pid, owner.pid, 'the owner is the process this test spawned');
+    assert.ok(require('../crash.cjs').crash(owner), 'the owner is ended by its live handle');
     assert.ok(await waitGone(gpuId), 'the child outlived its owner');
   } finally { if (owner && owner.exitCode === null) { try { process.kill(owner.pid); } catch { /* gone */ } } }
 });
@@ -222,7 +223,8 @@ test('killing the owner by its exact pid takes the REAL gpu-worker with it, even
     const info = await waitLine(owner.stdout, 'gpu_pid');
     assert.ok(pidAlive(info.gpu_pid), 'the real worker is up with its model loaded');
     const gpuId = await G.identify(info.gpu_pid);
-    process.kill(info.owner_pid); // the exact pid of the owner this test spawned
+    assert.strictEqual(info.owner_pid, owner.pid, 'the owner is the process this test spawned');
+    assert.ok(require('../crash.cjs').crash(owner), 'the owner is ended by its live handle');
     assert.ok(await waitGone(gpuId), 'the real worker outlived its owner');
   } finally {
     if (owner && owner.exitCode === null) { try { process.kill(owner.pid); } catch { /* gone */ } }

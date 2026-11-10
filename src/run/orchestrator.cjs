@@ -115,8 +115,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   // with no listener Node crashes this process. Record it; the exit handler still settles the run.
   if (child.stdin) child.stdin.on('error', (e) => { state.stdinError = { code: e && e.code, message: e && e.message }; });
 
-  const streamFd = fs.openSync(path.join(written.dir, 'stream.jsonl'), 'a');
-  const stderrFd = fs.openSync(path.join(written.dir, 'stderr.txt'), 'a');
+  const streamFiles = require('./stream-files.cjs').openStreamFiles(written.dir); // stream.jsonl and stderr.txt; output read after the settle is appended by path
   const parser = createParser('claude-code');
   const usage = createUsage();
   let pollHandle = null;
@@ -128,6 +127,8 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
   const leftovers = require('./orchestrator-leftovers.cjs').createLeftovers({ child, P, state, core, runId }); // ADR 0054 amendment 2
   const preClose = require('./pre-close-wake.cjs').createPreCloseNotice({ core, runId }); // ADR 0065 amendment 1
   const callWatcher = require('./call-wake.cjs').createCallWatcher({ core, runId });
+  const policyWatcher = require('./policy-wakes.cjs').createPolicyWatcher({ core, runId, enabled: !!spec.policy, dataDir }); // ADR 0073: the exceptions of a run under a plan
+  const planned = require('./planned.cjs').createPlanned({ core, runId }); // whether the run has a plan, read from the store (the same rule on every delivery path)
   const noteWatcher = require('./note-wake.cjs').createNoteWatcher({ core, runId, enabled: !!spec.notes }); // wave 4: a refuted note wakes the orchestrator (notes runs only)
   let readyTimer = null, sigintHandler = null;
 
@@ -224,29 +225,25 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       return true;
     } catch { return false; } // the child died before it could take this write; the exit handler settles the run
   }
-
-  // One wake event from diffWorkers: render its text, write it to stdin (unless the run is already
-  // finishing, in which case it is suppressed and named why), and record it either way. No worker
-  // output ever reaches `text` — `wakeText` carries only the id, the turn and the exit facts.
-  // `orchestrator_idle_at_write` reads `state.idle` HERE, at the instant of the write (5b TASK.md
-  // design item 4's own words) — not a pre-read snapshot, which a store round trip can leave stale
-  // for as long as the read took (5b fix round, finding 3: probe-idle.cjs measured a 1,498 ms gap).
+  // One wake event from diffWorkers: render its text, write it to stdin (unless the run is already finishing, in which case it is
+  // suppressed and named why), and record it either way. No worker output reaches `text`: `wakeText` carries only the id, the turn and the exit facts.
+  // `orchestrator_idle_at_write` reads `state.idle` HERE, at the instant of the write, not a snapshot a store round trip can leave stale (5b).
   function writeWake(ev) {
     if (state.finishing) {
       state.wakesSuppressed.push({ ...ev, reason: 'stdin already closed when this event was found' });
       return;
     }
-    const text = wakeText(ev);
-    const rec = {
-      at_ms: Date.now() - t0, worker_id: ev.worker_id, event: ev.event, turn: ev.turn,
-      bytes: Buffer.byteLength(text, 'utf8'), orchestrator_idle_at_write: state.idle,
-      established_by: ev.event === 'note_refuted' || ev.event === 'scrub_alarm' ? `${ev.event} receipt seq ${ev.seq}` : ev.event === 'budget_pause' ? 'the budget guard' : ev.event === 'evaluated' ? `task ${ev.task_id} results at ${ev.seq}` : ev.event === 'pre_close' ? 'task.worktreeSweep dry run' : `worker.list row seq ${ev.seq} for the run`,
-    };
-    if (ev.event === 'death') {
-      rec.exit_code = ev.exit_code; rec.exit_signal = ev.exit_signal; rec.death_established_by = ev.death_established_by;
+    // ADR 0074: a policy exception is delivered once, by the wake or by worker_wait, whichever claims it first (run-digest.cjs). A claim that
+    // cannot be made delivers the wake: an exception is never lost for want of a file.
+    // A worker death or stale record has the same second path and the same key, and is claimed only once a plan is in force.
+    const uid = require('./run-digest.cjs').wakeUid(ev);
+    if (uid && (ev.exception || ev.event === 'policy_done' || planned.value())) {
+      let won = true;
+      try { won = require('./run-digest.cjs').claimException({ dataDir, runId, uid }); } catch { won = true; }
+      if (!won) { state.wakesSuppressed.push({ ...ev, reason: 'delivered by worker_wait' }); (state.lostClaims || (state.lostClaims = new Map())).set(uid, ev); return; } // kept: a wait's claim given back is offered again (digest-wake.cjs writeAll)
     }
-    if (ev.event === 'paused') rec.paused_by = ev.paused_by;
-    if (ev.turns_skipped) rec.turns_skipped = ev.turns_skipped;
+    const text = wakeText(ev);
+    const rec = require('./wake-record.cjs').wakeRecord(ev, text, Date.now() - t0, state.idle);
     if (!ev.unheld && hold.holdWake(rec, text)) return; // 6f design item 2: held while paused, never suppressed; the budget pause's own wake is the one not held
     if (writeStdinLine(text, ev.worker_id, rec)) state.wakes.push(rec);
     else state.wakesSuppressed.push({ ...ev, reason: 'stdin was broken when this event was found' });
@@ -301,11 +298,13 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       orphanGraceMs: ORPHAN_GRACE_MS, adapterAlive: (pid) => !!pid && P.pidAlive(pid), sinceAt: t0,
     });
     state.baseline = next;
-    for (const ev of (await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), state.evalSeen || (state.evalSeen = new Map()), { holdMs: require('./release-eval.cjs').holdMs(), workers: rows })).concat(await noteWatcher.poll(), await callWatcher.poll(), spec.budgetWake ? spec.budgetWake.takeWakes() : [])) writeWake(ev); // ADR 0058 amendment 4: a turn_end carries its release evaluation
+    const evs = (await require('./release-eval.cjs').enrichWakes(core, runId, events.filter((e) => !require('./job-prefixes.cjs').isJobId(String(e.worker_id))), state.evalSeen || (state.evalSeen = new Map()), { holdMs: require('./release-eval.cjs').holdMs(), workers: rows, dataDir })).concat(await noteWatcher.poll(), await callWatcher.poll(), await policyWatcher.poll(state.evalSeen), require('./stall-wake.cjs').of(state, { core, runId, planned: () => planned.value() }).poll(state.evalSeen, policyWatcher.snapshot()), spec.budgetWake ? spec.budgetWake.takeWakes() : [], (state.timeWake || (state.timeWake = require('./time-wake.cjs').createTimeWake({ totalMs: timeoutMs, remaining: () => hold.getTimeoutRemaining(), armed: () => !!policyWatcher.snapshot() || planned.value() }))).poll());
+    if (evs.some((e) => e.event === 'death')) await planned.check(); // a death has a second delivery path once the store shows a plan (planned.cjs)
+    await require('./digest-wake.cjs').writeAll(evs, { core, dataDir, runId, state, writeWake, armed: () => !!policyWatcher.snapshot() || planned.value() }); // ADR 0058 amendment 4: a turn_end carries its release evaluation; ADR 0074 amendment 2: the steps belay took follow the wakes
     if (state.finishing) return; // a wake's own write may have found the child already gone
 
     if (pollAgain) { pollHandle = setTimeout(pollOnce, pollMs); return; } // a turn ended after the read: decide on the re-poll's rows
-    if (state.idle && await require('./orchestrator-idle-close.cjs').idleClose({ state, rows, runId, pending_deaths, turnAtCall, hold, awaitingWakeIds, callWatcher, recordHold, preClose, writeWake, closeThenKillOnDeadline })) return;
+    if (state.idle && await require('./orchestrator-idle-close.cjs').idleClose({ state, rows, runId, pending_deaths, turnAtCall, hold, awaitingWakeIds, callWatcher, recordHold, preClose, writeWake, closeThenKillOnDeadline, policyWatcher, stall: require('./stall-wake.cjs').of(state, { core, runId, planned: () => planned.value() }), flushDigest: require('./digest-wake.cjs').closer({ core, dataDir, runId, state, writeWake, armed: () => !!policyWatcher.snapshot() || planned.value() }) })) return;
     pollHandle = setTimeout(pollOnce, pollMs);
   }
 
@@ -320,6 +319,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
     // an already-ready run on the second init's own mcp_servers. Every ready event past the first —
     // repeat or not — is counted rather than acted on.
     if (ev.kind === 'ready') usage.onInit(ev);
+    if (ev.kind === 'model_fallback') { usage.onModelFallback(ev); require('./model-fallback-note.cjs').noteOrchestratorFallback(core, ev, (m) => streamFiles.stderr(`belay: ${m}\n`)); } // live on the run row; a failed write only logs
     if (ev.kind === 'ready' && !state.finishing) {
       if (ev.repeat || state.readyGateStarted) {
         state.laterInits += 1;
@@ -390,10 +390,10 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
 
   child.stdout.on('data', (chunk) => {
     const { lines, events } = parser.pushChunk(chunk);
-    for (const l of lines) { try { fs.writeSync(streamFd, l + '\n'); } catch { /* fd may be closing */ } if (spec.budgetWake) spec.budgetWake.noteOrchestratorLine(l); } // the turn in flight, priced as it arrives (budget-guard.cjs)
+    for (const l of lines) { streamFiles.stream(l + '\n'); if (spec.budgetWake) spec.budgetWake.noteOrchestratorLine(l); } // the turn in flight, priced as it arrives (budget-guard.cjs)
     for (const ev of events) handleEvent(ev);
   });
-  child.stderr.on('data', (chunk) => { try { fs.writeSync(stderrFd, chunk); } catch { /* closing */ } });
+  child.stderr.on('data', (chunk) => streamFiles.stderr(chunk));
 
   function orchestratorBlock() {
     return buildOrchestratorBlock({ child, state, model, argvHash, initFacts, usage: usage.snapshot() });
@@ -405,13 +405,12 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       if (settled) return;
       settled = true;
       clearTimers();
-      try { fs.closeSync(streamFd); } catch { /* already closed */ }
-      try { fs.closeSync(stderrFd); } catch { /* already closed */ }
+      streamFiles.close();
       expireStalePendingWrites(); for (const ev of require('./release-eval.cjs').drainHeld(state.evalSeen)) state.wakesSuppressed.push({ ...ev, reason: 'the run ended while this turn end was held for its release evaluation' }); // recorded either way
       const out = {
         orchestrator: orchestratorBlock(), ended_by: state.endedBy, holds: state.holds, polls: state.polls,
         wakes: state.wakes, wakes_suppressed: state.wakesSuppressed, wakes_expired: state.wakesExpired,
-        wakes_held: hold.wakesHeld, pauses: hold.pauses, // 6f design item 2
+        wakes_held: hold.wakesHeld, pauses: hold.pauses, stall: state.stallWatch ? state.stallWatch.record() : null, // 6f design item 2; ADR 0074 amendment 3
       };
       // ADR 0054 amendment 2: the caller ends what the shell left running once the run's own close is done (not part of the receipt).
       Object.defineProperty(out, 'endLeftovers', { value: () => leftovers.end() });
@@ -458,7 +457,7 @@ async function runOrchestrator({ core, runId, dataDir, spec, onAttached, stopCon
       if (stopControl) {
         try {
           stopControl.attach({
-            pid: child.pid, exited: getExitFacts, stop: stopForControl,
+            pid: child.pid, exited: getExitFacts, stop: stopForControl, spawnStartedAt: t0, // t0 is read before the spawn call
             pause: (by) => hold.pause(by), resume: (by, line) => hold.resume(by, line), isPaused: () => hold.isPaused(),
             // 6f-2: lets a run pause/resume refuse a run that is finishing for any reason (run-pause.cjs:50)
             finishing: () => state.finishing, endedBy: () => state.endedBy,

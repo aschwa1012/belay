@@ -67,3 +67,25 @@ test('a Codex worker is launched with the configured codex_model as -m, and the 
     assert.ok(!cargs.includes('cfg-codex'));
   } finally { delete process.env.FAKE_CODEX_GATE_FILE; await m.shutdown().catch(() => {}); cleanup(data); }
 });
+
+test('a Codex coder spawned by agent_type gets agents.coder.codex_model as -m and codex_effort as -c model_reasoning_effort in its launch argv', async () => {
+  const d = fs.mkdtempSync(path.join(os.tmpdir(), 'belay-agentdef-cxe-'));
+  const data = d.split(path.sep).join('/');
+  const worktree = `${data}/wt`;
+  fs.mkdirSync(worktree, { recursive: true });
+  const defaults = { path: CFG, types: { coder: { codex_model: 'gpt-6.1-sol', codex_effort: 'medium' } } };
+  const m = createRunManager({ core: createFakeCore(), dataDir: data, runId: 'run-agentdef-cxe', agentDefaults: defaults, paths: { claudeExe: FAKE, codexExe: FAKE_CODEX, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') } });
+  process.env.FAKE_CODEX_GATE_FILE = `${data}/codex-turn.gate`;
+  try {
+    const row = await m.spawn({ substrate: 'codex', worktree, prompt: 'one', worker_id: 'wx', agent_type: 'coder' });
+    assert.deepStrictEqual([row.agent.model.value, row.agent.effort.value], ['gpt-6.1-sol', 'medium']);
+    const args = JSON.parse(fs.readFileSync(`${data}/workers/wx/argv.json`, 'utf8')).spec.args;
+    assert.strictEqual(args[args.indexOf('-m') + 1], 'gpt-6.1-sol');
+    const i = args.findIndex((a) => a === 'model_reasoning_effort="medium"');
+    assert.ok(i > 0 && args[i - 1] === '-c', 'the effort is passed as -c model_reasoning_effort="medium"');
+    // a spawn without an agent_type takes neither, as before
+    await m.spawn({ substrate: 'codex', worktree, prompt: 'one', worker_id: 'wy' });
+    const bare = JSON.parse(fs.readFileSync(`${data}/workers/wy/argv.json`, 'utf8')).spec.args;
+    assert.ok(!bare.includes('-m') && !bare.some((a) => String(a).startsWith('model_reasoning_effort')));
+  } finally { delete process.env.FAKE_CODEX_GATE_FILE; await m.shutdown().catch(() => {}); cleanup(data); }
+});

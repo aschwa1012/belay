@@ -6,13 +6,13 @@
 // pauses (the hook is told the call name `memory.embedQuery` and the worker the call is for).
 //
 // Input: { task_id?, extra_texts?, worker_id?, timeout_ms? }.
-//   task_id     the task's own text: the opening paragraph of its `spec` (up to the first blank line, still cut to TEXT_CHARS), read
-//               here from the task row, so the caller never sends it and a relaunch embeds the same text a spawn did. The whole
-//               spec is not the query: its later paragraphs (constraints, files, acceptance) share little with a note's situation.
-//               Label `task`.
-//   extra_texts up to 4 further short queries (strings, or { label, text }), written by the orchestrator in time (worker_spawn's
-//               memory_queries: task lines naming the situations the worker will be in); labelled `extra:1`, `extra:2`, ... unless they
-//               carry a label. The index fuses them with the task's by RRF.
+//   task_id     the task, read here from the task row, so the caller never sends it and a relaunch embeds the same texts a spawn did:
+//               its whole `spec` (cut to TEXT_CHARS), label `task`; and, unless extra_texts is given, its `memory_queries` (the
+//               orchestrator's short search lines, kept on the task), plain lines labelled `q:1`, `q:2`, ... (not a "Task: " wrapped
+//               text: the wrap lowers cosines). The opening paragraph of a spec is not the query: in a plan run it is boilerplate.
+//   extra_texts up to 4 short queries (strings, or { label, text }), written by the orchestrator in time (worker_spawn's
+//               memory_queries); labelled `extra:1`, `extra:2`, ... unless they carry a label. When given they win over the task's
+//               own lines. The index scores every text but `task` as a search line and `task` as the spec, each against its own floor.
 //   worker_id   the worker the call is for, for the hook's label.
 //   timeout_ms  the whole call's bound, 12,000 ms by default (500 to 100,000): a spawn must not wait on a slow embedder. The task's
 //               text gets half of it when there are extras (the rest is shared evenly among them, time a text does not use
@@ -23,9 +23,9 @@
 // Output: { queries: [{ label, ok, ms, query_embedding?, embedding_model?, dim?, code?, message?, cause?, timed_out? }],
 //           on_embedder_failure, embed_ms }. A text that could not be embedded is its own entry with ok false and its code; an
 // embedder failure (detail.embedder true) also reaches the hook. A text still unembedded when the bound passes is ok false,
-// timed_out true, code E_EMBED_BOUND, embedder true, and reaches the hook as a failure (cause timeout), once per call (ADR 0034
-// amendment 1: under `required` the run pauses, as for any embedder failure); the embed in flight finishes on its own and a
-// failure of it is reported to the hook then. The run's memory being off (on_embedder_failure off, after a failure) answers
+// timed_out true, code E_EMBED_BOUND, embedder false: the index is an aid at spawn, so running out of time for it never reaches the
+// hook, whatever on_embedder_failure says (ADR 0034 amendment 2); the spawn goes on with the texts that did embed, and the call's
+// `embed_bound` event is the record. The embed in flight finishes on its own and a failure of it is reported to the hook then. The run's memory being off (on_embedder_failure off, after a failure) answers
 // { queries: [], memory_off: true } and embeds nothing. The owner's embedder is serial, so abandoned embeds
 // must not pile up: an embed in flight for the same text is joined, never started twice, and past INFLIGHT_MAX embeds in flight a
 // new text is not started at all (timed out at once, E_EMBED_BOUND, saying so). A call in which any text hit the bound writes one
@@ -36,7 +36,7 @@
 
 const { err } = require('./errors.cjs');
 const rows = require('./rows.cjs');
-const { withEmbedding, notifyEmbedderFailure } = require('./methods-memory.cjs');
+const { withEmbedding } = require('./methods-memory.cjs');
 const { normalize: normalizeMode } = require('./embedder-mode.cjs');
 const { recordEventSync } = require('./methods-ledger.cjs');
 
@@ -48,23 +48,6 @@ const INFLIGHT_MAX = 8;
 const CALL = 'memory.embedQuery';
 
 const isStr = (v) => typeof v === 'string' && v.trim().length > 0;
-
-// The spec's opening paragraph: from its first line that is neither blank nor a markdown heading to the first blank line (CRLF read as
-// LF). A spec with no blank line is itself. Leading headings are skipped so a spec that opens with "# Title" is not embedded as only
-// its title; a spec that is nothing but headings falls back to the first heading's words.
-const HEADING = /^\s{0,3}#{1,6}(\s|$)/;
-function openingParagraph(spec) {
-  const lines = String(spec).split(/\r?\n/);
-  let i = 0;
-  while (i < lines.length && (!lines[i].trim() || HEADING.test(lines[i]))) i++;
-  if (i >= lines.length) {
-    const h = lines.find((l) => HEADING.test(l));
-    return h ? h.replace(/^\s{0,3}#{1,6}\s*/, '').trim() : '';
-  }
-  const out = [];
-  for (; i < lines.length && lines[i].trim(); i++) out.push(lines[i]);
-  return out.join(' ').trim();
-}
 
 function parseExtras(list) {
   if (list === undefined || list === null) return [];
@@ -91,8 +74,9 @@ async function embedQuery(E, caller, args = {}) {
 
   const texts = [];
   const task = args.task_id ? rows.current(E.store, 'task', args.task_id) : null;
-  if (task && isStr(task.spec)) texts.push({ label: 'task', text: openingParagraph(task.spec) });
-  texts.push(...extras);
+  if (task && isStr(task.spec)) texts.push({ label: 'task', text: task.spec });
+  const lines = !extras.length && task && Array.isArray(task.memory_queries) ? task.memory_queries.filter(isStr).slice(0, EXTRA_MAX).map((text, i) => ({ label: `q:${i + 1}`, text })) : extras;
+  texts.push(...lines);
 
   const opts = (E.owner && E.owner.opts) || {};
   // The run's mode is read now (a function: an operator's choice at a resume changes it), as is whether its memory is off.
@@ -110,7 +94,7 @@ async function embedQuery(E, caller, args = {}) {
     const share = texts.length > 1 && t.label === 'task' ? Math.floor(left / 2) : Math.floor(left / (texts.length - i));
     const s0 = now;
     const cut = t.text.slice(0, TEXT_CHARS);
-    const timedOut = (message) => ({ label: t.label, ok: false, ms: Date.now() - s0, code: 'E_EMBED_BOUND', timed_out: true, message });
+    const timedOut = (message) => ({ label: t.label, ok: false, ms: Date.now() - s0, code: 'E_EMBED_BOUND', timed_out: true, embedder: false, message });
     if (share <= 0) { queries.push(timedOut(`the ${timeout} ms bound for embedding the index queries had passed before ${t.label} was started`)); continue; }
     let work = inflight.get(cut);
     if (!work) {
@@ -133,14 +117,11 @@ async function embedQuery(E, caller, args = {}) {
   }
   const bounded = queries.filter((q) => q.timed_out);
   if (bounded.length) {
-    // ADR 0034 amendment 1: hitting the bound is an embedder failure like any other, so under `required` it pauses the run (and the
-    // caller refuses the spawn), under `keyword` it is recorded and the index is keyword-only, under `off` memory goes off.
-    for (const q of bounded) q.embedder = true;
-    notifyEmbedderFailure(E, caller, CALL, err('E_EMBED_BOUND', bounded[0].message, { embedder: true, cause: 'timeout', op: 'embed' }), args.worker_id);
+    // ADR 0034 amendment 2: the bound of the index's own embeds is not an embedder failure: no hook call, so no pause, stop or refused spawn.
     // The embeds were awaited: a run that ended meanwhile takes no receipt (audit D42); the guard's refusal is swallowed like any receipt failure.
     try { E.assertRunOpen(caller, 'memory.embedQuery'); recordEventSync(E, caller, { kind: 'embed_bound', ok: 0, code: 'E_EMBED_BOUND', worker_id: args.worker_id, task_id: args.task_id, message: JSON.stringify({ labels: bounded.map((q) => q.label), bound_ms: timeout }) }); } catch { /* the receipt is best effort; the result below still names the bound */ }
   }
   return { queries, on_embedder_failure: mode, ...(typeof opts.runEnding === 'function' ? { run_ending: !!opts.runEnding() } : {}), embed_ms: Date.now() - t0 };
 }
 
-module.exports = { embedQuery, openingParagraph, TEXT_CHARS, EXTRA_MAX, DEFAULT_TIMEOUT_MS };
+module.exports = { embedQuery, TEXT_CHARS, EXTRA_MAX, DEFAULT_TIMEOUT_MS };

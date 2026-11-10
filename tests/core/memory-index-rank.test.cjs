@@ -13,8 +13,8 @@ const R = core('memory-index-rank.cjs');
 let dir, store, E;
 const RUNS = { kw: 'rn-kw', on: 'rn-rank', record: 'rn-record', penalty: 'rn-penalty', off: 'rn-sink-off' };
 const LEVERS = {
-  kw: { project: 'acme', notes: true }, on: { project: 'acme', notes: true }, off: { project: 'acme', notes: true, notes_sink: 'off' },
-  record: { project: 'acme', notes: true, notes_sink: 'record' }, penalty: { project: 'acme', notes: true, notes_sink: 'penalty' },
+  kw: { project: 'acme', notes: true, index_min_relevance: 0, index_max_notes: 20 }, on: { project: 'acme', notes: true, index_min_relevance: 0, index_max_notes: 20 }, off: { project: 'acme', notes: true, index_min_relevance: 0, index_max_notes: 20, notes_sink: 'off' },
+  record: { project: 'acme', notes: true, index_min_relevance: 0, index_max_notes: 20, notes_sink: 'record' }, penalty: { project: 'acme', notes: true, index_min_relevance: 0, index_max_notes: 20, notes_sink: 'penalty' },
 };
 const orch = (k) => callerFor('orchestrator', { run_id: RUNS[k] });
 const index = (k, args) => E.handle('memory.index', { caller: orch(k), ...args });

@@ -8,15 +8,15 @@ const crypto = require('node:crypto');
 const COLUMNS = {
   run: ['id', 'epoch', 'orchestrator_pid', 'adapter_pid', 'started_at', 'ended_at', 'exit_reason',
     'orch_model', 'orch_input_tokens', 'orch_output_tokens', 'orch_cache_read_tokens', 'orch_cache_creation_tokens',
-    'orch_cost_usd', 'orch_turns', 'orch_effort_requested', 'max_fix_rounds', 'max_follow_ups', 'fix_hard_cap', 'fix_hard_cap_source', 'adapter_pid_created', 'max_parallel_evaluations', 'budget_usd'],
+    'orch_cost_usd', 'orch_turns', 'orch_effort_requested', 'max_fix_rounds', 'max_follow_ups', 'fix_hard_cap', 'fix_hard_cap_source', 'adapter_pid_created', 'max_parallel_evaluations', 'max_parallel_builds', 'budget_usd', 'policy_default', 'orch_model_fallback'],
   worker: ['id', 'run_id', 'substrate', 'pid', 'session_id', 'adapter_pid', 'argv_hash', 'state',
     'worktree', 'task_id', 'started_at', 'exited_at', 'exit_code', 'exit_signal', 'turns',
     'input_tokens', 'output_tokens', 'cost_usd', 'last_event_at', 'mid_turn', 'death_established_by',
     'permission_mode_requested', 'permission_mode_effective', 'claude_code_version',
     'paused_at', 'paused_by', 'park_turns',
     'model', 'cache_read_tokens', 'cache_creation_tokens', 'tool_calls', 'base_sha', 'head_sha',
-    'effort_requested', 'head_error', 'base_error', 'pid_created', 'pid_created_error', 'pid_image', 'memory_queries', 'native_memory', 'native_memory_auth', 'tools', 'max_budget_usd', 'model_requested', 'leases_released', 'cost_estimate', 'cost_source', 'cost_base', 'agent_type'],
-  task: ['id', 'run_id', 'spec', 'acceptance', 'files_owned', 'state', 'results', 'depends_on', 'handoff', 'repairs', 'worktree', 'answers', 'base', 'amended', 'follows_up', 'budget_usd'],
+    'effort_requested', 'head_error', 'base_error', 'pid_created', 'pid_created_error', 'pid_image', 'memory_queries', 'native_memory', 'native_memory_auth', 'tools', 'max_budget_usd', 'model_requested', 'leases_released', 'cost_estimate', 'cost_source', 'cost_base', 'cost_saved', 'agent_type', 'model_fallback'],
+  task: ['id', 'run_id', 'spec', 'acceptance', 'files_owned', 'state', 'results', 'depends_on', 'handoff', 'repairs', 'worktree', 'answers', 'base', 'amended', 'follows_up', 'budget_usd', 'policy', 'policy_rev', 'acted_by', 'trigger', 'memory_queries'],
   lease: ['id', 'task_id', 'run_id', 'holder', 'holder_role', 'granted_at', 'expires_at',
     'released_at', 'supersedes', 'ttl_ms', 'released_reason', 'tree'],
   checkpoint: ['id', 'task_id', 'worker_id', 'run_id', 'turn', 'files_touched', 'tool_digest',
@@ -30,8 +30,8 @@ const COLUMNS = {
 
 // Text in SQLite, parsed objects on the wire (api.md §1).
 const JSON_COLUMNS = {
-  run: [], worker: ['memory_queries', 'tools', 'leases_released', 'cost_estimate'], lease: ['tree'],
-  task: ['acceptance', 'files_owned', 'results', 'depends_on', 'handoff', 'worktree', 'answers', 'amended', 'follows_up'],
+  run: ['policy_default', 'orch_model_fallback'], worker: ['memory_queries', 'tools', 'leases_released', 'cost_estimate', 'model_fallback'], lease: ['tree'],
+  task: ['acceptance', 'files_owned', 'results', 'depends_on', 'handoff', 'worktree', 'answers', 'amended', 'follows_up', 'policy', 'trigger', 'memory_queries'],
   integration: ['task_ids', 'merged', 'conflict', 'error', 'checks', 'junctions', 'forced', 'approver', 'prepared'],
   checkpoint: ['files_touched', 'tool_digest', 'stated'],
   // build step 6d: `input` stays a string on the wire, never parsed here. A truncated JSON text
@@ -39,6 +39,14 @@ const JSON_COLUMNS = {
   // see the digest as text either way — so it is never in this list, on purpose.
   permission: [],
 };
+
+// ADR 0072 decision 3: who took a row's step. Written only by policy-stamp.cjs from the open claim the harness caller names, never from a
+// value a writer passes or spreads (so a writer that copies the current row does not carry another writer's stamp). Added here, not in the lists
+// above, so each table's own columns stay as their owners wrote them.
+const STAMPED = { task: ['acted_by', 'trigger', 'policy_rev', 'policy'], lease: ['acted_by', 'trigger', 'policy_rev'], integration: ['acted_by', 'trigger', 'policy_rev'] };
+for (const [t, cs] of Object.entries(STAMPED)) for (const c of cs) if (!COLUMNS[t].includes(c)) COLUMNS[t].push(c);
+for (const t of Object.keys(STAMPED)) if (!JSON_COLUMNS[t].includes('trigger')) JSON_COLUMNS[t].push('trigger');
+if (!JSON_COLUMNS.task.includes('policy')) JSON_COLUMNS.task.push('policy');
 
 // node:sqlite binds null, numbers, strings, bigints and buffers only: a boolean or an object thrown at
 // it is a TypeError at call time, so coerce here rather than at each call site.
@@ -64,7 +72,8 @@ function append(store, table, values, writtenBy, at = Date.now()) {
   const cols = COLUMNS[table];
   const all = [...cols, 'written_at', 'written_by'];
   const sql = `INSERT INTO ${table}(${all.join(', ')}) VALUES (${all.map(() => '?').join(', ')})`;
-  const params = cols.map(c => bind(values[c]));
+  const over = STAMPED[table] ? require('./policy-stamp.cjs').overrides(store, table, values) : null;
+  const params = cols.map(c => bind(over && c in over ? over[c] : values[c]));
   params.push(at, String(writtenBy));
   const info = store.p(sql).run(...params);
   const seq = Number(info.lastInsertRowid);

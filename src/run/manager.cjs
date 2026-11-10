@@ -4,7 +4,6 @@
 
 const fs = require('node:fs');
 const path = require('node:path');
-const crypto = require('node:crypto');
 
 const L = require('./launch.cjs');
 const { createParser } = require('./parsers.cjs');
@@ -18,7 +17,7 @@ const { rotateWireLog } = require('./wire-log.cjs');
 const S = require('./surface.cjs'); // ADR 0024, S2 fix round F4: the surface fields spawn/restart/resume return
 const I = require('./instructions.cjs'); // ADR 0024 amendment 1: the spawn-time CLAUDE.md copy
 const { fail } = require('./errors.cjs');
-const { checkWorkerId, checkIdFree, validateSpawnArgs, checkMemoryQueries, discardUnstarted } = require('./spawn-args.cjs');
+const { freshWorkerId, checkWorkerId, checkIdFree, validateSpawnArgs, checkMemoryQueries, discardUnstarted } = require('./spawn-args.cjs');
 const CS = require('./codex-surface.cjs'); // what belay sets on a Codex launch
 const AD = require('./agent-defaults.cjs'); // the config's per-agent-type model and effort defaults
 const TP = require('./tool-policy.cjs'); // ADR 0054 decision 4: a worker type's tool list
@@ -32,7 +31,7 @@ const { decideBranch, restartFirstText, holdForLaunch, leaseField, leaseNote, CL
 // build step 6e-4: pause and resume (the park design, ADR 0023 amendment 2), and the one per-worker
 // operation slot pause, resume, restart and stop all share.
 const { createPause, INTERRUPT_TIMEOUT_MS, EXIT_TIMEOUT_MS } = require('./pause.cjs');
-const LC = require('./lifecycle.cjs');
+const LC = require('./lifecycle.cjs'); const WT = require('./worker-temp.cjs'); // WT: ADR 0084 amendment 1, a worker's own temp folder
 // build step 6i-2 design item 3 (R4): writeRow moved verbatim here to keep this file under its own
 // 500-line budget once the closed-flag fix (shutdownFlags below) landed.
 const { createWriteRow } = require('./write-row.cjs');
@@ -136,7 +135,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     w.settledState = null; // the last process's end; a restatement of this one's row must never carry it
     w.exitedAt = null;
     w.turnEnded = false;
-    w.readyAt = null;
+    w.readyAt = null; w.stderrLaunch = ''; require('./cost-carry.cjs').arm(w, root); // this launch's own stderr; its first cost report decides whether the session total carried (cost-carry.cjs)
     w.parkRequested = null; w.paused = null; w.staleSince = null; w.bgTasks = new Map(); w.controlWaiters.clear(); w.pendingTurnEnd = null; // 6e-4/6e-6: fresh
     // The adapter log is shared across a worker's launches: rotate it if large (review B1), then remember
     // where it ended, so a previous process's tools/list never passes this one's ready check.
@@ -148,7 +147,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       // MCP_TOOL_TIMEOUT is set only with permission_prompt, always outside permit_wait_ms's own bound.
       exe: spec.exe, args: spec.args, cwd: w.worktree,
       env: L.buildEnv(process.env, {
-        substrate: w.substrate, cwd: w.worktree, workerId: w.id,
+        substrate: w.substrate, cwd: w.worktree, workerId: w.id, tempDir: WT.make(runId, w.id, { dataDir: root }),
         mcpToolTimeoutMs: w.permissionPrompt ? w.permitWaitMs + 60000 : null,
       }),
       stdin: w.substrate === 'claude-code' ? 'pipe' : 'ignore', input: spec.stdinText, // a Codex prompt on stdin is written and closed by spawnWorker
@@ -183,7 +182,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const {
       substrate, worktree, prompt, task_id = null, model: modelArg = null, allowed_tools = null,
       permission_mode = null, startup_timeout_ms = 60000, worker_id = null, sandbox = null,
-      permission_prompt: permissionArg, permit_wait_ms = 600000, effort: effortArg = null, tools = null, agent_type = null, max_budget_usd = null, memory_queries = null, native_memory = null,
+      permission_prompt: permissionArg, permit_wait_ms = 600000, effort: effortArg = null, tools = null, agent_type = null, max_budget_usd = null, memory_queries = null, native_memory = null, assignCore = null, // assignCore: a policy step's stamped core view for the task assignment (policy-steps-run.cjs spawnFor), never a tool argument
     } = opts || {};
     const permission_prompt = permissionArg !== undefined ? permissionArg : (ctx.permissionPrompt === true && substrate === 'claude-code'); // the run lever is the default; an explicit spawn argument wins
     checkWorkerId(worker_id); // before anything else: the id is a path component
@@ -204,25 +203,25 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     validateSpawnArgs({ substrate, worktree, prompt, task_id, permission_prompt, permit_wait_ms, effort, worker_id, native_memory: nativeMemory });
     const codexSurface = CS.forSpawn(substrate, effort, agent); // a Codex worker: what belay set and what it left to the user's config
     const indexQueries = checkMemoryQueries(memory_queries);
-
-    const id = worker_id || crypto.randomUUID();
+    const id = worker_id || await freshWorkerId(core, root, agent_type, (k) => [...workers.keys(), ...pendingIds].some((x) => x.toLowerCase() === k)); // readable and unique in the store; its directory is made by the choice, so it is this spawn's own
     if ([...workers.keys(), ...pendingIds].some((k) => k.toLowerCase() === id.toLowerCase())) fail('E_ARGS', 'a worker with that id already exists in this run (ids compare without case: NTFS gives W1 and w1 one directory). Choose another id: an id is used once per run, even by a spawn that failed', { worker_id: id });
     // ADR 0030 decision 4: ask the core whether the task can be assigned before anything is written, so a
     // refusal leaves no directory, no row, and the id free. Later refusals still take the write-dead path.
     // The id is reserved synchronously: the await below must not let a second spawn with it pass the check above.
     pendingIds.add(id);
-    let w; const dirExisted = fs.existsSync(L.workerDir(root, id)); // a directory this spawn creates is its own to remove if it fails before any row exists
+    let w; const dirExisted = worker_id ? fs.existsSync(L.workerDir(root, id)) : false; // a directory this spawn creates is its own to remove if it fails before any row exists
+    let made = !worker_id; // the empty directory this spawn made to hold its id (a generated id's, or a named fresh id's): removed again if the spawn fails before a row exists
     try {
-      if (worker_id) await checkIdFree(core, root, id, runId); // inside the reservation, so two spawns of one id cannot both pass
+      if (worker_id) made = await checkIdFree(core, root, id, runId); // inside the reservation, so two spawns of one id cannot both pass
       if (task_id) await core.task.assign({ task_id, check_only: true, worker_id: id, worktree: typeof worktree === 'string' ? L.fwd(path.resolve(worktree)) : worktree });
       w = W.newWorkerRecord({
         id, substrate, worktree, dataDir: root, taskId: task_id, model,
         allowedTools, permissionMode: permission_mode, sandbox,
         permissionPrompt: permission_prompt, permitWaitMs: permit_wait_ms, effort, tools: spawnTools, maxBudgetUsd: max_budget_usd, nativeMemory, agentType: agent_type,
       });
-      w.toolsBy = allowed_tools != null ? 'spawn' : 'type'; // what narrowed w.tools: the spawn's allowed_tools, else the agent type's list (task-body.cjs toolsLine)
-      w.indexQueries = indexQueries; // the orchestrator's situation lines for this worker's memory index (memory.embedQuery extra_texts)
+      w.assignCore = assignCore; w.indexQueries = indexQueries; w.toolsBy = allowed_tools != null ? 'spawn' : 'type'; // indexQueries: the orchestrator's situation lines for this worker's memory index (memory.embedQuery extra_texts); toolsBy: what narrowed w.tools, the spawn's allowed_tools or else the agent type's list (task-body.cjs toolsLine)
       workers.set(id, w); w.launching = true; hold.w = w; // launching: until the spawn returns or fails, a run pause is held for it (launch-gate.cjs)
+    } catch (e) { if (made) { try { fs.rmSync(L.workerDir(root, id), { recursive: true, force: true }); } catch { /* the original error is the one to report */ } } throw e; // a refusal writes nothing (ADR 0030): not even the id's directory
     } finally { pendingIds.delete(id); }
     try { await MP.spawnLevers(ctx, w); w.nativeMemoryAuth = await NM.authorize(core, runId, w.nativeMemory); } catch (e) { await discardUnstarted(workers, w, dirExisted); throw e; } // ADR 0047: the levers are known before the files are written; with the first-message index off the row keeps no situation lines
     try { writeFilesFor(w); } catch (e) { await discardUnstarted(workers, w, dirExisted); throw e; } // no row, nothing launched: leave no record and no directory, so a corrected retry with the same id is free
@@ -321,10 +320,10 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     try { return await p; } finally { if (adopting.get(workerId) === p) adopting.delete(workerId); }
   }
 
-  // Shared by `restart` and by `resume` (pause.cjs): `firstTextOverride(branch)` replaces
-  // `restartFirstText`'s own text when given; `appendMessage` follows two newlines; `awaitFirstTurn: false`
-  // returns once the relaunch's `running` row lands, before its first turn ends.
-  async function doRestart(w, { firstTextOverride = null, appendMessage = null, awaitFirstTurn = true, first_turn_timeout_ms = 180000, onFirstText = null, skipDeadPidKill = false } = {}) {
+  // Shared by `restart` and by `resume` (pause.cjs): `firstTextOverride(branch)` replaces `restartFirstText`'s own text when given; `appendMessage` follows
+  // two newlines; `awaitFirstTurn: false` returns once the relaunch's `running` row lands. `forceReplace`: why (resume-fallback.cjs).
+  const doRestart = require('./resume-fallback.cjs').withFallback((w, o) => restartBranch(w, o), (w) => writeRow(w, 'dead'), (w) => require('../core/kill-mark.cjs').isKilledLoose(root, w.id, w.pid, w.pidCreated));
+  async function restartBranch(w, { forceReplace = null, firstTextOverride = null, appendMessage = null, awaitFirstTurn = true, first_turn_timeout_ms = 180000, onFirstText = null, skipDeadPidKill = false } = {}) {
     const worker_id = w.id;
     const old_pid = w.pid;
     RG.refuseIfRelaunching(w, 'restart'); // a Codex message's relaunch owns the window; this one waits its turn
@@ -337,7 +336,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     // ADR 0026 amendment 2 (proposed): from here until launch() has moved w.launches, a death of this worker keeps its lease.
     const { d, hold, firstText } = await RG.relaunching(w, writeRow, async () => {
       await w.queue; // the life before's rows land first (a death meanwhile keeps the lease: relaunch-guard.cjs)
-      const d = decideBranch(w); const hold = await holdForLaunch(w, core); // the task's files are held for this run, or nothing is touched; a death-released lease is granted back or reported
+      const d = decideBranch(w, forceReplace); const hold = await holdForLaunch(w, core); // the task's files are held for this run, or nothing is touched; a death-released lease is granted back or reported
       W.settleHeld(w, ctx, 'pid-check-on-restart'); await w.queue; // a held death gets its dead row, and every row of the life before lands, before the relaunch
       if (w.child && P.pidAlive(w.pid)) await doStop(w, 'graceful', 10000);
       // Fix round, should-fix finding: `skipDeadPidKill` (resume, pause.cjs) skips this branch — a park's own
@@ -352,7 +351,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       firstText = (await MP.relaunch(w, ctx, firstText, { fresh: d.branch === 'replace', message: appendMessage })) + leaseNote(hold); // ADR 0042 decision 3: minus the rows already shown, only where that conversation still holds them
       if (d.branch === 'replace') {
         w.sessionId = null;
-        w.costBase = w.costUsd; // a fresh session's total_cost_usd starts at zero: what the earlier sessions reported stays in the row
+        require('./cost-carry.cjs').fresh(w); // a fresh session's total starts at zero: what the earlier sessions reported stays in the row
         w.parser = createParser(w.substrate, MP.parserOpts(ctx));
       }
       if (onFirstText) onFirstText(firstText); if (!skipDeadPidKill) await LG.refuseIfPaused(ctx.core, ctx.runId, w, { restart: true }); // a run pause landing during the awaits above; a resume (skipDeadPidKill) runs while the run is still paused
@@ -377,7 +376,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
       const t0 = now();
       const ready = await W.waitReady(w, 60000);
       if (!ready) {
-        await failNoReady(w, 'the relaunched worker produced no ready event inside the startup window', { branch: d.branch });
+        await failNoReady(w, 'the relaunched worker produced no ready event inside the startup window', { branch: d.branch, exited_before_ready: !!w.settled, launch_stderr: w.stderrLaunch });
       }
       const v = await verifyReady(w, ready, t0 + 60000);
       if (!v.ok) await failNoReady(w, v.reason, { branch: d.branch });
@@ -391,7 +390,7 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     const turn = awaitFirstTurn ? await W.waitTurn(w, first_turn_timeout_ms) : null;
     await w.queue;
     return {
-      worker_id, branch: d.branch, reason: d.reason, old_pid, new_pid: w.pid,
+      worker_id, branch: d.branch, reason: d.reason, cache_cold: d.cache_cold === true, old_pid, new_pid: w.pid,
       session_id: w.sessionId, checkpoint_id: (turn && turn.checkpoint_id) || w.lastCheckpointId,
       first_turn_usage: turn ? turn.usage : null, first_turn_timed_out: awaitFirstTurn ? turn === null : null,
       permission_mode_degraded: init.permission_mode_degraded, surface: S.surfaceFields(w.readyEvidence), instructions: I.instructionsFields(w.instructions), // F4
@@ -452,7 +451,8 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     };
   }
 
-  const wait = createWait({ workers, get, core }); // core: the leases behind idle_without_task (ADR 0058, the idle-workers amendment)
+  let policyWait = null; // ADR 0074: the run wait the policy executor's wiring hands over (src/mcp/policy-wire.cjs); null in a run with no plan
+  const wait = createWait({ workers, get, core, policyWait: () => policyWait }); // core: the leases behind idle_without_task (ADR 0058, the idle-workers amendment)
   // build step 6e-4 (ADR 0023 amendment 2): pause parks the worker; resume relaunches it through doRestart.
   const PZ = createPause({ core, forWorker, doStop, doRestart, runOp: LC.runOp, adapterPid: ctx.adapterPid, writeRow });
   const message = createMessage({ core, ctx, forWorker, refuseIfPaused: PZ.refuseIfPaused, sendStdin, launch, guarded, writeRow });
@@ -468,11 +468,11 @@ function createRunManager({ core, dataDir, runId, paths = {}, compactAtTokens = 
     markOwnerGone: () => { shutdownFlags.ownerGone = true; return shutdownFlags.paired; },
     beforeStop: (ms) => NR.drainVerdicts(ctx, ms),
     onDrained: () => MP.runEnd(ctx),
-  });
+  }).then((res) => WT.closeRun(workers, runId, res)); // the workers' temp folders go with the run, but not those the shutdown left running or parked
 
   const manager = {
     spawn, message, stop, restart, list, shutdown,
-    wait, pause: PZ.pause, resume: PZ.resume,
+    wait, setPolicyWait: (rw) => { policyWait = rw; }, pause: PZ.pause, resume: PZ.resume,
     ask: (args) => MP.ask(manager, ctx, args), // ADR 0043 decision 1
     // Read-only handles for tests and for the CLI's own views. Neither writes.
     _worker: (id) => workers.get(id),

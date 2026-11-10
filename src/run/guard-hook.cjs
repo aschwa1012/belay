@@ -1,6 +1,6 @@
 'use strict';
 // guard-hook.cjs — the PreToolUse hook process (ADR 0024 amendment 7, ADR 0084). Reads Claude Code's hook payload from stdin;
-// a call that kills processes by name, or writes the root of the current drive's `\tmp`, or (with --push, a worker's) pushes to a remote, is answered with a deny, anything else
+// a call that kills processes by name, or writes the root of the current drive's `\tmp`, or (with --push, a worker's) pushes to a remote or runs a writing `git stash`, is answered with a deny, anything else
 // with nothing. A payload that cannot be read is allowed: the hook never fails a tool call by itself.
 const { decide, denyOutput } = require('./guard.cjs');
 

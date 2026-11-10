@@ -9,6 +9,7 @@
 const W = require('./worker.cjs');
 const P = require('./process.cjs');
 const { fail } = require('./errors.cjs');
+const { boundOf } = require('./run-wait.cjs');
 const EV = require('./wait-eval.cjs'); // gap 9: a later wait holds for a release evaluation in flight
 
 const now = () => Date.now();
@@ -17,7 +18,7 @@ const dropped = (w) => (w.queuedDropped && w.queuedDropped.length ? { queued_dro
 // The previous process's terminal row a relaunch overtook (exit.cjs lifeWrite): its exit facts, on the answers about this life only.
 const priorRow = (w) => (w.droppedRow && w.droppedRow.launch === w.launches ? { previous_row_dropped: w.droppedRow } : {});
 
-function createWait({ workers, get, core = null }) {
+function createWait({ workers, get, core = null, policyWait = () => null }) {
   // ADR 0015 §1. Blocks until one of the named workers (or any worker this manager launched)
   // finishes a turn or dies, or the timeout passes. It is the same shape as `spawn`'s wait for the ready
   // event, pointed at the next event instead: a tool call that has not returned holds the orchestrator's
@@ -27,19 +28,18 @@ function createWait({ workers, get, core = null }) {
   // harness has its own tool timeout and this one has to come back under it.
   return async function wait({ worker_ids = null, timeout_ms = 110000 } = {}) {
     const t0 = now();
+    // ADR 0029 decision 5: the adapter inherits the client's tool timeout (MCP_TOOL_TIMEOUT, read at call
+    // time); a wait longer than that fails at the client, so it is capped at that value less 10,000 ms (at
+    // least 1,000 ms) and the answer says so (run-wait.cjs boundOf). Absent, empty, non-numeric or non-positive: unchanged.
+    const { ms, capNote } = boundOf(timeout_ms);
+    // ADR 0074 decision 2: in a run with a policy, a wait that names no worker waits for the run (run-wait.cjs). Naming workers is as before.
+    // ADR 0058, the idle-workers amendment (proposed): every answer names the workers this manager launched that sit idle with no task.
+    const idleOf = async () => { const v = await require('./idle-remind.cjs').idleRecords(core, workers.values()); return v.length ? { idle_without_task: v } : {}; };
+    const runWait = policyWait();
+    if (runWait && !(Array.isArray(worker_ids) && worker_ids.length) && await runWait.active()) return runWait.wait({ ms, capNote, t0, workers: [...workers.values()], idleOf });
     const ids = Array.isArray(worker_ids) && worker_ids.length ? worker_ids : [...workers.keys()];
     if (!ids.length) fail('E_ARGS', 'wait needs a worker, and this run manager has launched none');
     const ws = ids.map(get);
-    const requested = Math.max(1, Number(timeout_ms) || 110000);
-    // ADR 0029 decision 5: the adapter inherits the client's tool timeout (MCP_TOOL_TIMEOUT, read at call
-    // time); a wait longer than that fails at the client, so it is capped at that value less 10,000 ms (at
-    // least 1,000 ms) and the answer says so. Absent, empty, non-numeric or non-positive: unchanged.
-    const envTmo = /^\d+$/.test(String(process.env.MCP_TOOL_TIMEOUT || '').trim()) ? Number(String(process.env.MCP_TOOL_TIMEOUT).trim()) : 0;
-    const limit = envTmo > 0 ? Math.max(1000, envTmo - 10000) : Infinity;
-    const ms = Math.min(requested, limit);
-    const capNote = ms < requested
-      ? { timeout_capped: { requested_ms: requested, used_ms: ms, by: `MCP_TOOL_TIMEOUT ${envTmo} ms less a 10,000 ms margin` } }
-      : null;
     // The state settle() wrote once, fixed at the death; w.state is the fallback for a record adopt()
     // built and never ran settle() on (invariant 4: no affirmative dead this adapter never established).
     // 6e-5 item 2 (review 1/2 notes, wait.cjs:33/:34): `w.parkRequested`, not `w.paused` — it is set
@@ -67,8 +67,6 @@ function createWait({ workers, get, core = null }) {
         usage: (v && v.usage) || w.lastTurnUsage || null, ...dropped(w), ...priorRow(w), ...require('./release-eval.cjs').evalOf(w), // ADR 0058: evaluated once it lands, evaluating while it runs
       };
     };
-    // ADR 0058, the idle-workers amendment (proposed): every answer names the workers this manager launched that sit idle with no task.
-    const idleOf = async () => { const v = await require('./idle-remind.cjs').idleRecords(core, workers.values()); return v.length ? { idle_without_task: v } : {}; };
     const done = async (r) => ({ ...r, waited_ms: now() - t0, timed_out: false, watched: ids, ...capNote, ...(await idleOf()) });
     // build step 6e-6 item 4 (carried item 4, wait.cjs:37): once clearParkForStop or checkNotStale
     // (pause.cjs) has found this record's own park belongs to a row another adapter now holds, every wait
@@ -96,24 +94,27 @@ function createWait({ workers, get, core = null }) {
     // restart in flight is skipped by the already-finished checks and watched through its relaunch instead; the call answers
     // whichever comes first, a worker that has already finished or any relaunch (a failed one is the answer, naming its worker).
     const failedOf = (w, e) => ({ worker_id: w.id, event: 'restart_failed', established_by: `the relaunch failed: ${(e && e.message) || e}`, error_code: (e && e.code) || null, exit_code: w.exitCode, exit_signal: w.exitSignal, turn: w.turns });
-    const finishedOf = (w) => (w.staleSince ? { ...staleOf(w), already: true } : w.settled ? { ...settledOf(w), already: true } : w.turnEnded ? { ...turnOf(w, null), already: true } : null);
+    // Every answer about a hand-back whose evaluation a stop, park or other operation cancelled says so (the last evaluation of this turn).
+    const cancelOf = (w) => (w.lastEvaluation && w.lastEvaluation.cancelled && w.lastEvaluation.turn === w.turns ? { evaluation: 'cancelled' } : {});
+    const finishedOf = (w) => (w.staleSince ? { ...staleOf(w), already: true } : w.settled ? { ...settledOf(w), ...cancelOf(w), already: true } : w.turnEnded ? { ...turnOf(w, null), ...cancelOf(w), already: true } : null);
     // Gap 9 (ADR 0058's evaluation at release): a turn that already ended with its hand-back still being evaluated is not answered at
     // once with `evaluating` again; the wait holds, within its own bound, until that evaluation ends, and answers with its result.
     const evaluating = [];
     for (const w of ws) {
       if (w.restartInFlight) continue;
       if (w.staleSince) return done({ ...staleOf(w), already: true });
-      if (w.settled) { if (w.exitCode == null && w.exitSignal == null) await withCode(w); return done({ ...settledOf(w), already: true }); }
+      if (w.settled) { if (w.exitCode == null && w.exitSignal == null) await withCode(w); return done({ ...settledOf(w), ...cancelOf(w), already: true }); }
       if (w.turnEnded && EV.evaluatingOf(w)) { evaluating.push(w); continue; }
-      if (w.turnEnded) return done({ ...turnOf(w, null), already: true });
+      if (w.turnEnded) return done({ ...turnOf(w, null), ...cancelOf(w), already: true });
     }
     // The hold ended. A stop that cancelled the evaluation has not settled yet: answer as the stop will (its settled state), never as
     // a finished turn. Any other cancel is named in the answer, so a caller can tell a cancelled evaluation from one that found nothing.
     const afterHold = (w, ev) => {
-      if (w.stopRequested && !w.settled) return watch(w);
+      const cancelled = !!(ev && ev.cancelled);
+      if (w.stopRequested && !w.settled) return watch(w).then((x) => (cancelled && x.turn === w.turns ? { ...x, evaluation: 'cancelled' } : x));
       const r = finishedOf(w);
       if (!r) return watch(w);
-      return ev && ev.cancelled && r.event === 'turn_end' ? { ...r, evaluation: 'cancelled' } : r;
+      return cancelled && !r.evaluation && r.turn === w.turns ? { ...r, evaluation: 'cancelled' } : r;
     };
     const never = new Promise(() => {});
     // build step 6e-6 item 2 (`settle`, worker.cjs): `waitTurn` now also resolves on the worker's own
@@ -121,17 +122,48 @@ function createWait({ workers, get, core = null }) {
     // `settledOf`, exactly as `waitExit`'s own resolution is, so a worker that dies mid-turn (no
     // `turn_end` event ever reached) still answers its settled state (`dead`, `stopped`, `paused`…),
     // never a manufactured `turn_end` this stream never produced.
-    const watch = (w) => (w.restartInFlight
-      ? w.restartInFlight.then(() => finishedOf(w) || watch(w), (e) => failedOf(w, e))
+    const watch = (w, left = ms) => (w.restartInFlight
+      ? w.restartInFlight.then(() => finishedOf(w) || watch(w, left), (e) => failedOf(w, e))
       : Promise.race([
-        W.waitTurn(w, ms).then((v) => (v ? (v.exited ? { ...settledOf(w) } : { ...turnOf(w, v) }) : never)),
-        W.waitExit(w, ms).then((v) => (v ? { ...settledOf(w) } : never)),
+        W.waitTurn(w, left).then((v) => (v ? (v.exited ? { ...settledOf(w) } : { ...turnOf(w, v) }) : never)),
+        W.waitExit(w, left).then((v) => (v ? { ...settledOf(w) } : never)),
       ]));
+    // A turn that ends with its hand-back under release evaluation (queued or running) is not answered until that evaluation settles:
+    // the answer is the turn with the evaluation's result, in one call. Only this worker's turn end is held. Its death, stop or park,
+    // a turn begun meanwhile, and every other worker's event answer at once through the same race. The call's own bound still holds:
+    // when it runs out first, the turn is answered as it stood, still `evaluating`.
+    const partial = [];
+    const holdTurn = (w, r) => {
+      if (r.event !== 'turn_end' || !r.evaluating || !EV.evaluatingOf(w)) return r;
+      const left = () => Math.max(1, ms - (now() - t0));
+      const stopping = () => !!(w.stopRequested || w.parkRequested);
+      // Read when the hold resolves, never at the turn end: the evaluation starts only after the turn's row is written (ids noted
+      // first), so nothing captured then says whether it ran. A stop or park that cancelled it, or that kept it from starting, is
+      // 'cancelled'; an operation that cancelled a running one is too.
+      const cancelled = () => {
+        const le = w.lastEvaluation;
+        if (le && le.turn === r.turn && le.cancelled) return true;
+        const v = require('./release-eval.cjs').evalOf(w);
+        return stopping() && !v.evaluating && !v.evaluated;
+      };
+      const finish = () => { const { evaluating, ...rest } = r; return { ...rest, ...require('./release-eval.cjs').evalOf(w), ...(cancelled() ? { evaluation: 'cancelled' } : {}) }; };
+      partial.push(() => (cancelled() ? finish() : r)); // the bound ran out: the turn as it stands then, not as it stood at its end
+      return Promise.race([
+        // The worker's death, a turn begun meanwhile, and its stop or park settling: a stop or park that cancelled the evaluation
+        // answers the turn with evaluation 'cancelled', not as a bare settled state.
+        watch(w, left()).then((x) => (x.event !== 'turn_end' && x.event !== 'turn_failed' && stopping() && cancelled() ? finish() : x)),
+        EV.evaluationEnded(w).then(async () => {
+          if (w.turns !== r.turn || !w.turnEnded) return watch(w, left());
+          if (cancelled() && stopping() && !w.settled) { if (!(await W.waitExit(w, left()))) return never; }
+          return finish();
+        }),
+      ]);
+    };
     const winner = await Promise.race([
-      ...ws.filter((w) => !evaluating.includes(w)).map(watch),
+      ...ws.filter((w) => !evaluating.includes(w)).map((w) => watch(w).then((r) => holdTurn(w, r))),
       // The worker stays watched through the hold: its death, stop or park, and a turn begun or ended meanwhile, answer as they would
       // without it. Once the evaluation ends the worker is looked at again, so a turn begun during the hold is not answered as the old one.
-      ...evaluating.map((w) => { const ev = w.evaluation; return Promise.race([watch(w), EV.evaluationEnded(w).then(() => afterHold(w, ev))]); }),
+      ...evaluating.map((w) => { const ev = w.evaluation; return Promise.race([watch(w).then((x) => (x.event !== 'turn_end' && x.event !== 'turn_failed' ? { ...x, ...cancelOf(w) } : x)), EV.evaluationEnded(w).then(() => afterHold(w, ev))]); }),
       new Promise((res) => { const t = setTimeout(() => res(null), ms); if (t.unref) t.unref(); }),
     ]);
     if (winner && winner.event !== 'restart_failed' && 'exit_code' in winner && winner.exit_code == null && winner.exit_signal == null) {
@@ -139,6 +171,7 @@ function createWait({ workers, get, core = null }) {
       if (w) { await withCode(w); return done({ ...settledOf(w) }); }
     }
     if (winner) return done(winner);
+    if (partial.length) return done(partial[0]()); // the bound ran out mid-evaluation: the turn as it stands, still evaluating, or cancelled
     // Only what is still in flight: a cancelled evaluation, or one that ended without an answer, is not listed with empty tasks.
     const stillEvaluating = evaluating.map((w) => ({ worker_id: w.id, turn: w.turns, tasks: EV.evaluatingOf(w) })).filter((e) => e.tasks);
     return {

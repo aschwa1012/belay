@@ -88,7 +88,7 @@ const ROW_DROP = new Set(['acceptance', 'spec', 'results', 'handoff', 'lease', '
 // A listing row also leaves out what the task's own detail carries: its files, who wrote it, the reason for a hold.
 // A listing the orchestrator scans for what to do next also leaves out the row version (`seq`, shown as `rev` in detail), the last
 // checkpoint's id and time, and an integration's id and time: no tool takes any of them.
-const SUMMARY_DROP = new Set(['seq', 'run_id', 'written_at', 'written_by', 'files_owned', 'holds_reason', 'last_checkpoint_id', 'last_checkpoint_at']);
+const SUMMARY_DROP = new Set(['memory_queries', 'seq', 'run_id', 'written_at', 'written_by', 'files_owned', 'holds_reason', 'last_checkpoint_id', 'last_checkpoint_at']);
 
 // A listing's results: the verdict facts (`flaky` and `timed_out` too, when the core sets them), the checks counted, the failing
 // ones named, and the passing ones marked flaky named apart, since `failing` does not list them.
@@ -122,6 +122,7 @@ function compactTask(row, { detail = false } = {}) {
   if (out.review === null) delete out.review;
   if (Array.isArray(row.amended)) { if (!detail) out.amended = row.amended.length; } else delete out.amended; // ADR 0061: a listing counts the revisions, detail has them; none, nothing
   out.spec_head = head(row.spec);
+  if (row.policy && typeof row.policy === 'object' && !detail) out.policy = require('../core/policy-plan.cjs').tag(row.policy); // ADR 0071 decision 5: a listing shows the plan as a tag, the task's own detail whole
   if (row.lease !== undefined) out.lease = leaseOf(row.lease);
   if (detail) { if (row.worktree !== undefined) out.worktree = worktreeOf(row.worktree); } else if (row.worktree && row.worktree.branch) out.branch = row.worktree.branch;
   let allChecks = row.results && Array.isArray(row.results.checks) ? row.results.checks : [];
@@ -220,11 +221,11 @@ function statusView(answer) {
 // task_create: the new task's id, rev, state and spec head. The row's other columns are the caller's own arguments (spec,
 // acceptance, files, dependencies) or empty on a new task, so they are left out; anything else the core adds to the answer (a
 // `warning` for a task with no checks, `overlaps` for a file held by a task in another tree) stays.
-const CREATED_DROP = new Set(['spec', 'acceptance', 'files_owned', 'depends_on', 'repairs', 'answers', 'results', 'handoff', 'worktree', 'run_id', 'written_at', 'written_by']);
+const CREATED_DROP = new Set(['memory_queries', 'spec', 'acceptance', 'files_owned', 'depends_on', 'repairs', 'answers', 'results', 'handoff', 'worktree', 'run_id', 'written_at', 'written_by']);
 function created(row) {
   if (!row || typeof row !== 'object' || Array.isArray(row)) return row;
   const out = { id: row.id, seq: row.seq, state: row.state, spec_head: head(row.spec) };
-  for (const [k, v] of Object.entries(row)) if (!(k in out) && !CREATED_DROP.has(k) && !(k === 'amended' && v == null)) out[k] = v; // an amend's answer names what it replaced
+  for (const [k, v] of Object.entries(row)) if (!(k in out) && !CREATED_DROP.has(k) && !(k === 'amended' && v == null) && !((k === 'acted_by' || k === 'trigger') && v == null) && !((k === 'policy' || k === 'policy_rev') && row.policy_rev == null)) out[k] = v; // an amend's answer names what it replaced; the plan is shown back whole (a null one only after a hand-back)
   return out;
 }
 

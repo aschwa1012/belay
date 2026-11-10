@@ -1,4 +1,5 @@
 'use strict';
+// Not a legacy test: it tests the first-message index (an open question) and the byte-for-byte first message; the legacy levers it sets are incidental.
 require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // memory-preface.test.cjs — ADR 0042 decisions 2 and 3: the first message's memory index, inject-once on a
 // relaunch, and the rule that with the levers off the first message is today's, byte for byte. The run
@@ -43,13 +44,14 @@ const received = (f) => (fs.existsSync(f) ? fs.readFileSync(f, 'utf8').split('\n
 
 // The fake core plus run.get (levers) and the memory methods the preface calls. `rows` is what memory.index
 // would rank; it honours exclude_ids as the real method does and returns a fixed text for what is left.
-function memoryCore({ levers = null, rows = [], failIndex = false, failEvents = false } = {}) {
+function memoryCore({ levers = null, rows = [], failIndex = false, failEvents = false, noneListed = 0, heldBack = 0, scope = 0, unranked = false } = {}) {
   const core = createFakeCore({ runId: 'run-fake', resumeLineText: RL });
   const events = [];
   core.run = { get: async () => ({ run: { memory_levers: levers === null ? null : JSON.stringify(levers) } }) };
   core.memory.index = async (a) => {
     core.calls.push({ method: 'memory.index', args: a });
     if (failIndex) { const e = new Error('index down'); e.code = 'E_OWNER_LOST'; throw e; }
+    if (noneListed) return { text: '', bytes: 0, row_ids: [], dropped: 0, over_budget: false, sha256: 'f'.repeat(64), considered: noneListed, excluded_already_injected: heldBack, ...(scope ? { candidates: { scope } } : {}), ...(unranked ? { unranked: true } : { none_passed: true }), bar: { min_relevance: 0.4, max_notes: 5, by: 'cosine_or_facts', listed: [], cut_by_floor: noneListed, cut_by_cap: 0, best_cut_cos: 0.31 } };
     const left = rows.filter((r) => !(a.exclude_ids || []).includes(r));
     const text = left.length ? `INDEX ${left.join(' ')}` : '';
     return { text, bytes: Buffer.byteLength(text), row_ids: left, dropped: 0, over_budget: false, sha256: 'f'.repeat(64), considered: rows.length, excluded_already_injected: rows.length - left.length };
@@ -138,6 +140,42 @@ test('levers on, no rows: nothing is injected and the event records zero bytes',
     assert.strictEqual(core.events.length, 1);
     assert.strictEqual(core.events[0].bytes, 0);
     assert.strictEqual(core.events[0].ok, 1);
+  });
+});
+
+test('levers on, notes in scope but none passed the bar: one short line says so, and the receipt carries the bar', async () => {
+  const core = memoryCore({ levers: { first_message_index: true }, noneListed: 3 });
+  await run(core, async (m, sb) => {
+    await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w5', task_id: 't1' });
+    const line = "The project has 3 notes; none matched this task's queries closely enough to list here. Some may still apply: before you change a file or command, run memory_search on it.";
+    assert.strictEqual(m._worker('w5').firstMessage, `${RL}
+
+${line}
+
+${PROMPT}${PL}${HB}`);
+    assert.ok(Buffer.byteLength(line) <= 200, 'about 190 bytes');
+    assert.strictEqual(core.events[0].bytes, 0);
+    assert.strictEqual(JSON.parse(core.events[0].message).bar.best_cut_cos, 0.31);
+  });
+});
+
+test('notes in scope that could not be ranked (keyword mode, another embedder): the worker is told so, never that none matched', async () => {
+  const core = memoryCore({ levers: { first_message_index: true }, noneListed: 4, unranked: true });
+  await run(core, async (m, sb) => {
+    await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w5', task_id: 't1' });
+    const line = 'The project has 4 notes; this run could not rank them against this task, so none are listed here. Before you change a file or command, run memory_search on it.';
+    assert.ok(m._worker('w5').firstMessage.includes(line));
+    assert.ok(!m._worker('w5').firstMessage.includes('none matched'));
+  });
+});
+
+test('a relaunch that excluded notes the worker already holds never says that no note passed', async () => {
+  const core = memoryCore({ levers: { first_message_index: true }, noneListed: 2, heldBack: 3, scope: 37 }); // 37 notes not yet shown (candidates.scope) and 3 already shown
+  await run(core, async (m, sb) => {
+    await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w5', task_id: 't1' });
+    const line = "No further project note matched this task's queries closely enough to list here (40 notes in scope). Some may still apply: before you change a file or command, run memory_search on it.";
+    assert.ok(m._worker('w5').firstMessage.includes(line), 'further, and the notes in scope are the unshown scope plus the shown ones, not the ranked candidates');
+    assert.ok(!m._worker('w5').firstMessage.includes('The project has'));
   });
 });
 
@@ -245,7 +283,7 @@ test('the prompt reaches memory.index as its relevance query; without one no que
   const spec = 'Add a --since <date> option to tally report; dates are UTC days';
   assert.strictEqual(await MP.memoryPreface({ id: 'wq', taskId: 't1' }, ctx, spec), 'INDEX mem-a\n\n');
   const idx = () => core.calls.filter((c) => c.method === 'memory.index');
-  assert.deepStrictEqual(idx()[0].args, { task_id: 't1', worker_id: 'wq', max_bytes: 1200, exclude_ids: [], query: spec });
+  assert.deepStrictEqual(idx()[0].args, { task_id: 't1', worker_id: 'wq', max_bytes: 1600, exclude_ids: [], query: spec });
   // A relaunch has no prompt: the core ranks by the task's spec on its own, so no query key is sent.
   await MP.relaunch({ id: 'wr', taskId: 't1' }, ctx, 'resumed');
   assert.ok(!('query' in idx()[1].args), JSON.stringify(idx()[1].args));

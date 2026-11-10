@@ -89,6 +89,8 @@ function registerProcess(rec, what) {
   catch (e) { throw new Error(`${what} (pid ${rec.pid}) could not be recorded in the spawn register (${(e && e.message) || e}); another store on this machine could not tell its children from an operator`); }
 }
 
+// Fill in a record's creation time. The record is written again through `register`, so its `at` becomes the time of this write (the
+// lifetime the record closes at is read from `seen_at`/`at`, so a later `at` only lengthens it: fail closed); `spawned_at` is kept.
 function update(pid, created, expect = null) {
   if (!Number.isFinite(created)) return false;
   let rec;
@@ -424,8 +426,9 @@ function problems() {
 
 // What `belay run` tells its owner it spawned besides the workers: the headless orchestrator, once its pid is known. The interactive
 // orchestrator is the human's own session (its plugin runs the CLI), so it is listed nowhere.
-function runSpawned(interactive, orchestratorPid) {
-  return !interactive && Number.isInteger(orchestratorPid) ? [{ pid: orchestratorPid, created: null, kind: 'orchestrator' }] : [];
+// `created` is the orchestrator's creation time once it is known; until then the entry matches by pid alone (fail closed).
+function runSpawned(interactive, orchestratorPid, created = null) {
+  return !interactive && Number.isInteger(orchestratorPid) ? [{ pid: orchestratorPid, created: Number.isFinite(created) ? created : null, kind: 'orchestrator' }] : [];
 }
 
 module.exports = { matches, register, registerProcess, update, unregister, retire, touch, stampNow, scan, settle, list, live, tombFile, startOf, bootMs, BOOT_SLACK_MS, SEEN_REFRESH_MS, tombstones, tombstoneScan, tombstonesAsync, warmTombstones, saveTombstone, dropTombstone, dropTombstoneAsync, moveAside, unprovenLife, problems, dir, runSpawned, io };

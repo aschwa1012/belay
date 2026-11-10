@@ -22,12 +22,13 @@
 
 import { atom, read, update } from 'claude-code'
 import type { EngineInterface, On, Timer } from 'claude-code'
-import type { BelayMenu as BelayMenuT, BelayPanelMenu, BelayPanelSettled, BelayPanelSnap, BelayPanelUi, BelayPanelWatch } from '../../types/index'
-import { argvFor, buildSnapshot, fatalSnapshot, fwd, launcherLine, isWindowsPath, needsRun, parseRan, parseRunFile, projectRootOf, repoCliGuess, type Ran, type RunFileRead } from './fetch'
-import { CONFIRM_MS, normHeld, reasonProblem, reviewProject, SETTLE_ACTIONS, SETTLE_UNKNOWN, PENDING_STALE_MS, pruneSettled, settleArgs, settleKind, settleLine, settledActive, shortId, type SettleAction } from './held'
-import { DEFAULT_SETTINGS, DEFAULT_UI } from './model'
+import type { BelayMenu as BelayMenuT, BelayPanelMenu, BelayPanelSettled, BelayPanelSnap, BelayPanelWatch } from '../../types/index'
+import { argvFor, buildSnapshot, sameWatch, fatalSnapshot, fwd, launcherLine, isWindowsPath, needsRun, parseRan, parseRunFile, projectRootOf, refreshEvery, repoCliGuess, roundParts, type Ran, type RunFileRead } from './fetch'
+import { CONFIRM_MS, reasonProblem, reviewProject, SETTLE_ACTIONS, SETTLE_UNKNOWN, PENDING_STALE_MS, pruneSettled, settleArgs, settleKind, settleLine, settledActive, shortId, type SettleAction } from './held'
+import { COMMAND_TIMEOUT_MS, MEM_TIMEOUT_MS, MENU_EVERY_MS, MENU_OPEN_EVERY_MS, ROUND_TIMEOUT_MS, SETTINGS_EVERY_MS, START_TIMEOUT_MS, TRANSCRIPT_TAIL } from './limits'
+import { calm, DEFAULT_SETTINGS, DEFAULT_UI, noticesSeen } from './model'
 import { actionId, PROFILE_KEYS, cmdToast, confirmText, cycleDraft, draftOf, gb, modelById, normBadge, normMenu, resultLine, routeFit, routingWrites, sameDraft, writeArgv, type MemAction } from './memory'
-import { Band, BandWaiting, Fallback, Pane, type Act, type Els } from './view'
+import { Band, BandWaiting, Fallback, Pane, type Act, type Ctx, type Els } from './view'
 
 const PANE = 'belay'
 const watchA = atom({ plugin: 'belay', key: 'panelWatch' } as const, null)
@@ -37,25 +38,14 @@ const menuA = atom({ plugin: 'belay', key: 'panelMenu' } as const, { menu: null,
 const settleA = atom({ plugin: 'belay', key: 'panelSettle' } as const, null)
 const settledA = atom({ plugin: 'belay', key: 'panelSettled' } as const, {} as BelayPanelSettled)
 
-// A round starts this long after the previous round ENDS (a slow belay is never chased).
-const PANE_EVERY_MS = 4000
-const BAND_EVERY_MS = 5000
-const SETTINGS_EVERY_MS = 10000
-const COMMAND_TIMEOUT_MS = 8000 // the panel's patience under host load (reads of 3.5 to 4.8 s were seen), not a product budget
-// `belay transcript --tail N`: the band reads the last 10 entries (it shows the newest words among them), the pane the last 50. Null would read it all.
-const TRANSCRIPT_TAIL: { band: number | null; pane: number | null } = { band: 10, pane: 50 }
+// A round starts after the previous round ENDS (a slow belay is never chased): refreshEvery (fetch.ts) gives the wait. The other waits are in limits.ts.
 const BACKOFF_FIRST_MS = 10000
 const BACKOFF_MAX_MS = 60000
 const RUN_ID = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,79}$/
 const REVIEW_ARGS = ['memory', 'review', '--project'] // the one write the panel makes; the project follows, then START_FLAG
 const START_FLAG = '--start'
 const RUN_FLAG = '--run' // the review acts for the watched run, a live one included (the CLI never defaults to a live run)
-const READ_VERBS = ['agents', 'notices', 'transcript', 'settings'] // the only commands runJson runs ...
-const AWAITING_READ = ['memory', 'held', '--awaiting'] // ... and this one read, run only while a held note waits on the operator
-const MENU_EVERY_MS = 30000 // the Memory menu's facts while only the badge needs them; 10 s while the menu is open
-const MENU_OPEN_EVERY_MS = 10000
-const MEM_TIMEOUT_MS = { set: 20000, delete: 30000, verify: 180000 } as const // a verify hashes the whole model
-const START_TIMEOUT_MS = 40000 // the launcher waits up to 20 s for the claim
+const READ_VERBS = ['panel-read'] // the only command runJson runs besides the Memory menu's read: one process that runs the panel's reads
 const NO_CLI_WINDOWS = 'belay CLI not found: on Windows set belay_cli and node in belay-run.json, or load this plugin from <repo>/src/mod'
 
 type Host = EngineInterface
@@ -66,6 +56,7 @@ type Resolved = { cli: string[] } | { error: string }
 let timer: Timer | null = null
 let inflight = false
 let lastFetchAt = 0
+let lastRunState: BelayPanelSnap['runState'] = null // the last run state any read gave, kept across failed reads
 let lastSettingsAt = 0
 let timeoutStreak = 0
 let backoffUntil = 0
@@ -98,48 +89,33 @@ async function resolveCli($: Host, watch: BelayPanelWatch): Promise<Resolved> {
 // Every command has a hard timeout. A rejection after the full wait (or one that says it timed out) is a
 // timeout, which the caller turns into a skipped round and a back-off; any other rejection is a command
 // that did not run.
-async function runJson($: Host, cli: string[], args: string[], dataDir: string | null, cwd: string | null = null): Promise<Ran> {
+async function runJson($: Host, cli: string[], args: string[], dataDir: string | null, cwd: string | null = null, timeoutMs: number = COMMAND_TIMEOUT_MS): Promise<Ran> {
   const menuRead = args[0] === 'memory' && args[1] === 'menu' && (args.length === 2 || (args.length === 3 && args[2] === '--badge')) // `belay memory menu [--badge]`: the Memory menu's read
-  if (!READ_VERBS.includes(args[0] ?? '') && args.join(' ') !== AWAITING_READ.join(' ') && !menuRead) return { error: `belay ${args[0] ?? ''}: the read helper runs only ${READ_VERBS.join(', ')}, memory held --awaiting and memory menu` } // never a write, whatever called it
+  if (!READ_VERBS.includes(args[0] ?? '') && !menuRead) return { error: `belay ${args[0] ?? ''}: the read helper runs only ${READ_VERBS.join(', ')} and memory menu` } // never a write, whatever called it
   const t0 = await $.clock.now()
   try {
-    const r = await $.process.run(argvFor(cli, args, dataDir), { timeoutMs: COMMAND_TIMEOUT_MS, ...(cwd ? { cwd } : {}) })
+    const r = await $.process.run(argvFor(cli, args, dataDir), { timeoutMs, ...(cwd ? { cwd } : {}) })
     return parseRan(args, r)
   } catch (err) {
     const waited = (await $.clock.now()) - t0
     const said = err instanceof Error ? err.message : String(err)
-    if (waited >= COMMAND_TIMEOUT_MS - 100 || /time/i.test(said)) return { error: `belay ${args.join(' ')} timed out (${COMMAND_TIMEOUT_MS / 1000} s)`, timedOut: true }
+    if (waited >= timeoutMs - 100 || /time/i.test(said)) return { error: `belay ${args.join(' ')} timed out (${timeoutMs / 1000} s)`, timedOut: true }
     return parseRan(args, null)
   }
 }
 
-const timedOut = (r: Ran | null): boolean => !!r && 'timedOut' in r
-
-// One round: agents, notices, then (headless runs only) the transcript, then settings. Sequential, so at
-// most one belay process at a time. The orchestrator's words are read only for a headless run.
-// A timeout skips the rest of the round: what was read stays, what was not read is kept from before.
+// One round: `belay panel-read`, one process that runs the reads the panel needs (agents, notices, the awaiting list while a held note waits,
+// the transcript for a headless run, settings when they are due) one after another and answers with all of them. A part that timed out ends
+// the round inside the verb; what was read stays, what was not read is kept from before (buildSnapshot with prev).
 async function fetchSnapshot($: Host, watch: BelayPanelWatch, prev: BelayPanelSnap | null, o: { withSettings: boolean; now: number; open: boolean }): Promise<{ snap: BelayPanelSnap; timedOut: boolean }> {
   if (watch.error) return { snap: fatalSnapshot(watch.error, null, o.now), timedOut: false }
   const r = await resolveCli($, watch)
   if ('error' in r) return { snap: fatalSnapshot(r.error, watch.runId, o.now), timedOut: false }
   const cli = r.cli
-  const agents = await runJson($, cli, ['agents', ...(watch.runId ? [watch.runId] : []), ...(watch.orchDir ? ['--dir', watch.orchDir] : [])], watch.dataDir)
-  const seen = 'json' in agents ? (agents.json as { run_id?: string; mode?: string }) : null
-  const runId = watch.runId ?? seen?.run_id ?? prev?.runId ?? null
-  const runArg = runId ? [runId] : []
-  const cut = (a: Ran, n: Ran | null, t: Ran | null, s: Ran | null, w: Ran | null = null) => ({ snap: buildSnapshot({ watch, prev, now: o.now, agents: a, notices: n, transcript: t, settings: s, awaiting: w }), timedOut: true })
-  if (timedOut(agents)) return cut(agents, null, null, null)
-  const notices = await runJson($, cli, ['notices', ...runArg], watch.dataDir)
-  if (timedOut(notices)) return cut(agents, notices, null, null)
-  // The ids of the held notes that wait on the operator: one more read, only while the notices say some wait.
-  const awaiting = 'json' in notices && (normHeld(notices.json)?.awaiting ?? 0) > 0 ? await runJson($, cli, ['memory', 'held', '--awaiting'], watch.dataDir) : null
-  if (timedOut(awaiting)) return cut(agents, notices, null, null, awaiting)
-  const mode = watch.fixed ? 'interactive' : seen ? seen.mode : prev?.mode
   const tail = o.open ? TRANSCRIPT_TAIL.pane : TRANSCRIPT_TAIL.band
-  const transcript = mode === 'headless' ? await runJson($, cli, ['transcript', ...runArg, ...(tail === null ? [] : ['--tail', String(tail)])], watch.dataDir) : null
-  if (timedOut(transcript)) return cut(agents, notices, transcript, null, awaiting)
-  const settings = o.withSettings ? await runJson($, cli, ['settings'], watch.dataDir, watch.fixed && watch.dataDir ? projectRootOf(watch.dataDir) : null) : null
-  return { snap: buildSnapshot({ watch, prev, now: o.now, agents, notices, transcript, settings, awaiting }), timedOut: timedOut(settings) }
+  const got = await runJson($, cli, ['panel-read', ...(watch.runId ? [watch.runId] : []), ...(watch.orchDir ? ['--dir', watch.orchDir] : []), ...(tail === null ? [] : ['--tail', String(tail)]), ...(watch.fixed ? ['--fixed'] : []), ...(prev?.mode ? ['--prev-mode', prev.mode] : []), ...(prev?.runId ? ['--prev-run', prev.runId] : []), ...(o.withSettings ? ['--settings'] : [])], watch.dataDir, null, ROUND_TIMEOUT_MS)
+  const { parts, slow } = roundParts(got)
+  return { snap: buildSnapshot({ watch, prev, now: o.now, ...parts }), timedOut: slow }
 }
 
 // The Memory menu's facts: `belay memory menu`, a read (it copies the store to count a heavy embedder's backlog, and starts nothing). Its own atom, so a
@@ -171,10 +147,10 @@ async function setOpen($: Host, open: boolean): Promise<void> {
   if (open && (snap?.settings ?? DEFAULT_SETTINGS).pane === 'docked') placed = (await $.ui.open({ id: PANE, title: 'belay' })).isPlaced
   if (!open && ui.placed) await $.ui.close({ id: PANE })
   if (!open) await update($, settleA, () => null) // a pending settle does not survive the panel closing
-  // Opening the panel is the person seeing the notices (decision 3): the current ones are marked seen.
-  const seen = open ? [...new Set([...ui.seen, ...(snap?.notices ?? []).map(n => n.key)])].slice(-200) : ui.seen
+  // Opening the panel is the person seeing the notices (decision 3): they are marked seen, unless NOTICES is folded.
+  const seen = open ? [...new Set([...ui.seen, ...noticesSeen(snap?.notices ?? [], ui).map(n => n.key)])].slice(-200) : ui.seen
   await update($, uiA, u => ({ ...u, open, placed, seen }))
-  lastFetchAt = 0
+  lastFetchAt = 0; backoffUntil = 0 // opening or closing the pane, like a press, reads at once, back-off or not
   $.ui.invalidate('ui.render')
 }
 
@@ -185,15 +161,19 @@ async function tick($: Host): Promise<void> {
     if (watch.error) return
     const ui = await read($, uiA)
     const now = await $.clock.now()
-    if (!inflight && now >= backoffUntil && now - lastFetchAt >= (ui.open ? PANE_EVERY_MS : BAND_EVERY_MS)) {
+    const known = await read($, snapA)
+    // 5 s with the pane open, 10 s for the band alone, 60 s once the run has ended or died: each refresh is one belay process.
+    if (!inflight && now >= backoffUntil && now - lastFetchAt >= refreshEvery(ui.open, known?.runState ?? lastRunState)) {
       inflight = true
       try {
-        const prev = await read($, snapA)
+        const prev = known
         const settingsDue = !prev || now - lastSettingsAt >= SETTINGS_EVERY_MS
         const { snap, timedOut: slow } = await fetchSnapshot($, watch, prev, { withSettings: settingsDue, now, open: ui.open })
         // Back off while commands keep timing out: 10 s, doubling to 60 s; one success resets it.
-        timeoutStreak = slow ? timeoutStreak + 1 : 0
-        backoffUntil = slow ? (await $.clock.now()) + Math.min(BACKOFF_MAX_MS, BACKOFF_FIRST_MS * 2 ** (timeoutStreak - 1)) : 0
+        const backOff = slow || snap.stale // a failed agents read backs off like a timeout, so a store that keeps failing is not hammered
+        if (snap.runState) lastRunState = snap.runState // a failed read keeps the last known state: an ended run stays at the slow refresh
+        timeoutStreak = backOff ? timeoutStreak + 1 : 0
+        backoffUntil = backOff ? (await $.clock.now()) + Math.min(BACKOFF_MAX_MS, BACKOFF_FIRST_MS * 2 ** (timeoutStreak - 1)) : 0
         if (settingsDue) lastSettingsAt = now
         await update($, snapA, () => snap)
         // The Memory menu is read while it is open, after a write, and (for the badge) while the settings name a heavy profile or a routing.
@@ -211,8 +191,8 @@ async function tick($: Host): Promise<void> {
         if (!snap.memWanted && ui.memTab === null) await update($, menuA, m => (m.behind === 0 ? m : { ...m, behind: 0 }))
         // `/belay watch` with no id resolved the newest run: pin that id once.
         if (!watch.runId && snap.runId) await update($, watchA, w => (w && !w.runId ? { ...w, runId: snap.runId } : w))
-        // While the panel is open, notices that arrive are seen as they arrive.
-        if (ui.open) await update($, uiA, u => ({ ...u, seen: [...new Set([...u.seen, ...snap.notices.map(n => n.key)])].slice(-200) }))
+        // While the panel is open, notices that arrive are seen as they arrive, unless NOTICES is folded.
+        if (ui.open) await update($, uiA, u => ({ ...u, seen: [...new Set([...u.seen, ...noticesSeen(snap.notices, u).map(n => n.key)])].slice(-200) }))
         // A pending settle whose note left the list, or whose run changed, is cleared.
         await settleCheck($, snap, watch)
         // A note that has left the list closes.
@@ -239,9 +219,6 @@ function ensureTicker($: Host): void {
   timer = $.clock.every(1000, () => { void tick($) })
 }
 
-const sameWatch = (a: BelayPanelWatch | null, b: BelayPanelWatch): boolean =>
-  !!a && a.runId === b.runId && a.dataDir === b.dataDir && a.cli === b.cli && a.node === b.node && a.orchDir === b.orchDir && a.fixed === b.fixed && a.error === b.error
-
 // A repeated session.start (a hot reload) with an unchanged watch keeps the snapshot and the seen notices.
 async function watchRun($: Host, next: BelayPanelWatch): Promise<void> {
   const cur = await read($, watchA)
@@ -256,6 +233,7 @@ async function watchRun($: Host, next: BelayPanelWatch): Promise<void> {
   }
   await update($, snapA, () => null)
   lastFetchAt = 0
+  lastRunState = null
   lastSettingsAt = 0
   lastMenuAt = 0
   menuForce = false
@@ -338,7 +316,7 @@ async function dispatchMenu($: Host, a: MemAction, menu: BelayMenuT): Promise<vo
   }
   if (ok && a.kind === 'saveRouting') await update($, uiA, u => ({ ...u, routeDraft: null }))
   lastSettingsAt = 0 // what was written shows on the next round
-  lastFetchAt = 0
+  lastFetchAt = 0; backoffUntil = 0
   menuForce = true
   $.ui.invalidate('ui.render')
 }
@@ -481,7 +459,7 @@ async function recheckNote($: Host, id: string): Promise<void> {
   if (settling.has(id)) { $.ui.toast(`belay: note ${shortId(id)} is being settled; wait for it to finish.`); return }
   const at = await $.clock.now()
   await update($, settledA, m => (m[id] && (m[id]!.pending !== true || at - m[id]!.at > PENDING_STALE_MS) ? { ...m, [id]: { label: 're-checking', at } } : m))
-  lastFetchAt = 0
+  lastFetchAt = 0; backoffUntil = 0
   $.ui.invalidate('ui.render')
 }
 
@@ -491,7 +469,7 @@ async function markSettled($: Host, id: string, line: string): Promise<void> {
   const at = await $.clock.now() // stamped after the process returned; the API has only the epoch clock (no monotonic one), so this is compared with fetchedAt in the same clock
   const k = settleKind(line)
   await update($, settledA, m => pruneSettled({ ...m, [id]: { label: k.label, at, ...(k.kind === 'unknown' ? { unknown: true as const } : {}) } }, id))
-  lastFetchAt = 0
+  lastFetchAt = 0; backoffUntil = 0
   $.ui.invalidate('ui.render')
 }
 
@@ -506,14 +484,12 @@ async function settleCheck($: Host, snap: BelayPanelSnap, watch: BelayPanelWatch
   $.ui.toast(same ? `belay: note ${shortId(p.id)} no longer awaits you, so the settle was cleared.` : 'belay: the watched run changed, so the settle was cleared.')
 }
 
-// Every press that is not the review button cancels a pending confirm.
-const calm = (u: BelayPanelUi): BelayPanelUi => (u.confirm || u.memConfirm ? { ...u, confirm: null, memConfirm: null } : u)
-
 function acts($: Host): Act {
   return {
     select: id => { void update($, uiA, u => ({ ...calm(u), selected: u.selected === id ? null : id })) },
     legend: () => { void update($, uiA, u => ({ ...calm(u), legend: !u.legend })) },
     fold: () => { void update($, uiA, u => ({ ...calm(u), foldOpen: !u.foldOpen })) },
+    notices: () => { void update($, uiA, u => ({ ...calm(u), noticesFold: !u.noticesFold })) },
     group: key => { void update($, uiA, u => ({ ...calm(u), groups: u.groups.includes(key) ? u.groups.filter(g => g !== key) : [...u.groups, key].slice(-50) })) },
     seen: key => { void update($, uiA, u => (u.seen.includes(key) && !u.confirm ? u : { ...calm(u), seen: u.seen.includes(key) ? u.seen : [...u.seen, key].slice(-200) })) },
     close: () => { void update($, settleA, () => null); void update($, uiA, calm).then(() => setOpen($, false)) },
@@ -527,6 +503,11 @@ function acts($: Host): Act {
     commit: id => { void settlePress($, id) },
     note: id => { void update($, settleA, () => null); void update($, uiA, u => ({ ...calm(u), openNote: u.openNote === id ? null : id })) }, // opening, switching or closing a note drops a pending settle
   }
+}
+
+// What a drawing reads: the atoms, the clock and the handlers, for the width it draws at.
+async function drawCtx($: Host, E: Els, snap: BelayPanelSnap, cols: number, focused: boolean): Promise<Ctx> {
+  return { E, snap, ui: await read($, uiA), now: await $.clock.now(), cols, act: acts($), pend: await read($, settleA), focused, settled: await read($, settledA), menu: await read($, menuA) }
 }
 
 export function registerPanel(on: On): void {
@@ -583,12 +564,9 @@ export function registerPanel(on: On): void {
     const { Box, Text } = E
     const watch = await read($, watchA)
     const snap = await read($, snapA)
-    const ui = await read($, uiA)
-    const now = await $.clock.now()
-    const menu = await read($, menuA)
     if (!watch) return <Box><Text dimColor>No belay run is watched. /belay watch [run-id]</Text></Box>
     if (!snap) return <BandWaiting E={E} runId={watch.runId} errors={[]} cols={e.props.bodyColumns} />
-    const c = { E, snap, ui, now, cols: e.props.bodyColumns, act: acts($), pend: await read($, settleA), focused: e.props.isFocused, settled: await read($, settledA), menu }
+    const c = await drawCtx($, E, snap, e.props.bodyColumns, e.props.isFocused)
     return e.surface === 'terminal' ? <Pane {...c} /> : <Fallback {...c} />
   })
 
@@ -598,11 +576,9 @@ export function registerPanel(on: On): void {
     const E = $.ui.resolve(e) as unknown as Els
     const { Box } = E
     const snap = await read($, snapA)
-    const ui = await read($, uiA)
-    const now = await $.clock.now()
-    const menu = await read($, menuA)
     if (!snap) return <BandWaiting E={E} runId={watch.runId} errors={[]} cols={e.props.bodyColumns} />
-    const c = { E, snap, ui, now, cols: e.props.bodyColumns, act: acts($), pend: await read($, settleA), focused: inlineFocused, settled: await read($, settledA), menu } // the band has no focus prop: the hint is for the docked pane
+    const c = await drawCtx($, E, snap, e.props.bodyColumns, inlineFocused) // the band has no focus prop: the hint is for the docked pane
+    const ui = c.ui
     // Inline when the person chose above-prompt, or when the docked pane is not seated (a narrow terminal).
     const inline = ui.open && (snap.settings.pane === 'above-prompt' || !ui.placed)
     if (e.surface !== 'terminal') return inline ? <Fallback {...c} /> : <Band {...c} />

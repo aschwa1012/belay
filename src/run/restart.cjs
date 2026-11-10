@@ -13,14 +13,16 @@ const CLAUDE_RESUME_WINDOW_MS = 55 * 60 * 1000; // ADR 0001 §6/§7: 1 h cache, 
 const CODEX_RESUME_WINDOW_MS = 25 * 60 * 1000; // ~30 min server-side window, 5 min of margin
 const now = () => Date.now();
 
-// Contract §5 branch rule. `reason` states the numbers it decided on.
-function decideBranch(w) {
+// Contract §5 branch rule: a session or thread id that exists is resumed, whatever its age. The window is only how long the prompt cache lives, and it must be
+// repaid either way, so it informs the receipt (`cache_cold`) and decides nothing. `replace` is for no session id, or for `forceReplace`: the resume itself failed
+// (resume-fallback.cjs), its reason in the string. `reason` states the numbers it decided on.
+function decideBranch(w, forceReplace = null) {
   const window_ms = w.substrate === 'codex' ? CODEX_RESUME_WINDOW_MS : CLAUDE_RESUME_WINDOW_MS;
   const age_ms = w.lastEventAt ? now() - w.lastEventAt : null;
+  if (forceReplace) return { branch: 'replace', reason: forceReplace, age_ms, window_ms };
   if (!w.sessionId) return { branch: 'replace', reason: 'no session or thread id is known for this worker', age_ms, window_ms };
-  if (age_ms === null) return { branch: 'replace', reason: 'no event has ever been seen, so there is no age to compare with the window', age_ms, window_ms };
-  if (age_ms <= window_ms) return { branch: 'resume', reason: `last event ${age_ms} ms ago, inside the ${window_ms} ms ${w.substrate} window`, age_ms, window_ms };
-  return { branch: 'replace', reason: `last event ${age_ms} ms ago, outside the ${window_ms} ms ${w.substrate} window`, age_ms, window_ms };
+  const cold = age_ms !== null && age_ms > window_ms;
+  return { branch: 'resume', reason: `a ${w.substrate} session is known; last event ${age_ms === null ? 'never seen' : `${age_ms} ms ago`}${cold ? `, past the ${window_ms} ms cache window: the cache is likely cold and is written again` : `, inside the ${window_ms} ms cache window`}`, age_ms, window_ms, cache_cold: cold };
 }
 
 const OBS_MAX = 200; // observations fetched for a bottle: the newest turns matter most, and the page is bounded
@@ -81,6 +83,44 @@ async function writeBottle(w, ctx, core, lv) {
   return true;
 }
 
+const TAIL_BYTES = 262144; // the stream's tail read for a restart's recent turns
+const RECENT_TURNS = 10, TURN_CHARS = 160; // the bounds of the rows section this stands in for
+const RECENT_BYTES = 1024; // and the section's own cap, on top of the document's 4,096 bytes: resume.md stays under 5,120 bytes
+// The final text of the worker's last turns: the `result` events at the tail of its stream file, oldest first. Without a stream file, or with
+// none readable, the turns the manager kept in memory. Reading is bounded to the tail; a first line cut by the bound is dropped.
+function recentTurns(w) {
+  const clip = (t) => String(t).replace(/\s+/g, ' ').trim().slice(0, TURN_CHARS);
+  try {
+    const fd = fs.openSync(w.streamPath, 'r');
+    try {
+      const size = fs.fstatSync(fd).size, len = Math.min(size, TAIL_BYTES), buf = Buffer.alloc(len);
+      fs.readSync(fd, buf, 0, len, size - len);
+      const lines = buf.toString('utf8').split('\n');
+      if (size > len) lines.shift();
+      lines.pop(); // a last line without its newline may be half written
+      const out = [];
+      for (const l of lines) { try { const e = JSON.parse(l); if (e && e.type === 'result' && typeof e.result === 'string' && e.result.trim()) out.push(clip(e.result)); } catch { /* a damaged line is skipped */ } }
+      if (out.length) return out.slice(-RECENT_TURNS);
+    } finally { fs.closeSync(fd); }
+  } catch { /* no stream file: the in-memory record below */ }
+  return Array.isArray(w.recentTurns) ? w.recentTurns.map((t) => t.text) : [];
+}
+
+// The section appended to the resume document: the newest turns that fit RECENT_BYTES, oldest first. A reused worker's tail can hold the
+// turns of a task before this one, which the stream does not tag; the heading says so.
+function recentSection(w, turns) {
+  const head = ['', '', `## recent turns of ${w.id} (from its own stream; a reused worker's earlier task may show)`].join('\n');
+  const keep = [];
+  let bytes = Buffer.byteLength(head) + 1;
+  for (const t of turns.slice().reverse()) {
+    const line = `- [${w.id}] ${t}`;
+    bytes += Buffer.byteLength(line) + 1;
+    if (bytes > RECENT_BYTES) break;
+    keep.unshift(line);
+  }
+  return keep.length ? [head, ...keep, ''].join('\n') : '';
+}
+
 // `ctx` is optional: without it (or with `memory.bottle` off) the replace branch is exactly what it was.
 async function restartFirstText(w, branch, { core, ctx, hold }) {
   if (branch === 'resume') {
@@ -95,7 +135,12 @@ async function restartFirstText(w, branch, { core, ctx, hold }) {
   if (!bottled) {
     try {
       const doc = await core.continuity.resumeDoc(key);
-      if (doc && doc.text) fs.writeFileSync(L.fwd(path.join(w.dir, 'resume.md')), doc.text);
+      if (doc && doc.text) {
+        // With turn rows off the document's rows section is empty; the worker's own last turns, read from the tail of its stream file, stand in.
+        const turns = lv && lv.turn_rows ? [] : recentTurns(w);
+        const recent = recentSection(w, turns);
+        fs.writeFileSync(L.fwd(path.join(w.dir, 'resume.md')), doc.text + recent);
+      }
     } catch (e) {
       w.lastError = { where: 'continuity.resumeDoc', code: e && e.code, message: e && e.message };
     }
@@ -115,7 +160,7 @@ async function currentRule(w, core, hold) {
     if (!task) return '';
     const full = (await core.task.get({ task_id: task.id })) || task;
     const HB = require('./handback.cjs'), assigned = { task: full, new_lease: full.lease };
-    return HB.rule(assigned, await HB.facts((id) => core.task.get({ task_id: id }), assigned));
+    return HB.rule(assigned, await HB.facts((id) => core.task.get({ task_id: id }), assigned), w.substrate);
   } catch { return ''; }
 }
 

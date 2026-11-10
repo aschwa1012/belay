@@ -1,4 +1,5 @@
 'use strict';
+// Not a legacy test: it checks what a run records for its memory levers, and names legacy levers only as values.
 // attach-memory-default.test.cjs — a re-run over a run that never ended must not inherit that run's memory levers (audit D55).
 // run.attach carries an absent field forward from an unended epoch; `belay run` therefore sends every memory column, null for a
 // default block.

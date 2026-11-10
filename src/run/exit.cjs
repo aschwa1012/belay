@@ -61,6 +61,7 @@ function settle(w, code, signal, establishedBy, ctx) {
     if (w.exitCode == null && w.exitSignal == null && (code != null || signal != null)) {
       w.exitCode = code;
       w.exitSignal = signal;
+      require('./cost-carry.cjs').noteExit(w); // the code arrived late: a clean exit saved the session total
       w.deathEstablishedBy = w.deathEstablishedBy + '+' + establishedBy;
       // Fix round, should-fix finding: `w.settledState`, fixed at the first settle() call, not `w.state`
       // (which a queued write behind this one can still leave 'stopping'/'paused' racing settle's own).
@@ -73,6 +74,7 @@ function settle(w, code, signal, establishedBy, ctx) {
   w.exitedAt = w.pidGoneAt != null && w.pidGonePid === w.pid ? w.pidGoneAt : now();
   w.exitCode = code;
   w.exitSignal = signal;
+  require('./cost-carry.cjs').noteExit(w); // a clean exit saved the session total (cost-carry.cjs)
   w.settled = true;
   const child = w.child; // captured before clearing: the deferred close listener below still needs it
   // fix round (verifier failure 1, manager.test.cjs regression): named so worker.cjs's own exit handler
@@ -105,6 +107,7 @@ function settle(w, code, signal, establishedBy, ctx) {
   }
   for (const r of w.exitWaiters.splice(0)) r({ code, signal, at: w.exitedAt, established_by: establishedBy });
   for (const r of w.readyWaiters.splice(0)) r(null);
+  if (w.deferDead && w.launches > w.deferFrom && state === 'dead') { w.deadDeferred = true; return; } // a failed resume that a second launch replaces (resume-fallback.cjs): not a death, no row, no wake
   lifeWrite(w, ctx, state, 'worker.write/exit');
 }
 

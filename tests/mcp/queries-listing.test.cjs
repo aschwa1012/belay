@@ -1,4 +1,4 @@
-// queries-listing.test.cjs — the orchestrator's worker_spawn lists `memory_queries` only when the run's first_message_index lever is
+// queries-listing.test.cjs — the orchestrator's task_create and worker_spawn list `memory_queries` only when the run's first_message_index lever is
 // on (they feed that index and nothing else); the call is accepted either way. Measured on the module and on the wire.
 'use strict';
 require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
@@ -12,7 +12,9 @@ const { launch, sandboxDir, ROOT } = require('./rpc.cjs');
 
 const FAKE = `${ROOT}/tests/mcp/fake-core-knowledge.cjs`;
 const spawnOf = (list) => list.find((t) => t.name === 'worker_spawn');
-const hasQueries = (list) => Object.prototype.hasOwnProperty.call(spawnOf(list).inputSchema.properties, 'memory_queries');
+const createOf = (list) => list.find((t) => t.name === 'task_create');
+const has = (t) => Object.prototype.hasOwnProperty.call(t.inputSchema.properties, 'memory_queries');
+const hasQueries = (list) => has(spawnOf(list)) && has(createOf(list)) ? true : has(spawnOf(list)) || has(createOf(list)) ? null : false; // true: both list it; false: neither; null: one only
 
 async function wireListing(levers) {
   const data = sandboxDir('ql');
@@ -25,7 +27,9 @@ test('module: the field is off the listing by default and on with queries, and n
   const off = tools.toolsFor('orchestrator'), on = tools.toolsFor('orchestrator', { queries: true });
   assert.strictEqual(hasQueries(off), false);
   assert.strictEqual(hasQueries(on), true);
-  assert.deepStrictEqual(off.filter((t) => t.name !== 'worker_spawn'), on.filter((t) => t.name !== 'worker_spawn'));
+  assert.deepStrictEqual(off.filter((t) => t.name !== 'worker_spawn' && t.name !== 'task_create'), on.filter((t) => t.name !== 'worker_spawn' && t.name !== 'task_create'));
+  assert.ok(has(createOf(on)) && !has(createOf(off)), 'task_create lists the field with the lever on only');
+  assert.deepStrictEqual(Object.keys(createOf(on).inputSchema.properties).filter((k) => k !== 'memory_queries'), Object.keys(createOf(off).inputSchema.properties), 'the other task_create properties keep their order');
   const { memory_queries, ...rest } = spawnOf(on).inputSchema.properties;
   assert.ok(memory_queries);
   assert.deepStrictEqual(spawnOf(off).inputSchema.properties, rest, 'the other properties keep their order and text');
@@ -42,7 +46,8 @@ test('a worker_spawn call that carries memory_queries is accepted when the field
 
 test('over the wire: no levers and a run without the index do not list it, first_message_index does', async () => {
   assert.strictEqual(hasQueries(await wireListing(null)), false);
-  assert.strictEqual(hasQueries(await wireListing(JSON.stringify({ project: 'p', notes: true }))), false);
+  assert.strictEqual(hasQueries(await wireListing(JSON.stringify({ project: 'p', notes: true, first_message_index: false }))), false);
+  assert.strictEqual(hasQueries(await wireListing(JSON.stringify({ project: 'p', notes: true }))), true, 'the index follows notes');
   const on = await wireListing(JSON.stringify({ project: 'p', notes: false, first_message_index: true }));
   assert.strictEqual(hasQueries(on), true);
   assert.deepStrictEqual(on, tools.toolsFor('orchestrator', { queries: true }));
@@ -55,7 +60,7 @@ test('the gate answers from the adapter\'s own run row once attached, and from t
   const attached = createKnowledgeGate({ role: 'orchestrator', runId: 'r1', storeExists: () => false, openCore: async () => { throw new Error('no read once attached'); }, log: noop, attachedRun: () => row({ project: 'p', first_message_index: true }) });
   await attached();
   assert.strictEqual(attached.queries(), true);
-  const attachedOff = createKnowledgeGate({ role: 'orchestrator', runId: 'r1', storeExists: () => false, openCore: async () => { throw new Error('no read'); }, log: noop, attachedRun: () => row({ project: 'p' }) });
+  const attachedOff = createKnowledgeGate({ role: 'orchestrator', runId: 'r1', storeExists: () => false, openCore: async () => { throw new Error('no read'); }, log: noop, attachedRun: () => row({ project: 'p', first_message_index: false }) });
   await attachedOff();
   assert.strictEqual(attachedOff.queries(), false);
   const unread = createKnowledgeGate({ role: 'orchestrator', runId: 'r1', storeExists: () => false, openCore: async () => { throw new Error('no store'); }, log: noop });

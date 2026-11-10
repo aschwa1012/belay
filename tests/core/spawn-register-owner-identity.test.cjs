@@ -78,12 +78,12 @@ test('registerOrchestrator: the exit hook leaves another spawn record, and remov
   const reg = H.ownSpawnRegistry();
   try {
     const proc = new EventEmitter();
-    registerOrchestrator({ pid: 5151, exited: () => true }, { dataDir: 'A:/store', proc, stampOpts: { every: 3600000 } });
+    registerOrchestrator({ pid: 5151, exited: () => true }, { dataDir: 'A:/store', proc, createdOf: async () => null, stampOpts: { every: 3600000 } });
     SR.register({ pid: 5151, kind: 'worker', workerId: 'other', dataDir: 'B:/store', created: 3000 });
     proc.emit('exit');
     assert.ok(fs.existsSync(recFile(reg, 5151)), 'store B record stays');
     const own = new EventEmitter();
-    registerOrchestrator({ pid: 5152, exited: () => true }, { dataDir: 'A:/store', proc: own, stampOpts: { every: 3600000 } });
+    registerOrchestrator({ pid: 5152, exited: () => true }, { dataDir: 'A:/store', proc: own, createdOf: async () => null, stampOpts: { every: 3600000 } });
     own.emit('exit');
     assert.ok(!fs.existsSync(recFile(reg, 5152)), 'its own record is removed');
   } finally { reg.remove(); }
@@ -118,7 +118,7 @@ test('registerOrchestrator: a later orchestrator of the same store at the reused
   const reg = H.ownSpawnRegistry();
   try {
     const proc = new EventEmitter();
-    registerOrchestrator({ pid: 5151, exited: () => true }, { dataDir: 'A:/store', proc, stampOpts: { every: 3600000 } });
+    registerOrchestrator({ pid: 5151, exited: () => true }, { dataDir: 'A:/store', proc, createdOf: async () => null, stampOpts: { every: 3600000 } });
     SR.register({ pid: 5151, kind: 'orchestrator', dataDir: 'A:/store', spawnedAt: Date.now() + 1 }); // run B, same store
     proc.emit('exit');
     assert.ok(fs.existsSync(recFile(reg, 5151)), 'run B orchestrator record stays');

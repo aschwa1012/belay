@@ -43,7 +43,7 @@ const summaryOf = async (s) => {
   return s.op.memory.get({ id: listed.rows[0].id, view: 'full' });
 };
 
-test('the summary lists the files and commands in the observation bodies', async () => {
+test('legacy: the summary lists the files and commands in the observation bodies', async () => {
   const s = await setup([
     { v: 1, turn: 1, files_read: ['a.cjs'], files_modified: ['b.cjs'], commands: [{ command: 'npm test', exit_code: 1 }], errors: 0 },
     { v: 1, turn: 2, files_read: ['c.cjs'], files_modified: ['b.cjs', 'd.cjs'], commands: [{ command: 'npm test', exit_code: 0 }], errors: 1 },
@@ -59,7 +59,7 @@ test('the summary lists the files and commands in the observation bodies', async
   } finally { await teardown(s); }
 });
 
-test('500 observations with commands still give a stored summary under 8192 bytes, with the counts', async () => {
+test('legacy: 500 observations with commands still give a stored summary under 8192 bytes, with the counts', async () => {
   const obs = Array.from({ length: 500 }, (_, i) => ({
     v: 1, turn: i + 1, files_read: [`src/read/file-${i}.cjs`], files_modified: [`src/changed/file-${i}.cjs`],
     commands: [{ command: `node scripts/run-check.cjs --case ${i} ${'x'.repeat(300)}`, exit_code: i % 7 === 0 ? 1 : 0 }], errors: 0,
@@ -88,7 +88,7 @@ const failOnCall = (core, which) => {
   core.memory.get_many = async (a) => { n += 1; if (n >= which) throw Object.assign(new Error('busy'), { code: 'E_BUSY' }); return real(a); };
 };
 
-test('the kept commands are the last 30, in order, and the files the first 50', async () => {
+test('legacy: the kept commands are the last 30, in order, and the files the first 50', async () => {
   const s = await setup(turns(120));
   try {
     await MJ.runEndJobs({ core: s.op, runId: RUN, levers: LEVERS });
@@ -100,7 +100,7 @@ test('the kept commands are the last 30, in order, and the files the first 50', 
   } finally { await teardown(s); }
 });
 
-test('a read that stops partway keeps what it read and says the list is incomplete', async () => {
+test('legacy: a read that stops partway keeps what it read and says the list is incomplete', async () => {
   const s = await setup(turns(120));
   try {
     failOnCall(s.op, 2);
@@ -112,7 +112,7 @@ test('a read that stops partway keeps what it read and says the list is incomple
   } finally { await teardown(s); }
 });
 
-test('nothing read of a task that has observations is a failed summary, not an empty one', async () => {
+test('legacy: nothing read of a task that has observations is a failed summary, not an empty one', async () => {
   const s = await setup(turns(3));
   try {
     failOnCall(s.op, 1);
@@ -125,7 +125,7 @@ test('nothing read of a task that has observations is a failed summary, not an e
   } finally { await teardown(s); }
 });
 
-test('the stored body is under 8192 bytes for hostile input of every kind', async () => {
+test('legacy: the stored body is under 8192 bytes for hostile input of every kind', async () => {
   const { summarise } = require('../../src/run/summarise.cjs');
   const big = (n, c = 'x') => c.repeat(n);
   const cases = {

@@ -9,7 +9,7 @@ const { err } = require('./errors.cjs');
 const K = 60;
 // ADR 0040 amendment (hybrid default), chosen by the second hybrid evaluation: the fusion memory.search and the first-message
 // index share, so a worker's index and its own search rank the same way.
-const HYBRID_ALPHA = 0.3, HYBRID_K = 10;
+const HYBRID_ALPHA = 0.5, HYBRID_K = 10;
 
 // An item is an id or an object carrying one. The first occurrence of an id is its rank.
 const idOf = x => (x !== null && typeof x === 'object' ? x.id : x);

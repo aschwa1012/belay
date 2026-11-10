@@ -50,15 +50,20 @@ function requiredLine(task) {
 // The rule for the task in this assign answer, or '' when there is no lease to name. A coder or fixer in the task's own belay
 // worktree commits before it hands back (integrate merges a commit of what was judged); a reviewer never commits in the tree it
 // judges, and hands back a verdict.
-function rule(assigned, fact = '') {
+// ADR 0074 amendment 4: a worker that needs the orchestrator says so in its hand-back, and that always wakes it, planned task or not.
+const ESCALATE_LINE = ' If you need the orchestrator (a question, blocked, a scope or plan change, a conflict, an unclear spec), add "escalate": { "kind": "question|blocked|scope|conflict|spec", "reason": "..." } to the result: it is woken with your reason.';
+
+// A Codex worker's sandbox cannot commit, so belay commits its worktree changes when it hands back: its rule says so and does not ask for a commit.
+function rule(assigned, fact = '', substrate = null) {
   const lease = assigned && assigned.new_lease ? assigned.new_lease.id : null;
   if (!lease) return '';
   const task = assigned.task || {};
   if (isVerdict(task)) {
-    return `\n\nWhen you are finished, call lease_release with lease_id ${lease} and result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [{ "severity": "blocking|should-fix|note", "title": "...", ... }] }.${requiredLine(task)}${fact}\n\n${reviewStandard()}`;
+    return `\n\nWhen you are finished, call lease_release with lease_id ${lease} and result: { "verdict": "holds" | "refuted", "summary": "...", "findings": [{ "severity": "blocking|should-fix|note", "title": "...", ... }] }.${ESCALATE_LINE}${requiredLine(task)}${fact}\n\n${reviewStandard()}`;
   }
   const commits = !!(task.worktree && task.worktree.path && !task.worktree.removed_at);
-  return `\n\nWhen you are finished, ${commits ? 'commit your work in your worktree, then ' : ''}call lease_release with lease_id ${lease} and a result object (branch, head, tests, findings).${requiredLine(task)}`;
+  if (commits && substrate === 'codex') return `\n\nWhen you are finished, call lease_release with lease_id ${lease} and a result object (summary, tests, findings). Do not run git commit: belay commits your changes in your worktree when you hand back.${ESCALATE_LINE}${requiredLine(task)}`;
+  return `\n\nWhen you are finished, ${commits ? 'commit your work in your worktree, then ' : ''}call lease_release with lease_id ${lease} and a result object (branch, head, tests, findings).${ESCALATE_LINE}${requiredLine(task)}`;
 }
 
-module.exports = { rule, facts, reviewStandard, isVerdict, STANDARD_FILE };
+module.exports = { rule, facts, reviewStandard, isVerdict, STANDARD_FILE, ESCALATE_LINE };

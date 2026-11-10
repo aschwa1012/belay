@@ -28,7 +28,7 @@ const { withDataNotice } = require('./data-notice.cjs'); // invariant 8: a resul
 const { parseArgv, die } = require('./argv.cjs'); // identity from argv only; moved out to keep this file short
 
 const SERVER_NAME = 'belay';
-const SERVER_VERSION = '0.3.3';
+const SERVER_VERSION = '0.4.0';
 const DEFAULT_PROTOCOL = '2025-06-18';
 
 const opts = parseArgv(process.argv.slice(2));
@@ -132,6 +132,8 @@ function attachOnce(c) {
         // reattach that did so silently would be a state change nobody can see. Recorded on both
         // channels, and kept for status to carry.
         ATTACH = att;
+        // A plan-first orchestrator's first turn may call no worker tool, so nothing would open the run manager and its policy executor: open them now.
+        if (opts.role === 'orchestrator' && att && att.run && att.run.policy_default) setImmediate(() => !closing && openRunManagerOnce().catch((e) => wlog('!!', `policy executor start: ${e && e.message}`)));
         const dead = (att && att.workers_marked_dead) || [];
         const line = `run.attach epoch=${att && att.epoch} reattached=${att && att.reattached} `
           + `workers_marked_dead=${dead.length}${dead.length ? ` [${dead.join(', ')}]` : ''}`;
@@ -207,7 +209,7 @@ function openRunManagerOnce() {
         const adapterCore = await openCoreOnce(); // ADR 0045 decision 5: the pipe acts only on a ticket this adapter redeems with the owner
         const control = createWorkerControl({ dataDir: opts.dataDir, manager: r, redeem: (a) => adapterCore.ticketRedeem(a) });
         await control.listen();
-        runManager = r;
+        runManager = r; if (opts.role === 'orchestrator') require('./policy-wire.cjs').start({ core: adapterCore, manager: r, opts, run: attachedRun(), log: (m) => wlog('!!', m) }); // ADR 0072: the policy executor
         workerControl = control;
         const line = `worker control pipe=${control.pipe} pid=${process.pid}`;
         wlog('##', line);
@@ -218,33 +220,7 @@ function openRunManagerOnce() {
   }
   return runPromise;
 }
-
-// The contract names Core methods with dots. Whether the module hangs them off nested namespaces
-// (core.memory.store), flat dotted keys or camelCase is not stated, so all three are accepted and a
-// method that is genuinely absent fails loudly with E_INTERNAL naming it.
-function resolveCoreMethod(c, dotted) {
-  const parts = dotted.split('.');
-  let owner = c;
-  let cur = c;
-  for (const p of parts) {
-    if (cur == null) { cur = undefined; break; }
-    owner = cur;
-    cur = cur[p];
-  }
-  if (typeof cur === 'function') return cur.bind(owner);
-  if (typeof c[dotted] === 'function') return c[dotted].bind(c);
-  const camel = parts[0] + parts.slice(1).map((s) => s[0].toUpperCase() + s.slice(1)).join('');
-  if (typeof c[camel] === 'function') return c[camel].bind(c);
-  return null;
-}
-
-const fail = (code, message, detail) => {
-  const e = new Error(message);
-  e.code = code;
-  if (detail !== undefined) e.detail = detail;
-  return e;
-};
-
+const { resolveCoreMethod, fail } = require('./core-method.cjs');
 async function callCore(dotted, args, channel = null) {
   const c = await settleEpoch(await openCoreOnce());
   const fn = resolveCoreMethod(channel && typeof c.keepalive === 'function' ? c.keepalive() : c, dotted); // channel: the keep-alive's own (ADR 0054 amendment 1)
@@ -252,7 +228,7 @@ async function callCore(dotted, args, channel = null) {
   return fn(args);
 }
 
-const COMPOSE = require('./compose.cjs').createCompose({ callCore, manager: () => runManager, openManager: () => openRunManagerOnce(), dataDir: opts.dataDir, runId: opts.runId });
+const COMPOSE = require('./compose.cjs').createCompose({ callCore, manager: () => runManager, openManager: () => openRunManagerOnce(), dataDir: opts.dataDir, runId: opts.runId, onPolicy: () => { require('./policy-wire.cjs').arm(); if (!closing) openRunManagerOnce().catch((e) => wlog('!!', `policy executor start: ${e && e.message}`)); } });
 // ADR 0053 decision 6: worker_spawn's cwd defaults to the worktree belay made for task_id, and a different one is refused, so a
 // worker is never pointed past its task's own tree by a typo. Without a recorded worktree the call is as it was.
 async function reviewedWorktree(task) {
@@ -338,7 +314,7 @@ async function callTool(name, args) {
     if (typeof r[route.method] !== 'function') throw fail('E_INTERNAL', `the run manager exposes no method ${route.method}`, { method: route.method });
     // ADR 0048: a restart must answer inside MCP_TOOL_TIMEOUT (120 s); it may spend 100 s, then returns early (manager.restart).
     if (name === 'worker_restart') return r[route.method]({ ...args, mcp_budget_ms: RESTART_MCP_BUDGET_MS });
-    return r[route.method](args);
+    return r[route.method](name === 'worker_wait' ? require('./tools-orchestrator.cjs').waitArgs(args) : args); // ADR 0037 amendment 7: a short check by default
   }
   throw fail('E_INTERNAL', `tool ${name} has no route`, { tool: name });
 }
@@ -371,6 +347,7 @@ async function handle(msg) {
     return undefined;
   }
   if (method === 'notifications/initialized') { ownCreatedNow(); return undefined; }
+  if (method === 'notifications/cancelled') { require('../run/call-signal.cjs').cancel(params && params.requestId); return undefined; } // a worker_wait in flight under that id (call-signal.cjs)
   if (typeof method === 'string' && method.startsWith('notifications/')) return undefined;
   if (method === 'ping') return send({ jsonrpc: '2.0', id, result: {} });
   if (method === 'tools/list') {
@@ -390,8 +367,12 @@ async function handle(msg) {
       return send({ jsonrpc: '2.0', id, result });
     }
     try {
-      const row = await require('./call-budget.cjs').withinBudget(name, args, (async () => opts.role === 'orchestrator' && require('./views.cjs').isViewed(name) ? await require('./views.cjs').viewed(name, args, (a) => callTool(name, a)) : (opts.role === 'worker' && name === 'lease_release' ? require('./views.cjs').leaseRelease(await callTool(name, args), args) : await callTool(name, args)))(), process.env, opts.role === 'orchestrator' ? require('./call-hooks.cjs').callHooks(callCore) : null); // ADR 0058 amendment 3: compact unless view debug; a worker's lease_release answer is compact too // call-budget.cjs: integrate and task_evaluate answer before the client's tool timeout
-      return send({ jsonrpc: '2.0', id, result: okResult(row) });
+      const tracked = await require('../run/call-signal.cjs').run(id, name, () => require('./call-budget.cjs').withinBudget(name, args, (async () => opts.role === 'orchestrator' && require('./views.cjs').isViewed(name) ? await require('./views.cjs').viewed(name, args, (a) => callTool(name, a)) : (opts.role === 'worker' && name === 'lease_release' ? require('./views.cjs').leaseRelease(await callTool(name, args), args) : await callTool(name, args)))(), process.env, opts.role === 'orchestrator' ? require('./call-hooks.cjs').callHooks(callCore) : null)); // a cancelled worker_wait claims nothing and is not answered (call-signal.cjs) // ADR 0058 amendment 3: compact unless view debug; a worker's lease_release answer is compact too // call-budget.cjs: integrate and task_evaluate answer before the client's tool timeout
+      if (tracked.cancelled) return undefined;
+      const row = tracked.value;
+      const sent = send({ jsonrpc: '2.0', id, result: okResult(row) });
+      tracked.confirm(); // the reply is written: a worker_wait's claim stands (call-signal.cjs)
+      return sent;
     } catch (e) {
       return send({ jsonrpc: '2.0', id, result: errResult(e) });
     }
@@ -476,7 +457,7 @@ async function shutdown() {
       // A verdict drain that was cut off or failed is named here (the review tasks still pending and what became of the receipt), never dropped.
       const vd = res && res.verdict_drain;
       const drainText = vd ? ` verdict_drain=[pending ${(vd.pending || []).join(', ') || 'none'}; receipt ${vd.receipt === 'written' ? 'written' : (vd.receipt && vd.receipt.error) || 'none'}${vd.error ? `; error ${vd.error}` : ''}]` : '';
-      const line = `shutdown stopped=${stopped.length}${stopped.length ? ` [${stopped.join(', ')}]` : ''} ms=${res && res.ms}${drainText}`;
+      const line = `shutdown stopped=${stopped.length}${stopped.length ? ` [${stopped.join(', ')}]` : ''} ms=${res && res.ms}${drainText} ${require('../run/worker-temp.cjs').describe(res && res.worker_temp)}`.trimEnd();
       wlog('##', line);
       process.stderr.write(`belay-mcp: ${line}\n`);
     } else if (core) {

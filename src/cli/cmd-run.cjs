@@ -84,7 +84,7 @@ async function run(ctx) {
   parsed.promptWarnings = parsed.briefText !== null ? [] : require('./run-prompt-check.cjs').checkPrompt({ promptText: parsed.promptText, promptFile: parsed.promptFile, mode, levers: parsed.levers, timeoutMs: parsed.timeout_ms }); // a stale copy of the template: a warning, never a refusal
   const sub = mode === 'interactive'
     ? substituteLevers(parsed.promptText, parsed.levers, 0, { mode: 'interactive' })
-    : substituteLevers(parsed.promptText, parsed.levers, parsed.timeout_ms);
+    : substituteLevers(parsed.promptText, parsed.levers, parsed.timeout_ms, { startedAt: Date.now() }); // the rule's start and deadline (ADR 0037 amendment 7); rendered at launch, so a little before the run's own clock starts
   parsed.promptMarker = require('./run-prompt-check.cjs').markerVersion(parsed.promptText); // ADR 0082: the copy's version, read before the markers are stripped
   parsed.promptText = parsed.briefText !== null ? BR.appendBrief(stripMarkers(sub.text), parsed.briefText) : stripMarkers(sub.text); // the header markers were read above; the orchestrator is not shown them
   parsed.levers.substituted = sub.substituted;
@@ -92,6 +92,8 @@ async function run(ctx) {
   require('../run/exe-discovery.cjs').exportConfigured(found, C.effective); // config claude_exe/codex_exe reach every child
   // The orchestrator is always Claude Code: a missing executable exits 1 (a host prerequisite, like the embedder) before any file is created.
   try { require('../run/exe-discovery.cjs').exeFor('claude'); } catch (e) { return { code: 1, text: `belay run: ${e.message}\n`, json: { error: e.message } }; }
+  if (parsed.levers.memory_project && !ctx.json) process.stderr.write(`belay: notes project ${parsed.levers.memory_project.name} (derived from ${parsed.levers.memory_project.source}); set memory.project to change it
+`); // the run's own choice of name, said once
   if (parsed.levers.memory_notice && !ctx.json) process.stderr.write(`${require('../core/memory-notice.cjs').noticeLines(parsed.levers.memory_notice, 'belay: ').join('\n')}\n`); // once, before anything launches; under --json stderr carries failure receipts, so the notice stays out of it
   if (parsed.promptWarnings.length && !ctx.json) process.stderr.write(`${parsed.promptWarnings.map((w) => `belay: warning: ${w.message}`).join('\n')}\n`); // once; under --json the receipt's prompt_warnings carries it
   const dataDir = C.dataDirOf(found, ctx);
@@ -104,6 +106,8 @@ async function run(ctx) {
   fs.mkdirSync(dataDir, { recursive: true });
 
   const t0 = Date.now();
+  const DT = require('../run/drive-tmp.cjs');
+  const driveTmpStart = DT.snapshot(DT.folder()); // the drive-root tmp, listed now and again at the end: a record, never a gate
   // 5c design item 5: `stopControl` is a `let` bound only after openCore, so the arrow below is late-bound: no owner exists until
   // the election, so no control can arrive before it is assigned.
   // ADR 0023 amendment 3 decision 4: `runPauseControl` (run-pause.cjs) joins it, registered as `run.pause`/`run.resume`. `hookBox` is the
@@ -113,7 +117,7 @@ async function run(ctx) {
   // The headless orchestrator is recorded in the machine-wide spawn register, so another store's owner refuses its descendants too.
   // A register that cannot be written throws: the orchestrator runner ends the child before its first prompt (a launch that fails open
   // would leave other stores taking its descendants for operators).
-  const registerOrchestrator = (h) => require('../run/register-orchestrator.cjs').registerOrchestrator(h, { dataDir });
+  const runWire = require('../run/register-orchestrator.cjs').wireRun({ hookBox, dataDir, interactive: !!ce });
   const core = await openCore({
     dataDir, caller: { role: 'operator', run_id: parsed.runId, pid: process.pid },
     ownerOpts: {
@@ -123,7 +127,7 @@ async function run(ctx) {
       // the human's own session (its plugin runs the CLI), so it is not listed. Where the peer cannot be examined the owner stays claimed.
       mode: require('../core/operator-check.cjs').SUPPORTED ? 'bound' : 'claimed',
       longLived: true, // it serves the whole run, so it may start the snapshot probe a merge's owner_boot reads (ADR 0053 amendment 2)
-      spawnedProcesses: () => require('../core/spawn-register.cjs').runSpawned(!!ce, hookBox.pid),
+      spawnedProcesses: () => runWire.spawned(),
       controls: {
         'run.stop': (params) => stopControl.handle(params),
         // ADR 0023 amendment 5: an interactive run registers them too; its pause parks the workers and leaves the session alone
@@ -180,7 +184,7 @@ async function run(ctx) {
   });
   budget = require('../run/budget-guard.cjs').createBudgetGuard({ dataDir, core, runId: parsed.runId, runLimit: parsed.levers.budget_usd || null, source: parsed.levers.budget_source || null, countInFlight: parsed.levers.budget_counts_in_flight === true, interactive: !!ce, warn: ctx.json ? null : (m) => process.stderr.write(m), pauseRun: (why) => runPauseControl.pause({ run_id: parsed.runId, caller: opCaller }, why) });
   if (ce && ctx.interactiveDeps && ctx.interactiveDeps.onGuard) ctx.interactiveDeps.onGuard(guard); // test seam
-  const attachHook = { attach: (h) => { stopControl.attach(h); Object.assign(hookBox, h); if (!ce) registerOrchestrator(h); } };
+  const attachHook = { attach: (h) => { stopControl.attach(h); runWire.attach(h); } };
 
   // Step 2 (5a-2 design): elect before any write, any file under orchestrator_dir, or any process
   // spawned. A refusal here has made no write of any kind.
@@ -238,7 +242,7 @@ async function run(ctx) {
   if (!warm.ok && guard.mode() === 'required') {
     let sd = null;
     try { sd = await core.shutdownOwner(); } catch (e) { sd = { error: (e && e.message) || String(e) }; }
-    const endedBy = `the embedder could not be warmed, so the run did not start: ${warm.code}: ${warm.message}; fix: ${warm.fix}`;
+    const endedBy = `the embedder could not be warmed, so the run did not start: ${warm.code}: ${warm.message}; fix: ${warm.fix}; ${require('../core/embedder-mode.cjs').withoutEmbedderAdvice()}`;
     const receipt = refusal(endedBy, process.pid, 'embedder warm-up failed before any spawn');
     receipt.embedder = warm;
     receipt.store.shutdown = sd;
@@ -259,7 +263,7 @@ async function run(ctx) {
     try {
       clearRunStart(orchestratorDir); // before this launch's attach: no marker of an earlier life of this run id survives
       RID.watchOrchestrator(pid); // ADR 0039: run-identity.cjs; the attach never waits on a snapshot
-      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, max_follow_ups: parsed.levers.max_follow_ups, fix_hard_cap: parsed.levers.fix_hard_cap, fix_hard_cap_source: parsed.levers.fix_hard_cap_source, max_parallel_evaluations: parsed.levers.max_parallel_evaluations === undefined ? null : parsed.levers.max_parallel_evaluations, merge_into: parsed.levers.merge_into === undefined ? null : parsed.levers.merge_into, cross_run_merge: parsed.levers.cross_run_merge === true ? true : null, run_mode: mode, budget_usd: parsed.levers.budget_usd || null, budget_explicit: /^spec/.test(parsed.levers.budget_source || ''), project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, harness, ...attachMemory(parsed.levers) });
+      attachRow = await core.run.attach({ adapter_pid: process.pid, adapter_pid_created: await RID.ownNow(), orchestrator_pid: pid, orch_effort_requested: eff.effort, max_fix_rounds: parsed.levers.max_fix_rounds, max_follow_ups: parsed.levers.max_follow_ups, fix_hard_cap: parsed.levers.fix_hard_cap, fix_hard_cap_source: parsed.levers.fix_hard_cap_source, max_parallel_evaluations: parsed.levers.max_parallel_evaluations === undefined ? null : parsed.levers.max_parallel_evaluations, max_parallel_builds: parsed.levers.max_parallel_builds === undefined ? null : parsed.levers.max_parallel_builds, merge_into: parsed.levers.merge_into === undefined ? null : parsed.levers.merge_into, cross_run_merge: parsed.levers.cross_run_merge === true ? true : null, run_mode: mode, budget_usd: parsed.levers.budget_usd || null, policy_default: parsed.levers.policy_default || null, budget_explicit: /^spec/.test(parsed.levers.budget_source || ''), project_dir: found.found ? found.dir : C.writeDirOf(ctx.cwd), embedder_mode: parsed.levers.on_embedder_failure, harness, ...attachMemory(parsed.levers) });
       await budget.loadAttach(attachRow.run); for (const w of attachRow.warnings || []) process.stderr.write("belay run: warning: " + w + String.fromCharCode(10));
       // ADR 0050: the routing is resolved once, here, before the orchestrator's first prompt (a heavy backlog is drained or fallen back from first).
       try {
@@ -302,6 +306,7 @@ async function run(ctx) {
           closeGraceMs: parsed.close_grace_ms, compactAtTokens: parsed.levers.compact_at_tokens, stopIdleOnDone: !!parsed.levers.stop_idle_on_done, permissionPrompt: !!parsed.levers.permission_prompt, // ADR 0007 decision 3; ADR 0058; ADR 0020
           interactiveSurfaceMs: parsed.interactive_surface_ms, fullscreen: parsed.fullscreen,
           knowledgeAgent: !!(parsed.levers.memory_levers && parsed.levers.memory_levers.knowledge_agent),
+          policy: !!parsed.levers.policy_default, // the run's plan arms the policy watcher from the start: a plan-first run's first step is a build, before any turn end
           notes: !!(parsed.levers.memory_levers && parsed.levers.memory_levers.notes), // wave 4: the refuted-note wake reads receipts only for a notes run
           budgetWake: budget, // the budget pause's own wake, written past the run's hold; the headless orchestrator's cost feeds the guard
         },
@@ -407,7 +412,9 @@ async function run(ctx) {
     : crashedBy;
   const holds = partial ? partial.holds : [];
   const polls = partial ? partial.polls : 0;
-  const wakes = partial ? partial.wakes : [];
+  // ADR 0074: the wakes a worker_wait delivered are in the receipt too (via: 'wait'); the same fact is in wakes_suppressed only as a note of the duplicate.
+  const waitWakes = require('../run/run-digest.cjs').readDeliveries(dataDir, parsed.runId, t0);
+  const wakes = (partial ? partial.wakes : []).concat(waitWakes).sort((a, b) => a.at_ms - b.at_ms);
   const wakesSuppressed = partial ? partial.wakes_suppressed : [];
   const wakesExpired = partial ? partial.wakes_expired : []; // 5b fix round, finding 2
   // Fix round (6f finding 4): runOrchestrator already returns these (orchestrator.cjs's own `settle`);
@@ -432,14 +439,14 @@ async function run(ctx) {
     run_id: parsed.runId, mode, data_dir: dataDir, spec_path: specPath, orchestrator_dir: orchestratorDir,
     orchestrator: { ...orchestratorBlock, ...(await RID.orchestratorFacts()) }, store: storeBlock, orch_effort_requested: eff.effort, agent_settings: parsed.agentSettings, // ADR 0028 (SF3); ADR 0039 pid_created
     ended_by: endedBy, holds, polls, wakes, wakes_suppressed: wakesSuppressed, wakes_expired: wakesExpired,
-    wakes_held: wakesHeld, pauses, ...(leftovers && (leftovers.found.length || leftovers.not_taken) ? { orchestrator_leftovers: leftovers } : {}),
+    wakes_held: wakesHeld, pauses, ...(partial && partial.stall ? { stall: partial.stall } : {}), ...(leftovers && (leftovers.found.length || leftovers.not_taken) ? { orchestrator_leftovers: leftovers } : {}),
     stop: stopReceipt, ms: Date.now() - t0, receipt_path: null,
     ...require('./run-routing.cjs').receiptBlock(routingPin, gotRun), // the pin as the row holds it at the end, so a fallback in force is in the receipt; under --json the start-up progress lines are here
     levers: parsed.levers, prompt_warnings: parsed.promptWarnings, on_embedder_failure_final: guard.mode(), memory_off: guard.memoryOff(), embedder: warm, embedder_failures: guard.events(), ...(guard.reloads().length ? { embedder_reloads: guard.reloads() } : {}), ...(embedBounds && embedBounds.length ? { embedder_bounds: embedBounds } : {}),
     review_rounds: reviewRounds.value, review_rounds_reason: reviewRounds.reason,
     workers_closed: closed ? workersClosedBlock(closed, endedRow ? (endedRow.workers_marked_dead || []) : null) : null,
-    ...(closeStages ? { close_stages: closeStages } : {}), ...(await require('./run-prepared.cjs').left(core, parsed.runId)), // close_stages only with notes on; prepared_left: merges kept for the user
-    ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), ...(treesClosed ? { worktrees_closed: treesClosed } : {}), ...(taskChecks || {}), ...require('../run/review-scratch.cjs').closeRun(dataDir, parsed.runId, parsed.levers), // the run-end memory jobs; the reviewers' scratch removed (ADR 0054 amendment 1)
+    ...(closeStages ? { close_stages: closeStages } : {}), ...DT.receiptBlock(driveTmpStart, DT.snapshot(DT.folder())), ...(await require('./run-prepared.cjs').left(core, parsed.runId)), // close_stages only with notes on; prepared_left: merges kept for the user
+    ...(memoryEnd ? { memory_run_end: memoryEnd } : {}), ...(treesClosed ? { worktrees_closed: treesClosed } : {}), ...(taskChecks || {}), ...(await require('../run/run-digest.cjs').receiptField(core, dataDir, parsed.runId)), ...require('../run/review-scratch.cjs').closeRun(dataDir, parsed.runId, parsed.levers), // the run-end memory jobs; the reviewers' scratch removed (ADR 0054 amendment 1)
   };
   try {
     fs.writeFileSync(receiptPath, `${JSON.stringify({ ...receipt, receipt_path: receiptPath }, null, 2)}\n`);

@@ -26,7 +26,7 @@ const ALL_NAMES = new Set(ALL_ON.concat(BASE).map((t) => t.name));
 // lease_release), a value (done), a branch name (main).
 const NOT_FIELDS = new Set(['done', 'lease_release', 'main']);
 // Per tool: the prompt names a result or a refusal detail beside the tool, not an input.
-const NOT_FIELDS_OF = { memory_store: new Set(['notes']), worker_message: new Set(['op', 'queued']), worker_spawn: new Set(['coder']), worker_wait: new Set(['already', 'evaluated', 'evaluating']), task_assign: new Set(['delivered']), task_create: new Set(['flaky']), memory_retrieve: new Set(['memory_ids']) };
+const NOT_FIELDS_OF = { memory_store: new Set(['notes']), worker_message: new Set(['op', 'queued']), worker_spawn: new Set(['coder']), worker_wait: new Set(['already', 'evaluated', 'evaluating', 'evaluation', 'exceptions', 'digest']), task_assign: new Set(['delivered']), task_create: new Set(['flaky']), memory_retrieve: new Set(['memory_ids']) };
 
 // Marks: every `mcp__belay__<tool>` (the tool must exist) and every backticked bare name that is a listed tool.
 function marks(text) {
@@ -105,7 +105,7 @@ function hasFieldOrNested(listing, tool, key) {
   if (key.includes('.')) return false;
   // or a property of the items of an array one object down (acceptance.commands[].retries_on_fail).
   const itemHas = (o) => Object.values((o && o.properties) || {}).some((p) => p.type === 'array' && p.items && p.items.properties && p.items.properties[key]);
-  return Object.keys(props).some((k) => props[k].type === 'object' && (hasField(listing, tool, `${k}.${key}`) || itemHas(props[k])));
+  return Object.keys(props).some((k) => [].concat(props[k].type).includes('object') && (hasField(listing, tool, `${k}.${key}`) || itemHas(props[k]))); // a nullable object (task_create's policy) counts
 }
 
 function check(label, text, listing, impliedTool) {
@@ -124,7 +124,7 @@ for (const f of ['orchestrator.md', 'orchestrator-interactive.md']) {
   test(`${f}: every tool and field the prompt names is in the orchestrator listing`, () => {
     const ps = check(f, read(f), BASE);
     for (const [t, k] of [['task_create', 'acceptance.verdict'], ['task_create', 'spec'], ['worker_spawn', 'substrate'], ['worker_spawn', 'agent_type'],
-      ['worker_spawn', 'worktree'], ['task_evaluate', 'task_id'], ['worker_wait', 'worker_ids'], ['memory_store', 'text']]) {
+      ['worker_spawn', 'worktree'], ['task_evaluate', 'task_id'], ['worker_wait', 'worker_ids'], ['memory_search', 'query']]) {
       assert.ok(has(ps, t, k), `the extraction finds ${t}.${k}`);
     }
   });
@@ -168,11 +168,11 @@ test('tripwire: invented fields appended to a prompt are caught, in both prompts
 test('A5 the largest orchestrator listing (every lever on) is pinned and inside the 20,480 byte budget', () => {
   const bytes = tools.listingBytes('orchestrator', { notes: true, knowledge: true, queries: true });
   assert.ok(bytes <= tools.BUDGET.orchestrator, `everything-on orchestrator listing is ${bytes} bytes, over ${tools.BUDGET.orchestrator} by ${bytes - tools.BUDGET.orchestrator}`);
-  assert.strictEqual(bytes, 16129, 'the everything-on orchestrator listing size is pinned; change this with the ADR 0010 amendment that changes it');
+  assert.strictEqual(bytes, 17603, 'the everything-on orchestrator listing size is pinned; change this with the ADR amendment that changes it (last: ADR 0042 amendment, task_create memory_queries)');
 });
 
 test('the everything-on listing with the permission channel is pinned and inside the budget (ADR 0010 amendment 16)', () => {
   const bytes = tools.listingBytes('orchestrator', { notes: true, knowledge: true, queries: true, permissions: true });
   assert.ok(bytes <= tools.BUDGET.orchestrator, `permissions-on orchestrator listing is ${bytes} bytes, over ${tools.BUDGET.orchestrator} by ${bytes - tools.BUDGET.orchestrator}`);
-  assert.strictEqual(bytes, 16894, 'pinned; change this with the ADR 0010 amendment that changes it');
+  assert.strictEqual(bytes, 18368, 'pinned; change this with the ADR amendment that changes it (last: ADR 0042 amendment, task_create memory_queries)');
 });
