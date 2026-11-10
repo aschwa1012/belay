@@ -65,13 +65,13 @@ const resumeMd = (dir) => fs.readFileSync(path.join(dir, 'resume.md'), 'utf8');
 const names = (core) => core.calls.map((c) => c[0]);
 const TAIL = 'This is a fresh session replacing an interrupted one. Read resume.md in your worker directory, then continue.' + require('../../src/run/task-body.cjs').PROCESS_LINE;
 
-test('lever off: resume.md is the resumeDoc text byte for byte, the text is unchanged, no bottle call is made', async () => {
+test('legacy: lever off: resume.md is the resumeDoc text followed by the recent turns of the stream, the text is unchanged, no bottle call is made', async () => {
   for (const ctx of [undefined, { runId: 'r', memoryLevers: { ...DEFAULTS } }, { runId: 'r', memoryLevers: { ...DEFAULTS, observations: true } }]) {
     const { dir, w } = workerDir();
     try {
       const core = stubCore();
       const text = await restartFirstText(w, 'replace', { core, ctx: ctx && { ...ctx, core } });
-      assert.strictEqual(resumeMd(dir), DOC);
+      assert.ok(resumeMd(dir).startsWith(DOC), 'the resumeDoc text byte for byte, then the recent turns from the stream (turn_rows off)');
       assert.strictEqual(text, `LINE\n\n${TAIL}`);
       assert.deepStrictEqual(names(core), ['resumeDoc', 'resumeLine']);
       assert.deepStrictEqual(fs.readdirSync(dir).sort(), ['resume.md', 'sent.jsonl', 'stream.jsonl']);
@@ -79,7 +79,7 @@ test('lever off: resume.md is the resumeDoc text byte for byte, the text is unch
   }
 });
 
-test('on: resume.md is the bottle built from the stream and the sent record, written whole, with one bottle receipt', async () => {
+test('legacy: on: resume.md is the bottle built from the stream and the sent record, written whole, with one bottle receipt', async () => {
   const { dir, w } = workerDir();
   try {
     const core = stubCore();
@@ -108,7 +108,7 @@ test('on: resume.md is the bottle built from the stream and the sent record, wri
   } finally { cleanup(dir); }
 });
 
-test('on: it is rebuilt whole every time, replacing the previous file', async () => {
+test('legacy: on: it is rebuilt whole every time, replacing the previous file', async () => {
   const { dir, w } = workerDir();
   try {
     fs.writeFileSync(path.join(dir, 'resume.md'), 'STALE '.repeat(1000));
@@ -118,7 +118,7 @@ test('on: it is rebuilt whole every time, replacing the previous file', async ()
   } finally { cleanup(dir); }
 });
 
-test('on, no sent record: the bottle says so and the receipt reports user_messages=unrecorded', async () => {
+test('legacy: on, no sent record: the bottle says so and the receipt reports user_messages=unrecorded', async () => {
   const { dir, w } = workerDir({ sent: null });
   try {
     const core = stubCore();
@@ -129,7 +129,7 @@ test('on, no sent record: the bottle says so and the receipt reports user_messag
   } finally { cleanup(dir); }
 });
 
-test('on with observations: stored exit data is keyed by tool_use_id and the receipt says how many were read', async () => {
+test('legacy: on with observations: stored exit data is keyed by tool_use_id and the receipt says how many were read', async () => {
   const { dir, w } = workerDir({ stream: false });
   try {
     const line = (o) => JSON.stringify(o) + '\n';
@@ -149,7 +149,7 @@ test('on with observations: stored exit data is keyed by tool_use_id and the rec
   } finally { cleanup(dir); }
 });
 
-test('on, observations unreadable: the bottle is still built, without them, and the receipt names the code', async () => {
+test('legacy: on, observations unreadable: the bottle is still built, without them, and the receipt names the code', async () => {
   const { dir, w } = workerDir();
   try {
     const core = stubCore({ failList: true });
@@ -160,7 +160,7 @@ test('on, observations unreadable: the bottle is still built, without them, and 
   } finally { cleanup(dir); }
 });
 
-test('an unreadable stream falls back to the resume document and records why', async () => {
+test('legacy: an unreadable stream falls back to the resume document and records why', async () => {
   const { dir, w } = workerDir({ stream: false });
   try {
     const core = stubCore();
@@ -175,19 +175,19 @@ test('an unreadable stream falls back to the resume document and records why', a
   } finally { cleanup(dir); }
 });
 
-test('over budget with nothing droppable falls back with over_budget set', async () => {
+test('legacy: over budget with nothing droppable falls back with over_budget set', async () => {
   const { dir, w } = workerDir();
   try {
     const core = stubCore();
     await restartFirstText(w, 'replace', { core, ctx: ctxWith(core, { bottle_bytes: 40 }) });
-    assert.strictEqual(resumeMd(dir), DOC);
+    assert.ok(resumeMd(dir).startsWith(DOC), 'the resumeDoc text, then the recent turns from the stream (turn_rows off)');
     assert.strictEqual(core.events[0].ok, 0);
     assert.strictEqual(core.events[0].code, 'E_OVER_BUDGET');
     assert.strictEqual(core.events[0].over_budget, 1);
   } finally { cleanup(dir); }
 });
 
-test('a write that fails falls back and records E_BOTTLE_WRITE (the resume document is then tried, and its failure named)', async () => {
+test('legacy: a write that fails falls back and records E_BOTTLE_WRITE (the resume document is then tried, and its failure named)', async () => {
   const { dir, w } = workerDir();
   try {
     fs.mkdirSync(path.join(dir, 'resume.md')); // a directory where the file goes: the rename fails
@@ -202,7 +202,7 @@ test('a write that fails falls back and records E_BOTTLE_WRITE (the resume docum
   } finally { cleanup(dir); }
 });
 
-test('the resume branch builds no bottle: no file, no read of the stream, no event', async () => {
+test('legacy: the resume branch builds no bottle: no file, no read of the stream, no event', async () => {
   const { dir, w } = workerDir();
   try {
     const core = stubCore();
@@ -238,7 +238,7 @@ async function withManager(levers, fn) {
   }
 }
 
-test('manager: a replace restart delivers the bottle with the task and the later message; the resume branch builds none', async () => {
+test('legacy: manager: a replace restart delivers the bottle with the task and the later message; the resume branch builds none', async () => {
   await withManager({ bottle: true }, async (m, core, sb) => {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'build the widget', worker_id: 'w1', task_id: 't1' });
     await m._waitTurn('w1', 8000);
@@ -250,7 +250,7 @@ test('manager: a replace restart delivers the bottle with the task and the later
     assert.deepStrictEqual(core.events.filter((e) => e.kind === 'bottle'), [], 'a resume builds no bottle');
     assert.ok(!fs.existsSync(path.join(sb.dir('w1'), 'resume.md')));
 
-    m._worker('w1').lastEventAt = Date.now() - 60 * 60 * 1000;
+    m._worker('w1').sessionId = null; // no session to resume: the replace branch (age no longer decides it)
     const r2 = await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 });
     assert.strictEqual(r2.branch, 'replace');
     const md = fs.readFileSync(path.join(sb.dir('w1'), 'resume.md'), 'utf8');
@@ -269,11 +269,11 @@ test('manager: a replace restart delivers the bottle with the task and the later
   });
 });
 
-test('manager, lever off: a replace restart writes the resumeDoc text and no bottle event', async () => {
+test('legacy: manager, lever off: a replace restart writes the resumeDoc text and no bottle event', async () => {
   await withManager({ bottle: false }, async (m, core, sb) => {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'build the widget', worker_id: 'w1', task_id: 't1' });
     await m._waitTurn('w1', 8000);
-    m._worker('w1').lastEventAt = Date.now() - 60 * 60 * 1000;
+    m._worker('w1').sessionId = null; // no session to resume: the replace branch (age no longer decides it)
     const r = await m.restart({ worker_id: 'w1', first_turn_timeout_ms: 8000 });
     assert.strictEqual(r.branch, 'replace');
     assert.match(fs.readFileSync(path.join(sb.dir('w1'), 'resume.md'), 'utf8'), /^# resume/);
@@ -282,7 +282,7 @@ test('manager, lever off: a replace restart writes the resumeDoc text and no bot
   });
 });
 
-test('the standing process line follows a fresh restart and not a resume', async () => {
+test('legacy: the standing process line follows a fresh restart and not a resume', async () => {
   const PL = require('../../src/run/task-body.cjs').PROCESS_LINE;
   const { dir, w } = workerDir();
   try {

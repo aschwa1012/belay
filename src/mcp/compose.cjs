@@ -35,8 +35,12 @@ const hasCheck = (a) => !!a && ((Array.isArray(a.commands) && a.commands.length 
 // A worker this adapter launched is the only one it has a channel to: an adopted row's process belongs to another adapter.
 const launchedHere = (r, id) => !!(r && typeof r._worker === 'function' && r._worker(id));
 
+// Lease grants whose task this process has sent to the worker (worker|lease), shared by every compose in the adapter: a repeat assignment of the same worker
+// is not sent twice, and one whose delivery is not on record (a policy step's hand-over that failed) is sent.
+const DELIVERED = new Set();
+
 // `openManager()` opens the run manager when a tool needs one (spawn); `manager()` only reads whether it is open.
-function createCompose({ callCore, manager, openManager, dataDir = null, runId = null }) {
+function createCompose({ callCore, manager, openManager, dataDir = null, runId = null, onPolicy = null }) {
   // ADR 0054 amendment 1: a review task's answer carries the reviewer's real scratch folder, made now if the worker has none (a
   // worker of another type given a review), so the orchestrator never names one of its own; the delivered task names it too.
   function withScratch(raw, workerId) {
@@ -56,8 +60,11 @@ function createCompose({ callCore, manager, openManager, dataDir = null, runId =
     try { raw = await callCore('task.assign', coreArgs); } finally { endMark(); }
     const out = withWarnings(withScratch(raw, coreArgs.worker_id), raw && overlapWarning(raw.overlaps));
     const not = (reason, extra) => ({ ...out, delivered: { sent: false, reason, ...extra } });
+    if (raw && raw.existing === true && raw.new_lease && raw.new_lease.holder && raw.new_lease.holder !== coreArgs.worker_id) return not(`the task is already held by ${raw.new_lease.holder}, not ${coreArgs.worker_id}, so nothing was sent to ${coreArgs.worker_id}`); // task.assign answers a standing lease of any worker as existing
+    const sentKey = raw && raw.new_lease ? `${coreArgs.worker_id}|${raw.new_lease.id}` : null;
+    if (raw && raw.existing === true && sentKey && DELIVERED.has(sentKey)) return not('the assignment already stands (existing) and the worker was told of it, so nothing was sent again'); // a policy step or an earlier call made it and told the worker (ADR 0072 decision 2); with no record of the delivery it is sent again
     const r = manager();
-    const rule = HB.rule(out, await HB.facts((id) => callCore('task.get', { task_id: id }), out)); // the hand-back rule for this task, sent below and kept for the worker
+    const rule = HB.rule(out, await HB.facts((id) => callCore('task.get', { task_id: id }), out), launchedHere(r, coreArgs.worker_id) ? (r._worker(coreArgs.worker_id) || {}).substrate : null); // the hand-back rule for this task, sent below and kept for the worker
     if (launchedHere(r, coreArgs.worker_id) && typeof r.retask === 'function') r.retask({ worker_id: coreArgs.worker_id, task_id: coreArgs.task_id, spec: out && out.task && out.task.spec, review: out && out.review, rule }); // the worker's current task follows the assignment, delivered or not
     if (deliver === false) return not('deliver was false');
     if (!launchedHere(r, coreArgs.worker_id)) return not(`worker ${coreArgs.worker_id} was not launched by this session, so belay has no channel to it; send the task with worker_message`);
@@ -72,6 +79,7 @@ function createCompose({ callCore, manager, openManager, dataDir = null, runId =
     const text = `${head}\n\n${body}${out && out.scratch ? require('../run/review-scratch.cjs').firstLine(out.scratch) : ''}${out && out.review ? require('../run/review-scratch.cjs').treeLine(out.review) : ''}${rule}${tail}`;
     try {
       const m = await r.message({ worker_id: coreArgs.worker_id, text });
+      if (sentKey) DELIVERED.add(sentKey);
       return { ...out, delivered: { ...m, sent: !m.queued, queued: !!m.queued } }; // queued: held for a compaction, written when it ends
     } catch (e) {
       return not(`the task is assigned but the message was not sent: ${e && e.message}`, { error: (e && e.code) || 'E_INTERNAL' });
@@ -88,7 +96,7 @@ function createCompose({ callCore, manager, openManager, dataDir = null, runId =
   }
 
   async function spawn(args) {
-    const { view = 'compact', ...rest } = args || {};
+    const { view = 'compact', assignCore: _never, ...rest } = args || {}; // assignCore is the policy executor's own argument, never a tool's
     const row = await (await openManager()).spawn(rest);
     if (view === 'debug') return row;
     const out = compactSpawn(row, rest.model);
@@ -115,6 +123,7 @@ function createCompose({ callCore, manager, openManager, dataDir = null, runId =
   // (ADR 0059) when it owns paths a task in another tree owns too.
   async function create(args) {
     const out = await callCore('task.create', args);
+    if (onPolicy && args && (args.policy != null || (Array.isArray(args.tasks) && args.tasks.some((t) => t && t.policy != null)))) onPolicy(); // a plan was written: the policy executor reads from now on
     const warn = (row) => withWarnings(row, row && !hasCheck(row.acceptance) && NO_CHECK, row && overlapWarning(row.overlaps));
     return out && Array.isArray(out.tasks) ? { tasks: out.tasks.map(warn) } : warn(out); // ADR 0062: a batch answers every row it wrote
   }

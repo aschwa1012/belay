@@ -80,6 +80,8 @@ CREATE TABLE IF NOT EXISTS usage (
   written_at INTEGER NOT NULL, written_by TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_usage_id ON usage(id, seq);
 CREATE INDEX IF NOT EXISTS ix_usage_run ON usage(run_id, seq);
+-- 0.4.0: the policy step log prices a step turn by (run, turn, worker) without scanning the run ledger.
+CREATE INDEX IF NOT EXISTS ix_usage_turn ON usage(run_id, turn, worker_id);
 
 -- ADR 0053 decision 5: one row per state of an integration (merging, then conflict, failed or evaluated). Append-only like the
 -- tables above; the JSON columns are text in SQLite and parsed on the wire.
@@ -89,6 +91,27 @@ CREATE TABLE IF NOT EXISTS integration (
   error TEXT, checks TEXT, passed INTEGER, junctions TEXT, removed_at INTEGER,
   written_at INTEGER NOT NULL, written_by TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS ix_integration_id ON integration(id, seq);
+
+-- ADR 0072 decisions 2 and 3: one row per policy step, keyed by the trigger fact it acts on, so the run's executor and the orchestrator
+-- cannot both take a step for one trigger. The one orchestration table that is updated: a claim is the row, and policy.finish is its single
+-- UPDATE (outcome 'started' to a final one). Reads and writes: policy-steps.cjs.
+CREATE TABLE IF NOT EXISTS policy_step (
+  seq INTEGER PRIMARY KEY AUTOINCREMENT, run_id TEXT NOT NULL, task_id TEXT, step TEXT NOT NULL,
+  trigger_table TEXT NOT NULL, trigger_id TEXT NOT NULL, trigger_seq INTEGER NOT NULL DEFAULT 0, policy_rev INTEGER,
+  outcome TEXT NOT NULL, row_ref TEXT, error TEXT, worker_id TEXT, turn INTEGER, at INTEGER NOT NULL, finished_at INTEGER,
+  UNIQUE(run_id, trigger_table, trigger_id, trigger_seq, step));
+CREATE INDEX IF NOT EXISTS ix_policy_step_run ON policy_step(run_id, seq);
+
+-- The store-wide record of a check command's outcomes on one tree (0.4.0, written by check-flake.cjs in the same write as an evaluation's
+-- result). Keyed by the command, its cwd and the tree it ran on (key_kind 'tree'; 'head' when no tree id was known). A counter row, updated
+-- in place like policy_step; it holds counts and the last outcome and claims no rate.
+CREATE TABLE IF NOT EXISTS check_flake (
+  argv TEXT NOT NULL, cwd TEXT NOT NULL, key_sha TEXT NOT NULL, key_kind TEXT NOT NULL,
+  pass_n INTEGER NOT NULL DEFAULT 0, fail_n INTEGER NOT NULL DEFAULT 0, flips INTEGER NOT NULL DEFAULT 0,
+  last_outcome TEXT, last_concurrent INTEGER, first_at INTEGER, last_at INTEGER,
+  PRIMARY KEY (argv, cwd, key_sha, key_kind));
+-- The flipped keys, newest first, are what status reads; this keeps that read off the whole table.
+CREATE INDEX IF NOT EXISTS ix_check_flake_flipped ON check_flake(last_at) WHERE flips > 0;
 `;
 
 // Additive columns so an existing data dir upgrades in place. First (session-3 hardening MS-5): on a
@@ -279,6 +302,33 @@ const MIGRATIONS = [
   'ALTER TABLE worker ADD COLUMN cost_source TEXT',
   // Reported cost of the sessions before the current one: a fresh session's total_cost_usd starts at zero, so the adapter adds this base.
   'ALTER TABLE worker ADD COLUMN cost_base REAL',
+  // The session total Claude Code saved at the worker's last graceful exit, which a --resume starts from (src/run/cost-carry.cjs); null before it.
+  'ALTER TABLE worker ADD COLUMN cost_saved REAL',
+  // 0.4.0 (ADR 0072 decision 3): who took a row's step and why. `acted_by` ('policy' or null), `trigger` (JSON text {table, id, seq} of the
+  // fact the step acted on) and `policy_rev` are written by the core from the harness caller only, never from arguments; all nullable, null on
+  // every row written before them. `policy` is a task's resolved plan (JSON text, nullable), carried forward by every later task row.
+  'ALTER TABLE task ADD COLUMN acted_by TEXT',
+  'ALTER TABLE task ADD COLUMN trigger TEXT',
+  'ALTER TABLE task ADD COLUMN policy_rev INTEGER',
+  'ALTER TABLE task ADD COLUMN policy TEXT',
+  'ALTER TABLE lease ADD COLUMN acted_by TEXT',
+  'ALTER TABLE lease ADD COLUMN trigger TEXT',
+  'ALTER TABLE lease ADD COLUMN policy_rev INTEGER',
+  'ALTER TABLE integration ADD COLUMN acted_by TEXT',
+  'ALTER TABLE integration ADD COLUMN trigger TEXT',
+  'ALTER TABLE integration ADD COLUMN policy_rev INTEGER',
+  // ADR 0071 decision 3: the user's default plan for the run (JSON text of a policy object), stated by the launching process at run.attach; null when none.
+  'ALTER TABLE run ADD COLUMN policy_default TEXT',
+  // ADR 0072 (fix round): the adapter that claimed a policy step, as its pid and creation time, so only a claim whose claimant is gone is swept.
+  'ALTER TABLE policy_step ADD COLUMN claimant_pid INTEGER',
+  'ALTER TABLE policy_step ADD COLUMN claimant_created TEXT',
+  // ADR 0074 amendment 4: the cap on a plan's builds in flight (null: belay's default, 4).
+  'ALTER TABLE run ADD COLUMN max_parallel_builds INTEGER',
+  // The substrate moved the session to another model (model-switch.cjs): JSON text { at, from, to, trigger, scope, category }; null until it does.
+  'ALTER TABLE worker ADD COLUMN model_fallback TEXT',
+  'ALTER TABLE run ADD COLUMN orch_model_fallback TEXT',
+  // ADR 0042 amendment (proposed): the orchestrator's search lines for the task (JSON array of up to 4 short strings, nullable), carried by every later task row; the first-message index of a worker spawned or relaunched for the task embeds them (a task handed to a live worker by task.assign gets no index).
+  'ALTER TABLE task ADD COLUMN memory_queries TEXT',
 ];
 
 // Indexes over the columns above. They run after MIGRATIONS because a store that predates a column cannot
@@ -288,6 +338,7 @@ const MEMORY_INDEXES = [
   'CREATE INDEX IF NOT EXISTS ix_entries_task ON memory_entries(task_id)',
   'CREATE INDEX IF NOT EXISTS ix_entries_status ON memory_entries(status)',
   'CREATE INDEX IF NOT EXISTS ix_entries_ns_created ON memory_entries(namespace, created_at)',
+  'CREATE INDEX IF NOT EXISTS ix_usage_turn ON usage(run_id, turn, worker_id)', // 0.4.0: the policy step log prices a turn through it; an older store gains it on open
 ];
 
 // build step 6b: 'forgotten' is the state worker.forget appends over a dead worker's rows, always last

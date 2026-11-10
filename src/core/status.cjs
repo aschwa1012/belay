@@ -152,10 +152,12 @@ async function get(E, caller, args = {}) {
     notes_held: notesHeld,
     established_by: E.owner ? 'owner' : E.establishedBy,
     ms: Date.now() - t0,
+    ...(storePresent && runRow ? require('./status-plans.cjs').plansOf(E, runRow.id) : {}), // ADR 0071 decision 5: the plan of each task that has one
+    ...(storePresent && runRow && caller.role !== 'worker' ? require('./policy-log.cjs').statusOf(E, runRow.id) : {}), // 0.4.0: the newest policy steps and the count; no key for a run with none, and none for a worker (it holds no plan either)
     rungs,
     // Fix round: reuse runAdapterAlive (the run-alive rung's own fact) so this can't drift from it.
     run: runRow
-      ? { id: runRow.id, epoch: runRow.epoch, adapter_pid: runRow.adapter_pid, alive: runAdapterAlive, ended_at: runRow.ended_at, exit_reason: runRow.exit_reason, paused_at: runRow.paused_at == null ? null : runRow.paused_at, paused_by: runRow.paused_by == null ? null : runRow.paused_by, ...embedBoundsOf(E, runRow.id), ...(runRow.budget_usd != null ? { budget: require('./run-budget.cjs').statusBlock(E, runRow) } : {}) }
+      ? { id: runRow.id, epoch: runRow.epoch, adapter_pid: runRow.adapter_pid, alive: runAdapterAlive, ended_at: runRow.ended_at, exit_reason: runRow.exit_reason, paused_at: runRow.paused_at == null ? null : runRow.paused_at, paused_by: runRow.paused_by == null ? null : runRow.paused_by, ...(runRow.orch_model_fallback ? { orch_model_fallback: runRow.orch_model_fallback } : {}), ...embedBoundsOf(E, runRow.id), ...(runRow.budget_usd != null ? { budget: require('./run-budget.cjs').statusBlock(E, runRow) } : {}) }
       : null,
     // build step 6b: a forgotten row is hidden here too, the same rule worker.list's default carries.
     workers: allWorkers.filter(w => w.state !== 'forgotten').map(w => ({
@@ -165,6 +167,7 @@ async function get(E, caller, args = {}) {
       turns: w.turns, input_tokens: w.input_tokens, output_tokens: w.output_tokens, cost_usd: w.cost_usd, ...CE.statusFigures(w), ...require('./inflight-cost.cjs').workerFigures(inFlightPub, w),
       // build step 4a: status.get's own projection lacked these two, though worker.list carried both.
       mid_turn: w.mid_turn, death_established_by: w.death_established_by,
+      ...(w.model_fallback ? { model_fallback: w.model_fallback } : {}),
     })),
   };
 }

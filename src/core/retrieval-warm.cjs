@@ -100,7 +100,7 @@ async function warmUp(E, routing, onStep) {
   ];
   for (const s of steps) {
     const t0 = Date.now();
-    try { await s.run(); } catch (e) { return { ok: false, model: s.model, kind: s.kind, code: (e && e.code) || 'E_INTERNAL', message: (e && e.message) || String(e), models: done }; }
+    try { await s.run(); } catch (e) { return { ok: false, model: s.model, kind: s.kind, code: (e && e.code) || 'E_INTERNAL', message: (e && e.message) || String(e), detail: (e && e.detail) || null, models: done }; }
     done.push({ model: s.model, kind: s.kind, ms: Date.now() - t0 });
     if (onStep) { try { onStep(done[done.length - 1]); } catch { /* a sink never stops the warm-up */ } }
   }

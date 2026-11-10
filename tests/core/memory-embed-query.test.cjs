@@ -112,18 +112,17 @@ async function held(fn) {
   try { return await fn(); } finally { gate = null; open(); await Promise.allSettled([...running]); }
 }
 
-test('the call has its own bound: past it a query is timed out and the hook is told once, as an embedder failure, and the late embed finishes on its own', async () => {
+test('the call has its own bound: past it a query is timed out, the hook is NOT told (the index is an aid, not an embedder failure), and the late embed finishes on its own', async () => {
   mode = 'ok'; hookCalls.length = 0; embedded.length = 0;
   await held(async () => {
     const r = await call('memory.embedQuery', { task_id: 't-ship', timeout_ms: 500 });
     assert.deepStrictEqual(r.queries.map((q) => [q.label, q.ok, q.code, q.timed_out]), [['task', false, 'E_EMBED_BOUND', true]]);
     assert.strictEqual(running.size, 1, 'the abandoned embed is still running in the stub');
-    assert.strictEqual(r.queries[0].embedder, true);
-    assert.strictEqual(hookCalls.length, 1, 'the bound is an embedder failure (ADR 0034 amendment 1): under required it pauses the run');
-    assert.deepStrictEqual([hookCalls[0].call, hookCalls[0].error.code, hookCalls[0].error.detail.embedder, hookCalls[0].error.detail.cause], ['memory.embedQuery', 'E_EMBED_BOUND', true, 'timeout']);
+    assert.strictEqual(r.queries[0].embedder, false);
+    assert.strictEqual(hookCalls.length, 0, 'the index\'s own bound never reaches the hook, so under required it pauses nothing');
   });
   assert.strictEqual(running.size, 0, 'the abandoned embed finished by itself');
-  assert.strictEqual(hookCalls.length, 1, 'finishing late told the hook nothing more');
+  assert.strictEqual(hookCalls.length, 0, 'finishing late told the hook nothing either');
 });
 
 test('an embed still in flight for the same text is joined, not started again, so abandoned embeds do not pile up', async () => {
@@ -264,14 +263,14 @@ test('rrfMany with one list is rrf, and the semantic weight is shared among the 
   assert.deepStrictEqual(rrfMany([], ['x']).map((h) => h.id), ['x']);
 });
 
-test('the index fuses with memory.search\'s weights: alpha 0.3 and k 10', async () => {
+test('the index fuses with memory.search\'s weights: alpha 0.5 and k 10', async () => {
   const ns = 'embq-fuse';
   await put(ns, 'deploy checklist for the release', vecOf('release'), 1);
   await put(ns, 'dates use the TZ zone', vecOf('dates'), 2);
   const args = { namespaces: [ns], query: 'checklist', query_embeddings: [{ vector: [0, 1, 0], model: 'stub', label: 'task' }] };
   const r = await call('memory.index', args);
   assert.deepStrictEqual(r.relevance.fusion, { method: 'rrf', alpha: HYBRID_ALPHA, k: HYBRID_K, lists: 1 });
-  assert.strictEqual(HYBRID_ALPHA, 0.3);
+  assert.strictEqual(HYBRID_ALPHA, 0.5);
   assert.strictEqual(HYBRID_K, 10);
   const s = await call('memory.search', { namespace: ns, query: 'checklist', query_embedding: [0, 1, 0], embedding_model: 'stub', mode: 'hybrid' });
   assert.deepStrictEqual(s.fusion, { method: 'rrf', alpha: HYBRID_ALPHA, k: HYBRID_K }, 'the same fusion as memory.search');
@@ -299,7 +298,7 @@ test('query_embeddings cross the pipe as base64 and arrive as the same vectors',
     [['task', 'stub', [0.25, -1, 3.5]], ['extra:1', null, [1, 2, 3]]]);
 });
 
-test('the task query is the spec\'s opening paragraph, up to the first blank line, and not the whole spec', async () => {
+test('the task query is the whole spec, cut to the cap, not its opening paragraph', async () => {
   mode = 'ok'; embedded.length = 0;
   const spec = `
 
@@ -311,15 +310,25 @@ Files: db/migrate/, db/schema.sql
 Acceptance: npm test exits 0`;
   rows.append(store, 'task', { id: 't-multi', run_id: 'test-run', spec, state: 'open' }, 'orchestrator');
   const r = await call('memory.embedQuery', { task_id: 't-multi', extra_texts: ['dedupe email addresses'] });
-  assert.deepStrictEqual(embedded, ['Add a migration that numbers the users table by its filename, and ship it', 'dedupe email addresses']);
+  assert.deepStrictEqual(embedded, [spec, 'dedupe email addresses']);
   assert.deepStrictEqual(r.queries.map((q) => q.label), ['task', 'extra:1']);
-  // one paragraph with no blank line is itself, still cut to the cap
+  // a spec past the cap is cut to it
   rows.append(store, 'task', { id: 't-one', run_id: 'test-run', spec: `ship ${'y'.repeat(5000)}`, state: 'open' }, 'orchestrator');
   embedded.length = 0;
   await call('memory.embedQuery', { task_id: 't-one' });
   assert.strictEqual(embedded[0].length, 2048);
-  const { openingParagraph } = core('methods-embed-query.cjs');
-  assert.strictEqual(openingParagraph('a\r\nb\r\n\r\nc'), 'a b', 'CRLF is a line break too');
+});
+
+test('the task\'s memory_queries are embedded as plain lines (no "Task: " prefix) labelled q:1.., after the spec; extra_texts given win over them', async () => {
+  mode = 'ok'; embedded.length = 0;
+  rows.append(store, 'task', { id: 't-lines', run_id: 'test-run', spec: 'Tickets: T11', state: 'open', memory_queries: ['parse --at as the latest past time', 'lib/timer.js start and stop'] }, 'orchestrator');
+  const r = await call('memory.embedQuery', { task_id: 't-lines' });
+  assert.deepStrictEqual(embedded, ['Tickets: T11', 'parse --at as the latest past time', 'lib/timer.js start and stop']);
+  assert.deepStrictEqual(r.queries.map((q) => q.label), ['task', 'q:1', 'q:2']);
+  embedded.length = 0;
+  const w = await call('memory.embedQuery', { task_id: 't-lines', extra_texts: ['dedupe email addresses'] });
+  assert.deepStrictEqual(embedded, ['Tickets: T11', 'dedupe email addresses'], 'the spawn\'s own lines win for that spawn');
+  assert.deepStrictEqual(w.queries.map((q) => q.label), ['task', 'extra:1']);
 });
 
 test('a call whose run ended while it waited for the embedder writes no embed_bound event', async () => {

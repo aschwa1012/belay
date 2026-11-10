@@ -39,6 +39,9 @@ function grant(kind, noteId, fn) {
   } finally { token.live = false; }
 }
 
+// The caller of the write method now running (the engine's runAs context), or null outside one.
+function callerNow() { const ctx = als.getStore(); return ctx ? ctx.caller : null; }
+
 function authorised(id) {
   const ctx = als.getStore();
   if (!ctx) return false;
@@ -59,4 +62,4 @@ function check(E, op, id, detail = {}) {
   throw err('E_HELD', `note ${id} is held for the archive review (row ${heldRow}); only the archive review or the operator settles it, so this ${op} is refused`, { id, held_row: heldRow, op, ...detail });
 }
 
-module.exports = { runAs, grant, check, explicitOperator };
+module.exports = { runAs, grant, check, explicitOperator, callerNow };

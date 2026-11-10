@@ -136,6 +136,7 @@ const METHODS = {
   // identity), and it is read back through the ordinary run row.
   'run.setPaused': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: run.setPaused },
   'run.setEmbedderMode': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: run.setEmbedderMode },
+  'run.setModelFallback': { roles: ['operator'], kind: 'write', fn: run.setModelFallback },
   'run.assertNotPaused': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./paused-run.cjs', 'assertNotPaused') },
   'run.setBudget': { roles: ['operator'], kind: 'write', fn: lazy('./run-budget.cjs', 'setBudget') },
   // The run's retrieval routing, resolved once (with the GPU probe) and recorded on its row; the run process calls it after run.attach.
@@ -146,6 +147,8 @@ const METHODS = {
   // build step 4a: every run's current row, so a CLI with no run id argument (belay status,
   // belay workers) has a way to find the current run at all.
   'run.list': { roles: ALL, kind: 'read', fn: run.listRuns },
+  // 0.4.0 (item J): the check commands whose outcome flipped on one tree; check-flake.record writes the rows inside task.evaluate's write.
+  'check.flake': { roles: ALL, kind: 'read', fn: lazy('./check-flake.cjs', 'list') },
 
   // `harnessGuard(E, caller, args)`: the one write an operator on the harness channel (core.harness(), never a tool call) may make
   // beyond its roles. The run process becomes the parent of the run-close stages' child and writes that child's rows, and only
@@ -162,6 +165,8 @@ const METHODS = {
   'task.assign': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: require('./paused-run.cjs').gate(task.assign) },
   // The run manager asks this before it relaunches a worker (restart, resume, a Codex turn): the task it holds is held for the manager's live run, or the relaunch is refused.
   'task.ensureHold': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: taskHold.ensureHold },
+  // The run manager records that belay committed a Codex worker's hand-back (Codex's sandbox cannot commit), or why it could not.
+  'task.recordCommit': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: require('./methods-task-commit.cjs').recordCommit },
   'task.list': { roles: ALL, kind: 'read', fn: task.list },
   'task.get': { roles: ALL, kind: 'read', fn: task.get },
   'task.evaluate': { roles: ORCH, kind: 'write', fn: task.evaluate },
@@ -205,6 +210,13 @@ const METHODS = {
   'permission.list': { roles: ALL, kind: 'read', fn: permission.list },
   'permission.decide': { roles: ['operator', 'orchestrator', 'worker'], kind: 'write', fn: permission.decide },
   'permission.wait': { roles: ['worker'], kind: 'wait', fn: permission.wait },
+
+  // 0.4.0, ADR 0072: the policy step store. claim and finish are the run manager's (harness channel, checked inside); list is a read.
+  'policy.claim': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./policy-steps.cjs', 'claim') },
+  'policy.finish': { roles: ORCH_OR_OPERATOR, kind: 'write', fn: lazy('./policy-steps.cjs', 'finish') },
+  'policy.list': { roles: ALL, kind: 'read', fn: lazy('./policy-steps.cjs', 'list') },
+  'policy.log': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./policy-log.cjs', 'list') }, // the step log with each turn's cost, newest N
+  'policy.revisions': { roles: ORCH_OR_OPERATOR, kind: 'read', fn: lazy('./policy-revisions.cjs', 'revisions') }, // ADR 0073: the plan revision of each task version, for an amend's lift of a halt
 };
 
 // The methods that read or write memory rows and are refused when the run's memory is off.
@@ -223,6 +235,10 @@ function validateCaller(caller) {
   }
   if (caller.channel !== undefined && caller.channel !== 'tool' && caller.channel !== 'harness' && caller.channel !== 'keepalive') {
     throw err('E_ARGS', `caller.channel must be tool, harness or keepalive, and this call carried ${JSON.stringify(caller.channel)}`);
+  }
+  // ADR 0072 decision 3: the step a call acts for is named by the harness view alone (core-views.cjs policyAs); no other channel carries one.
+  if (caller.policy_step !== undefined && (caller.channel !== 'harness' || !Number.isInteger(caller.policy_step) || caller.policy_step <= 0)) {
+    throw err('E_ARGS', 'caller.policy_step belongs to the harness channel and is the seq of an open policy claim; this call carried one it may not', { channel: caller.channel || 'tool' });
   }
   // ADR 0054 amendment 1: the worker adapter's lease keep-alive (lease-keepalive.cjs), a timer of belay's, not the model.
   if (caller.channel === 'keepalive' && caller.role !== 'worker') throw err('E_ARGS', 'the keepalive channel belongs to a worker adapter (its lease keep-alive)', { role: caller.role });
@@ -376,6 +392,8 @@ class Engine {
     delete args.caller;
     if (method.startsWith('memory.')) require('./memory-reach.cjs').normalizeArgs(args); // one spelling per namespace before any routing or reach check
     if (spec.kind === 'write' && !ENDED_RUN_EXEMPT.has(method)) this.assertRunOpen(caller, method);
+    // ADR 0072 decision 3: a call made for a policy step is made under an open claim, whatever the method: a finished or foreign claim stamps nothing.
+    if (spec.kind === 'write') require('./policy-stamp.cjs').openClaim(this, caller);
     const off = this.memoryOff(method);
     if (off === 'refuse') throw err('E_LEVER_OFF', `${method}: notes are off for this run (on_embedder_failure off, after an embedder failure), so nothing is read or written through them`, { lever: 'on_embedder_failure' });
     if (off === 'empty') return { text: '', bytes: 0, row_ids: [], dropped: 0, over_budget: false, sha256: require('node:crypto').createHash('sha256').update('', 'utf8').digest('hex'), considered: 0, excluded_already_injected: 0, memory_off: true };

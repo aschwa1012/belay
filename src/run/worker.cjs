@@ -137,6 +137,7 @@ async function adopt({ core, workerId, dataDir, runId }) {
   w.outputTokens = row.output_tokens || 0;
   w.costUsd = row.cost_usd || 0;
   w.adoptedLedger = { cost: w.costUsd, turns: w.turns }; // what the usage ledger already holds for this worker
+  w.costSaved = row.cost_saved || 0; // the session total the substrate saved at the last graceful exit (cost-carry.cjs)
   w.costBase = row.cost_base || 0; // reported cost of the lives before this session (a fresh session's total starts at zero)
   w.exitedAt = row.exited_at || null;
   w.exitCode = row.exit_code == null ? null : row.exit_code;
@@ -185,7 +186,7 @@ function rowOf(w, state, { runId, adapterPid }) {
     // An inherited started_at that is not a safe integer is left out, so the core keeps it rather than refusing this write (api.md: an inherited value is never checked).
     ...(Number.isSafeInteger(w.startedAt) ? { started_at: w.startedAt } : {}),
     exited_at: w.exitedAt, exit_code: w.exitCode, exit_signal: w.exitSignal,
-    turns: w.turns, input_tokens: w.inputTokens, output_tokens: w.outputTokens, cost_usd: w.costUsd, cost_base: w.costBase || 0,
+    turns: w.turns, input_tokens: w.inputTokens, output_tokens: w.outputTokens, cost_usd: w.costUsd, cost_base: w.costBase || 0, cost_saved: require('./cost-carry.cjs').savedOf(w),
     last_event_at: w.lastEventAt,
     // ADR 0021 decision 3: set only by a launch this record made, so an adopted record claims nothing.
     permission_mode_requested: w.permissionModeEffective ? w.permissionMode : null,
@@ -214,6 +215,7 @@ function rowOf(w, state, { runId, adapterPid }) {
 function receiptFields(w, state) {
   const f = { cache_read_tokens: w.cacheReadTokens, cache_creation_tokens: w.cacheCreationTokens, tool_calls: w.toolCalls };
   if (w.initModel != null) f.model = w.initModel;
+  if (w.modelFallback) f.model_fallback = w.modelFallback;
   if (w.baseSha != null) { f.base_sha = w.baseSha; f.base_error = null; }
   else if (w.baseError != null) f.base_error = w.baseError;
   if (state === 'starting' || state === 'running') { f.head_sha = null; f.head_error = null; }
@@ -314,7 +316,7 @@ async function onTurnEnd(w, e, ctx) {
   }
   w.outputTokens += n(u.output_tokens);
   if (w.substrate === 'claude-code') {
-    if (typeof e.cost_usd === 'number') w.costUsd = (w.costBase || 0) + e.cost_usd; // the session's cumulative total, on top of what earlier sessions reported
+    if (typeof e.cost_usd === 'number') w.costUsd = require('./cost-carry.cjs').total(w, e.cost_usd); // the session's cumulative total, on top of what earlier sessions reported
     w.iterationsLastTurn = typeof e.num_turns === 'number' ? e.num_turns : null;
   }
   w.lastTurnUsage = e.usage;
@@ -383,13 +385,16 @@ function attach(w, child, ctx) {
         if (e.model) w.initModel = e.model; // W2-3: what init reported, never the requested string
         if (!e.repeat && !w.readyAt) w.readyAt = e.at;
         for (const r of w.readyWaiters.splice(0)) r(e);
-      } else if (e.kind === 'bg_task') BG.noteBgTask(w, e); // ADR 0023 amendment 1 decision 1
+      } else if (e.kind === 'model_fallback') w.modelFallback = require('../core/model-switch.cjs').shape(e); // the substrate moved this session to another model
+      else if (e.kind === 'bg_task') BG.noteBgTask(w, e); // ADR 0023 amendment 1 decision 1
       else if (e.kind === 'tool_use') noteToolUse(w, e);
       else if (e.kind === 'tool_result') noteToolResult(w, e);
       else if (e.kind === 'assistant_text') {
         w.lastAssistantText = e.text;
         if (e.context_tokens != null) w.contextTokens = e.context_tokens;
         if (e.five_minute_cache_write) w.fiveMinuteCacheWrites += 1;
+      } else if (e.kind === 'turn_end' && e.is_error && !w.readyAt) {
+        w.lastError = { where: 'turn', detail: 'a result arrived before the ready event; a process that never became ready has no turns' };
       } else if (e.kind === 'turn_end') { // fix round, worker.cjs:317: pendingTurnEnd, cleared by onTurnEnd (settle() reads it)
         w.pendingTurnEnd = e; w.queue = w.queue.then(() => onTurnEnd(w, e, ctx)).catch(() => {});
       } else if (e.kind === 'turn_failed') {
@@ -411,6 +416,7 @@ function attach(w, child, ctx) {
   child.stdout.on('end', () => ingest(parser.flush()));
   child.stderr.on('data', (d) => {
     w.stderr = (w.stderr + d.toString('utf8')).slice(-STDERR_TAIL_MAX);
+    w.stderrLaunch = ((w.stderrLaunch || '') + d.toString('utf8')).slice(-STDERR_TAIL_MAX);
     try {
       fs.appendFileSync(w.stderrPath, d);
     } catch { /* the in-memory tail is the receipt of last resort */ }

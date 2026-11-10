@@ -87,7 +87,7 @@ before(async () => {
   head = git('rev-parse', 'HEAD').trim();
   store = new Store(`${dir}/memory.db`, { stamp: true });
   E = new Engine({ dataDir: dir, store, getEmbedder: async () => ({ embed }), owner: null, establishedBy: 'test' });
-  await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true }) });
+  await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true, index_min_relevance: 0, index_max_notes: 20 }) });
 });
 after(() => { store.close(); cleanup(dir); cleanup(repo); });
 

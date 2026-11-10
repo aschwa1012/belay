@@ -200,12 +200,12 @@ test('a copy of an owner store keeps the index and ftsReady is true on it', () =
   } finally { cleanup(dir); }
 });
 
-test('SCHEMA_VERSION is 2 (the memory columns and redaction) and the stamp says so', () => {
-  assert.strictEqual(SCHEMA_VERSION, 2);
+test('SCHEMA_VERSION is 3 (the memory columns and redaction, then the policy tables) and the stamp says so', () => {
+  assert.strictEqual(SCHEMA_VERSION, 3);
   const dir = sandbox();
   try {
     const s = ownerOpen(path.join(dir, 'memory.db'));
-    try { assert.strictEqual(metaOf(s.db, 'schema_version'), '2'); } finally { s.close(); }
+    try { assert.strictEqual(metaOf(s.db, 'schema_version'), '3'); } finally { s.close(); }
   } finally { cleanup(dir); }
 });
 

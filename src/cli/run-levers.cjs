@@ -18,7 +18,7 @@ const DEFAULT_FIX_CUTOFF = 'orchestrator';
 const EM = require('../core/embedder-mode.cjs');
 const DEFAULT_ON_EMBEDDER_FAILURE = EM.DEFAULT_MODE; // ADR 0034 decision 2, amendment 1
 const MEMORY_RULES_FILE = path.join(__dirname, '..', 'run', 'prompts', 'memory-rules.md');
-// The one sentence that asks the orchestrator for `memory_queries`. Its only reader is the first-message index
+// The one sentence that asks the orchestrator for `memory_queries` at task creation. Its only reader is the first-message index
 // (memory-preface.cjs), so it is told to the orchestrator only when that lever is on; off, the placeholder is ''
 // and the prompt asks for nothing the run never reads.
 const MEMORY_REPORT_LINE = ' If a note is wrong, out of date or contradicted by the evaluation of a task or the code, report it with `mcp__belay__memory_report` and say why (it holds the note for the archive review); you need not wait for the operator.';
@@ -26,7 +26,7 @@ const MEMORY_REPORT_LINE = ' If a note is wrong, out of date or contradicted by 
 const PERMISSION_LINE = '- Answer permission requests (`mcp__belay__permission_list`, `mcp__belay__permission_decide`) only when the request is inside the plan.\n';
 // ADR 0047 amendment (2026-10-22), decision 7: in a notes run the orchestrator's memory bullet says four things, and a run outcome is a summary. The
 // template keeps the text a run without notes always had, between {{memory_use}} ... {{/memory_use}} (and {{memory_outcome}} ... {{/memory_outcome}}); a run
-// with notes replaces the span, a run without drops only the markers, so its prompt is byte for byte what it was.
+// with notes replaces the span, a run without drops only the markers (the base text of each span is what a run with notes off is told: search, and no store).
 const MEMORY_USE_NOTES = [
   "- Use belay's notes yourself.",
   '  - Search before you plan: before you create any task, call `mcp__belay__memory_search` with a `query` on the brief\'s subject and no namespace (it searches the',
@@ -36,18 +36,21 @@ const MEMORY_USE_NOTES = [
   '  - Record your decisions and the outcome with `namespace: "summary"` (a `title` and `text`); they are found on demand with `mcp__belay__memory_summaries`.',
   '  - Never tell a worker to write memory with `memory_store`: what it learns that is worth keeping goes in the `notes` of its `lease_release`.',
 ].join('\n');
-const MEMORY_OUTCOME_NOTES = 'record the outcome with `namespace: "summary"`';
+const MEMORY_OUTCOME_NOTES = 'record the outcome with `namespace: "summary"`, ';
 const MEMORY_VERIFY_RULE = ' Use `mcp__belay__memory_verify` only with a receipt.'; // a notes run's orchestrator has no memory_verify
-const MEMORY_QUERIES_LINE = ' Also give 1 to 3 `memory_queries`: task lines (each under 160 bytes) naming the situations the worker will be in, such as "add a migration" or "dedupe email addresses", not the finding you expect it to make.';
+const MEMORY_QUERIES_LINE = ' Also give `memory_queries`: 2 to 4 short search lines (each under 160 bytes) naming the commands, files, symbols or behaviours the work touches, so a worker spawned or relaunched for the task is shown the project notes that match.';
 
-// The time-bound condition is observable only if the orchestrator is told the bound and can read elapsed time
-// (the waited_ms of its worker_wait answers), so it is written in from timeout_ms and dropped when that is 0.
+// The time-bound condition is observable only if the orchestrator is told the bound and can read elapsed time. `belay run` renders the run's
+// start and deadline into it as absolute UTC times (`opts.startedAt`), so the rule carries them through a compaction and needs no call the
+// model must remember; it reads the time now from a shell (`date -u`). An orchestrator that waits by the wake has no worker_wait answer to
+// read waited_ms from (ADR 0037 amendment 7). A pause stops the run's clock (ADR 0023 amendment 3), so the deadline moves later by it.
+// Without a start (a prompt check, not a launch) the times are left out. Written in from timeout_ms and dropped when that is 0.
 // `mode` is 'headless' (the default, byte-identical to before) or 'interactive' (ADR 0037 decision 4: the run
 // does not end, so stop-and-surface is stop, store, tell the operator, then wait).
-function cutoffRule(fixCutoff, timeoutMs, mode = 'headless') {
+function cutoffRule(fixCutoff, timeoutMs, mode = 'headless', startedAt = null) {
   if (fixCutoff === 'cap-only') return 'Do not stop fix rounds before the fix-round limit.';
   const timeCond = timeoutMs > 0
-    ? `; the run's time bound (${timeoutMs} ms from its start) is near, judged from the waited_ms your worker_wait answers report`
+    ? `; the run's time bound (${timeoutMs} ms from its start${Number.isFinite(startedAt) ? `, ${new Date(startedAt).toISOString()}, so ${new Date(startedAt + timeoutMs).toISOString()}, later by any time the run is paused` : ''}) is near, judged by the time now (\`date -u\` in a shell)`
     : '';
   const interactive = mode === 'interactive';
   const surface = interactive
@@ -115,6 +118,16 @@ function evalKeys(spec) {
 
 // Returns { max_fix_rounds, fix_cutoff, on_embedder_failure, fix_hard_cap, fix_hard_cap_source[, compact_at_tokens] } or { error }. `compact_at_tokens` (ADR 0007 decision 3,
 // null by default) is present only when set, so a run without it has the receipt it always had.
+// { name, source } when this run's project is to be derived, else null. Needs `opts.projectDir` (a prompt check or a test that gives none derives nothing).
+function deriveProject(spec, merged, opts) {
+  if (!opts.projectDir || !merged.sources || spec.memory === null) return null;
+  if (spec.memory === undefined && opts.config && opts.config.memory === null) return null;
+  const b = merged.block;
+  if (b !== undefined && (typeof b !== 'object' || b === null || Array.isArray(b))) return null;
+  if (b && (Object.prototype.hasOwnProperty.call(b, 'project') || b.notes === false || b.redact === false)) return null;
+  return require('./default-project.cjs').derive(opts.projectDir);
+}
+
 function parseLevers(spec, opts = {}) {
   let maxFixRounds = DEFAULT_MAX_FIX_ROUNDS;
   if (spec.max_fix_rounds !== undefined) {
@@ -183,6 +196,11 @@ function parseLevers(spec, opts = {}) {
   // Merging another run's tasks, or into another run's integrate branch: off unless the spec says true. Fixed for the run.
   if (spec.cross_run_merge !== undefined && typeof spec.cross_run_merge !== 'boolean') return { error: 'cross_run_merge must be true or false' };
   if (spec.cross_run_merge === true) out.cross_run_merge = true;
+  if (spec.max_parallel_builds !== undefined) { // ADR 0074 amendment 4: the cap on a plan's builds in flight; unset, the executor's default (4)
+    const v = spec.max_parallel_builds;
+    if (typeof v !== 'number' || !Number.isSafeInteger(v) || v < 1) return { error: 'max_parallel_builds must be a positive integer' };
+    out.max_parallel_builds = v;
+  }
   // ADR 0054 amendment 1: the run close deletes the reviewers' scratch folders; this opt-in keeps them. Absent unless on.
   if (spec.keep_review_scratch !== undefined && typeof spec.keep_review_scratch !== 'boolean') return { error: 'keep_review_scratch must be true or false' };
   if (spec.keep_review_scratch === true) out.keep_review_scratch = true;
@@ -194,6 +212,13 @@ function parseLevers(spec, opts = {}) {
   const shapeOk = spec.memory === undefined || spec.memory === null || (typeof spec.memory === 'object' && !Array.isArray(spec.memory)); // a bad block is refused as it is alone, never folded into an object by an eval key
   const merged = mergeMemory(ev.fold && shapeOk ? { ...(spec.memory || {}), ...ev.fold } : spec.memory, spec.memory === null ? null : opts.config) // `memory: null` inherits no config, eval keys or not;
   if (merged.error) return { error: merged.error };
+  // ADR 0041 amendment (ADR 0088): a run that names no project and has not turned notes off takes one from the project folder (the git remote, else
+  // the folder name). An explicit setting always wins: a project, `notes: false`, `redact: false`, `memory: null`, or a config whose memory is null.
+  const derived = deriveProject(spec, merged, opts);
+  if (derived) {
+    merged.block = { ...(merged.block || {}), project: derived.name };
+    merged.sources.project = `derived: ${derived.source}`;
+  }
   const mem = ML.parseMemoryBlock(merged.block);
   if (mem.error) return { error: merged.fromConfig ? `${mem.error} (memory defaults come from ${opts.config.path}, the spec's own memory block over them)` : mem.error };
   if (mem.value.native_memory !== null) { // the spawn's own check, here at spec load, so a bad folder refuses the run before anything launches
@@ -221,6 +246,7 @@ function parseLevers(spec, opts = {}) {
       Object.defineProperty(out, 'rules_text', { value: text, enumerable: false }); // not part of the receipt
     }
   }
+  if (derived) out.memory_project = { name: derived.name, source: derived.source, derived: true }; // the receipt names the project and where it came from
   // Notes default on but need a project: say so when there is none. Not enumerable, so the receipt is unchanged; `belay run` prints it.
   // An explicit `memory: null` is silent, whether the spec says it or the config file does (an inherited one, unless the spec's own block overrides it).
   const off = spec.memory === null || (spec.memory === undefined && !!opts.config && opts.config.memory === null);
@@ -228,6 +254,8 @@ function parseLevers(spec, opts = {}) {
   if (merged.dropped) out.memory_dropped = merged.dropped; // config levers a spec's `notes: false` left out, so the receipt says what did not apply
   const bud = require('./run-budget-levers.cjs').applyBudget(out, spec, opts); // the run's dollar budget; turns the usage ledger on
   if (bud.error) return bud;
+  const pol = require('./run-policy-levers.cjs').applyPolicy(out, spec, opts); // the user's default task plan (ADR 0071)
+  if (pol.error) return pol;
   return out;
 }
 
@@ -242,7 +270,7 @@ function attachMemory(levers) {
 
 // The receipt line's suffix, empty for a default block.
 function memoryText(levers) {
-  return (levers && levers.memory_levers ? `; memory_levers: ${JSON.stringify(levers.memory_levers)}` : '') + (levers && levers.memory_dropped ? `; config levers dropped by notes false: ${levers.memory_dropped.join(', ')}` : '');
+  return (levers && levers.memory_project ? `; project ${levers.memory_project.name} (derived from ${levers.memory_project.source})` : '') + (levers && levers.memory_levers ? `; memory_levers: ${JSON.stringify(levers.memory_levers)}` : '') + (levers && levers.memory_dropped ? `; config levers dropped by notes false: ${levers.memory_dropped.join(', ')}` : '');
 }
 
 const TRAILING_EOL = /\r?\n$/;
@@ -265,9 +293,19 @@ function stripMarkers(text) {
     .replace(/^[ \t]*<!--\s*belay-mode:[^>]*-->[ \t]*\r?\n(\r?\n)?/m, '');
 }
 
+// ADR 0037 amendment 8: the orchestrator is told the run's plan, the one every work task takes at create unless it states its own (run-policy-levers.cjs).
+// With a plan it carries the plan-first directive (plan the work, then go hands off); without one, the flow where the orchestrator takes each step.
+const PLAN_FIRST = 'Plan the work first: create every work task with `task_create`, an independent one with `worktree: true`, and a dependent one with its `depends_on` and no tree (belay cuts its tree from `belay/integrate/<run>` once its dependencies are merged, so they are in it). Then end your turn and rely on the wakes: act on an exception or an escalation, and on the done wake decide whether you are done. Do not spawn or assign a task whose plan builds it; handle a step yourself only when you have a specific reason, and say why in your reply to the user. If a builder dies, belay restarts it once; you are woken only if that did not work, and then restart it or assign the task yourself.';
+const NO_PLAN = 'This run has no run plan: a task has a plan only if you give it a `policy`; otherwise you assign, review, fix and merge it yourself.';
+function runPlanLine(levers) {
+  const p = levers && levers.policy_default;
+  if (!p || typeof p !== 'object' || !Object.keys(p).length) return NO_PLAN;
+  return `This run's plan, which every work task you create takes unless you give it a \`policy\` of its own (a field you leave out takes this plan; a field set to null keeps that step yours) or \`policy: null\`, is \`${JSON.stringify(p)}\`. ${PLAN_FIRST}`;
+}
+
 function substituteLevers(text, levers, timeoutMs = 0, opts = {}) {
-  const rule = cutoffRule(levers.fix_cutoff, timeoutMs, (opts && opts.mode) || 'headless');
-  const a = String(text).split('{{max_fix_rounds}}');
+  const rule = cutoffRule(levers.fix_cutoff, timeoutMs, (opts && opts.mode) || 'headless', opts && Number.isFinite(opts.startedAt) ? opts.startedAt : null);
+  const a = String(text).split('{{run_plan}}').join(runPlanLine(levers)).split('{{max_fix_rounds}}');
   const b = a.join(String(levers.max_fix_rounds)).split('{{fix_cutoff_rule}}');
   const withRule = b.join(rule);
   // ADR 0040 decision 6: the rules text goes in only when memory.rules is on, trailing newline trimmed and
@@ -329,4 +367,4 @@ async function countReviewRounds(core, runId) {
   }
 }
 
-module.exports = { stripMarkers, MEMORY_REPORT_LINE, MEMORY_QUERIES_LINE, MEMORY_USE_NOTES, MEMORY_OUTCOME_NOTES, MEMORY_VERIFY_RULE, mergeMemory, parseLevers, attachMemory, memoryText, substituteLevers, countReviewRounds, cutoffRule, FIX_CUTOFFS };
+module.exports = { runPlanLine, PLAN_FIRST, NO_PLAN, stripMarkers, MEMORY_REPORT_LINE, MEMORY_QUERIES_LINE, MEMORY_USE_NOTES, MEMORY_OUTCOME_NOTES, MEMORY_VERIFY_RULE, mergeMemory, parseLevers, attachMemory, memoryText, substituteLevers, countReviewRounds, cutoffRule, FIX_CUTOFFS };

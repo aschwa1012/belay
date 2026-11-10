@@ -132,8 +132,20 @@ function effectiveNotes(found, out) {
   const block = cfg && typeof cfg === 'object' && !Array.isArray(cfg) ? cfg : {};
   const r = ML.parseMemoryBlock(block);
   if (r.error) return { ...out, note: 'effective: off (the notes block, memory, is refused: ' + r.error + ')' };
+  const derived = !r.value.notes && !('project' in block) && block.notes !== false && block.redact !== false && !(found.found && found.config && found.config.memory === null);
+  if (derived) return { ...out, value: true, note: 'effective: on, because a run takes its project from the git remote or the folder name (set memory.project to name it)' };
   const why = r.value.notes ? 'on, because memory.project is set' : block.redact === false ? 'off, because memory.redact is false' : 'off, because memory.project is not set';
   return { ...out, value: r.value.notes, note: 'effective: ' + why };
+}
+
+// `memory.first_message_index` left unstated follows `notes`: on when notes are on for the config, so show that state and why.
+function effectiveIndex(found, out) {
+  const cfg = found.found && found.config && found.config.memory;
+  const block = cfg && typeof cfg === 'object' && !Array.isArray(cfg) ? cfg : {};
+  const notes = effectiveNotes(found, { value: false, note: '' });
+  const r = ML.parseMemoryBlock(block);
+  const on = r.error ? false : (r.value.first_message_index || notes.value === true);
+  return { ...out, value: on, note: 'effective: ' + (on ? 'on, because notes are on (the index follows notes)' : 'off, because notes are off') };
 }
 
 function effective(found, key) {
@@ -150,7 +162,8 @@ function effective(found, key) {
       : fieldOf(key) === AD.TOOLS_FIELD ? 'the agent type\'s tools: a spawn of that type gets them, and its allowed_tools may narrow them, never widen them'
         : 'default for the agent type; an explicit model or effort always wins',
   };
-  const withNote = (o) => (key === 'memory.notes' && o.source === 'default' ? effectiveNotes(found, o) : o);
+  const withNote = (o) => (key === 'memory.notes' && o.source === 'default' ? effectiveNotes(found, o)
+    : key === 'memory.first_message_index' && o.source === 'default' ? effectiveIndex(found, o) : o);
   if (!stored.present) return withNote(out);
   const chk = checkStored(key, stored.value);
   if (!chk.ok) return { ...out, invalid: { stored: stored.value, reason: `${chk.reason}; the default ${JSON.stringify(dflt)} is used` } };

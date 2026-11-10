@@ -1,4 +1,5 @@
 'use strict';
+// Not a legacy test: it tests the run levers and the receipt; legacy levers are parsed as examples.
 require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1'; // ADR 0034: a run here has no model to warm; the one suite that tests the warm-up opts in
 // run-levers.test.cjs — ADR 0031 decisions 3 to 6: the spec's max_fix_rounds and fix_cutoff (validation,
@@ -18,6 +19,7 @@ const FAKE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
 const FAKE_TASKS = `${ROOT}/tests/cli/fakes/core-fake-tasks.cjs`;
 const fwd = (p) => String(p).split(path.sep).join('/');
 const { parseLevers, substituteLevers } = require('../../src/cli/run-levers.cjs');
+const { SHIPPED_PLAN } = require('../../src/cli/run-policy-levers.cjs'); // a run that states no plan takes belay's (ADR 0074 amendment 4)
 
 function cleanup(dir) {
   for (let i = 0; i < 5; i += 1) {
@@ -27,6 +29,9 @@ function cleanup(dir) {
 }
 
 // One run of the CLI against a sandbox. Returns { status, out, orchDir }.
+// The receipt's levers without the memory fields: notes are on by default now, and these tests are about the other levers.
+const lessMemory = (l) => { const o = { ...l }; for (const k of ['memory_levers', 'memory_sources', 'memory_project']) delete o[k]; o.substituted = { ...o.substituted }; for (const k of ['memory_report_line', 'memory_use', 'memory_outcome', 'memory_queries_line']) delete o.substituted[k]; return o; };
+
 function go(prompt, specExtra, envExtra = {}) {
   const dir = fwd(fs.mkdtempSync(path.join(os.tmpdir(), 'belay-run-levers-')));
   fs.mkdirSync(`${dir}/wt`);
@@ -42,9 +47,9 @@ function go(prompt, specExtra, envExtra = {}) {
 }
 
 test('levers: parseLevers defaults and validation', () => {
-  assert.deepStrictEqual(parseLevers({}), { max_fix_rounds: 2, max_follow_ups: 1, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', on_embedder_failure: 'required' });
-  assert.deepStrictEqual(parseLevers({ max_fix_rounds: 0, fix_cutoff: 'cap-only' }), { max_fix_rounds: 0, max_follow_ups: 1, fix_cutoff: 'cap-only', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', on_embedder_failure: 'required' });
-  assert.deepStrictEqual(parseLevers({ max_fix_rounds: 5 }), { max_fix_rounds: 5, max_follow_ups: 1, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', on_embedder_failure: 'required' });
+  assert.deepStrictEqual(parseLevers({}), { max_fix_rounds: 2, max_follow_ups: 1, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', policy_default: SHIPPED_PLAN, policy_source: 'belay default', on_embedder_failure: 'required' });
+  assert.deepStrictEqual(parseLevers({ max_fix_rounds: 0, fix_cutoff: 'cap-only' }), { max_fix_rounds: 0, max_follow_ups: 1, fix_cutoff: 'cap-only', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', policy_default: SHIPPED_PLAN, policy_source: 'belay default', on_embedder_failure: 'required' });
+  assert.deepStrictEqual(parseLevers({ max_fix_rounds: 5 }), { max_fix_rounds: 5, max_follow_ups: 1, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', policy_default: SHIPPED_PLAN, policy_source: 'belay default', on_embedder_failure: 'required' });
   for (const bad of [-1, 1.5, '2', null, NaN, Infinity, 2 ** 60, true, [], {}]) {
     assert.match(parseLevers({ max_fix_rounds: bad }).error, /max_fix_rounds must be a non-negative integer/, String(bad));
   }
@@ -70,11 +75,16 @@ test('levers: substituteLevers replaces every placeholder, counts them, and pass
   assert.deepStrictEqual(plain.substituted, { max_fix_rounds: 0, fix_cutoff_rule: 0 });
   const orch = substituteLevers('{{fix_cutoff_rule}}', { max_fix_rounds: 2, fix_cutoff: 'orchestrator' }, 600000).text;
   for (const part of ['survived a fix round', 'new regression', 'outside the task', 'stop-and-surface', 'report a refuted step as passing',
-    'the run\'s time bound (600000 ms from its start) is near, judged from the waited_ms your worker_wait answers report']) {
+    'the run\'s time bound (600000 ms from its start) is near, judged by the time now (`date -u` in a shell)']) {
     assert.ok(orch.includes(part), `the orchestrator rule names "${part}"`);
   }
   const none = substituteLevers('{{fix_cutoff_rule}}', { max_fix_rounds: 2, fix_cutoff: 'orchestrator' }, 0).text;
-  assert.ok(!none.includes('time bound (') && !none.includes('waited_ms'), 'timeout_ms 0: the time condition is dropped');
+  assert.ok(!none.includes('time bound (') && !none.includes('date -u'), 'timeout_ms 0: the time condition is dropped');
+  assert.ok(!orch.includes('worker_wait') && !orch.includes('waited_ms'), 'the time source is the clock: a run that never waits can still judge it');
+  // At launch the start and the deadline are written in as absolute times, so the rule carries them (pinned with a fixed start: the instance varies per run).
+  const at = substituteLevers('{{fix_cutoff_rule}}', { max_fix_rounds: 2, fix_cutoff: 'orchestrator' }, 600000, { startedAt: Date.UTC(2026, 10, 6, 12, 0, 0) }).text;
+  assert.ok(at.includes('the run\'s time bound (600000 ms from its start, 2026-11-06T12:00:00.000Z, so 2026-11-06T12:10:00.000Z, later by any time the run is paused) is near, judged by the time now (`date -u` in a shell)'), at);
+  assert.ok(!substituteLevers('{{fix_cutoff_rule}}', { max_fix_rounds: 2, fix_cutoff: 'orchestrator' }, 0, { startedAt: Date.UTC(2026, 10, 6) }).text.includes('2026-'), 'no bound: no times');
   assert.match(none, /The run has no time bound\./);
   assert.match(none, /owned set\. Name the condition/);
 });
@@ -91,7 +101,7 @@ test('run: bad max_fix_rounds and fix_cutoff exit 2 before anything is created; 
   const ok = go('hi\n', { max_fix_rounds: 0, fix_cutoff: 'cap-only' });
   try {
     assert.strictEqual(ok.status, 0, ok.stderr.slice(-600));
-    assert.deepStrictEqual(JSON.parse(ok.stdout).levers, { max_fix_rounds: 0, max_follow_ups: 1, fix_cutoff: 'cap-only', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 0, fix_cutoff_rule: 0 } });
+    assert.deepStrictEqual(lessMemory(JSON.parse(ok.stdout).levers), { max_fix_rounds: 0, max_follow_ups: 1, fix_cutoff: 'cap-only', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', policy_default: SHIPPED_PLAN, policy_source: 'belay default', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 0, fix_cutoff_rule: 0 } });
   } finally { cleanup(ok.dir); }
 });
 
@@ -109,7 +119,7 @@ test('run: the orchestrator receives the prompt with both placeholders substitut
     const text = fs.readFileSync(`${b.orchDir}/prompt.txt`, 'utf8');
     assert.ok(text.startsWith('cap 2 rounds. You may stop fix rounds before the fix-round limit'), text);
     assert.ok(!text.includes('{{'), 'no placeholder is left');
-    assert.deepStrictEqual(JSON.parse(b.stdout).levers, { max_fix_rounds: 2, max_follow_ups: 1, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 2, fix_cutoff_rule: 1 } });
+    assert.deepStrictEqual(lessMemory(JSON.parse(b.stdout).levers), { max_fix_rounds: 2, max_follow_ups: 1, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', policy_default: SHIPPED_PLAN, policy_source: 'belay default', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 2, fix_cutoff_rule: 1 } });
     assert.match(text, /The run has no time bound\./, 'timeout_ms defaults to 0');
   } finally { cleanup(b.dir); }
 
@@ -126,7 +136,7 @@ test('run: the receipt carries levers and review_rounds (this run\'s verdict tas
   try {
     assert.strictEqual(a.status, 0, a.stderr.slice(-600));
     const rc = JSON.parse(a.stdout);
-    assert.deepStrictEqual(rc.levers, { max_fix_rounds: 1, max_follow_ups: 1, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 0, fix_cutoff_rule: 0 } });
+    assert.deepStrictEqual(lessMemory(rc.levers), { max_fix_rounds: 1, max_follow_ups: 1, fix_cutoff: 'orchestrator', fix_hard_cap: 5, fix_hard_cap_source: 'default, no run timeout', policy_default: SHIPPED_PLAN, policy_source: 'belay default', on_embedder_failure: 'keyword', substituted: { max_fix_rounds: 0, fix_cutoff_rule: 0 } });
     assert.strictEqual(rc.review_rounds, 2, 'two review tasks of this run; the work task and the other run\'s review are not counted');
     assert.strictEqual(rc.review_rounds_reason, null);
     assert.strictEqual(JSON.parse(fs.readFileSync(`${a.orchDir}/run.json`, 'utf8')).review_rounds, 2, 'run.json agrees');
@@ -135,7 +145,7 @@ test('run: the receipt carries levers and review_rounds (this run\'s verdict tas
   const t = go('hi\n', {}, { BELAY_FAKE_CORE: FAKE_TASKS, FAKE_TASKS_MODE: 'reject', NO_JSON: '1' });
   try {
     assert.strictEqual(t.status, 0, t.stderr.slice(-600));
-    assert.match(t.stdout, /levers: max_fix_rounds 2, max_follow_ups 1, fix_hard_cap 5 \(default, no run timeout\), fix_cutoff orchestrator, on_embedder_failure keyword; review_rounds: unknown \(task\.list failed: .*PROBE/);
+    assert.match(t.stdout, /levers: max_fix_rounds 2, max_follow_ups 1, fix_hard_cap 5 \(default, no run timeout\), fix_cutoff orchestrator, on_embedder_failure keyword[^]*; review_rounds: unknown \(task\.list failed: .*PROBE/);
   } finally { cleanup(t.dir); }
 
   const r = go('hi\n', {}, { BELAY_FAKE_CORE: FAKE_TASKS, FAKE_TASKS_MODE: 'reject' });
@@ -172,7 +182,7 @@ test('template: the shipped orchestrator prompt has both placeholders and the fo
   assert.match(text, /belay appends the Review standard and the verdict hand-back rule to the reviewer's first message; do not repeat them/);
   assert.ok(!/verbatim, in the reviewer's prompt/.test(text), 'the orchestrator is not asked to copy it');
   assert.match(text, /answer carries a\s+`fix_notice` with the count/);
-  assert.match(text, /A failed acceptance check is not a fix round/); // ADR 0058: worded beside fix_from_review
+  assert.match(text, /\(`fix_eval`, `fix_run`\), counts against the fix-round limit like a fix task/); // the executor counts these steps (policy-rounds.cjs), worded beside fix_from_review
   assert.ok(!/\bland\b/.test(text), 'no "land" wording');
   const done = substituteLevers(text, { max_fix_rounds: 2, fix_cutoff: 'orchestrator' }, 0);
   assert.ok(!done.text.includes('{{'), 'substitution leaves no placeholder');
@@ -183,7 +193,7 @@ test('template: the shipped orchestrator prompt has both placeholders and the fo
 
 test('memory levers: parseLevers omits the block when absent or all-default, and refuses each bad key and each missing prerequisite', () => {
   assert.deepStrictEqual(parseLevers({ memory: {} }), parseLevers({}));
-  assert.deepStrictEqual(parseLevers({ memory: { redact: true, alpha: 0.3, summaries: 'off' } }), parseLevers({}));
+  assert.deepStrictEqual(parseLevers({ memory: { redact: true, alpha: 0.5, summaries: 'off' } }), parseLevers({}));
   const ok = parseLevers({ memory: { capture: true, observations: true, project: 'acme', notes: false, project_writes: true, summaries: 'mechanical', index_bytes: 4096 } });
   assert.strictEqual(ok.memory_levers.project, 'acme');
   assert.strictEqual(ok.memory_levers.summaries, 'mechanical');
@@ -297,11 +307,12 @@ test('run: a bad memory block exits 2 before anything is created; a good one run
   try {
     assert.strictEqual(plain.status, 0, plain.stderr.slice(-600));
     const rc = JSON.parse(plain.stdout);
-    assert.ok(!('memory_levers' in rc.levers), 'a default block leaves the receipt as it was');
+    assert.strictEqual(rc.levers.memory_levers.notes, true, 'no block: notes are on with a derived project');
+    assert.deepStrictEqual([rc.levers.memory_project.derived, rc.levers.memory_levers.turn_rows], [true, false]);
     const row = runRow(plain);
-    assert.strictEqual(row.memory_levers, null);
-    assert.strictEqual(row.project, null);
-    assert.strictEqual(adapterArgs(plain)[adapterArgs(plain).indexOf('--worktree') + 1], `${plain.dir}/wt`, 'with every lever off the adapter still gets the worktree (ADR 0054)');
+    assert.strictEqual(row.project, rc.levers.memory_project.name);
+    assert.strictEqual(JSON.parse(row.memory_levers).notes, true);
+    assert.strictEqual(adapterArgs(plain)[adapterArgs(plain).indexOf('--worktree') + 1], `${plain.dir}/wt`, 'with the default levers the adapter still gets the worktree (ADR 0054)');
   } finally { cleanup(plain.dir); }
   const ka = go('hi\n', { memory: { knowledge_agent: true } });
   try {

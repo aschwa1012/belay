@@ -37,6 +37,8 @@ const redactText = (s) => require('./redact.cjs').redact(String(s)).text; // the
 const WHERE_SHOWN = 80; // bytes of the evidence location shown (the location, not the claim, is cut)
 const HELD_WHY_SHOWN = 60; // bytes of a hold's reason shown
 const WHY_SHOWN = 120; // bytes of a reported_wrong reason shown
+const SPEC_LABEL = 'task'; // the embedQuery label of the whole task spec; every other query is a search line
+const REL_CUT = 0.05; // a search-line hit is listed only within this of the best search-line cosine of any note
 const RECEIPT_KINDS = new Set(['commit', 'task', 'review', 'test', 'memory', 'checkpoint']);
 
 const marks = (list) => list.map(() => '?').join(', ');
@@ -135,7 +137,13 @@ function subjectMatches(subject, prep, norm) {
   }
   if (PATHLIKE.test(s) && norm) s = norm(s);
   s = s.toLowerCase();
-  return [...s].length >= 3 && hasEdged(prep.lower, s, /\p{L}$/u.test(s));
+  if ([...s].length >= 3 && hasEdged(prep.lower, s, /\p{L}$/u.test(s))) return true;
+  // A hyphenated subject (cli-parsing) also matches when each of its parts is a word of the task, since the task's words are split on the hyphen.
+  if (/^[^\s/\\._:]+$/.test(s) && s.includes('-')) {
+    const parts = s.split('-').filter(Boolean);
+    return parts.length > 1 && parts.every((p) => ([...p].length < 2 ? false : [...p].length < 4 ? prep.words.has(p) : formsOf(p).some((f) => prep.words.has(f))));
+  }
+  return false;
 }
 function subjectHits(subjects, text, norm) {
   if (!text || !Array.isArray(subjects)) return 0;
@@ -256,17 +264,69 @@ async function index(E, caller, c) {
     const hits = ps > 0 ? 0 : subjectHits(r.b && r.b.subjects, prep, norm);
     // A path match whose idf is 0 names a task file but adds no rank; it is still a fact, so the overflow line counts it.
     const fact = ps > 0 || hits > 0 || (paths.length > 0 && pathMatches(paths, ownedF));
-    return { r, ps, hits, fact, tier: ps > 0 ? 1 : hits > 0 ? 2 : 3, rel: rel.scores.get(r.id) || 0 };
+    const cosine = sel.cos.has(r.id) ? sel.cos.get(r.id) : null;
+    return { r, ps, hits, fact, cosine, tier: ps > 0 ? 1 : hits > 0 ? 2 : 3, rel: rel.scores.get(r.id) || 0 };
   }).sort((a, b) => (
     (heldTier(a) - heldTier(b)) || (b.rel - a.rel) || (a.tier - b.tier) || (b.ps - a.ps) || (b.hits - a.hits)
     || ((b.r.status === 'verified') - (a.r.status === 'verified')) || (b.r.created_at - a.r.created_at)
     || (a.r.id < b.r.id ? -1 : a.r.id > b.r.id ? 1 : 0)
   ));
 
+  // The bar (ADR 0042 amendment, proposed). Two scores per note, each against its own floor and never mixed under one: `sub`, the best cosine over the
+  // task's search lines (its memory_queries), and `spec`, the cosine to the whole task spec (label `task`). Whole-text queries sit on a higher cosine
+  // scale than short lines, so one floor cannot serve both. With search lines a note is listed when (sub >= index_min_relevance and sub is within
+  // REL_CUT of the best sub of any note) or spec >= index_min_relevance_spec; with none, when spec >= index_spec_only_floor. A path or subject match
+  // lists nothing (it measured as noise); it stays a tiebreaker in the order above. index_min_relevance 0 turns the whole bar off (rank order up to
+  // the cap); a spec floor of 0 turns that leg off. The floors were measured on nano only, so with another embedder, or with no vector list
+  // (keyword only), no note qualifies by the bar, and the receipt says so.
+  const num = (v, d) => (typeof v === 'number' ? v : d);
+  const minRel = num(lv.index_min_relevance, 0.45), minSpec = num(lv.index_min_relevance_spec, 0.6), specOnly = num(lv.index_spec_only_floor, 0.55);
+  const maxNotes = Number.isInteger(lv.index_max_notes) ? lv.index_max_notes : 3;
+  // The cosine comes from the vectors stored under the namespace, so the gate is the namespace's own embedding model: the bar was measured on nano.
+  const models = namespaces.map((ns) => E.store.db.prepare('SELECT embedding_model FROM namespace_models WHERE namespace = ?').get(ns)).filter(Boolean).map((m) => m.embedding_model);
+  const nano = models.length === 0 || models.every((m) => m === c.nanoModel);
+  const useCos = nano && sel.info && sel.info.semantic_contributed === true && sel.cos.size > 0;
+  const subMaps = useCos ? [...sel.cosBy].filter(([label]) => label !== SPEC_LABEL).map(([, m]) => m) : [];
+  const specMap = useCos ? sel.cosBy.get(SPEC_LABEL) || null : null;
+  const subOn = subMaps.length > 0;
+  const embedded = (rq.queries || []).filter((q) => q.label !== SPEC_LABEL).length; // search-line vectors the call carried
+  const onTask = task && Array.isArray(task.memory_queries) ? task.memory_queries.length : 0; // lines the task has, embedded or not
+  const subqueries = Math.max(embedded, onTask);
+  const linesPresent = subqueries > 0; // lines that failed to embed do not loosen the bar: the spec alone then meets the spec leg's floor
+  let bestSub = null;
+  for (const x of ranked) {
+    x.sub = subMaps.reduce((m, map) => (map.has(x.r.id) && (m === null || map.get(x.r.id) > m) ? map.get(x.r.id) : m), null);
+    x.spec = specMap && specMap.has(x.r.id) ? specMap.get(x.r.id) : null;
+    if (x.sub !== null && (bestSub === null || x.sub > bestSub)) bestSub = x.sub;
+  }
+  const why = (x) => {
+    if (minRel === 0) return 'rank';
+    if (!useCos) return null;
+    if (subOn) {
+      if (x.sub !== null && x.sub >= minRel && x.sub >= bestSub - REL_CUT) return 'sub';
+      return minSpec === 0 || (x.spec !== null && x.spec >= minSpec) ? 'spec' : null;
+    }
+    if (linesPresent) return minSpec === 0 || (x.spec !== null && x.spec >= minSpec) ? 'spec' : null;
+    return specOnly === 0 || (x.spec !== null && x.spec >= specOnly) ? 'spec_only' : null;
+  };
+  const passing = ranked.filter((x) => why(x) !== null);
+  const shown = passing.slice(0, maxNotes);
+  const cutByFloor = ranked.length - passing.length, cutByCap = passing.length - shown.length;
+  const r3 = (v) => (v === null ? null : Math.round(v * 1000) / 1000);
+  const bestCut = (k) => r3(ranked.filter((x) => why(x) === null && x[k] !== null).reduce((m, x) => (m === null || x[k] > m ? x[k] : m), null));
+  const barInfo = {
+    bar: {
+      min_relevance: minRel, min_relevance_spec: minSpec, spec_only_floor: specOnly, max_notes: maxNotes, by: minRel === 0 ? 'off' : useCos ? 'cosine' : 'none',
+      ...(useCos || minRel === 0 ? {} : { reason: !nano ? `the notes are embedded with ${[...new Set(models)].join(', ')}, not the model the relevance bar was measured on (${c.nanoModel})` : 'no vector list ranked the notes (keyword only)' }),
+      subqueries, subqueries_embedded: embedded, spec_only: useCos && !linesPresent,
+      listed: shown.map((x) => ({ id: x.r.id, sub: r3(x.sub), spec: r3(x.spec), why: why(x) })),
+      cut_by_floor: cutByFloor, cut_by_cap: cutByCap, best_cut_sub: bestCut('sub'), best_cut_spec: bestCut('spec'),
+    },
+  };
   const trust = lv.notes_trust_wording === true;
   const header = trust ? HEADER_ON : HEADER_OFF;
-  const items = ranked.map(({ r }, i) => ({ id: r.id, text: lineOf(r, r.b, trust, caller.run_id, holds.get(r.id) || null), priority: ranked.length - i }));
-  const factIds = new Set(ranked.filter((x) => x.fact).map((x) => x.r.id));
+  const items = shown.map(({ r }, i) => ({ id: r.id, text: lineOf(r, r.b, trust, caller.run_id, holds.get(r.id) || null), priority: shown.length - i }));
+  const factIds = new Set(passing.filter((x) => x.fact).map((x) => x.r.id));
   const run = (footer) => fit(items, { max_bytes: o.maxBytes, header, footer, drop_order: 'priority-then-oldest' });
   let fitted = run(FRAME.end);
   let overflow = factIds.size - fitted.kept.filter((id) => factIds.has(id)).length;
@@ -286,7 +346,10 @@ async function index(E, caller, c) {
   const info = {
     // A held note is listed last, so a tight budget cuts it first: the orchestrator and the operator are told which ones were cut. Workers never see held notes.
     ...(heldCut.length ? { held_unlisted: heldCut } : {}),
-    considered: found.length, excluded_already_injected: excluded, candidates: sel.candidates, ...(rel.info ? { relevance: rel.info } : {}),
+    considered: found.length, excluded_already_injected: excluded, candidates: sel.candidates, ...(rel.info ? { relevance: rel.info } : {}), ...barInfo,
+    // none_passed: the notes were scored and none reached a floor. unranked: nothing could be scored by meaning (keyword mode, a non-nano embedder), so no floor was applied.
+    none_passed: found.length > 0 && passing.length === 0 && (useCos || minRel === 0),
+    ...(found.length > 0 && passing.length === 0 && !useCos && minRel !== 0 ? { unranked: true } : {}),
     notes: { path: ranked.filter((x) => x.tier === 1).length, term: ranked.filter((x) => x.tier === 2).length, unlisted_path_or_term: Math.max(overflow, 0) },
   };
   if (!fitted.kept.length) return { ...empty(found.length, excluded, ranked.length, fitted.over_budget), ...info };

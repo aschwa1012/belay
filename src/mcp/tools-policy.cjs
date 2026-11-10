@@ -1,0 +1,36 @@
+'use strict';
+// tools-policy.cjs — task_create's `policy` property (ADR 0071) and the stamp fields no tool call may carry (ADR 0072 decision 3).
+// The property lists what v1 takes; the core's policy-plan.cjs is the check, and refuses any other field or value.
+
+// Written by the core for a policy step, from the harness caller only. A model naming one is refused at the boundary, by name.
+const STAMPS = ['acted_by', 'trigger', 'policy_rev'];
+
+const POLICY_PROPERTY = {
+  type: ['object', 'null'],
+  description: 'What belay does for this task. A field left out takes the run plan, or is yours when the run has none; set a field to null to keep that step yourself. On amend it replaces the plan. null: no plan, no default. Its steps and hand-backs do not wake you; exceptions, escalations and the done wake do, with a digest. The run plan names build, review, fix, re_review and integrate; set a field here only to change it for this task',
+  properties: {
+    build: { type: ['object', 'null'], description: '{worker: id} or {spawn: {agent_type, worker_id?}}; when open and its deps are done' },
+    review: { type: ['object', 'null'], description: '{worker: id} or {spawn: {agent_type, worker_id?}}; when the task passes' },
+    fix: { enum: ['builder', null] },
+    re_review: { enum: ['refuter', null] },
+    integrate: { enum: ['on_hold', null] },
+    follow_up: { enum: ['plan', null] },
+  },
+};
+
+// A batch item is a task's fields too; its stamps are refused as the top level's are. Returns the first stamp an item names, or null.
+function stampIn(args) {
+  if (!args || typeof args !== 'object') return null;
+  const own = STAMPS.find((k) => Object.prototype.hasOwnProperty.call(args, k));
+  if (own) return { field: own };
+  if (Array.isArray(args.tasks)) {
+    for (let i = 0; i < args.tasks.length; i++) {
+      const t = args.tasks[i];
+      const k = t && typeof t === 'object' ? STAMPS.find((s) => Object.prototype.hasOwnProperty.call(t, s)) : null;
+      if (k) return { field: k, item: i };
+    }
+  }
+  return null;
+}
+
+module.exports = { STAMPS, POLICY_PROPERTY, stampIn };

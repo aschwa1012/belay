@@ -122,3 +122,58 @@ test('a worker of ra cannot renew, release or checkpoint a lease granted under l
   const held = (await call(O('rb'), 'task.list', {})).tasks.find((x) => x.id === t.id).lease;
   assert.ok(held && held.released_at == null, 'the lease of the other live run is not released');
 });
+
+// A task whose policy step holds a live worker lease answers its own run's asks as a standing lease, but another run's orchestrator
+// still gets the cross-run refusal: the standing answer must not run before the guard. Own sandbox, through the public core.
+test('task.assign by another run over a policy-granted live lease is refused E_ROLE, not answered as existing', async () => {
+  const { openCore } = core('index.cjs');
+  const d2 = sandbox();
+  const C = (run) => ({ role: 'orchestrator', run_id: run, pid: process.pid });
+  const ra = await openCore({ dataDir: `${d2}/data`, caller: C('ra'), embed: false });
+  await ra.run.attach({ adapter_pid: process.pid });
+  const rb = await openCore({ dataDir: `${d2}/data`, caller: C('rb'), embed: false });
+  await rb.run.attach({ adapter_pid: process.pid });
+  try {
+    const h = ra.harness();
+    await ra.worker.write({ id: 'wk-a', substrate: 'claude-code', pid: process.pid, state: 'idle', session_id: 's-a', last_event_at: Date.now(), worktree: d2 });
+    const t = await ra.task.create({ spec: 'ra work' });
+    const seq = (await h.policy.claim({ step: 'fix', trigger: { table: 'task', id: t.id, seq: (await ra.task.get({ task_id: t.id })).seq }, task_id: t.id })).row.seq;
+    await h.policyAs(seq).task.assign({ task_id: t.id, worker_id: 'wk-a' });
+    await assert.rejects(rb.task.assign({ task_id: t.id, worker_id: 'wk-a' }), code('E_ROLE'));
+    const again = await ra.task.assign({ task_id: t.id, worker_id: 'wk-a' }); // the same run still gets the standing answer
+    assert.strictEqual(again.existing, true);
+  } finally { await rb.close(); try { await ra.shutdownOwner(); } finally { await ra.close(); cleanup(d2); } }
+});
+
+// The wider pre-fix hole: a policy step's caller was answered by ANY live worker lease on the task, so run rb's own policy step
+// handed back ra's standing lease as success. The cross-run guard must refuse it first, and the refusal must write nothing.
+test('task.assign by run rb\'s policy step over run ra\'s task with a standing lease is refused E_ROLE and writes nothing', async () => {
+  const { openCore } = core('index.cjs');
+  const d2 = sandbox();
+  const C = (run) => ({ role: 'orchestrator', run_id: run, pid: process.pid });
+  const ra = await openCore({ dataDir: `${d2}/data`, caller: C('ra'), embed: false });
+  await ra.run.attach({ adapter_pid: process.pid });
+  const rb = await openCore({ dataDir: `${d2}/data`, caller: C('rb'), embed: false });
+  await rb.run.attach({ adapter_pid: process.pid });
+  try {
+    const worker = (id) => ({ id, substrate: 'claude-code', pid: process.pid, state: 'idle', session_id: `s-${id}`, last_event_at: Date.now(), worktree: d2 });
+    await ra.worker.write(worker('wk-a'));
+    await rb.worker.write(worker('wk-b'));
+    const ta = await ra.task.create({ spec: 'ra work' });
+    const tb = await rb.task.create({ spec: 'rb work' });
+    const claim = async (core, t) => (await core.harness().policy.claim({ step: 'fix', trigger: { table: 'task', id: t.id, seq: (await core.task.get({ task_id: t.id })).seq }, task_id: t.id })).row.seq;
+    await ra.harness().policyAs(await claim(ra, ta)).task.assign({ task_id: ta.id, worker_id: 'wk-a' });
+    const state = async () => {
+      const t = await ra.task.get({ task_id: ta.id });
+      return { seq: t.seq, state: t.state, lease: t.lease ? { id: t.lease.id, holder: t.lease.holder, expires_at: t.lease.expires_at } : null,
+        workers: [(await ra.worker.get({ worker_id: 'wk-a' })).seq, (await rb.worker.get({ worker_id: 'wk-b' })).seq] };
+    };
+    const before = await state();
+    assert.ok(before.lease && before.lease.holder === 'wk-a' && Number.isFinite(Number(before.lease.expires_at)), 'ra holds a standing lease');
+    const stepB = rb.harness().policyAs(await claim(rb, tb));
+    await assert.rejects(stepB.task.assign({ task_id: ta.id, worker_id: 'wk-b' }), code('E_ROLE'));
+    assert.deepStrictEqual(await state(), before, 'the refusal wrote no task, lease or worker row');
+    const again = await ra.task.assign({ task_id: ta.id, worker_id: 'wk-a' });
+    assert.strictEqual(again.existing, true);
+  } finally { await rb.close(); try { await ra.shutdownOwner(); } finally { await ra.close(); cleanup(d2); } }
+});

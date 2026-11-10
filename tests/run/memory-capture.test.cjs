@@ -18,7 +18,7 @@ const { memoryCore } = require('./fake-memory.cjs');
 const { cleanup } = require('../core/helpers.cjs');
 
 const FAKE = path.join(__dirname, 'fakes', 'fake-claude.cjs').replace(/\\/g, '/');
-const ON = { capture: true, observations: true };
+const ON = { capture: true, observations: true, turn_rows: true }; // turn_rows: the safety-net turn row of a failed observation is written only when the lever is on
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function sandbox() {
@@ -71,7 +71,7 @@ function parsedEvents(fixture) {
   return p.pushChunk(Buffer.from(text.endsWith('\n') ? text : text + '\n')).events;
 }
 
-test('buffer: parser tool events are kept per turn, keyed by the turn_end event, and taken once', () => {
+test('legacy: buffer: parser tool events are kept per turn, keyed by the turn_end event, and taken once', () => {
   const tools = parsedEvents('capture-claude.jsonl').filter((e) => e.kind === 'tool_use' || e.kind === 'tool_result');
   assert.ok(tools.length >= 4, 'the fixture has tool events');
   const w = { parser: {} };
@@ -82,7 +82,7 @@ test('buffer: parser tool events are kept per turn, keyed by the turn_end event,
   assert.deepStrictEqual(w.memBuf.events, [], 'the next turn starts empty');
 });
 
-test('buffer: a turn the compaction hook swallows leaves nothing for the next turn', () => {
+test('legacy: buffer: a turn the compaction hook swallows leaves nothing for the next turn', () => {
   const w = { parser: {} };
   const t1 = { kind: 'tool_use', tool: 'Read' };
   const end1 = { kind: 'turn_end' };
@@ -92,7 +92,7 @@ test('buffer: a turn the compaction hook swallows leaves nothing for the next tu
   assert.deepStrictEqual(MC.takeTurn(w, end2), [t2]); // end1 was never taken
 });
 
-test('buffer: a relaunch (new parser) and a failed turn drop the partial events of the previous life', () => {
+test('legacy: buffer: a relaunch (new parser) and a failed turn drop the partial events of the previous life', () => {
   const w = { parser: { id: 1 } };
   MC.onEvent(w, { kind: 'tool_use', tool: 'Read' }, ON);
   w.parser = { id: 2 };
@@ -108,7 +108,7 @@ test('buffer: a relaunch (new parser) and a failed turn drop the partial events 
   assert.deepStrictEqual(MC.takeTurn(w, end2), []);
 });
 
-test('buffer: with no consumer nothing is kept, and the buffer is bounded', () => {
+test('legacy: buffer: with no consumer nothing is kept, and the buffer is bounded', () => {
   const w = { parser: {} };
   for (const lv of [undefined, {}, { capture: false, observations: true }, { capture: true, observations: false }]) {
     MC.onEvent(w, { kind: 'tool_use' }, lv);
@@ -119,7 +119,7 @@ test('buffer: with no consumer nothing is kept, and the buffer is bounded', () =
   assert.strictEqual(w.memBuf.dropped, 5);
 });
 
-test('observe over real parser output: files, commands by tool_use_id and the failure type come through', () => {
+test('legacy: observe over real parser output: files, commands by tool_use_id and the failure type come through', () => {
   const evs = parsedEvents('capture-claude.jsonl');
   const { buildObservation } = require('../../src/run/observe.cjs');
   const o = buildObservation({ turn: 1, events: evs.filter((e) => e.kind === 'tool_use' || e.kind === 'tool_result'), final_text: 'done' });
@@ -133,7 +133,7 @@ test('observe over real parser output: files, commands by tool_use_id and the fa
 
 // ---- the observation row, through the manager ----
 
-test('one row per turn: the observation is embedded, source harness, carries the turn tags, and no turn row is written', async () => {
+test('legacy: one row per turn: the observation is embedded, source harness, carries the turn tags, and no turn row is written', async () => {
   const core = memoryCore({ levers: ON });
   await run(core, async (m, sb) => {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1', task_id: 't1' });
@@ -170,7 +170,7 @@ test('one row per turn: the observation is embedded, source harness, carries the
   });
 });
 
-test('two turns give two observations, each with only its own events', async () => {
+test('legacy: two turns give two observations, each with only its own events', async () => {
   const core = memoryCore({ levers: ON });
   await run(core, async (m, sb) => {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
@@ -186,7 +186,7 @@ test('two turns give two observations, each with only its own events', async () 
   }, { FAKE_TOOL_USES: '3' });
 });
 
-test('a failed observation store is an ok 0 event with the code, is not retried, and the turn row is written as the lever-off path writes it', async () => {
+test('legacy: a failed observation store is an ok 0 event with the code, is not retried, and the turn row is written as the lever-off path writes it', async () => {
   const core = memoryCore({ levers: ON, failStore: 'observation' });
   await run(core, async (m, sb) => {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
@@ -207,7 +207,7 @@ test('a failed observation store is an ok 0 event with the code, is not retried,
   });
 });
 
-test('a failed event write is named on the worker and never retried', async () => {
+test('legacy: a failed event write is named on the worker and never retried', async () => {
   const core = memoryCore({ levers: ON, failEvent: true });
   await run(core, async (m, sb) => {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });
@@ -219,7 +219,7 @@ test('a failed event write is named on the worker and never retried', async () =
   });
 });
 
-test('a turn with no assistant text still gets its observation', async () => {
+test('legacy: a turn with no assistant text still gets its observation', async () => {
   const core = memoryCore({ levers: ON });
   const w = { id: 'w9', turns: 4, taskId: null, substrate: 'claude-code', lastAssistantText: '', memoryQueue: null };
   const ctx = { core, memoryLevers: ON, shutdownFlags: {} };
@@ -233,8 +233,8 @@ test('a turn with no assistant text still gets its observation', async () => {
   assert.strictEqual(core.stores[0].turn, 4);
 });
 
-test('the jobs after a turn get the turn events and the observation id, only when a job lever is on', async () => {
-  for (const [levers, expectCalls] of [[ON, 0], [{ ...ON, summaries: 'mechanical' }, 1], [{ capture: true, cost_ledger: true }, 1]]) {
+test('legacy: the jobs after a turn get the turn events and the observation id, only when a job lever is on', async () => {
+  for (const [levers, expectCalls] of [[ON, 0], [{ ...ON, summaries: 'mechanical' }, 1], [{ capture: true, cost_ledger: true, turn_rows: true }, 1]]) {
     const seen = [];
     const core = memoryCore({ levers });
     await run(core, async (m, sb) => {
@@ -257,7 +257,7 @@ test('the jobs after a turn get the turn events and the observation id, only whe
   }
 });
 
-test('a jobs module that throws is named on the worker and does not break the next turn', async () => {
+test('legacy: a jobs module that throws is named on the worker and does not break the next turn', async () => {
   const core = memoryCore({ levers: { ...ON, summaries: 'mechanical' } });
   await run(core, async (m, sb) => {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w1' });

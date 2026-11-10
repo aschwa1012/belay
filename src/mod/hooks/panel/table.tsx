@@ -1,9 +1,11 @@
 // The agent table: its columns, the task label, an opened agent's detail and the rows. Drawing only.
 
 import type { BelayAgent, BelayPanelSnap } from '../../types/index'
-import { cacheSegs, ctxSegs, type CtxMode, dur, fitSegs, interactiveMark, interactiveOrch, isLive, isReviewWorker, markSeg, markWidth, money, STATE_NAME, type Seg } from './model'
+import { cacheSegs, ctxSegs, type CtxMode, dur, fitSegs, interactiveMark, interactiveOrch, isLive, isReviewWorker, markSeg, markWidth, money, rowName, STATE_NAME, type Seg } from './model'
 import { cells, clipCells, wrapParts } from './wrap'
 import { clip, Line, pad, padName, shortModel, tp, type Act, type Ctx, type Els } from './base'
+import { ATTN, ERR, OK } from './theme'
+import { hhmm } from './sections'
 
 type Cols = { mark: number; agent: number; id: number; model: boolean; task: number; ctx: number; ctxMode: CtxMode; cache: number; cost: number }
 
@@ -11,7 +13,7 @@ type Cols = { mark: number; agent: number; id: number; model: boolean; task: num
 // least needed first: task, cache, context, the model name, then the id is cut. Nothing is squeezed.
 function columns({ snap, cols }: Ctx): Cols {
   const s = snap.settings
-  const longest = snap.agents.reduce((m, a) => Math.max(m, a.id.length), 0)
+  const longest = snap.agents.reduce((m, a) => Math.max(m, rowName(a).length), 0)
   const c: Cols = {
     mark: markWidth(s.marks), agent: 0, id: Math.max(6, Math.min(16, longest)), model: true, task: 0,
     ctx: 6, ctxMode: 'tokens', cache: s.cache === 'both' ? 11 : 5, cost: 7,
@@ -78,12 +80,12 @@ function taskSegs(a: BelayAgent, snap: BelayPanelSnap, room: number): Seg[] {
   const perm = snap.notices.find(n => n.tone === 'permission' && n.agentId === a.id)
   const v = a.task && snap.notices.find(n => n.taskId === a.task!.id && (n.tone === 'holds' || n.tone === 'refuted'))
   const tail: Seg[] = []
-  if (v) tail.push({ t: ' → ', brk: true }, { t: v.tone === 'holds' ? 'holds' : 'refuted', c: v.tone === 'holds' ? 'merged' : 'error' })
-  if (perm) tail.push({ t: ` ▲ ${perm.ids}`, c: 'permission', brk: true })
+  if (v) tail.push({ t: ' → ', brk: true }, { t: v.tone === 'holds' ? 'holds' : 'refuted', c: v.tone === 'holds' ? OK : ERR })
+  if (perm) tail.push({ t: ` ▲ ${perm.ids}`, c: ATTN, brk: true })
   if (snap.settings.task === 'kind') {
     // The kind label is kept last: the permission mark drops first, then the verdict. A request id is about 30 cells, so
     // the mark stands alone here; the id and the commands are in the permission notice.
-    const kt: Seg[] = tail.map(x => (x.c === 'permission' ? { ...x, t: ' ▲' } : x))
+    const kt: Seg[] = tail.map(x => (x.c === ATTN ? { ...x, t: ' ▲' } : x))
     return fitSegs([a.task ? { t: clip(kindOf(a), room) } : { t: '—', dim: true }, ...kt], room)
   }
   const kept = fitSegs([{ t: '' }, ...tail], Math.max(1, room - 6)).slice(1)
@@ -104,6 +106,9 @@ const costText = (a: BelayAgent): string => (a.costUsd !== null && a.costBasis =
 
 const LABEL = 8
 
+// The context figure is right-aligned; beside the cache column it keeps one more column of space (when it fits), so the cache bar does not read as part of it.
+const ctxGap = (w: Cols): boolean => w.ctxMode !== 'tokens' && w.cache > 0
+
 // A detail row is a label and parts. The parts join with `sep` and wrap under the label instead of being cut.
 type DRow = { k: string; parts: string[]; sep: string; note?: Seg }
 
@@ -111,6 +116,10 @@ function Detail({ E, a, snap, now, cols, last }: { E: Els; a: BelayAgent; snap: 
   const { Box } = E
   const rows: DRow[] = []
   rows.push({ k: 'status', sep: ' · ', parts: [interactiveOrch(a, snap) ? 'interactive — its words are in its own window' : `${STATE_NAME[a.state]} — established by ${a.stateBy ?? 'not recorded'}`, a.pid !== null ? `pid ${a.pid}` : ''] })
+  if (rowName(a) !== a.id) rows.push({ k: 'id', sep: ' ', parts: [a.id] })
+  // When the worker row was first started, and how long ago. belay sets started_at at the first spawn and keeps it across a restart and a resume,
+  // so this is the row's age (parked time included), not the uptime of the process now running. The exit shows when one is recorded.
+  if (a.startedAtMs !== null) rows.push({ k: 'started', sep: ' · ', parts: [`${hhmm(a.startedAtMs)} (${dur(Math.max(0, now - a.startedAtMs))} ago)`, a.exitedAtMs !== null ? `exited ${hhmm(a.exitedAtMs)}` : ''] })
   const launch = [a.model, a.effort ? `effort ${a.effort}` : null, a.launchMode ? `mode ${a.launchMode}` : null, a.version ? `Claude Code ${a.version}` : null]
   rows.push({ k: 'launch', sep: ' · ', parts: launch.filter(Boolean).length ? launch.filter(Boolean) as string[] : ['not recorded'] })
   if (a.task) {
@@ -156,21 +165,23 @@ function AgentRow(c: Ctx & { a: BelayAgent; c: Cols; last: boolean }) {
   const { E, a, snap, ui, now, act } = c
   const { Box, Text, Button } = E
   const w = c.c
-  const cell = (key: string, width: number, segs: Seg[], end = false) => (
-    <Box key={key} width={width} flexShrink={0} marginRight={1} {...(end ? { justifyContent: 'flex-end' } : {})}>{segs.map(s => <Text {...tp(s)}>{s.t}</Text>)}</Box>
+  // `gap`: one more column of space inside the cell's right edge, so a right-aligned figure keeps two columns from the cell after it.
+  const cell = (key: string, width: number, segs: Seg[], end = false, gap = false) => (
+    <Box key={key} width={width} flexShrink={0} marginRight={1} {...(gap ? { paddingRight: 1 } : {})} {...(end ? { justifyContent: 'flex-end' } : {})}>{segs.map(s => <Text {...tp(s)}>{s.t}</Text>)}</Box>
   )
   const io = interactiveOrch(a, snap)
+  const ctx = ctxSegs(a, snap.settings, w.ctxMode)
   const mk = io ? interactiveMark(snap.settings.marks) : markSeg(a.state, snap.settings.marks)
   return (
     <Box key={`row-${a.id}`} flexDirection="column">
       <Box>
         {cell('m', w.mark, [mk])}
         <Box key="a" width={w.agent} flexShrink={0} marginRight={1}>
-          <Button key={`agent:${a.id}`} label={padName(a.id, w.id)} plain onPress={() => act.select(a.id)} />
+          <Button key={`agent:${a.id}`} label={padName(rowName(a), w.id)} plain onPress={() => act.select(a.id)} />
           {w.model ? <Text dimColor> {pad(shortModel(a.model), 7)}</Text> : null}
         </Box>
         {w.task > 0 && cell('t', w.task, taskSegs(a, snap, w.task))}
-        {w.ctx > 0 && cell('x', w.ctx, ctxSegs(a, snap.settings, w.ctxMode))}
+        {w.ctx > 0 && cell('x', w.ctx, ctx, true, ctxGap(w) && cells(ctx.map(s => s.t).join('')) < w.ctx)}
         {w.cache > 0 && cell('k', w.cache, cacheSegs(a, snap.settings, snap.fetchedAt, now))}
         {cell('$', w.cost, [{ t: a.costUsd === null && io ? 'n/a' : costText(a), dim: a.costUsd === null }], true)}
       </Box>
@@ -192,7 +203,7 @@ export function Table(c: Ctx) {
       <Box key="th">
         <Box width={w.mark} marginRight={1}>{null}</Box>
         <Line E={E} w={cols - w.mark - 1} k="th1" segs={[{ t: pad('agent', w.agent + 1), dim: true }, ...(w.task > 0 ? [{ t: pad('task', w.task + 1), dim: true }] : []),
-          ...(w.ctx > 0 ? [{ t: pad('ctx', w.ctx + 1), dim: true }] : []), ...(w.cache > 0 ? [{ t: pad('cache', w.cache + 1), dim: true }] : []), { t: ' '.repeat(Math.max(0, w.cost - 4)) + 'cost', dim: true }]} />
+          ...(w.ctx > 0 ? [{ t: ctxGap(w) ? `${' '.repeat(Math.max(0, w.ctx - 4))}ctx  ` : `${' '.repeat(Math.max(0, w.ctx - 3))}ctx `, dim: true }] : []), ...(w.cache > 0 ? [{ t: pad('cache', w.cache + 1), dim: true }] : []), { t: ' '.repeat(Math.max(0, w.cost - 4)) + 'cost', dim: true }]} />
       </Box>
       {live.map(a => <AgentRow {...c} a={a} c={w} last={a === lastRow} />)}
       {fin.length > 0 && (

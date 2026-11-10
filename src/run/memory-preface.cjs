@@ -143,14 +143,14 @@ const { SPAWN_EMBED_MS } = require('../core/spawn-bounds.cjs');
 const NO_EMBED = Object.freeze({ attempted: false, embeddings: [], queries: [], failure: null, stop: false, off: false, ms: 0 });
 
 // The query vectors of this worker's index, made by the store owner's embedder (memory.embedQuery: the path memory.search
-// uses; this process never loads the model). The queries are the task's own text, which the core reads from the task row
-// (so a relaunch embeds the same text a spawn did), plus the worker's `indexQueries` (the orchestrator's memory_queries from worker_spawn, kept on the worker row; each is sent as
-// "Task: <line>", the shape the task query has). Only for a run with a project, and only when there is a task or an extra query. Resolves
+// uses; this process never loads the model). The queries are the task's whole spec and its memory_queries lines, which the core reads from the
+// task row (so a relaunch, and a plan executor's spawn that names no lines, embed the same texts), unless the worker has `indexQueries` (the memory_queries
+// of its worker_spawn, kept on the worker row), which are sent instead. Only for a run with a project, and only when there is a task or an extra query. Resolves
 // { attempted, embeddings: [{ vector, model, label }], queries: [{ label, ms, ok, code?, message?, embedder?, timed_out? }],
 // failure: the first failed query's { code, message } or null, stop: whether a failure of the model itself must stop this
 // launch (the run's mode is `required`), off: whether the run's memory is off (mode `off` after a failure), ms }. A core without memory.embedQuery is a test double and gets none. Never throws.
 async function embedForIndex(ctx, w, lv) {
-  const extra = (Array.isArray(w.indexQueries) ? w.indexQueries : []).map((q) => (typeof q === 'string' ? `Task: ${q}` : { ...q, text: `Task: ${q.text}` }));
+  const extra = Array.isArray(w.indexQueries) ? w.indexQueries : []; // plain lines: a "Task: " wrap lowers their cosines
   if (!lv.project || !ctx.core.memory || typeof ctx.core.memory.embedQuery !== 'function' || (!w.taskId && !extra.length)) return NO_EMBED;
   const t0 = Date.now();
   let r;
@@ -178,9 +178,9 @@ async function embedForIndex(ctx, w, lv) {
 // The receipt's detail, one JSON text in the event's `message` (the store has no scalar columns for it):
 // { hybrid, queries: [{ label, ms, ok }], failure?: { code, message } }. `hybrid` is true only when a semantic ranking
 // contributed to the index's order; `failure` is why a query or the semantic signal did not.
-function receiptDetail(emb, hybrid, failure) {
+function receiptDetail(emb, hybrid, failure, bar = null) {
   const f = failure || emb.failure;
-  return JSON.stringify({ hybrid, queries: emb.queries.map(({ label, ms, ok }) => ({ label, ms, ok })), ...(f ? { failure: { code: f.code, message: String(f.message || '').slice(0, 160) } } : {}) });
+  return JSON.stringify({ hybrid, ...(bar ? { bar } : {}), queries: emb.queries.map(({ label, ms, ok, code, timed_out }) => ({ label, ms, ok, ...(timed_out ? { timed_out: true, code } : {}) })), ...(f ? { failure: { code: f.code, message: String(f.message || '').slice(0, 160) } } : {}) });
 }
 
 // ADR 0034 decision 2 under `required`: the owner's hook has paused the run, so this launch injects no index. The receipt is
@@ -194,6 +194,15 @@ async function stopReceipt(ctx, w, emb, convo) {
 async function offReceipt(ctx, w, emb, convo) {
   return recordIndex(ctx, w, convo, { ok: 1, row_ids: [], bytes: 0, dropped: 0, over_budget: 0, message: JSON.stringify({ hybrid: false, memory: 'off', queries: emb.queries.map(({ label, ms, ok }) => ({ label, ms, ok })), ...(emb.failure ? { failure: { code: emb.failure.code, message: String(emb.failure.message || '').slice(0, 160) } } : {}) }) });
 }
+
+// The one line a worker gets when the project has notes in scope and none passed the index's relevance bar.
+// `n`: the notes in scope (candidates.scope counts only the notes not yet shown, so the already-shown ones are added back); `held`: notes this conversation was already shown, which did pass, so the line says no FURTHER note passed.
+const noneListedLine = (n, held = 0) => (held > 0
+  ? `No further project note matched this task's queries closely enough to list here (${n} note${n === 1 ? '' : 's'} in scope). Some may still apply: before you change a file or command, run memory_search on it.`
+  : `The project has ${n} note${n === 1 ? '' : 's'}; none matched this task's queries closely enough to list here. Some may still apply: before you change a file or command, run memory_search on it.`);
+
+// The line when the index could not rank the notes against the task (keyword mode after an embedder failure, or notes embedded with another model): no floor was applied, so it must not say that nothing matched.
+const unrankedLine = (n) => `The project has ${n} note${n === 1 ? '' : 's'}; this run could not rank them against this task, so none are listed here. Before you change a file or command, run memory_search on it.`;
 
 // What a worker is told when its first-message index was refused (E_INDEX_BOUND, E_SEMANTIC_REQUIRED): belay's own words, no note text.
 function noIndexNotice(e) {
@@ -246,9 +255,13 @@ async function indexBlock(w, ctx, prompt, given, replacing = null) {
   const semFailure = emb.embeddings.length && !hybrid && rel.semantic && typeof rel.semantic === 'object' ? rel.semantic : null;
   await recordIndex(ctx, w, convo, {
     ok: 1, row_ids: got.row_ids, bytes: got.bytes, sha256: got.sha256,
-    dropped: got.dropped > 0 ? 1 : 0, over_budget: got.over_budget ? 1 : 0, message: receiptDetail(emb, hybrid, semFailure),
+    dropped: got.dropped > 0 ? 1 : 0, over_budget: got.over_budget ? 1 : 0, message: receiptDetail(emb, hybrid, semFailure, got.bar || null),
   });
-  return got.bytes > 0 ? got.text : '';
+  if (got.bytes > 0) return got.text;
+  // The project has notes in scope and none passed the bar: say so in one line, so silence is not read as "no notes" (nothing is said when there are none).
+  const inScope = (got.candidates && Number.isInteger(got.candidates.scope) ? got.candidates.scope : got.considered) + (got.excluded_already_injected || 0);
+  if (got.unranked) return unrankedLine(inScope);
+  return got.none_passed ? noneListedLine((got.candidates && Number.isInteger(got.candidates.scope) ? got.candidates.scope : got.considered) + (got.excluded_already_injected || 0), got.excluded_already_injected || 0) : '';
 }
 
 // Eval-only `native_memory` run lever (the run row's memory levers): the folder a Claude Code worker gets when the spawn call names none.
@@ -358,10 +371,10 @@ async function preface(w, ctx, prompt) {
   }
   let head = '';
   if (w.taskId) {
-    const assigned = await ctx.core.task.assign({ task_id: w.taskId, worker_id: w.id });
+    const assigned = await (w.assignCore || ctx.core).task.assign({ task_id: w.taskId, worker_id: w.id }); // a policy step's spawn assigns through its stamped view
     if (assigned && assigned.review) w.review = assigned.review; // a review spawn's answer carries the reviewed tree, as task_assign's does
     w.taskSpec = assigned && assigned.task && typeof assigned.task.spec === 'string' ? assigned.task.spec : ''; // belay sends the spec itself (manager.cjs), so the orchestrator's prompt is only added instructions
-    w.handbackRule = require('./handback.cjs').rule(assigned, await require('./handback.cjs').facts((id) => ctx.core.task.get({ task_id: id }), assigned)); // belay ends the first message with the hand-back rule (a verdict task's carries the Review standard), as task_assign does
+    w.handbackRule = require('./handback.cjs').rule(assigned, await require('./handback.cjs').facts((id) => ctx.core.task.get({ task_id: id }), assigned), w.substrate); // belay ends the first message with the hand-back rule (a verdict task's carries the Review standard), as task_assign does
     try {
       const rl = await ctx.core.continuity.resumeLine({ task_id: w.taskId, first: true });
       head = rl && rl.text ? rl.text + '\n\n' : '';

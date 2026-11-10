@@ -1,27 +1,29 @@
 // The panel's drawing: the band, the pane and a plain fallback. Colours are theme keys only. Nothing
 // here fetches, writes or submits: a press only calls one of the `Act` handlers the caller passes.
 
-import type { BelayAwaitingNote, BelayEntry, BelayMemoryNotice, BelayNotice, BelayPanelSettle, BelayPanelSnap } from '../../types/index'
+import type { BelayAwaitingNote, BelayEntry, BelayMemoryNotice, BelayPanelSettle, BelayPanelSnap } from '../../types/index'
 import {
-  bandLines, cacheSegs, ctxSegs, isLive, markSeg, money, runLine, TONE, unseenNotices, bar,
+  bandLines, cacheSegs, ctxSegs, isBusy, isLive, markSeg, money, rowName, runLine, TONE,
   memoryTitleSegs, memoryFallbackSegs, staleLine, type Seg,
 } from './model'
 import { CONFIRM_MS, confirmLine, heldCount, heldDetail, heldLine, reviewLine, reviewProject, REASON_MAX, runningReview, SETTLE_ACTIONS, settleConfirm, settleEntryView, settledActive, shortId } from './held'
-import { cells, cmdLines, wordWrap, wrapHard } from './wrap'
-import { clip, INDENT, Line, Section, shortModel, tp, type Act, type Ctx, type Els } from './base'
+import { cells, wordWrap, wrapHard } from './wrap'
+import { clip, INDENT, Line, Section, shortModel, type Act, type Ctx, type Els } from './base'
 import { Table } from './table'
 import { badgeOf } from './memory'
 import { MemoryPane } from './memview'
+import { Fatal, Footer, Header, hhmm, Legend, Notices, taskSegs, widthOf } from './sections'
+import { BRAND, ERR, headSeg, OK, WARN } from './theme'
 import { modelRows } from './warm'
 
-export type { Act, Els }
+export type { Act, Ctx, Els }
 
 // ---- the band ----------------------------------------------------------------------------------
 
 export function Band({ E, snap, ui, now, cols, act, menu }: Ctx) {
   const { Box, Button } = E
   const badge = badgeOf(menu)
-  if (snap.fatal) return <Line E={E} w={cols} k="fatal" segs={[{ t: 'belay ', c: 'claude', bold: true }, { t: snap.fatal, c: 'error' }]} />
+  if (snap.fatal) return <Fatal E={E} text={snap.fatal} cols={cols} />
   const lines = bandLines(snap, ui, now, cols)
   const err = snap.errors[0]
   const stale = staleLine(snap)
@@ -34,7 +36,7 @@ export function Band({ E, snap, ui, now, cols, act, menu }: Ctx) {
         <Box key={`band${i}`}>
           <Line E={E} segs={segs} k={`l${i}`} w={i === 0 ? cols - toggle.length - (badge > 0 ? String(badge).length + 3 : 0) : cols} />
           {i === 0 && <Button key="open" label={toggle} plain dimColor onPress={act.toggle} />}
-          {i === 0 && badge > 0 && <Line E={E} segs={[{ t: ` [${badge}]`, c: 'warning' }]} k="badge" />}
+          {i === 0 && badge > 0 && <Line E={E} segs={[{ t: ` [${badge}]`, c: WARN }]} k="badge" />}
         </Box>
       ))}
       {stale && wrapHard(stale, cols).map((t, i) => <Line E={E} w={cols} segs={[{ t, dim: true }]} k={`stale${i}`} />)}
@@ -47,66 +49,15 @@ export function BandWaiting({ E, runId, errors, cols = 80 }: { E: Els; runId: st
   const { Box } = E
   return (
     <Box flexDirection="column">
-      <Line E={E} w={cols} segs={[{ t: 'belay', c: 'claude', bold: true }, { t: ` ${runId ?? 'latest run'}  `, dim: false }, { t: 'reading…', dim: true }]} k="w" />
+      <Line E={E} w={cols} segs={[{ t: 'belay', c: BRAND, bold: true }, { t: ` ${runId ?? 'latest run'}  `, dim: false }, { t: 'reading…', dim: true }]} k="w" />
       {errors[0] && <Line E={E} w={cols} segs={[{ t: errors[0], dim: true }]} k="we" />}
     </Box>
   )
 }
 
-// ---- the table ---------------------------------------------------------------------------------
+// ---- orchestrator ------------------------------------------------------------------------------
 
-
-// ---- notices, orchestrator, legend -------------------------------------------------------------
-
-const hhmm = (ts: number | null): string => (ts === null ? '--:--' : new Date(ts).toTimeString().slice(0, 5))
-const ATTN = 'warning' // the one accent for what waits on the operator; a failure keeps `error`
-
-// The line under a notice. An id wider than the room beside the time moves out to the notice's own indent, whole.
-function IdLines({ E, ids, cols }: { E: Els; ids: string; cols: number }) {
-  const { Box, Text } = E
-  const pl = cells(ids) > cols - 8 ? 2 : 8
-  return <Box paddingLeft={pl} flexShrink={0} flexDirection="column">{wordWrap(ids, cols - pl).map((t, i) => <Text key={`i${i}`} dimColor wrap="truncate-end">{clip(t, cols - pl)}</Text>)}</Box>
-}
-
-// The command row sits under the text (indent 8) when every command fits there whole; a command with a long id keeps the wider indent 2 so it stays whole.
-const cpl = (cmd: string, inner: number): number => (cmd.split(/\s+·\s+/).every(c => cells(c) <= inner - 8 - 2) ? 8 : 2)
-
-// Rows are drawn at the section's inner width. One line each: the id goes beside the text when both fit, and is left out when the
-// text already names it; only an id that does not fit beside the text takes the line under it.
-function Notices({ E, snap, ui, act, cols }: Ctx) {
-  const { Box, Text, Button } = E
-  const ordered = [...snap.notices].sort((a: BelayNotice, b: BelayNotice) => (b.ts ?? 0) - (a.ts ?? 0))
-  const fresh = unseenNotices(ordered, ui).length
-  const inner = cols - INDENT
-  if (!ordered.length) return <Section E={E} k="sn" title="NOTICES" cols={cols} summary={[{ t: 'none', dim: true }]} />
-  return (
-    <Section E={E} k="sn" title="NOTICES" cols={cols} summary={fresh ? [{ t: `${fresh} new`, c: ATTN }] : []}>
-      {ordered.slice(0, 8).map(n => {
-        const t = TONE[n.tone]
-        const seen = ui.seen.includes(n.key)
-        const room = inner - 8
-        const fits = cells(n.text) <= room
-        const lines = fits ? [n.text] : wrapHard(n.text, Math.max(8, room)) // the text once: its first line beside the time, the rest under it
-        const named = !n.ids || n.text.includes(n.ids)
-        const inline = fits && !named && cells(n.text) + 2 + cells(n.ids) <= room
-        return (
-          <Box key={`n-${n.key}`} flexDirection="column">
-            <Box>
-              <Box width={2} flexShrink={0}><Text color={t.color}>{t.glyph}</Text></Box>
-              <Box width={6} flexShrink={0}><Text dimColor>{hhmm(n.ts)}</Text></Box>
-              <Button key={`notice:${n.key}`} label={clip(lines[0] ?? '', room)} plain dimColor={seen} onPress={() => act.seen(n.key)} />
-              {inline ? <Text dimColor>{`  ${n.ids}`}</Text> : null}
-            </Box>
-            {lines.slice(1).map((l, i) => <Line E={E} w={inner} k={`ne-${n.key}-${i}`} segs={[{ t: `${' '.repeat(8)}${l}`, dim: seen }]} />)}
-            {n.ids && !inline && !(fits && named) ? <IdLines E={E} ids={n.ids} cols={inner} /> : null}
-            {n.cmd ? <Box paddingLeft={cpl(n.cmd, inner)} flexShrink={0} flexDirection="column">{cmdLines(n.cmd, inner - cpl(n.cmd, inner)).map((t, i) => <Text key={`c${i}`} dimColor wrap="truncate-end">{clip(t, inner - cpl(n.cmd, inner))}</Text>)}</Box> : null}
-          </Box>
-        )
-      })}
-      {ordered.length > 8 && <Line E={E} w={inner} k="nm" segs={[{ t: `and ${ordered.length - 8} older`, dim: true }]} />}
-    </Section>
-  )
-}
+const ATTN = WARN // the one accent for what waits on the operator; a failure keeps `error`
 
 type Item = { kind: 'text'; e: BelayEntry } | { kind: 'line'; e: BelayEntry } | { kind: 'tools'; key: string; calls: BelayEntry[] }
 
@@ -213,9 +164,9 @@ function Held({ E, snap, ui, now, act, cols, pend, focused, settled }: Ctx) {
       {off && <MemoryOff E={E} n={off} cols={inner} />}
       {hd && hd.reviews.flatMap((r, i) => {
         const bad = r.state === 'failed' // a review cut off (its claimant gone) is finished, so dim; only a failed one with a reason is red
-        return wrapHard(reviewLine(r, now), Math.max(8, inner - 2)).map((t, j) => <Line E={E} w={inner} k={`hr${i}-${j}`} segs={[{ t: j === 0 ? '◇ ' : '  ', c: bad ? 'error' : undefined, dim: !bad }, { t, c: bad ? 'error' : undefined }]} />)
+        return wrapHard(reviewLine(r, now), Math.max(8, inner - 2)).map((t, j) => <Line E={E} w={inner} k={`hr${i}-${j}`} segs={[{ t: j === 0 ? '◇ ' : '  ', c: bad ? ERR : undefined, dim: !bad }, { t, c: bad ? ERR : undefined }]} />)
       })}
-      {hd && hd.count > 0 && wrapHard(asking && project ? confirmLine(hd, project) : heldDetail(hd, now), Math.max(8, inner)).map((t, i) => <Line E={E} w={inner} k={`hl${i}`} segs={[{ t, c: asking ? ATTN : undefined, dim: !asking }]} />)}
+      {hd && hd.count > 0 && wrapHard(asking && project ? confirmLine(hd, project, snap.runState === 'paused') : heldDetail(hd, now), Math.max(8, inner)).map((t, i) => <Line E={E} w={inner} k={`hl${i}`} segs={[{ t, c: asking ? ATTN : undefined, dim: !asking }]} />)}
       {notes.map(n => <SettleRow E={E} cols={inner} n={n} act={act} open={n.id === openId} pend={pend} focused={focused} done={settledActive(settled[n.id], snap, n.id) ? settleEntryView(settled[n.id]!, now) : null} />)}
       {carriedAt !== null && <Line E={E} w={inner} k="awc" segs={[{ t: `list from ${hhmm(carriedAt)}`, dim: true }]} />}
       {more > 0 && wrapHard(`+${more} more · belay memory held --awaiting`, inner).map((t, i) => <Line E={E} w={inner} k={`awm${i}`} segs={[{ t, dim: true }]} />)}
@@ -255,31 +206,6 @@ function Orchestrator({ E, snap, ui, act, cols }: Ctx) {
   )
 }
 
-function Legend({ E, cols }: Ctx) {
-  const inner = cols - INDENT
-  const m: [string, string, string][] = [
-    ['success', '●', 'running'], ['success', '◐', 'waiting inside a call'], ['inactive', '○', 'idle, no turn running'], ['warning', '◌', 'stalled, no event for 5 min'],
-    ['permission', '▲', 'needs your approval'],
-    // Marks for these three confirmed by the operator, 2026-10-08.
-    ['inactive', '●', 'starting or stopping'], ['inactive', '?', 'state unknown'], ['inactive', '‖', 'parked, session kept'], ['error', '✕', 'dead'], ['inactive', '✓', 'finished'],
-  ]
-  const b = bar(0.6, 4)
-  const c: Seg[][] = [
-    [{ t: b.on, c: 'success' }, { t: b.off, dim: true }, { t: ' cache time left', dim: true }],
-    [{ t: b.on, c: 'suggestion' }, { t: b.off, dim: true }, { t: ' context used', dim: true }],
-    [{ t: '18.2k · 2%', dim: false }, { t: ' context: tokens, and the share of the window when known', dim: true }],
-    [{ t: 'amber', c: 'warning' }, { t: ' look soon', dim: true }], [{ t: 'red', c: 'error' }, { t: ' failed', dim: true }],
-    [{ t: 'purple', c: 'merged' }, { t: ' review holds', dim: true }],
-  ]
-  return (
-    <Section E={E} k="sl" title="LEGEND" cols={cols} summary={[{ t: '? closes', dim: true }]}>
-      {m.map(([col, g, t]) => <Line E={E} w={inner} k={`lg${g}${t}`} segs={[{ t: g, c: col }, { t: ` ${t}`, dim: true }]} />)}
-      {c.map((s, i) => <Line E={E} w={inner} k={`lc${i}`} segs={s} />)}
-      <Line E={E} w={inner} k="lz" segs={[{ t: '@hh:mm cost is as of the last turn end · → command to act', dim: true }]} />
-    </Section>
-  )
-}
-
 // The compact notice in the band, while no memory.project is set: a title and one short line with the fix (the full text is in the CLI).
 function MemoryNotice({ E, snap, cols }: { E: Els; snap: BelayPanelSnap; cols: number }) {
   const n = snap.memoryNotice
@@ -304,64 +230,63 @@ function MemoryOff({ E, n, cols }: { E: Els; n: BelayMemoryNotice; cols: number 
   )
 }
 
+// ---- the memory row ----------------------------------------------------------------------------
+
+// One line: the heading, the Memory menu button with its badge, and the run's embedder (the Memory menu's one way in from the pane). The run's retrieval models follow, one row each.
+export function MemoryRow({ E, snap, act, cols, menu }: Ctx) {
+  const { Box, Button } = E
+  const badge = badgeOf(menu)
+  const label = '◇ memory menu'
+  const emb: Seg[] = snap.embedder ? [{ t: '  embedder ', dim: true }, { t: snap.embedder, c: snap.embedder === 'ok' ? OK : WARN }] : []
+  const used = cells('MEMORY  ') + cells(label) + (badge > 0 ? cells(` [${badge}]`) : 0)
+  const tight = used > cols // a very narrow pane: the button goes under the heading
+  const beside = !tight && emb.length > 0 && used + widthOf(emb) <= cols
+  const button = (
+    <Box key="smem-b">
+      <Button key="mem" plain dimColor label={label} onPress={() => act.mem({ kind: 'tab', tab: 'profiles' })} />
+      {badge > 0 && <Line E={E} k="badge" segs={[{ t: ` [${badge}]`, c: WARN }]} />}
+    </Box>
+  )
+  return (
+    <Box key="smem" flexDirection="column" marginTop={1}>
+      <Box key="smem-h">
+        <Line E={E} k="smem-t" segs={[headSeg('MEMORY'), { t: '  ' }]} />
+        {!tight && button}
+        {beside && <Line E={E} k="smem-e" segs={emb} />}
+      </Box>
+      {tight || (emb.length > 0 && !beside) || snap.retrievalModels.length
+        ? <Box paddingLeft={INDENT} flexDirection="column">
+          {tight && button}
+          {emb.length > 0 && !beside && <Line E={E} w={cols - INDENT} k="smem-e2" segs={[{ ...emb[0]!, t: emb[0]!.t.trimStart() }, emb[1]!]} />}
+          {modelRows(snap.retrievalModels).map((segs, i) => <Line E={E} w={cols - INDENT} k={`pm${i}`} segs={segs} />)}
+        </Box>
+        : null}
+    </Box>
+  )
+}
+
 // ---- the pane ----------------------------------------------------------------------------------
 
 export function Pane(c: Ctx) {
   const { E, snap, ui, now, act, cols, menu } = c
-  const { Box, Button } = E
-  const t = snap.tasks
-  const stale = staleLine(snap)
-  if (snap.fatal) return <Line E={E} w={cols} k="fatal" segs={[{ t: 'belay ', c: 'claude', bold: true }, { t: snap.fatal, c: 'error' }]} />
-  const tasksLine: Seg[] = []
-  if (t) {
-    tasksLine.push({ t: 'tasks ', dim: true })
-    if (t.total !== null) {
-      const b = bar(t.total ? (t.done ?? 0) / t.total : 0, 10)
-      tasksLine.push({ t: b.on, c: 'success' }, { t: b.off, dim: true }, { t: ` ${t.done ?? 0}/${t.total}` })
-    } else tasksLine.push({ t: `${t.held} held by agents` })
-  }
-  if (snap.maxFixRounds !== null) tasksLine.push({ t: '   fix rounds ', dim: true }, { t: `notice at ${snap.maxFixRounds}` }) // the rounds used are not recorded, so no used count
-  if (snap.fixHardCap !== null) tasksLine.push({ t: '   hard cap ', dim: true }, { t: `${snap.fixHardCap}${snap.fixHardCapSource ? ` (${snap.fixHardCapSource})` : ''}` })
-  if (snap.embedder) tasksLine.push({ t: '   embedder ', dim: true }, { t: snap.embedder, c: snap.embedder === 'ok' ? 'success' : 'warning' })
-  const f = snap.footer
-  const costLine: Seg[] = f
-    ? (f.totalCostUsd === null && !f.asOfMs
-      ? [{ t: `no cost recorded yet${f.notRecorded ? ` · ${f.notRecorded} agent${f.notRecorded === 1 ? '' : 's'} unrecorded` : ''}`, dim: true }]
-      : [{ t: money(f.totalCostUsd) }, { t: ` as of ${f.asOfMs ? new Date(f.asOfMs).toTimeString().slice(0, 5) : 'unknown'} · ${f.notRecorded} agent${f.notRecorded === 1 ? '' : 's'} unrecorded · moves when a turn ends`, dim: true }])
-    : [{ t: 'cost not read', dim: true }]
+  const { Box } = E
+  if (snap.fatal) return <Fatal E={E} text={snap.fatal} cols={cols} />
   const inner = { ...c, cols: cols - INDENT }
   const live = snap.agents.filter(isLive).length
-  const header = (
-    <Box justifyContent="space-between">
-      <Line E={E} w={cols - 6} k="ph" segs={runLine(snap, now)} />
-      <Box>
-        <Button key="legend" label="?" plain dimColor onPress={act.legend} />
-        <Button key="close" label=" ✕" plain dimColor onPress={act.close} />
-      </Box>
-    </Box>
-  )
-  if (ui.memTab !== null) return <Box flexDirection="column">{header}<MemoryPane E={E} state={menu} ui={ui} now={now} cols={cols} act={act} /></Box>
-  const badge = badgeOf(menu)
+  const busy = snap.agents.filter(isBusy).length
+  if (ui.memTab !== null) return <Box flexDirection="column"><Header {...c} /><MemoryPane E={E} state={menu} ui={ui} now={now} cols={cols} act={act} /></Box>
   return (
     <Box flexDirection="column">
-      {header}
-      <Line E={E} w={cols} k="pr" segs={[{ t: '─'.repeat(cols), dim: true }]} />
-      {stale && wrapHard(stale, cols).map((t, i) => <Line E={E} w={cols} k={`pstale${i}`} segs={[{ t, dim: true }]} />)}
-      {tasksLine.length > 0 && <Line E={E} w={cols} k="pt" segs={tasksLine} />}
-      {modelRows(snap.retrievalModels).map((segs, i) => <Line E={E} w={cols} k={`pm${i}`} segs={segs} />)}
-      <Line E={E} w={cols} k="pc" segs={costLine} />
-      <Button key="mem" plain dimColor label={`◇ memory menu${badge > 0 ? ` [${badge}]` : ''}`} onPress={() => act.mem({ kind: 'tab', tab: 'profiles' })} />
+      <Header {...c} />
       {ui.legend && <Legend {...c} />}
-      <Section E={E} k="sa" title="AGENTS" cols={cols} summary={snap.agents.length ? [{ t: `${live} live`, dim: true }] : []}>
+      <Section E={E} k="sa" title="AGENTS" cols={cols} summary={snap.agents.length ? [{ t: `${live} live` }, ...(busy ? [{ t: ` · ${busy} busy`, dim: true } as Seg] : [])] : []}>
         {snap.agents.length ? <Table {...inner} /> : <Line E={E} w={cols - INDENT} k="pn" segs={[{ t: 'no agents read', dim: true }]} />}
       </Section>
       {(snap.held || snap.memoryNotice) && <Held {...c} />}
+      <MemoryRow {...c} />
       <Notices {...c} />
       <Orchestrator {...c} />
-      <Box flexDirection="column" marginTop={1}>
-        {snap.errors.map((e, i) => <Line E={E} w={cols} k={`pe${i}`} segs={[{ t: e, dim: true }]} />)}
-        {wrapHard(snap.held && snap.held.count > 0 ? 'read-only except the review and settle buttons · /orch toggles' : 'read-only · /orch toggles', cols).map((t, i) => <Line E={E} w={cols} k={`pf${i}`} segs={[{ t, dim: true }]} />)}
-      </Box>
+      <Footer {...c} />
     </Box>
   )
 }
@@ -371,15 +296,16 @@ export function Pane(c: Ctx) {
 export function Fallback(c: Ctx) {
   const { E, snap, ui, now, cols } = c
   const { Box } = E
-  const lines: Seg[][] = [runLine(snap, now)]
+  const tasks = taskSegs(snap, cols)
+  const lines: Seg[][] = [runLine(snap, now), ...(tasks.length ? [tasks] : [])] // the run line carries the cost
   for (const a of snap.agents) {
-    lines.push([markSeg(a.state, snap.settings.marks), { t: ` ${a.id} ${shortModel(a.model)} · ` }, ...ctxSegs(a, snap.settings), { t: ' · ' },
+    lines.push([markSeg(a.state, snap.settings.marks), { t: ` ${rowName(a)} ${shortModel(a.model)} · ` }, ...ctxSegs(a, snap.settings), { t: ' · ' },
       ...cacheSegs(a, snap.settings, snap.fetchedAt, now), { t: ` · ${money(a.costUsd)}` }, { t: a.task ? ` · ${a.task.id}` : '', dim: true }])
   }
   if (snap.memoryNotice) lines.push(memoryFallbackSegs(snap.memoryNotice))
   if (snap.held) { // plain text: the review button is the terminal pane's alone
-    for (const r of snap.held.reviews) lines.push([{ t: `◇ ${reviewLine(r)}`, c: 'warning' }])
-    if (snap.held.count > 0) lines.push([{ t: `◇ ${heldLine(snap.held, now)}`, c: 'warning' }])
+    for (const r of snap.held.reviews) lines.push([{ t: `◇ ${reviewLine(r)}`, c: WARN }])
+    if (snap.held.count > 0) lines.push([{ t: `◇ ${heldLine(snap.held, now)}`, c: WARN }])
   }
   for (const n of snap.notices) lines.push([{ t: `${TONE[n.tone].glyph} ${n.text}`, c: TONE[n.tone].color, dim: ui.seen.includes(n.key) }])
   if (snap.mode === 'headless') for (const e of (snap.transcript ?? []).slice(-5)) lines.push([{ t: e.text, dim: e.kind !== 'text' }])

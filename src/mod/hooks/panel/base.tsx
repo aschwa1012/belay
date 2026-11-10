@@ -6,6 +6,7 @@ import { fitSegs, type Seg } from './model'
 import { cells, clipCells } from './wrap'
 import type { SettleAction } from './held'
 import type { MemAction } from './memory'
+import { headSeg } from './theme'
 
 export type Els = Pick<Elements['terminal'], 'Box' | 'Text' | 'Button' | 'Input'>
 export type Act = {
@@ -33,6 +34,8 @@ export type Act = {
   note: (id: string) => void
   /** The Memory menu's actions: tabs, routing picks and the confirmed writes (index.tsx memPress). */
   mem: (a: MemAction) => void
+  /** Fold the NOTICES section to its heading, or open it again. UI state only. */
+  notices: () => void
 }
 export type Ctx = { E: Els; snap: BelayPanelSnap; ui: BelayPanelUi; now: number; cols: number; act: Act; pend: BelayPanelSettle | null; focused: boolean; settled: BelayPanelSettled; menu: BelayPanelMenu | null }
 
@@ -65,8 +68,8 @@ export function shortModel(m: string | null): string {
 
 // ---- sections ----------------------------------------------------------------------------------
 
-// Every block of the pane is a Section: one bold heading in caps, an optional dim summary beside it, one blank line above,
-// and its rows indented by one space. A caller draws the rows at `cols - 1`.
+// Every block of the pane is a Section: one bold heading in caps, an optional summary beside it, one blank line above,
+// and its rows indented by one space. A caller draws the rows at `cols - 1`. A section that folds has a dim ▾/▸ button after its heading.
 export const INDENT = 1
 // Pack segments onto lines of at most `room` cells, never splitting one. A bare ' · ' joiner that would start a line is dropped.
 export function packSegs(segs: Seg[], room: number): Seg[][] {
@@ -87,16 +90,20 @@ export function packSegs(segs: Seg[], room: number): Seg[][] {
   return out.filter(l => l.length)
 }
 
-export function Section({ E, k, title, summary, cols, children }: { E: Els; k: string; title: string; summary?: Seg[]; cols: number; children?: unknown }) {
-  const { Box } = E
+export type Fold = { open: boolean; press: () => void }
+export function Section({ E, k, title, summary, cols, fold, children }: { E: Els; k: string; title: string; summary?: Seg[]; cols: number; fold?: Fold; children?: unknown }) {
+  const { Box, Button } = E
+  const fw = fold ? 2 : 0 // the fold button: a space and one mark
   // The summary sits beside the heading when the whole of it fits; otherwise it wraps on its own lines under the heading. It is never dropped.
   const sw = (summary ?? []).reduce((n, s) => n + cells(s.t), 0)
-  const beside = !summary || !summary.length || cells(title) + 2 + sw <= cols
-  const head: Seg[] = [{ t: title, bold: true }, ...(summary && summary.length && beside ? [{ t: '  ' } as Seg, ...summary] : [])]
+  const beside = !summary || !summary.length || cells(title) + 2 + sw + fw <= cols
+  const head: Seg[] = [headSeg(title), ...(summary && summary.length && beside ? [{ t: '  ' } as Seg, ...summary] : [])]
   const below = !beside && summary ? packSegs(summary, Math.max(1, cols - INDENT)) : []
   return (
     <Box key={k} flexDirection="column" marginTop={1}>
-      <Line E={E} w={cols} k={`${k}-h`} segs={head} />
+      {fold
+        ? <Box key={`${k}-hb`}><Line E={E} w={cols - fw} k={`${k}-h`} segs={head} /><Button key={`fold:${k}`} plain dimColor label={fold.open ? ' ▾' : ' ▸'} onPress={fold.press} /></Box>
+        : <Line E={E} w={cols} k={`${k}-h`} segs={head} />}
       {below.length || children ? <Box paddingLeft={INDENT} flexDirection="column">{below.map((l, i) => <Line E={E} w={cols - INDENT} k={`${k}-s${i}`} segs={l} />)}{children as never}</Box> : null}
     </Box>
   )

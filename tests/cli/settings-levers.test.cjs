@@ -1,4 +1,5 @@
 'use strict';
+// Not a legacy test: it tests the settings listing; every lever, legacy ones included, is listed.
 require('../helpers/tmp.cjs'); // every test process gets its own spawn register and tmp cleanup (tests/helpers/tmp.cjs), however it is run
 process.env.BELAY_TEST_MODE = '1'; process.env.BELAY_TEST_SKIP_EMBEDDER_WARMUP = '1';
 // settings-levers.test.cjs — `belay settings` for the memory levers and the per-agent-type defaults: the keys
@@ -43,7 +44,7 @@ test('settings: every memory lever is listed as memory.<key> with its default, d
     const mem = r.out.settings.filter((s) => s.key.startsWith('memory.'));
     assert.deepStrictEqual(mem.map((s) => s.key), Object.keys(ML.DEFAULTS).filter((k) => !ML.EVAL_ONLY.includes(k)).map((k) => `memory.${k}`));
     for (const s of mem) {
-      assert.strictEqual(s.value, ML.DEFAULTS[s.key.slice(7)], s.key);
+      assert.strictEqual(s.value, s.key === 'memory.notes' || s.key === 'memory.first_message_index' ? true : ML.DEFAULTS[s.key.slice(7)], s.key); // notes are on by default (a run derives its project) and the index follows notes
       assert.deepStrictEqual(s.default, ML.DEFAULTS[s.key.slice(7)], s.key);
       assert.strictEqual(s.source, 'default');
       assert.ok(s.type, `${s.key} names its type`);
@@ -59,7 +60,7 @@ test('settings: every memory lever is listed as memory.<key> with its default, d
       ['claude-sonnet-5-5', null, 'claude-opus-5-5', 'high', 'claude-opus-5-5'], 'the roster is the built-in default');
     assert.strictEqual(by['agents.orchestrator.effort'], null, 'the orchestrator has no built-in effort');
     const text = cli(dir, ['settings'], { json: false });
-    assert.match(text.stdout, /memory\.index_bytes\s+1200\s+\(from default\)\s+\[integer 1\.\.4096\]/);
+    assert.match(text.stdout, /memory\.index_bytes\s+1600\s+\(from default\)\s+\[integer 1\.\.4096\]/);
     assert.match(text.stdout, /agents\.reviewer\.effort\s+"high"\s+\(from default\)\s+\[low \| medium \| high \| xhigh \| max \| null\]/);
   } finally { cleanup(dir); }
 });
@@ -163,16 +164,17 @@ test('run spec: the config memory block is the default and the spec overrides it
   } finally { cleanup(sb.dir); }
 });
 
-test('run spec: with no config memory block nothing changes; a block that fails validation is refused naming the file', () => {
+test('run spec: with no config memory block only the derived project is added; a block that fails validation is refused naming the file', () => {
   const none = runSandbox(null, {});
   const noMem = runSandbox({ mod: { pane: 'docked' } }, {});
-  const bad = runSandbox({ memory: { notes: true } }, {});
+  const bad = runSandbox({ memory: { notes: true, redact: false } }, {});
   const rescued = runSandbox({ memory: { notes: true } }, { memory: { project: 'acme' } });
   try {
     for (const sb of [none, noMem]) {
       const p = parseSpec(sb.specPath, sb.dir);
-      assert.strictEqual(p.levers.memory_levers, undefined);
-      assert.strictEqual(p.levers.memory_sources, undefined);
+      assert.strictEqual(typeof p.levers.memory_levers.project, 'string', 'no project is set, so the run derives one');
+      assert.match(p.levers.memory_sources.project, /^derived: /);
+      assert.deepStrictEqual(Object.entries(p.levers.memory_sources).filter(([, v]) => v !== 'default').map(([k]) => k), ['project'], 'the project is the only lever that is not a default');
     }
     const b = parseSpec(bad.specPath, bad.dir);
     assert.match(b.error, /memory\.notes needs memory\.project/);

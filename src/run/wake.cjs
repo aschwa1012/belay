@@ -84,6 +84,7 @@ function diffWorkers({ prev, rows, runId, nowMs, graceMs, orphanGraceMs = graceM
     if (base.state !== 'dead' && row.state === 'dead') {
       events.push({
         worker_id: row.id, event: 'death', turn: turns, seq: row.seq,
+        life: `${Number.isInteger(row.pid) ? row.pid : 0}:${row.pid_created == null ? 0 : row.pid_created}`, // the process this death ends: the key a second delivery path shares (run-digest.cjs lifeOf)
         exit_code: row.exit_code == null ? null : row.exit_code,
         exit_signal: row.exit_signal == null ? null : row.exit_signal,
         death_established_by: row.death_established_by || null,
@@ -142,8 +143,13 @@ function deathText(event) {
 // No worker output, ever, except a review hand-back's verdict, counts, finding titles and a cut summary (review-wake.cjs); otherwise ids and facts (pre_close: see pre-close-wake.cjs).
 // Both shapes stay comfortably under 400 bytes for any id this codebase generates.
 // A wake never names idle workers: worker_wait's answer does (idle-remind.cjs).
+// A digest folded into this wake (digest-wake.cjs) follows the wake's own text on the next line, never cutting it.
 function wakeText(event) {
-  if (event.event === 'note_refuted' || event.event === 'scrub_alarm' || event.event === 'evaluated' || event.event === 'pre_close' || event.event === 'budget_pause') return event.text; // evaluated: release-eval.cjs, facts, and for a review its quoted words (review-wake.cjs) // note-wake.cjs: belay's own record, built from the core's facts
+  const text = wakeBody(event);
+  return event.rider ? text + '\n' + event.rider.text : text;
+}
+function wakeBody(event) {
+  if (event.event === 'note_refuted' || event.event === 'scrub_alarm' || event.event === 'evaluated' || event.event === 'pre_close' || event.event === 'budget_pause' || event.event === 'policy_digest' || event.event === 'policy_done' || event.event === 'time_bound' || event.event === 'stalled') return event.text; // evaluated: release-eval.cjs, facts, and for a review its quoted words (review-wake.cjs) // note-wake.cjs: belay's own record, built from the core's facts
   if (event.event === 'death') return deathText(event);
   // build step 6f, decision 3's own words, ids and facts only (ADR 0015 §2): no worker output.
   if (event.event === 'paused') {

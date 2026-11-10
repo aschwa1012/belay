@@ -62,7 +62,7 @@ test('a new adapter restarts a worker of a session that has ended', async () => 
 
     const r = await second.restart({ worker_id: 'w-a3', first_turn_timeout_ms: SLOW });
     assert.equal(r.branch, 'resume', 'the session id and last event came from the store: ' + r.reason);
-    assert.match(r.reason, /inside the 3300000 ms claude-code window/);
+    assert.match(r.reason, /inside the 3300000 ms cache window/);
     assert.equal(r.old_pid, born.pid, 'the old pid is the one the store held');
     assert.ok(r.new_pid > 0 && r.new_pid !== r.old_pid);
     assert.equal(r.first_turn_timed_out, false);

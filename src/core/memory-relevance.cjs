@@ -8,7 +8,7 @@
 //     salient terms joined by OR;
 //   - semantic: cosine over the stored row vectors, only when the caller hands in a query embedding. This
 //     module never embeds anything, so the read path never loads a model.
-// With both, the two rankings are fused by reciprocal rank (fusion.cjs) with memory.search's hybrid weights (alpha 0.3, or the
+// With both, the two rankings are fused by reciprocal rank (fusion.cjs) with memory.search's hybrid weights (alpha 0.5, or the
 // run's memory.alpha lever; k 10); with one, its own score is used.
 //
 // Why OR: memory.search joins by OR as well (fts-query.cjs). The index answers "which rows are most worth showing",

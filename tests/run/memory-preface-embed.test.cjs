@@ -76,7 +76,7 @@ test('the worker\'s own extra queries are sent along when it has them, and are n
   const w = { ...W(), indexQueries: ['release checklist', { label: 'dates', text: 'calendar bug' }] };
   const { core, calls } = makeCore({ embed: async () => ({ queries: [okQuery(), okQuery('extra:1', 5), okQuery('dates', 6)], on_embedder_failure: 'required', embed_ms: 48 }) });
   await MP.memoryPreface(w, ctxOf(core), PROMPT);
-  assert.deepStrictEqual(calls.find((c) => c.method === 'embedQuery').args.extra_texts, ['Task: release checklist', { label: 'dates', text: 'Task: calendar bug' }], 'each sent as a Task: line');
+  assert.deepStrictEqual(calls.find((c) => c.method === 'embedQuery').args.extra_texts, ['release checklist', { label: 'dates', text: 'calendar bug' }], 'each sent as the plain line, with no Task: prefix');
   assert.strictEqual(calls.find((c) => c.method === 'index').args.query_embeddings.length, 3);
   assert.strictEqual(calls.find((c) => c.method === 'recordEvent').args.message.includes('"extra:1"'), true);
   const none = makeCore({ embed: okEmbed });
@@ -304,7 +304,7 @@ test('through the manager: memory_queries reach memory.embedQuery as extra_texts
   const embed = async (a) => { seen.push(a); return { queries: [okQuery(), okQuery('extra:1', 5), okQuery('extra:2', 5)], on_embedder_failure: 'required', embed_ms: 20 }; };
   await withManager(embed, async (m, sb, core) => {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w1', task_id: 't1', memory_queries: ['add or number a migration', '  dedupe   email addresses '] });
-    assert.deepStrictEqual(seen[0].extra_texts, ['Task: add or number a migration', 'Task: dedupe email addresses'], 'trimmed task lines, in order, as Task: lines');
+    assert.deepStrictEqual(seen[0].extra_texts, ['add or number a migration', 'dedupe email addresses'], 'trimmed task lines, in order, plain');
     assert.strictEqual(seen[0].task_id, 't1');
     assert.deepStrictEqual(m._worker('w1').indexQueries, ['add or number a migration', 'dedupe email addresses'], 'kept as written');
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w2', task_id: 't1' });
@@ -348,4 +348,40 @@ test('an index that dropped its vector lists, or was refused for its work, write
   const rev = refused.events.find((e) => e.kind === 'index_bound');
   assert.ok(rev && detail(rev).refused === true, 'a refusal is recorded as such');
   assert.ok(refused.events.some((e) => e.kind === 'index_injected' && e.ok === 0), 'and the usual failed receipt stands');
+});
+
+test('a plan-spawned worker: the orchestrator never calls worker_spawn with memory_queries, the task carries the lines, and the first message holds the index built from them', async () => {
+  const TASK_LINES = ['stop --at just after midnight', 'lib/timer.js start and stop'];
+  const seenEmbed = [], seenIndex = [];
+  // The double does what the core does: with no extra_texts it embeds the task's own lines, labelled q:N, beside the spec.
+  const embed = async (a) => {
+    seenEmbed.push(a);
+    const lines = a.extra_texts ? [] : TASK_LINES;
+    return { queries: [okQuery(), ...lines.map((_, i) => okQuery(`q:${i + 1}`, 5))], on_embedder_failure: 'required', embed_ms: 20 };
+  };
+  await withManager(embed, async (m, sb, core) => {
+    core.memory.index = async (a) => {
+      seenIndex.push(a);
+      const labels = (a.query_embeddings || []).map((q) => q.label);
+      return { text: `INDEX from ${labels.join(',')}`, bytes: 9, row_ids: ['a'], dropped: 0, over_budget: false, sha256: 'f'.repeat(64), relevance: { semantic_contributed: true } };
+    };
+    // what the plan executor's spawn passes: no memory_queries
+    await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, task_id: 't1', agent_type: 'coder', worker_id: 'bld-1' });
+    assert.ok(!('extra_texts' in seenEmbed[0]), 'no extra texts were sent');
+    assert.deepStrictEqual(seenIndex[0].query_embeddings.map((q) => q.label), ['task', 'q:1', 'q:2']);
+    assert.match(m._worker('bld-1').firstMessage, /INDEX from task,q:1,q:2/);
+  });
+});
+
+test('an index embed that timed out never refuses the spawn, even under required: the worker starts, and the receipt names the time-out', async () => {
+  const timedOut = async () => ({ queries: [{ label: 'task', ok: false, ms: 6003, code: 'E_EMBED_BOUND', message: 'the share passed', timed_out: true, embedder: false }, okQuery('q:1', 40)], on_embedder_failure: 'required', embed_ms: 6043 });
+  await withManager(timedOut, async (m, sb, core, events) => {
+    await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: PROMPT, worker_id: 'w1', task_id: 't1' });
+    assert.ok(!m._worker('w1').launchFailed);
+    assert.ok(m._worker('w1').pid, 'the worker was launched');
+    assert.match(m._worker('w1').firstMessage, /INDEX a/);
+    const d = JSON.parse(events[0].message);
+    assert.deepStrictEqual(d.queries, [{ label: 'task', ms: 6003, ok: false, timed_out: true, code: 'E_EMBED_BOUND' }, { label: 'q:1', ms: 40, ok: true }]);
+    assert.strictEqual(events[0].ok, 1);
+  });
 });

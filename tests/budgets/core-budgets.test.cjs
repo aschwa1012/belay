@@ -123,6 +123,22 @@ test('budgets: status.get adds under 100 ms in process over 10 live workers in 9
   } finally { await c.close(); }
 });
 
+test('budgets: status.get adds under 100 ms in process over a live run holding 500 policy steps and 1000 usage rows, interleaved', async (tcx) => {
+  const dir = sandbox();
+  tcx.after(() => cleanup(dir));
+  await require('../helpers/policy-plant.cjs').plantPolicyRun(dir, 'test-run', 500);
+  const c = await openCore({ dataDir: dir, caller: { role: 'operator', run_id: 'test-run', pid: process.pid }, embed: false });
+  try {
+    const r = await interleavedInProcess({
+      floor: noop,
+      subject: async () => { const t0 = process.hrtime.bigint(); const st = await c.status.get({}); const d = ms(t0); assert.deepStrictEqual([st.policy_log.total, st.policy_log.steps.length], [500, 5]); return d; },
+      n: N,
+    });
+    report('status_get_policy_steps_in_process', 100, r);
+    assertGate('status_get_policy_steps_in_process', 100, r);
+  } finally { await c.close(); }
+});
+
 test('budgets: redacting 64 KB of mixed text adds under 20 ms in process, interleaved', async () => {
   const unit = 'The quick brown fox: see https://example.com/a?b=1 and commit ' + 'a1b2c3d4'.repeat(5)
     + ' plus task-sk-1 key=value, "name": "x" -- ' + 'ey' + 'Jabc not a token\nline two NAME=val\n';

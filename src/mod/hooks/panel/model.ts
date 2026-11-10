@@ -8,6 +8,7 @@ import type {
 } from '../../types/index'
 import { cells, clipCells } from './wrap'
 import { normRetrievalModels } from './warm'
+import { ctxColor, CTX_WARN_PCT, ERR, MUTED, OK, WARN } from './theme'
 
 // `brk` marks the first segment of a part that may be dropped whole when the line is too wide (fitSegs).
 export type Seg = { t: string; c?: string; dim?: boolean; bold?: boolean; brk?: true }
@@ -15,7 +16,10 @@ export type Seg = { t: string; c?: string; dim?: boolean; bold?: boolean; brk?: 
 export const DEFAULT_SETTINGS: BelaySettings = {
   pane: 'docked', marks: 'shapes', cache: 'both', context: 'both', band: 'two-lines', task: 'kind',
 }
-export const DEFAULT_UI: BelayPanelUi = { open: false, selected: null, legend: false, foldOpen: false, groups: [], placed: false, seen: [], confirm: null, memTab: null, memConfirm: null, memNote: null, routeDraft: null }
+export const DEFAULT_UI: BelayPanelUi = { open: false, selected: null, legend: false, foldOpen: false, noticesFold: false, groups: [], placed: false, seen: [], confirm: null, memTab: null, memConfirm: null, memNote: null, routeDraft: null }
+
+// Every press that is not the review button cancels a pending confirm.
+export const calm = (u: BelayPanelUi): BelayPanelUi => (u.confirm || u.memConfirm ? { ...u, confirm: null, memConfirm: null } : u)
 
 export const num = (x: unknown): number | null => (typeof x === 'number' && Number.isFinite(x) ? x : null)
 export const str = (x: unknown): string | null => (typeof x === 'string' && x !== '' ? x : null)
@@ -105,7 +109,7 @@ function normAgent(raw: unknown): BelayAgent | null {
     costUsd: num(a.cost_usd), costSource: str(a.cost_source), costBasis: str(a.cost_basis),
     cache: normCache(a.cache), task,
     launchMode: str(a.permission_mode) ?? str(a.launch_mode), version: str(a.claude_code_version) ?? str(a.version),
-    pid: num(a.pid),
+    pid: num(a.pid), startedAtMs: num(a.started_at_ms), exitedAtMs: num(a.exited_at_ms),
   }
 }
 
@@ -141,8 +145,8 @@ export const TONE: Record<BelayNotice['tone'], { glyph: string; color: string; r
   dead: { glyph: '✕', color: 'error', rank: 1 },
   refuted: { glyph: '✕', color: 'error', rank: 2 },
   stalled: { glyph: '◌', color: 'warning', rank: 3 },
-  paused: { glyph: '‖', color: 'planMode', rank: 4 },
-  holds: { glyph: '✓', color: 'merged', rank: 5 },
+  paused: { glyph: '‖', color: WARN, rank: 4 },
+  holds: { glyph: '✓', color: OK, rank: 5 },
   stopped: { glyph: '✓', color: 'inactive', rank: 6 },
   ended: { glyph: '✓', color: 'inactive', rank: 7 },
   memory: { glyph: '◇', color: 'warning', rank: 8 },
@@ -195,6 +199,13 @@ export function normNotices(json: unknown): BelayNotice[] {
   }
   return out
 }
+
+// The pane draws the newest NOTICE_ROWS notices and counts the older ones under them ("and N older").
+export const NOTICE_ROWS = 8
+export const byNewest = (ns: BelayNotice[]): BelayNotice[] => [...ns].sort((a, b) => (b.ts ?? 0) - (a.ts ?? 0))
+// The notices that opening or watching the pane marks seen (decision 3): every one while the NOTICES list is open, older ones counted under it
+// included (marking only the drawn rows would leave the older ones new for ever); none while the list is folded or the Memory menu covers the pane.
+export const noticesSeen = (ns: BelayNotice[], ui: BelayPanelUi): BelayNotice[] => (ui.noticesFold || ui.memTab !== null ? [] : ns)
 
 // A stopped worker is not one of decision 5's notices: it is listed in the pane, never in the band or the count.
 export const unseenNotices = (ns: BelayNotice[], ui: BelayPanelUi): BelayNotice[] =>
@@ -281,9 +292,9 @@ export function ctxSegs(a: BelayAgent, s: BelaySettings, mode: CtxMode = 'full')
   const tok: Seg | null = a.ctxTokens !== null ? { t: tokensShort(a.ctxTokens) } : null
   const pct = a.ctxPct
   if (pct === null) return [tok ?? { t: '—', dim: true }]
-  const fig: Seg = { t: `${Math.round(pct)}%` }
+  const c = ctxColor(pct) // the pressure: the default colour, amber from 70%, red from 90%
+  const fig: Seg = { t: `${Math.round(pct)}%`, ...(pct >= CTX_WARN_PCT ? { c } : {}) }
   if (mode === 'tokens') return [tok ?? fig]
-  const c = pct > 75 ? 'warning' : 'suggestion'
   const b = bar(pct / 100, 6)
   const barSegs: Seg[] = [{ t: b.on, c }, { t: b.off, dim: true }]
   const both: Seg[] = tok ? [tok, { t: ' · ', dim: true }, fig] : [fig]
@@ -349,7 +360,7 @@ export function staleLine(snap: BelayPanelSnap): string | null {
 export function runBrief(snap: BelayPanelSnap, now: number): Seg[] {
   const segs: Seg[] = [{ t: 'belay', c: 'claude', bold: true }, { t: ` ${snap.runId ?? '—'}` }]
   if (snap.runState) {
-    const c = snap.runState === 'paused' ? 'planMode' : snap.runState === 'dead' ? 'error' : snap.runState === 'ended' ? 'inactive' : 'success'
+    const c = snap.runState === 'paused' ? WARN : snap.runState === 'dead' ? ERR : snap.runState === 'ended' ? MUTED : OK
     segs.push({ t: '  ', brk: true }, { t: '●', c }, { t: ` ${snap.runState}` })
     const el = elapsedMs(snap, now)
     if (el !== null) segs.push({ t: ` ${dur(el)}` })
@@ -430,3 +441,8 @@ export function bandLines(snap: BelayPanelSnap, ui: BelayPanelUi, now: number, c
   if (snap.settings.band === 'one-line') return [[...head, { t: '  │  ', dim: true, brk: true }, ...msg]]
   return [head, msg]
 }
+
+// A worker whose id is a bare uuid reads as its role and the first six characters of the id (`coder-3f2a9c`); any other id is shown whole. The full id
+// stays the row's key and is what the detail's commands name.
+const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i
+export const rowName = (a: BelayAgent): string => (UUID.test(a.id) ? `${(a.role || 'worker').slice(0, 9)}-${a.id.slice(0, 6)}` : a.id)

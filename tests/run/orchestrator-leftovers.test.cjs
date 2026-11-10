@@ -71,7 +71,7 @@ test("at the close the shell's stray process is ended; the adapter, a spawned wo
     const adapter = await pidFrom(f('adapter.pid'));
     const adaptersWorker = await pidFrom(f('adapters-worker.pid'));
     const registered = await pidFrom(f('registered.pid'));
-    kids.push(stray, adapter, adaptersWorker, registered);
+    kids.push(...(await G.identifyAll([stray, adapter, adaptersWorker, registered]))); // while they live: the teardown ends only these processes
     assert.strictEqual(P.pidAlive(stray), true, "nothing is ended before the run's own close is done");
     const strayId = await G.identify(stray);
     assert.strictEqual(typeof result.endLeftovers, 'function');
@@ -86,7 +86,8 @@ test("at the close the shell's stray process is ended; the adapter, a spawned wo
     await G.assertGone(strayId, `the shell's stray process (pid ${stray}) is still alive after the leftovers were ended`);
   } finally {
     for (const k of KNOBS) { if (saved[k] === undefined) delete process.env[k]; else process.env[k] = saved[k]; }
-    for (const pid of [...kids, other.pid]) { try { process.kill(pid, 'SIGKILL'); } catch { /* gone */ } }
+    await require('../crash.cjs').crashIdentities(kids); // by pid and creation time: the stray was ended above, and its pid may be another's now
+    require('../crash.cjs').crash(other); // by its live handle
     cleanup(d);
   }
 });
@@ -111,7 +112,7 @@ test('a captured descendant whose pid now belongs to another process (a differen
     assert.deepStrictEqual(r.gone, [stranger.pid], 'the meant process is provably not there');
     assert.deepStrictEqual(r.refused, [], 'so it is not a refusal, and the run is not failed for it');
     assert.strictEqual(P.pidAlive(stranger.pid), true, 'the process that took the pid is untouched');
-  } finally { try { process.kill(stranger.pid, 'SIGKILL'); } catch { /* gone */ } cleanup(d); }
+  } finally { require('../crash.cjs').crash(stranger); cleanup(d); }
 });
 
 test('with no adapter named in the run row, or the owned processes unreadable, nothing is taken and the receipt says why', async () => {

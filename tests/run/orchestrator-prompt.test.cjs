@@ -1,4 +1,5 @@
 'use strict';
+// Not a legacy test: it tests the prompt templates; legacy levers are set only to render them.
 require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // The orchestrator prompt template (build step S7) names tools by their exact MCP names; an invented
 // name would send a real Opus 5.5 orchestrator at a tool that does not exist.
@@ -14,6 +15,7 @@ test('orchestrator prompt: every mcp__belay__ tool name the template mentions is
   const raw = fs.readFileSync(TEMPLATE, 'utf8');
   const text = raw.replace(/\{\{\/?memory_(use|outcome)\}\}/g, ''); // as a run without notes renders it
   assert.ok(raw.split('\n').length < 120, 'the template stays under 120 lines');
+  assert.ok(fs.readFileSync(path.join(ROOT, 'src/run/prompts/orchestrator-interactive.md'), 'utf8').split('\n').length < 120, 'and so does its interactive twin');
   const T = require(path.join(ROOT, 'src/mcp/tools.cjs'));
   const listed = new Set();
   for (const role of T.ROLES) for (const t of T.toolsFor(role)) listed.add(t.name);
@@ -29,11 +31,10 @@ test('orchestrator prompt: every mcp__belay__ tool name the template mentions is
   assert.match(text, /spawned with `agent_type: "reviewer"`/, 'the review steps spawn the reviewer by type');
   assert.ok(!/reviewers `"high"`/.test(text), 'no instruction to pass effort high by hand');
   // H4 (operator): the orchestrator itself searches memory before creating tasks and stores at decision points.
-  assert.match(text, /always with `namespace: "project"`/, 'a namespace that outlives the run');
-  assert.match(text, /Before you create any task, call `mcp__belay__memory_search` with a `query` on the brief's subject/);
-  assert.match(text, /store the outcome in memory, say why, then end a turn/);
-  assert.match(text, /`mcp__belay__memory_store` with `text`[\s\S]*after each review verdict[\s\S]*when you end the run[\s\S]*open findings/);
-  assert.ok(named.includes('memory_search') && named.includes('memory_store'), 'the template names both memory tools');
+  assert.match(text, /Use belay's memory yourself: before you create any task, call `mcp__belay__memory_search` with a `query` on the brief's subject/);
+  assert.doesNotMatch(text, /memory_store|memory_verify/, 'the template teaches notes, not the legacy store and verify');
+  assert.match(text, /To stop on purpose, say why, then end a turn/);
+  assert.ok(named.includes('memory_search'), 'the template names the memory search');
   assert.ok(text.indexOf('memory_search') < text.indexOf('mcp__belay__task_create'), 'the search instruction precedes task creation');
   // ADR 0054 amendment 2 (the operator, 2026-10-27): the orchestrator has its shell; the prompt prefers belay's tools and says nothing restricts it.
   assert.doesNotMatch(text, /no shell/i, 'the prompt no longer says the orchestrator has no shell');
@@ -49,7 +50,6 @@ test('orchestrator prompt: every mcp__belay__ tool name the template mentions is
 
 // ADR 0040 section 6: the memory rules text is substituted at {{memory_rules}}, only when the lever is on.
 // The 0.1.0 prompts, kept as a fixture so the test needs no git history.
-const BASE_PROMPTS = path.join(__dirname, '..', 'fixtures', 'v0.1.0', 'src', 'run', 'prompts');
 const RULES = path.join(ROOT, 'src/run/prompts/memory-rules.md');
 const lf = (s) => s.replace(/\r\n/g, '\n');
 
@@ -58,16 +58,14 @@ const lf = (s) => s.replace(/\r\n/g, '\n');
 // changed line that goes stale with each amendment. What this test guards is narrower and does not drift: the {{memory_rules}} placeholder
 // closes an existing line of the prompt and adds none, so a run with the rules off (the placeholder replaced by '') renders the prompt
 // it always had on that line, and the placeholder is not a line of its own.
-test('memory rules: the placeholder sits at the end of an existing line, and an empty substitution leaves that line as the base prompt had it', () => {
+test('memory rules: the placeholder sits at the end of an existing line, never a line of its own', () => {
   for (const f of ['orchestrator.md', 'orchestrator-interactive.md']) {
     const now = lf(fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8')).replace(/\{\{\/?memory_(use|outcome)\}\}/g, ''); // the notes markers: a run without notes drops them
-    const base = lf(fs.readFileSync(path.join(BASE_PROMPTS, f), 'utf8'));
     assert.strictEqual(now.split('{{memory_rules}}').length, 2, `${f} carries the placeholder once`);
     assert.match(now, /\{\{memory_rules\}\}\n/, `${f}: the placeholder ends its line`);
     const at = now.split('\n').findIndex((l) => l.includes('{{memory_rules}}'));
     const line = now.split('\n')[at].replace('{{memory_rules}}', '');
     assert.ok(line.length > 0, `${f}: the placeholder is not a line of its own`);
-    assert.ok(base.split('\n').includes(line), `${f}: substituting '' leaves line ${at + 1} as the 0.1.0 prompt had it`);
   }
 });
 
@@ -94,15 +92,16 @@ test('memory rules: the text stays within 1,200 bytes and carries each rule the 
 
 // The paired write/search contract: the orchestrator names the situations a worker will be in as task lines, so the worker's
 // first-message index is searched by situation and not only by the spec's own words.
-test('both orchestrator prompts ask for 1 to 3 memory_queries only when the first-message index is on, and worker_spawn lists the field', () => {
+test('both orchestrator prompts ask for 2 to 4 memory_queries at task creation only when the first-message index is on, and task_create and worker_spawn list the field', () => {
   const { substituteLevers, parseLevers } = require(path.join(ROOT, 'src/cli/run-levers.cjs'));
   for (const f of ['orchestrator.md', 'orchestrator-interactive.md']) {
     const text = fs.readFileSync(path.join(ROOT, 'src/run/prompts', f), 'utf8');
     assert.strictEqual(text.split('{{memory_queries_line}}').length, 2, `${f} carries the placeholder once`);
     assert.ok(!/memory_queries/.test(text.replace('{{memory_queries_line}}', '')), `${f}: the sentence lives only behind the placeholder`);
     const on = substituteLevers(text, parseLevers({ memory: { first_message_index: true } }), 0);
-    assert.match(on.text, /give 1 to 3 `memory_queries`: task lines/, `${f} asks for memory_queries with the index on`);
-    assert.match(on.text, /not the finding you expect it to make/, `${f}: situations, not findings`);
+    assert.match(on.text, /`depends_on`: task ids that must be `done` first\. Also give `memory_queries`: 2 to 4 short search lines/, `${f} asks for memory_queries on the task_create fields with the index on`);
+    assert.match(on.text, /a worker spawned or relaunched for the task is shown the project notes that match/, `${f}: says what the lines are for`);
+    assert.ok(!/worker will be in/.test(on.text), `${f}: the old worker_spawn request is gone`);
     assert.strictEqual(on.substituted.memory_queries_line, 1);
     // D58: with every lever off the prompt asks for nothing the run never reads.
     for (const lv of [parseLevers({}), parseLevers({ memory: { capture: true, rules: true } })]) {
@@ -115,6 +114,8 @@ test('both orchestrator prompts ask for 1 to 3 memory_queries only when the firs
   const spawn = T.toolsFor('orchestrator', { queries: true }).find((t) => t.name === 'worker_spawn');
   assert.ok(spawn.inputSchema.properties.memory_queries, 'worker_spawn lists memory_queries');
   assert.strictEqual(spawn.inputSchema.properties.memory_queries.type, 'array');
+  assert.strictEqual(T.toolsFor('orchestrator', { queries: true }).find((t) => t.name === 'task_create').inputSchema.properties.memory_queries.type, 'array', 'task_create lists memory_queries with the index on');
+  for (const name of ['task_create', 'worker_spawn']) assert.ok(!('memory_queries' in T.toolsFor('orchestrator', {}).find((t) => t.name === name).inputSchema.properties), `${name} does not list it with the index off`);
 });
 
 // ADR 0047 amendment of 2026-10-22, decision 7: a notes run renders the memory bullet as four points; a run without notes renders what it always did.
@@ -148,7 +149,7 @@ test('notes off: the render is the template with only its markers dropped, byte 
     for (const lv of [undefined, { notes: false }, { notes: false, project: 'acme' }]) {
       const off = LV.substituteLevers(raw, { max_fix_rounds: 2, fix_cutoff: 'cap-only', memory_levers: lv }, 0).text;
       assert.strictEqual(off.includes('{{'), false, f);
-      const expect = plain.split('{{memory_rules}}').join('').split('{{memory_queries_line}}').join('').split('{{memory_report_line}}').join('').split('{{permission_line}}').join('');
+      const expect = plain.split('{{memory_rules}}').join('').split('{{memory_queries_line}}').join('').split('{{memory_report_line}}').join('').split('{{permission_line}}').join('').split('{{run_plan}}').join(LV.runPlanLine({})); // the run's plan line (ADR 0037 amendment 8): none in these levers
       assert.strictEqual(off.replace(/\n/g, ''), expect.split('{{fix_cutoff_rule}}').join(LV.cutoffRule('cap-only', 0, f === 'orchestrator.md' ? 'headless' : 'interactive')).replace(/\n/g, ''), `${f} ${JSON.stringify(lv)}`);
     }
     const withRules = render(f, { notes: false, rules: true }).text;
@@ -171,8 +172,7 @@ test('both orchestrator prompts: the review step does not call task_evaluate, in
     assert.match(text, /merges them and, unless you pass `evaluate: false`, re-runs their checks on the merged head; `checks` adds commands to run on that head only \(for example the full suite\)\. You choose when what runs: per merge, at the end, or both;/, `${f}: integrate re-runs checks unless evaluate is false, and takes checks`);
     assert.ok(!/files_within_owned is judged against the task's own base/.test(text), `${f}: why task_evaluate is not that check is the refusal's own text (task_evaluate against another tree, below)`);
     assert.ok(!/belay refuses it \(E_BUSY\)/.test(text), `${f}: a task_evaluate of the same task and tree joins the release evaluation; E_BUSY is only another tree or base`);
-    assert.match(text, /`project` is stored as `project\/<name>` and `summary` \(a run outcome, with a `title`\) as `summary\/<name>`/, `${f}: the project suffix`);
-    assert.match(text, /A row stays status unverified until a `mcp__belay__memory_verify` with a receipt; your summary is found by title and kept as it is./, `${f}: what unverified means`);
+    assert.doesNotMatch(text, /memory_verify|stays status unverified/, `${f}: the legacy store and verify are not taught`);
   }
 });
 

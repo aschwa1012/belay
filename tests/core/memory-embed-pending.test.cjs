@@ -52,7 +52,7 @@ before(async () => {
   store = new Store(`${dir}/memory.db`, { stamp: true });
   const owner = { opts: { embedderMode: () => mode } };
   E = new Engine({ dataDir: dir, store, getEmbedder: async () => embedder, owner, establishedBy: 'test' });
-  await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true }) });
+  await call('run.attach', orch, { adapter_pid: process.pid, project: 'acme', memory_levers: JSON.stringify({ project: 'acme', notes: true, index_min_relevance: 0 }) }); // the bar off: this file's embedder is not nano, and the index is read here for rank order
   await call('worker.write', orch, { id: 'w1', substrate: 'claude-code', pid: process.pid, state: 'running', session_id: 's-w1', last_event_at: Date.now(), model: 'claude-test-1' });
 });
 after(() => { store.close(); cleanup(dir); });

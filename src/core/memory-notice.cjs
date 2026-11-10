@@ -1,7 +1,7 @@
 'use strict';
 // memory-notice.cjs (core) — the one source of truth for "memory notes would be on, but the run has no project, so
-// they are off". `notes` defaults on (0.3.0) but notes live in a project namespace and the project is never derived
-// (ADR 0041), so without `memory.project` nothing is written or injected and, before this, nothing said so. Every
+// they are off". `notes` defaults on but notes live in a project namespace. `belay run` derives the project from the git remote or the folder
+// when none is set (ADR 0041 amendment), so this notice is for a run that could derive none; without a project nothing is written or injected. Every
 // surface (`belay run`, `belay status`, `belay doctor`, `belay settings`, the panel) takes its words from here.
 // Pure: it requires nothing, so a read command pays nothing for it and no embedder is reached.
 
@@ -9,7 +9,7 @@ const NAME_RULE = '^[a-z0-9][a-z0-9._-]{0,63}$';
 const CODE = 'memory_project_unset';
 const TITLE = 'Notes are on, but no project is set, so this run keeps no notes';
 const TITLE_NO_RUN = 'Notes are on, but no project is set, so no notes are kept';
-const WHY = 'Notes are on by default, but they are kept per project (memory.project) and belay never guesses a project name, so with none set nothing is saved or recalled.';
+const WHY = 'Notes are on by default, but they are kept per project (memory.project), and this run has none, so nothing is saved or recalled.';
 const FIX_LINE = '"memory": { "project": "<name>" }';
 const FIX = `Add ${FIX_LINE} to belay.config.json (or to the run spec), or run: belay settings memory.project <name>. A name is lowercase letters, digits, dot, underscore or dash (${NAME_RULE}). To turn notes off and silence this: belay settings memory.notes false.`;
 
@@ -18,10 +18,10 @@ const SHORT = 'set one: belay settings memory.project <name> · or turn notes of
 
 const REDACT_CODE = 'memory_redact_off';
 const REDACT_TITLE = 'Notes are off: redaction is disabled';
-const REDACT_WHY = 'With memory.redact false no notes are written, because the project namespace outlives the run and must not hold unredacted text.';
+const REDACT_WHY = 'Notes are off because redaction is off: with memory.redact false no notes are written, because the project namespace outlives the run and must not hold unredacted text.';
 const REDACT_SHORT = 'remove "redact": false from the memory block · or turn notes off: belay settings memory.notes false';
 const REDACT_LINE = '"memory": { "redact": true }';
-const REDACT_FIX = 'Remove "redact": false from the memory block (or set it to true) to have notes on with the project set. To silence this: belay settings memory.notes false.';
+const REDACT_FIX = 'Remove "redact": false from the memory block (or set it to true) to have notes on. To silence this: belay settings memory.notes false.';
 
 // `block` is the memory block as written (config file's, or the spec's over it). `null` is an explicit `memory: null`
 // (memory off, nothing to warn about); `undefined` or any other non-object is no block. Returns null when notes are
@@ -30,10 +30,8 @@ function noticeFor(block) {
   if (block === null) return null;
   const b = typeof block === 'object' && !Array.isArray(block) ? block : {};
   if (b.notes === false) return null;
-  if (typeof b.project === 'string' && b.project !== '') {
-    if (b.redact === false && b.notes !== true) return { code: REDACT_CODE, title: REDACT_TITLE, why: REDACT_WHY, fix: REDACT_FIX, short: REDACT_SHORT, config_line: REDACT_LINE, name_rule: NAME_RULE };
-    return null;
-  }
+  if (b.redact === false && b.notes !== true) return { code: REDACT_CODE, title: REDACT_TITLE, why: REDACT_WHY, fix: REDACT_FIX, short: REDACT_SHORT, config_line: REDACT_LINE, name_rule: NAME_RULE };
+  if (typeof b.project === 'string' && b.project !== '') return null;
   return { code: CODE, title: TITLE, why: WHY, fix: FIX, short: SHORT, config_line: FIX_LINE, name_rule: NAME_RULE };
 }
 
@@ -42,7 +40,7 @@ const CODES = Object.freeze([CODE, REDACT_CODE]);
 // The notice a code names, or null (no code, or one this build does not know).
 function byCode(code) {
   if (code === CODE) return noticeFor({});
-  if (code === REDACT_CODE) return noticeFor({ project: 'p', redact: false });
+  if (code === REDACT_CODE) return noticeFor({ redact: false });
   return null;
 }
 
@@ -55,7 +53,10 @@ function noticeForRun(row, found) {
 
 // From a discovered config ({ found, config }), as `belay doctor` and `belay status` hold it.
 function noticeForConfig(found) {
-  const n = noticeFor(found && found.found && found.config ? found.config.memory : undefined);
+  const block = found && found.found && found.config ? found.config.memory : undefined;
+  const derivable = block === undefined || (block !== null && typeof block === 'object' && !Array.isArray(block) && !('project' in block) && block.redact !== false);
+  if (derivable) return null; // a run takes its project from the git remote or the folder name (ADR 0041 amendment)
+  const n = noticeFor(block);
   return n && n.code === CODE ? { ...n, title: TITLE_NO_RUN } : n; // no run is named, so "this run" would point at nothing
 }
 

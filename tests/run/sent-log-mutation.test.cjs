@@ -22,7 +22,7 @@ const ctxOn = (extra = {}) => ({ memoryLevers: { bottle: true }, ...extra });
 const worker = (dir) => ({ id: 'w1', taskId: 't1', dir, streamPath: fwd(path.join(dir, 'stream.jsonl')) });
 const rows = (f) => fs.readFileSync(f, 'utf8').split('\n').filter(Boolean).map((l) => JSON.parse(l));
 
-test('a stream replaced by a shorter one starts the turn count again from its first line', () => {
+test('legacy: a stream replaced by a shorter one starts the turn count again from its first line', () => {
   const dir = tmp();
   try {
     const w = worker(dir);
@@ -36,7 +36,7 @@ test('a stream replaced by a shorter one starts the turn count again from its fi
   } finally { cleanup(dir); }
 });
 
-test('a kind that is not one of the five is refused by name and writes nothing', () => {
+test('legacy: a kind that is not one of the five is refused by name and writes nothing', () => {
   const dir = tmp();
   try {
     const w = worker(dir);
@@ -50,7 +50,7 @@ test('a kind that is not one of the five is refused by name and writes nothing',
   } finally { cleanup(dir); }
 });
 
-test('a failure keeps an E_ code, replaces any other code with E_SENT_LOG, and cuts its message at 300', () => {
+test('legacy: a failure keeps an E_ code, replaces any other code with E_SENT_LOG, and cuts its message at 300', () => {
   const dir = tmp();
   try {
     const cases = [
@@ -70,7 +70,7 @@ test('a failure keeps an E_ code, replaces any other code with E_SENT_LOG, and c
   } finally { cleanup(dir); }
 });
 
-test('flush passes the task id, and a receipt that cannot be written lands on lastError', async () => {
+test('legacy: flush passes the task id, and a receipt that cannot be written lands on lastError', async () => {
   const dir = tmp();
   try {
     const w = worker(dir);
@@ -99,7 +99,7 @@ test('flush passes the task id, and a receipt that cannot be written lands on la
   } finally { cleanup(dir); }
 });
 
-test('the sequence continues from the last line of an existing file and ignores damaged lines', () => {
+test('legacy: the sequence continues from the last line of an existing file and ignores damaged lines', () => {
   const dir = tmp();
   try {
     const w = worker(dir);

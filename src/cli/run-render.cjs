@@ -41,7 +41,7 @@ function renderText(receipt) {
     const rr = receipt.review_rounds === null ? `unknown (${receipt.review_rounds_reason})` : receipt.review_rounds;
     lines.push(`levers: max_fix_rounds ${receipt.levers.max_fix_rounds}${receipt.levers.max_follow_ups !== undefined ? `, max_follow_ups ${receipt.levers.max_follow_ups}` : ''}${receipt.levers.fix_hard_cap === undefined ? '' : `, fix_hard_cap ${receipt.levers.fix_hard_cap === null ? 'none' : `${receipt.levers.fix_hard_cap} (${receipt.levers.fix_hard_cap_source})`}`}, fix_cutoff ${receipt.levers.fix_cutoff}, on_embedder_failure ${receipt.levers.on_embedder_failure}${receipt.levers.max_parallel_evaluations ? `, max_parallel_evaluations ${receipt.levers.max_parallel_evaluations}` : ''}${memoryText(receipt.levers)}; review_rounds: ${rr}`);
   }
-  lines.push(...RI.embedderLines(receipt), ...require('../run/review-scratch.cjs').lines(receipt), ...require('./run-trees.cjs').lines(receipt), ...require('./run-checks.cjs').lines(receipt)); // ADR 0054 amendment 1: what the close removed
+  lines.push(...RI.embedderLines(receipt), ...require('../run/review-scratch.cjs').lines(receipt), ...require('./run-trees.cjs').lines(receipt), ...require('./run-checks.cjs').lines(receipt), ...require('../run/drive-tmp.cjs').lines(receipt)); // ADR 0054 amendment 1: what the close removed
   if (receipt.receipt_path) lines.push(`receipt: ${receipt.receipt_path}`);
   lines.push('');
   return lines.join('\n');

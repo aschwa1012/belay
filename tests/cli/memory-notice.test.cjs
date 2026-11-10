@@ -14,9 +14,9 @@ const { spawnSync } = require('node:child_process');
 const ROOT = path.resolve(__dirname, '..', '..').split(path.sep).join('/');
 const CLI = `${ROOT}/src/cli/belay.cjs`;
 const FAKE_CLAUDE = `${ROOT}/tests/run/fakes/fake-claude.cjs`;
-const TITLE = 'Notes are on, but no project is set, so this run keeps no notes';
-const TITLE_NO_RUN = 'Notes are on, but no project is set, so no notes are kept';
-const LINE = '"memory": { "project": "<name>" }';
+const TITLE = 'Notes are off: redaction is disabled';
+const TITLE_NO_RUN = 'Notes are off: redaction is disabled'; // redaction off and no project is the only no-notes case left with no project
+const LINE = '"memory": { "redact": true }';
 const fwd = (p) => String(p).split(path.sep).join('/');
 
 function project(config) {
@@ -29,7 +29,7 @@ const cleanup = (dir) => fs.rmSync(dir, { recursive: true, force: true });
 const cli = (cwd, args, env = {}) => spawnSync(process.execPath, [CLI, ...args], { cwd, windowsHide: true, encoding: 'utf8', env: { ...process.env, ...env } });
 const count = (s, t) => s.split(t).length - 1;
 
-for (const [name, config, shown] of [['no config', null, true], ['a config with no project', { memory: { rules: false } }, true], ['a config with a project', { memory: { project: 'acme' } }, false], ['notes off', { memory: { notes: false } }, false]]) {
+for (const [name, config, shown] of [['no config (a run derives the project)', null, false], ['a config with no project (a run derives it)', { memory: { rules: false } }, false], ['redaction off and no project', { memory: { redact: false } }, true], ['a config with a project', { memory: { project: 'acme' } }, false], ['notes off', { memory: { notes: false } }, false]]) {
   test(`settings, status and doctor with ${name}: the warning ${shown ? 'is' : 'is not'} listed, and no file is created`, () => {
     const dir = project(config);
     try {
@@ -61,12 +61,22 @@ function runWith(config, specMemory) {
   return { dir, r };
 }
 
-test('run: the notice is printed once on stderr when there is no project, and the stdout receipt does not carry it', () => {
+test('run: a run with no project derives one and prints it once, with no notice', () => {
   const { dir, r } = runWith(null);
   try {
     assert.strictEqual(r.status, 0, r.stderr);
+    assert.strictEqual(count(r.stderr, 'belay: notes project '), 1, r.stderr);
+    assert.match(r.stderr, /derived from folder name belay-mnotice-/);
+    assert.strictEqual(count(r.stderr, TITLE), 0, r.stderr);
+  } finally { cleanup(dir); }
+});
+
+test('run: the notice is printed once on stderr when there is no project, and the stdout receipt does not carry it', () => {
+  const { dir, r } = runWith(null, { redact: false });
+  try {
+    assert.strictEqual(r.status, 0, r.stderr);
     assert.strictEqual(count(r.stderr, TITLE), 1, r.stderr);
-    assert.ok(r.stderr.includes(LINE));
+    assert.ok(r.stderr.includes('Remove "redact": false'));
     assert.strictEqual(r.stdout.includes(TITLE_NO_RUN), false, 'the receipt on stdout is unchanged');
   } finally { cleanup(dir); }
 });

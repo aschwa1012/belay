@@ -1,4 +1,5 @@
 'use strict';
+// Not a legacy test: its other tests are about the run manager; the turn-row ones are labelled.
 require('../helpers/temp-root.cjs').enforceSafeTemp(process.env); // scratch never lands in an indexed folder, even for a bare `node file`
 // The run manager against a fake substrate and the in-memory fake core. Every assertion is about
 // an effect: a row written, a checkpoint written, a memory entry written, a file on disk. A
@@ -11,6 +12,7 @@ const os = require('node:os');
 const path = require('node:path');
 
 const { createRunManager } = require('../../src/run/index.cjs');
+const TURN_ROWS = { ...require('../../src/run/memory-levers.cjs').DEFAULTS, turn_rows: true }; // the turn row is written only when this lever is on
 const { createFakeCore } = require('./fake-core.cjs');
 const { cleanup } = require('../core/helpers.cjs');
 const P = require('../../src/run/process.cjs');
@@ -33,9 +35,9 @@ function sandbox() {
   return { data: d.replace(/\\/g, '/'), worktree: path.join(d, 'wt').replace(/\\/g, '/') };
 }
 
-function mgr(sb, core, exe = FAKE) {
+function mgr(sb, core, exe = FAKE, memoryLevers = null) {
   return createRunManager({
-    core, dataDir: sb.data, runId: 'run-test',
+    core, dataDir: sb.data, runId: 'run-test', memoryLevers,
     paths: { claudeExe: exe, codexExe: exe, userSettings: path.join(__dirname, 'fixtures', 'user-settings.json') },
   });
 }
@@ -107,10 +109,10 @@ test('spawn returns the row only after ready, and every artefact is on disk', as
   } finally { await teardown(m, sb); }
 });
 
-test('a turn writes a harness checkpoint with a tool digest and stores the final text', async () => {
+test('legacy: a turn writes a harness checkpoint with a tool digest and stores the final text', async () => {
   const sb = sandbox();
   const core = createFakeCore();
-  const m = mgr(sb, core);
+  const m = mgr(sb, core, FAKE, TURN_ROWS);
   try {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hello', worker_id: 'w1', task_id: 't1' });
     await m._waitTurn('w1', 8000);
@@ -137,10 +139,10 @@ test('a turn writes a harness checkpoint with a tool digest and stores the final
   } finally { await teardown(m, sb); }
 });
 
-test('a worker with no task gets no checkpoint, says why, and its turn still reaches memory', async () => {
+test('legacy: a worker with no task gets no checkpoint, says why, and its turn still reaches memory', async () => {
   const sb = sandbox();
   const core = createFakeCore();
-  const m = mgr(sb, core);
+  const m = mgr(sb, core, FAKE, TURN_ROWS);
   try {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'hello', worker_id: 'wn' });
     await m._waitTurn('wn', 8000);
@@ -171,7 +173,8 @@ test('with a task id the lease is taken and the resume line leads the first mess
     const w = m._worker('w1');
     assert.ok(w.firstMessage.startsWith('RESUME-LINE task t9'));
     assert.ok(w.firstMessage.includes('\n\nthe task'), 'the prompt follows the resume line');
-    assert.ok(w.firstMessage.endsWith('call lease_release with lease_id lease-1 and a result object (branch, head, tests, findings).'), 'belay closes the message with the hand-back rule naming the lease');
+    // The hand-back rule ends with the escalation line every worker is sent (ADR 0074 amendment 4).
+    assert.ok(w.firstMessage.endsWith(`call lease_release with lease_id lease-1 and a result object (branch, head, tests, findings).${require('../../src/run/handback.cjs').ESCALATE_LINE}`), 'belay closes the message with the hand-back rule naming the lease');
   } finally { await teardown(m, sb); }
 });
 
@@ -238,10 +241,10 @@ test('no ready event inside the window is E_NO_READY with a stderr tail and a de
 // Forced lag (build 12 a2-noready): the child's 'exit' event is held back 2,500 ms, longer than the 1,000 ms
 // failNoReady used to wait and longer than the pid poll's interval, so the poll settles the death first with no
 // code. The old code failed the start with exit_code null; the fix waits for the event and carries the code.
-test('message writes to stdin, counts a turn, and refuses a worker with no live stdin', async () => {
+test('legacy: message writes to stdin, counts a turn, and refuses a worker with no live stdin', async () => {
   const sb = sandbox();
   const core = createFakeCore();
-  const m = mgr(sb, core);
+  const m = mgr(sb, core, FAKE, TURN_ROWS);
   try {
     const row = await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w4', task_id: 't4' });
     await m._waitTurn('w4', 8000);
@@ -330,17 +333,17 @@ test('stopping a worker that is already gone claims neither a graceful stop nor 
   } finally { await teardown(m, sb); }
 });
 
-test('restart resumes inside the window and replaces outside it, and says the numbers', async () => {
+test('legacy: restart resumes at any age, says when the cache is cold, and replaces only with no session id', async () => {
   const sb = sandbox();
   const core = createFakeCore();
-  const m = mgr(sb, core);
+  const m = mgr(sb, core, FAKE, TURN_ROWS);
   try {
     await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'w8', task_id: 't1' });
     await m._waitTurn('w8', 8000);
 
     const r = await m.restart({ worker_id: 'w8', first_turn_timeout_ms: 8000 });
     assert.equal(r.branch, 'resume');
-    assert.match(r.reason, /inside the 3300000 ms claude-code window/);
+    assert.match(r.reason, /inside the 3300000 ms cache window/);
     assert.ok(r.new_pid !== r.old_pid);
     assert.equal(r.first_turn_timed_out, false);
     assert.ok(r.first_turn_usage);
@@ -348,11 +351,17 @@ test('restart resumes inside the window and replaces outside it, and says the nu
     const argv = JSON.parse(fs.readFileSync(path.join(sb.data, 'workers', 'w8', 'argv.json'), 'utf8'));
     assert.ok(argv.spec.args.includes('--resume'), 'a resume branch passes --resume');
 
-    // Age the worker past the window: the branch flips to replace and resume.md is written.
+    // Aged past the window the branch is still resume, with the cache named cold.
     m._worker('w8').lastEventAt = Date.now() - 60 * 60 * 1000;
+    const rOld = await m.restart({ worker_id: 'w8', first_turn_timeout_ms: 8000 });
+    assert.equal(rOld.branch, 'resume');
+    assert.equal(rOld.cache_cold, true);
+    assert.match(rOld.reason, /past the 3300000 ms cache window/);
+    // No session id: the branch is replace and resume.md is written.
+    m._worker('w8').sessionId = null;
     const r2 = await m.restart({ worker_id: 'w8', first_turn_timeout_ms: 8000 });
     assert.equal(r2.branch, 'replace');
-    assert.match(r2.reason, /outside the 3300000 ms claude-code window/);
+    assert.match(r2.reason, /no session or thread id/);
     const doc = fs.readFileSync(path.join(sb.data, 'workers', 'w8', 'resume.md'), 'utf8');
     assert.match(doc, /^# resume/);
     const argv2 = JSON.parse(fs.readFileSync(path.join(sb.data, 'workers', 'w8', 'argv.json'), 'utf8'));
@@ -434,12 +443,13 @@ test('a stop walks the worker subtree, and the taskkill receipt proves it', asyn
   const pidFile = sb.data + '/grandchild.pid';
   const m = mgr(sb, core, FAKE_WITH_CHILD);
   process.env.FAKE_CHILD_PID_FILE = pidFile;
-  let gpid = 0;
+  let gpid = 0, left = null; // left: the grandchild's identity, ended in the finally only if an assertion failed before it was gone
   try {
     const row = await m.spawn({ substrate: 'claude-code', worktree: sb.worktree, prompt: 'one', worker_id: 'wt' });
     gpid = Number(fs.readFileSync(pidFile, 'utf8').trim());
     assert.ok(gpid > 0 && P.pidAlive(gpid), 'the worker must really have a child to lose');
     const [rowId, gId] = await G.identifyAll([row.pid, gpid]);
+    left = gId;
 
     const s = await m.stop({ worker_id: 'wt', mode: 'kill', timeout_ms: 8000 });
     assert.equal(s.killed, true);
@@ -458,10 +468,10 @@ test('a stop walks the worker subtree, and the taskkill receipt proves it', asyn
       assert.ok(tk.terminated >= 2, `the tree kill must reach past the direct child, and it named ${tk.terminated} process(es): ${tk.output}`);
     }
     assert.ok(await G.waitGone(gId, { deadlineMs: 3000, intervalMs: 100 }), `the child (pid ${gpid}) outlived the worker that spawned it`);
-    gpid = 0;
+    left = null;
   } finally {
     delete process.env.FAKE_CHILD_PID_FILE;
-    if (gpid) { try { process.kill(gpid); } catch { /* already gone */ } }
+    if (left) await require('../crash.cjs').crashIdentities([left]); // by pid and creation time, never the bare pid
     await teardown(m, sb);
   }
 });

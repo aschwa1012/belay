@@ -8,10 +8,29 @@ const rows = require('./rows.cjs');
 const holds = require('./task-holds.cjs');
 const { filesOverlap, treeHint } = require('./methods-task-hold.cjs');
 
+// ADR 0072 decision 2: a verdict review of a task, where a policy step and the orchestrator both make one, leaves a single review in
+// either order. The new row is a verdict review depending on exactly one task, and a review of that task already stands: not cancelled,
+// not done, and not yet evaluated (an evaluated review that did not pass is a refuted verdict, a finished round, not a standing review, so
+// a second opinion on it is a new review), made by a policy step or being made now by one. It is answered with the standing row,
+// `existing: true` and a `reason` saying nothing of this call was written (a policy step after the orchestrator's is PS.duplicate's
+// tie-break). This runs in the same synchronous turn as the append.
+function standingReview(E, caller, acceptance, deps) {
+  if (!acceptance || acceptance.verdict !== true || !deps || deps.length !== 1) return null;
+  const PS = require('./policy-stamp.cjs');
+  const policyCaller = PS.stepOf(caller) !== null;
+  const there = rows.currentAll(E.store, 'task').find((t) => t.run_id === caller.run_id && t.state !== 'cancelled' && t.state !== 'done' && t.results == null
+    && t.acceptance && t.acceptance.verdict === true && Array.isArray(t.depends_on) && t.depends_on.length === 1 && t.depends_on[0] === deps[0]
+    && (policyCaller || PS.byPolicy(E.store, 'task', t.id)));
+  return there ? PS.duplicate(E, caller, 'task', there.id, { ...there, existing: true, reason: `a verdict review of ${deps[0]} already stands as ${there.id}; the spec, files and budget of this call were not written. To get another opinion, cancel it or wait for its verdict` }) : null;
+}
+
 // `runTop` is the run's repository, read by the caller when tree_of is given. `own.worktree` is a tree the caller made or inherited.
 function one(E, caller, args, own, runTop) {
   const AM = require('./methods-task-amend.cjs');
   if (args.follows_up !== undefined) throw err('E_ARGS', 'task.follows_up is written only by fix_from_review with follow_up: true; a caller cannot set it', { field: 'follows_up' }); // ADR 0064 decision 1
+  for (const k of ['acted_by', 'trigger', 'policy_rev']) { // ADR 0072 decision 3: the policy step's stamps are the harness's, never a caller's argument
+    if (args[k] !== undefined) throw err('E_ARGS', `task.create: ${k} is written by the core for a policy step; a caller cannot set it`, { field: k, reason: 'harness_only' });
+  }
   if (typeof args.spec !== 'string' || !args.spec.trim()) throw err('E_ARGS', 'task.create needs a spec describing the work');
   const filesOwned = args.files_owned == null ? null : args.files_owned;
   if (filesOwned != null && (!Array.isArray(filesOwned) || filesOwned.some(p => typeof p !== 'string'))) {
@@ -27,6 +46,7 @@ function one(E, caller, args, own, runTop) {
     throw err('E_ARGS', 'task.repairs must be the id of the work task this fix task repairs');
   }
   const repairs = args.repairs == null ? null : args.repairs;
+  const queries = require('./memory-queries.cjs').check(args.memory_queries, 'task', (code, msg, d) => { throw err(code, msg, d); });
   const id = args.id || rows.newId();
   if (rows.current(E.store, 'task', id)) throw err('E_ARGS', `a task with id ${id} already exists in this store; choose another id, leave id out for a generated one, or pass amend: true to revise its acceptance`, { task_id: id });
   if (args.tree_of != null && own.worktree) throw err('E_ARGS', 'task.create tree_of: this task already inherits a tree');
@@ -44,6 +64,9 @@ function one(E, caller, args, own, runTop) {
       throw err('E_DEPENDENCY_CYCLE', `these dependencies form a cycle, ${cycle.join(' -> ')}, and every task in it would refuse assignment for ever`, { task_id: id, cycle });
     }
   }
+
+  const standing = standingReview(E, caller, acceptance, deps);
+  if (standing) return standing;
 
   // ADR 0031 amendment 3: a fix task names its work; core refuses one only past the user's fix_hard_cap (none by default), and past max_fix_rounds the row carries a fix_notice.
   let fixNotice = null;
@@ -78,14 +101,18 @@ function one(E, caller, args, own, runTop) {
     overlaps = holds.acrossTrees(scan);
   }
 
+  const plan = require('./policy-plan.cjs').forCreate(rows.current(E.store, 'run', caller.run_id), args, { repairs, follows_up: own.follows_up, acceptance }); // ADR 0071: checked before the append, so a refused plan writes nothing
+  const planNotice = repairs && plan.policy && plan.policy.build ? 'the plan does not build a task that repairs another, so policy.build is not used: assign it with task_assign. The policy stated here replaces the plan of the work for this fix: name re_review and fix in it if it should be re-reviewed and sent back on a failed check; it is merged with its work under the plan of the work' : null; // the build gate is `!repairs` (policy-exec.cjs)
+  // A fix task with no lines of its own carries the lines of the work it repairs.
+  const lines = queries.length ? queries : (repairs && (rows.current(E.store, 'task', repairs) || {}).memory_queries) || null;
   const t = Date.now();
   const budget = require('./run-budget.cjs').taskLimit(E, caller, args); // dollar limit, checked before the append; null when none (the run process is told after the write: run-budget noteRows)
   const row = rows.append(E.store, 'task', {
     id, run_id: caller.run_id, spec: args.spec, acceptance, files_owned: filesOwned, state: 'open', ...(budget ? { budget_usd: budget } : {}),
-    results: null, depends_on: deps, repairs, ...(tree ? { worktree: tree } : {}), ...(own.answers ? { answers: own.answers } : {}), ...(own.follows_up ? { follows_up: own.follows_up } : {}), ...(args.base != null ? { base: require('./methods-worktree.cjs').baseArg(args.base) } : {}),
+    results: null, depends_on: deps, repairs, ...(lines && lines.length ? { memory_queries: lines } : {}), ...plan, ...(tree ? { worktree: tree } : {}), ...(own.answers ? { answers: own.answers } : {}), ...(own.follows_up ? { follows_up: own.follows_up } : {}), ...(args.base != null ? { base: require('./methods-worktree.cjs').baseArg(args.base) } : {}),
   }, E.writtenBy(caller), t);
   E.noteWrite();
-  return overlaps.length || fixNotice ? { ...row, ...(overlaps.length ? { overlaps } : {}), ...(fixNotice ? { fix_notice: fixNotice } : {}) } : row;
+  return overlaps.length || fixNotice || planNotice ? { ...row, ...(overlaps.length ? { overlaps } : {}), ...(fixNotice ? { fix_notice: fixNotice } : {}), ...(planNotice ? { plan_notice: planNotice } : {}) } : row;
 }
 
 module.exports = { one };
