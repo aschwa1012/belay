@@ -360,6 +360,12 @@ belay drives real multi-agent runs today, and parts of belay itself were built b
 
 Bugs, ideas and porting help: [GitHub Issues](https://github.com/aschwa1012/belay/issues). Release history: [CHANGELOG.md](CHANGELOG.md).
 
+## How this repository is built
+
+belay is built with AI coding agents, mainly Claude Code, working as builders and reviewers, with a person deciding what is built and what ships. Each commit on `main` is one reviewed change.
+
+Releases 0.1.0 to 0.4.0 were first published with one commit per agent step. In November 2026 that history was consolidated to one commit per reviewed change, keeping each change's real date and author and leaving the files of every release unchanged.
+
 ## Contributing
 
 Issues and pull requests are welcome. Clone the repository and run `npm install` (Windows, Node 24.19.0 or later).
